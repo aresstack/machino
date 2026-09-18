@@ -20,10 +20,10 @@ VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || ech
 CXX     := $(CROSS_COMPILE)g++
 BIN     := machinod
 
-CXXFLAGS ?= -std=c++17 -Os -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections \
+CXXFLAGS ?= -std=c++17 -Os -fno-pie -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections \
             -Wall -Wextra -Wno-unused-parameter -D_GNU_SOURCE
 CXXFLAGS += -DMACHINO_VERSION='"$(VERSION)"' -DPLATFORM_$(PLATFORM) -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp
-LDFLAGS  ?= -Wl,--gc-sections
+LDFLAGS  ?= -no-pie -Wl,--gc-sections
 LDFLAGS  += -static-libstdc++ -static-libgcc
 LIBS     ?= -lpthread -lrt -lm
 
