@@ -16,3 +16,6 @@ Dieses Repository ist ein Fork; die ursprüngliche Attribution bleibt erhalten.
 Ziel-Hardware zunächst: **T40NN + IMX307** unter OpenIPC (musl); Build gegen SDK **1.3.1**
 (Header `include/T40/1.3.1/en`), weil die von OpenIPC mitgelieferte 1.2.0-libimp den
 T40NN-Chip nicht kennt und mit dem Majestic-ABI nicht zusammenpasst.
+
+## Upstream-Basis
+Fork von Lu-Fi/timps @ `3de3a5694eb340684ecde4cb82741c637ddaa141` (main, Stand 2026-09-18). Machino-Aenderungen darueber.
