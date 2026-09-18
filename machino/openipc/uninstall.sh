@@ -20,6 +20,13 @@ warn() { echo "uninstall: $*" >&2; }
 die()  { echo "uninstall: $*" >&2; exit 1; }
 
 [ -n "$ROOT" ] || [ "$(id -u)" = "0" ] || die "run as root"
+
+# see install.sh: overlayfs on kernel 4.4 can refuse rename(2) with EINVAL
+move_file() {
+    _s=$1; _d=$2
+    mv "$_s" "$_d" 2>/dev/null && return 0
+    cp -p "$_s" "$_d" && rm -f "$_s"
+}
 case "${1:-}" in --keep-config) KEEP_CONFIG=1 ;; esac
 
 preinstall=none
@@ -49,7 +56,7 @@ fi
 rm -f "$INITD/S95streamer"
 
 if [ -f "$INITD/majestic" ]; then
-    mv "$INITD/majestic" "$INITD/S95majestic" || warn "could not move majestic back into the boot slot"
+    move_file "$INITD/majestic" "$INITD/S95majestic" || warn "could not move majestic back into the boot slot"
 elif [ -f "$BACKUP/S95majestic" ]; then
     cp -p "$BACKUP/S95majestic" "$INITD/S95majestic" || warn "could not restore S95majestic from the backup"
 fi

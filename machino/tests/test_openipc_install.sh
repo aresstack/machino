@@ -192,6 +192,37 @@ printf '<nav>a newer webui</nav>
 run_uninstall
 is "updated header kept" "$(cat "$R/var/www/cgi-bin/p/header.cgi")" "<nav>a newer webui</nav>"
 
+# ------------- 13a) --webui-password ends up applied, not just parsed -------
+# It WAS parsed and never used once; only this test keeps that from returning.
+make_bundle; make_camera auto
+PSTUB="$WORK/pstub"; mkdir -p "$PSTUB"
+printf '#!/bin/sh
+case "$1" in -m) echo "md5hash"; exit 0 ;; esac
+exit 0
+' > "$PSTUB/httpd"
+chmod +x "$PSTUB/httpd"
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" STREAMERCTL_HTTPD="$PSTUB/httpd" sh ./install.sh --webui-password s3cret ) >"$WORK/out" 2>&1 ||
+    bad "install with --webui-password failed: $(cat "$WORK/out")"
+has "webui.passwd written" "$R/etc/machino/webui.passwd"
+if grep -q '^/cgi-bin:root:' "$R/etc/machino/httpd.conf" 2>/dev/null; then ok; else bad "httpd.conf has no /cgi-bin auth rule"; fi
+rm -rf "$PSTUB"
+
+# ------------- 13b) the boot-slot move survives a failing mv -----------------
+# The camera's 4.4 overlayfs refused rename(2) with EINVAL for the lower-layer
+# S95majestic; the cp+rm fallback is what actually ran there.
+make_bundle; make_camera auto
+MVSTUB="$WORK/mvstub"; mkdir -p "$MVSTUB"
+printf '#!/bin/sh
+exit 1
+' > "$MVSTUB/mv"; chmod +x "$MVSTUB/mv"
+( cd "$WORK/bundle" && PATH="$MVSTUB:$PATH" MACHINO_ROOT="$WORK/root" sh ./install.sh ) >"$WORK/out" 2>&1 ||
+    bad "install failed although mv failure has a fallback: $(cat "$WORK/out")"
+has   "boot slot moved despite broken mv" "$R/etc/init.d/majestic"
+hasnt "old slot gone despite broken mv"   "$R/etc/init.d/S95majestic"
+( cd "$WORK/bundle" && PATH="$MVSTUB:$PATH" MACHINO_ROOT="$WORK/root" sh ./uninstall.sh ) >"$WORK/out" 2>&1
+has   "restore works despite broken mv"   "$R/etc/init.d/S95majestic"
+rm -rf "$MVSTUB"
+
 # --------- 13) everything shipped to the camera stays BusyBox-clean ---------
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static

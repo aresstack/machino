@@ -57,6 +57,16 @@ done
 # cp+chmod instead of install(1), for the same reason.
 put() { _m=$1; _s=$2; _d=$3; mkdir -p "$(dirname "$_d")" && cp "$_s" "$_d" && chmod "$_m" "$_d"; }
 
+# mv can fail with EINVAL on this kernel's overlayfs when the source still
+# lives in the squashfs lower layer (seen on the camera: "mv: can't rename
+# '/etc/init.d/S95majestic': Invalid argument"). Copy+delete works there: the
+# copy goes to the upper layer and the delete becomes a whiteout.
+move_file() {
+    _s=$1; _d=$2
+    mv "$_s" "$_d" 2>/dev/null && return 0
+    cp -p "$_s" "$_d" && rm -f "$_s"
+}
+
 # ------------------------------------------------------------- preflight ---
 if [ "$WEBUI_ONLY" = "1" ]; then
     [ -r "$HERE/webui/machino.cgi" ] || die "bundle incomplete: webui/machino.cgi is missing"
@@ -137,7 +147,7 @@ else
 fi
 if [ -d "$HERE/profiles" ]; then
     mkdir -p "$STATE_DIR/profiles"
-    for p in "$HERE"/profiles/*; do [ -f "$p" ] && put 0644 "$p" "$STATE_DIR/profiles/"; done
+    for p in "$HERE"/profiles/*; do [ -f "$p" ] && put 0644 "$p" "$STATE_DIR/profiles/${p##*/}"; done
 fi
 
 put 0755 "$HERE/sbin/streamerctl" "$ROOT/usr/sbin/streamerctl" || die "cannot install streamerctl"
@@ -153,7 +163,7 @@ put 0755 "$HERE/init/machino" "$INITD/machino"          || die "cannot install $
 # that glob. It stays fully usable as /etc/init.d/majestic.
 if [ -f "$INITD/S95majestic" ]; then
     [ -f "$BACKUP/S95majestic" ] || cp -p "$INITD/S95majestic" "$BACKUP/S95majestic"
-    mv "$INITD/S95majestic" "$INITD/majestic" || die "cannot move S95majestic aside"
+    move_file "$INITD/S95majestic" "$INITD/majestic" || die "cannot move S95majestic aside"
     chmod 0755 "$INITD/majestic"
     say "moved $INITD/S95majestic -> $INITD/majestic (a backup is in $BACKUP)"
 fi
