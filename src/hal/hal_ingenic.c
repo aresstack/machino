@@ -1092,8 +1092,12 @@ static int isp_init(void)
      * power-down on any board that doesn't wire the sensor there. -1 is
      * every vendor driver's own "no such pin" sentinel (checked before any
      * gpio_request), same convention prudynt uses. */
-    g_sensor.rst_gpio = -1;
-    g_sensor.pwdn_gpio = -1;
+    /* M1e (T40NN/imx307): the T40 tx-isp driver copies rst_gpio/pwdn_gpio from this
+     * struct into the sensor module parameters and pulses the reset pin before the
+     * chip-id probe. -1 skips the pulse -> sensor never wakes -> i2c EIO / 'not an
+     * imx307'. Take the board wiring from config (default -1 = unchanged behaviour). */
+    g_sensor.rst_gpio = g_hcfg->sensor.reset_gpio;
+    g_sensor.pwdn_gpio = g_hcfg->sensor.pwdn_gpio;
     g_sensor.power_gpio = -1;
 #endif
     /* bounded copies: sensor.model (64) is larger than name (32) / i2c.type (20).
