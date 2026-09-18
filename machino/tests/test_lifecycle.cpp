@@ -145,16 +145,22 @@ void test_failed_start_rolls_back() {
 void test_concurrent_acquire_release() {
     Rig r;
     std::atomic<int> active{0}, max_active{0};
-    std::vector<std::thread> ts;
-    for (int t = 0; t < 8; ++t) ts.emplace_back([&] {
-        for (int i = 0; i < 200; ++i) {
-            auto d = r.mgr.acquire(ConsumerType::Rtsp);
-            int a = ++active; int m = max_active.load(); while (a > m && !max_active.compare_exchange_weak(m, a)) {}
-            if ((i & 7) == 0) r.mgr.on_grace_timeout();  // stale expiries interleaved
-            --active;
-        }
-    });
-    for (auto& t : ts) t.join();
+    // Repeat until the threads really did overlap. A scheduler that serialises
+    // them makes the assertions below pass vacuously, and asserting on a single
+    // racy run makes the test flaky rather than strict - the invariants hold
+    // after every round, so repeating costs nothing but the wait.
+    for (int attempt = 0; attempt < 20 && max_active.load() < 2; ++attempt) {
+        std::vector<std::thread> ts;
+        for (int t = 0; t < 8; ++t) ts.emplace_back([&] {
+            for (int i = 0; i < 200; ++i) {
+                auto d = r.mgr.acquire(ConsumerType::Rtsp);
+                int a = ++active; int m = max_active.load(); while (a > m && !max_active.compare_exchange_weak(m, a)) {}
+                if ((i & 7) == 0) r.mgr.on_grace_timeout();  // stale expiries interleaved
+                --active;
+            }
+        });
+        for (auto& t : ts) t.join();
+    }
     Stats s = r.mgr.stats();
     LCHECK(s.total_demand == 0 && s.demand[(int)ConsumerType::Rtsp] == 0);
     LCHECK(s.state == State::GraceIdle || s.state == State::ColdIdle || s.state == State::Active);
