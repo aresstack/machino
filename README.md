@@ -17,6 +17,9 @@
 Machino is a new media runtime for embedded IP cameras, designed as a lightweight
 replacement for monolithic camera streamers such as Majestic.
 
+“Machino” is a blend of _Majestic_ and _Thingino_, reflecting two of the
+project’s original reference points.
+
 The long-term goal is deliberately ambitious:
 
 > **Support every camera. Or at least plan to.**
