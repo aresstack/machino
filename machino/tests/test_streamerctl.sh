@@ -64,7 +64,7 @@ EOF
 # is actually passed, not merely written to disk
 echo "$@" >> "@RUNDIR@/httpd.argv"
 case "$1" in -m) echo '$1$test$hash'; exit 0 ;; esac
-sleep 120 &
+sleep 120 >/dev/null 2>&1 &
 echo $! > "@RUNDIR@/httpd.pid"
 exit 0
 EOS

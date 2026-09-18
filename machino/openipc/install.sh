@@ -75,12 +75,32 @@ webui_menu_add() {
     header="$CGI/p/header.cgi"
     [ -w "$header" ] || { warn "cannot write $header - the page stays reachable at /cgi-bin/machino.cgi"; return 1; }
 
+    if grep -q "machino:begin" "$header" 2>/dev/null; then say "menu entry already present"; return 0; fi
+    [ -f "$BACKUP/header.cgi" ] || cp -p "$header" "$BACKUP/header.cgi"
+
+    # The label is written out literally instead of going through page_label(),
+    # so p/pages.cgi stays untouched: one stock file less to patch and restore.
+    anchor='<ul aria-labelledby="dropdownSystem" class="dropdown-menu">'
+    grep -qF "$anchor" "$header" || { warn "navigation layout not recognised - page reachable at /cgi-bin/machino.cgi only"; return 1; }
+
+    awk -v anchor="$anchor" -v b="$MARK_BEGIN" -v e="$MARK_END" '
+        { print }
+        index($0, anchor) {
+            print "							" b
+            print "							<li><a class=\"dropdown-item\" href=\"machino.cgi\">Media service</a></li>"
+            print "							" e
+        }' "$header" > "$header.machino.tmp" && mv "$header.machino.tmp" "$header" || {
+        warn "could not patch the navigation"; rm -f "$header.machino.tmp"; return 1; }
+    say "added the menu entry under System"
+}
+
 if [ "$WEBUI_ONLY" = "1" ]; then
     install -m 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || die "could not install the WebUI page"
     webui_menu_add || true
     say "WebUI page and menu entry refreshed; nothing else was touched."
     exit 0
 fi
+
 
 # --------------------------------------------- remember the previous state ---
 # Only on the very first install, so re-running the installer (or upgrading)
@@ -138,25 +158,6 @@ fi
 
 # ------------------------------------------------------------------ WebUI ---
 install -m 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || warn "could not install the WebUI page"
-
-    if grep -q "machino:begin" "$header" 2>/dev/null; then say "menu entry already present"; return 0; fi
-    [ -f "$BACKUP/header.cgi" ] || cp -p "$header" "$BACKUP/header.cgi"
-
-    # The label is written out literally instead of going through page_label(),
-    # so p/pages.cgi stays untouched: one stock file less to patch and restore.
-    anchor='<ul aria-labelledby="dropdownSystem" class="dropdown-menu">'
-    grep -qF "$anchor" "$header" || { warn "navigation layout not recognised - page reachable at /cgi-bin/machino.cgi only"; return 1; }
-
-    awk -v anchor="$anchor" -v b="$MARK_BEGIN" -v e="$MARK_END" '
-        { print }
-        index($0, anchor) {
-            print "							" b
-            print "							<li><a class=\"dropdown-item\" href=\"machino.cgi\">Media service</a></li>"
-            print "							" e
-        }' "$header" > "$header.machino.tmp" && mv "$header.machino.tmp" "$header" || {
-        warn "could not patch the navigation"; rm -f "$header.machino.tmp"; return 1; }
-    say "added the menu entry under System"
-}
 
 webui_menu_add || true
 
