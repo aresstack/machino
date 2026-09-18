@@ -78,10 +78,14 @@ bool resolve_hardware(const UserHardwareConfig& user, const Registry& reg,
     else if (board && board->default_mode) { r.mode.value = *board->default_mode; r.mode.source = Source::BoardProfile; }
     else if (sd->default_mode())      { r.mode.value = *sd->default_mode();   r.mode.source = Source::PlatformDefault; }
     else { err = "no sensor mode known for '" + sensor_model + "'"; return false; }
+    r.allow_unverified_mode = user.allow_unverified_mode;
+    r.presets = board ? board->presets : BoardPresets{};
     if (!sd->has_mode(r.mode.value)) {
-        err = "mode " + std::to_string(r.mode.value.width) + "x" + std::to_string(r.mode.value.height) + "@" +
+        std::string what = "mode " + std::to_string(r.mode.value.width) + "x" + std::to_string(r.mode.value.height) + "@" +
               std::to_string(r.mode.value.fps) + " is not a verified mode of sensor '" + sensor_model + "'";
-        return false;
+        if (!user.allow_unverified_mode) { err = what; return false; }
+        r.mode_verified = false;
+        r.conflicts += what + " (allowed by sensor.allow_unverified_mode)\n";
     }
     if (user.mode && board && board->default_mode && !(*user.mode == *board->default_mode))
         r.conflicts += "mode [user-config] overrides board default\n";

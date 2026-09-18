@@ -34,6 +34,9 @@ struct UserHardwareConfig {
     std::string  sensor;          // overrides/sets the sensor model
     SensorWiring wiring;          // explicit wiring overrides
     std::optional<SensorMode> mode;
+    // Explicit opt-in to run a mode that is not (yet) a verified operating
+    // point of the sensor - used to qualify new points on hardware.
+    bool allow_unverified_mode = false;
 };
 
 // Conservative per-platform defaults an adapter may declare. Deliberately
@@ -49,6 +52,9 @@ struct ResolvedHardware {
     SensorDescriptor   sensor;
     Resolved<int>      i2c_bus, i2c_addr, mclk, reset_gpio, pwdn_gpio;
     Resolved<SensorMode> mode;
+    bool               mode_verified = true;        // false only with allow_unverified_mode
+    bool               allow_unverified_mode = false;
+    BoardPresets       presets;                     // from the board profile (may be empty)
     std::string        conflicts;         // human-readable list, "" when none
 };
 

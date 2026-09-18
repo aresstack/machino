@@ -31,7 +31,9 @@ private:
 
 class StreamHub {
 public:
-    std::shared_ptr<Sink> subscribe(size_t depth = 8);
+    // depth: bounded per-consumer queue. Keep the sum over all consumers below
+    // the capture pool size (16) so a stalled consumer only drops its own frames.
+    std::shared_ptr<Sink> subscribe(size_t depth = 4);
     void unsubscribe(const std::shared_ptr<Sink>& s);
     void publish(const AuPtr& au);
     size_t consumers() const;

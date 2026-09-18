@@ -3,7 +3,7 @@
 //   PlatformDescriptor  which SoC family/model an adapter drives
 //   SensorDescriptor    what a sensor is (interface, native size, modes)
 //   SensorWiring        how a sensor is wired on ONE board (bus, address, clock, pins)
-//   BoardProfile        platform + sensor + wiring + default mode for ONE board
+//   BoardProfile        platform + sensor + wiring + default mode + presets for ONE board
 //
 // The core never contains concrete values (no "t40nn", "imx307", no GPIO
 // numbers). Data lives in profiles (src/profiles) or the user configuration.
@@ -36,7 +36,7 @@ struct SensorDescriptor {
     SensorInterface interface = SensorInterface::Unknown;
     int             native_width  = 0;
     int             native_height = 0;
-    std::vector<SensorMode> modes;         // verified modes only; index 0 = default
+    std::vector<SensorMode> modes;         // verified operating points only; index 0 = default
 
     bool has_mode(const SensorMode& m) const {
         for (const auto& x : modes) if (x == m) return true;
@@ -53,12 +53,22 @@ struct SensorWiring {
     std::optional<int> pwdn_gpio;    // -1 == "no such pin"
 };
 
+// Performance-profile presets a board may offer (M5). Unset = the service
+// derives them from the sensor's verified operating points, never invents.
+struct BoardPresets {
+    std::optional<int> balanced_fps;
+    std::optional<int> battery_fps;
+    std::optional<int> balanced_bitrate;   // kbps
+    std::optional<int> battery_bitrate;    // kbps
+};
+
 struct BoardProfile {
     std::string  board_id;           // unique id of this profile
     std::string  platform;           // PlatformDescriptor::id(), e.g. "ingenic-t40nn"
     std::string  sensor;             // SensorDescriptor::model
     SensorWiring wiring;
     std::optional<SensorMode> default_mode;
+    BoardPresets presets;
     bool         hardware_verified = false;
     std::string  notes;
 };

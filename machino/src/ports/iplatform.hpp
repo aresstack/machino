@@ -1,13 +1,14 @@
 // Port: the SoC media platform. Brings the sensor/ISP up and down, creates
-// frame-source and encoder channels and wires them, and reports what it can
-// do. The core never includes a vendor header; the adapter is constructed
-// from the resolved, abstract hardware description.
+// frame-source and encoder channels and wires them, reports what it can do,
+// and (M5) exposes the live sensor-rate control and the power-control port.
+// The core never includes a vendor header.
 #pragma once
 #include "core/capabilities.hpp"
 #include "core/config.hpp"
 #include "core/result.hpp"
 #include "ports/iencoder.hpp"
 #include "ports/iframesource.hpp"
+#include "ports/ipower_control.hpp"
 #include <cstdint>
 #include <memory>
 
@@ -19,7 +20,6 @@ public:
     virtual const char* name() const = 0;
     virtual CapabilitySet capabilities() const = 0;
 
-    // Sensor + ISP + system init. Idempotent; tear_down() undoes it fully.
     virtual Result bring_up() = 0;
     virtual void   tear_down() = 0;
 
@@ -30,6 +30,14 @@ public:
     virtual Result unbind(IFrameSource& fs, IEncoder& enc) = 0;
 
     virtual int64_t timestamp_us() = 0;
+
+    // Live sensor frame rate (only while brought up). `effective` is read back
+    // from the hardware when the platform can do that. Default: unsupported.
+    virtual Result set_sensor_fps(int fps, int& effective) { (void)fps; effective = -1; return Result::unsupported(); }
+    virtual Result get_sensor_fps(int& fps) { fps = -1; return Result::unsupported(); }
+
+    // Power/performance control, or nullptr when the adapter has none.
+    virtual IPowerControl* power() { return nullptr; }
 };
 
 } // namespace machino

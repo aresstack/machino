@@ -130,7 +130,7 @@ table below. New sensors get a `SensorDescriptor` with verified modes only.
 
 | board_id | platform | sensor | wiring (bus/addr/mclk/rst/pwdn) | mode | status |
 |---|---|---|---|---|---|
-| `t40nn-imx307-board-a` | ingenic-t40nn | imx307 | 1 / 0x1a / 1 / 91 / 0 | 1920x1080@20 | **hardware verified** (2026-09-18, OpenIPC 4.4.94 tx-isp, libimp 1.3.1, H.264/RTSP ≥60 s, ffmpeg-decoded) |
+| `t40nn-imx307-board-a` | ingenic-t40nn | imx307 | 1 / 0x1a / 1 / 91 / 0 | 1920x1080@20 (default), @15, @10 | **hardware verified** (2026-09-18, OpenIPC 4.4.94 tx-isp, libimp 1.3.1, H.264/RTSP ≥60 s per point, ffmpeg-decoded, sensor fps read back from the ISP); presets balanced=15 fps, battery=10 fps @ 2000 kbps |
 
 This entry describes one physical board. It does not mean all T40NN cameras
 or all IMX307 modules are supported.

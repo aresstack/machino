@@ -1,8 +1,11 @@
 // Ingenic adapter: IMP SDK 1.3.1 (T40 family) platform port. Constructed from
 // the resolved, abstract hardware description; the only place that turns it
 // into IMPSensorInfo. Sole owner of the ISP/sensor/system sessions.
+// M5: live sensor frame rate via ISP tuning (with hardware read-back) and the
+// power-control port (read-only clocks, cpufreq probe).
 #pragma once
 #include "adapters/ingenic/imp_sessions.hpp"
+#include "adapters/ingenic/ingenic_power_control.hpp"
 #include "adapters/ingenic/sensor_params.hpp"
 #include "ports/iplatform.hpp"
 #include <memory>
@@ -25,7 +28,10 @@ public:
     Result unbind(IFrameSource& fs, IEncoder& enc) override;
     int64_t timestamp_us() override;
 
-    // Conservative defaults this adapter declares to the resolver.
+    Result set_sensor_fps(int fps, int& effective) override;
+    Result get_sensor_fps(int& fps) override;
+    IPowerControl* power() override { return &power_; }
+
     static hw::PlatformDefaults platform_defaults();
 
 private:
@@ -34,6 +40,7 @@ private:
     bool          params_ok_ = false;
     std::string   params_err_;
     IMPSensorInfo info_{};
+    IngenicPowerControl power_;
     std::unique_ptr<imp::IspSession>    isp_;
     std::unique_ptr<imp::SensorSession> sensor_session_;
     std::unique_ptr<imp::SystemSession> system_;

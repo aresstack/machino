@@ -1,13 +1,14 @@
 // Machino entry point: config -> registry -> resolved hardware -> platform
-// adapter -> PipelineManager -> RTSP. Single process, event loop on
-// signalfd + the lifecycle grace timerfd (epoll); no polling.
+// adapter -> PipelineManager -> PerformanceService -> RTSP. Single process,
+// event loop on signalfd + lifecycle grace timerfd + optional telemetry
+// timerfd (epoll); no polling.
 //
-// An open Machino daemon is not an active camera pipeline: the media chain
-// is brought up by demand (RTSP PLAY, manual hold) and torn down after the
-// grace period when the last consumer left.
 //   SIGUSR1 = drop the manual hold    SIGUSR2 = take a manual hold
+//   SIGHUP  = re-read the configuration and apply performance/stream changes
+//             through the PerformanceService (LIVE / PIPELINE_RESTART / rejected)
 #include "adapters/ingenic/ingenic_platform.hpp"
 #include "app/linux_grace_timer.hpp"
+#include "app/linux_system_stats.hpp"
 #include "app/rtsp/rtsp_server.hpp"
 #include "core/capabilities.hpp"
 #include "core/config.hpp"
@@ -16,6 +17,7 @@
 #include "core/hw/resolve.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/log.hpp"
+#include "core/power/performance_service.hpp"
 #include "core/stream_hub.hpp"
 #include "profiles/builtin_profiles.hpp"
 
@@ -25,6 +27,7 @@
 #include <memory>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 
 using namespace machino;
@@ -45,10 +48,31 @@ static hw::PlatformDefaults platform_defaults_for(const std::string& vendor) {
 }
 
 static void log_capabilities(const CapabilitySet& c) {
-    LOGI(MOD, "capabilities: h264=%s h265=%s max_streams=%d isp=%s hw-encoder=%s sensor.fps=%s power(isp=%s enc=%s cpu=%s) ai=%s",
-         cap_name(c.video.h264), cap_name(c.video.h265), c.video.max_streams, cap_name(c.isp.available),
-         cap_name(c.encoder.hardware), cap_name(c.sensor.configurable_fps), cap_name(c.power.isp_clock_control),
-         cap_name(c.power.encoder_clock_control), cap_name(c.power.cpu_frequency_control), cap_name(c.ai.available));
+    LOGI(MOD, "capabilities: h264=%s h265=%s isp=%s hw-encoder=%s ai=%s", cap_name(c.video.h264), cap_name(c.video.h265),
+         cap_name(c.isp.available), cap_name(c.encoder.hardware), cap_name(c.ai.available));
+    LOGI(MOD, "controls: sensor.fps=%s/%s [%d..%d] video.fps=%s/%s video.bitrate=%s/%s | isp.perf=%s enc.perf=%s cpu.freq=%s",
+         cap_name(c.sensor.fps.support), apply_mode_name(c.sensor.fps.apply), c.sensor.fps.min, c.sensor.fps.max,
+         cap_name(c.video.fps.support), apply_mode_name(c.video.fps.apply),
+         cap_name(c.video.bitrate.support), apply_mode_name(c.video.bitrate.apply),
+         cap_name(c.isp.performance.support), cap_name(c.encoder.performance.support), cap_name(c.power.cpu_frequency.support));
+}
+
+static void log_telemetry(power::PerformanceService& perf) {
+    Telemetry t = perf.telemetry();
+    char sfps[16], efps[16], kbps[16], cpu[16], rss[16], thr[16], isp[16], enc[16], cf[16];
+    snprintf(sfps, sizeof sfps, t.effective_sensor_fps.available ? "%d" : "n/a", t.effective_sensor_fps.value);
+    snprintf(efps, sizeof efps, t.measured_encoded_fps.available ? "%.1f" : "n/a", t.measured_encoded_fps.value);
+    snprintf(kbps, sizeof kbps, t.measured_bitrate_kbps.available ? "%.0f" : "n/a", t.measured_bitrate_kbps.value);
+    snprintf(cpu, sizeof cpu, t.cpu_percent.available ? "%.1f" : "n/a", t.cpu_percent.value);
+    snprintf(rss, sizeof rss, t.rss_kb.available ? "%llu" : "n/a", (unsigned long long)t.rss_kb.value);
+    snprintf(thr, sizeof thr, t.threads.available ? "%d" : "n/a", t.threads.value);
+    snprintf(isp, sizeof isp, t.isp_clock_hz.available ? "%llu" : "n/a", (unsigned long long)(t.isp_clock_hz.value / 1000000));
+    snprintf(enc, sizeof enc, t.encoder_clock_hz.available ? "%llu" : "n/a", (unsigned long long)(t.encoder_clock_hz.value / 1000000));
+    snprintf(cf,  sizeof cf,  t.cpu_freq_khz.available ? "%llu" : "n/a", (unsigned long long)(t.cpu_freq_khz.value / 1000));
+    LOGI("telemetry", "state=%s gen=%u profile=%s sensor_fps req=%d eff=%s%s stream_fps req=%d enc=%s bitrate req=%d meas=%skbps drops=%u cpu=%s%% rss=%skB thr=%s isp=%sMHz enc=%sMHz cpu=%sMHz",
+         lifecycle::state_name(t.state), t.generation, power::profile_name(t.profile), t.requested_sensor_fps, sfps,
+         t.sensor_fps_readback ? "(hw)" : "", t.requested_stream_fps, efps, t.requested_bitrate_kbps, kbps,
+         t.dropped_frames, cpu, rss, thr, isp, enc, cf);
 }
 
 int main(int argc, char** argv) {
@@ -74,7 +98,6 @@ int main(int argc, char** argv) {
         if (!warn.empty()) LOGW(MOD, "board profile %s: %s", cfg.board_profile_file.c_str(), warn.c_str());
         reg.add_board(bp);
         if (cfg.hardware.board_id.empty()) cfg.hardware.board_id = bp.board_id;
-        LOGI(MOD, "board profile file %s registered as '%s'", cfg.board_profile_file.c_str(), bp.board_id.c_str());
     }
     std::string vendor;
     if (!cfg.hardware.platform.empty()) { if (const auto* p = reg.platform(cfg.hardware.platform)) vendor = p->vendor; }
@@ -88,13 +111,11 @@ int main(int argc, char** argv) {
     }
     hw::log_resolved_hardware(hwr);
     EffectiveStream stream = effective_stream(cfg.video, hwr);
-    LOGI(MOD, "Stream: %dx%d@%d gop=%d %d kbps profile=%d", stream.width, stream.height, stream.fps,
-         stream.gop, stream.bitrate_kbps, stream.profile);
+    LOGI(MOD, "Stream: %dx%d@%d gop=%d %d kbps profile=%d", stream.width, stream.height, stream.fps, stream.gop, stream.bitrate_kbps, stream.profile);
 
-    // Block the handled signals process-wide before any thread exists.
     sigset_t mask; sigemptyset(&mask);
     sigaddset(&mask, SIGINT); sigaddset(&mask, SIGTERM); sigaddset(&mask, SIGPIPE);
-    sigaddset(&mask, SIGUSR1); sigaddset(&mask, SIGUSR2);
+    sigaddset(&mask, SIGUSR1); sigaddset(&mask, SIGUSR2); sigaddset(&mask, SIGHUP);
     pthread_sigmask(SIG_BLOCK, &mask, nullptr);
     int sfd = signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
 
@@ -102,21 +123,31 @@ int main(int argc, char** argv) {
     {
         std::unique_ptr<IPlatform> platform = make_platform(hwr);
         if (!platform) { LOGE(MOD, "no adapter for platform vendor '%s'", hwr.platform.vendor.c_str()); return 5; }
-        log_capabilities(platform->capabilities());
 
         app::LinuxGraceTimer timer;
+        app::LinuxSystemStats sysstats;
         StreamHub  hub;
         lifecycle::LifecycleConfig lc; lc.idle_grace_ms = cfg.pipeline.idle_grace_ms; lc.poll_timeout_ms = cfg.pipeline.poll_timeout_ms;
         lifecycle::PipelineManager pipeline(*platform, stream, lc, timer, hub);
+        power::PerformanceService perf(pipeline, *platform, sysstats, hwr, cfg.video);
+        log_capabilities(perf.capabilities());
+        perf.apply_config(cfg.performance, cfg.video);      // profile / sensor fps / power levels (cold: stored)
         RtspServer rtsp(cfg.rtsp, pipeline, hub);
         IStreamServer& server = rtsp;
 
+        int tfd = -1;
+        if (cfg.telemetry.log_interval_s > 0) {
+            tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+            struct itimerspec its{}; its.it_interval.tv_sec = cfg.telemetry.log_interval_s; its.it_value.tv_sec = cfg.telemetry.log_interval_s;
+            timerfd_settime(tfd, 0, &its, nullptr);
+        }
         int ep = epoll_create1(EPOLL_CLOEXEC);
         epoll_event ev{}; ev.events = EPOLLIN;
         ev.data.fd = sfd;        epoll_ctl(ep, EPOLL_CTL_ADD, sfd, &ev);
         ev.data.fd = timer.fd(); epoll_ctl(ep, EPOLL_CTL_ADD, timer.fd(), &ev);
+        if (tfd >= 0) { ev.data.fd = tfd; epoll_ctl(ep, EPOLL_CTL_ADD, tfd, &ev); }
 
-        lifecycle::DemandHandle hold;                       // manual demand (always_on / SIGUSR2)
+        lifecycle::DemandHandle hold;
         if (cfg.pipeline.always_on) {
             Result r; hold = pipeline.acquire(ConsumerType::Manual, &r);
             if (!hold.active()) { LOGE(MOD, "always_on: pipeline bring-up failed"); rc = 3; }
@@ -124,12 +155,12 @@ int main(int argc, char** argv) {
         if (rc == 0 && !server.start()) { LOGE(MOD, "stream server start failed"); rc = 4; }
 
         if (rc == 0) {
-            LOGI(MOD, "running: rtsp://<ip>:%d%s lifecycle=%s idle_grace=%dms", cfg.rtsp.port, cfg.rtsp.path.c_str(),
-                 lifecycle::state_name(pipeline.state()), cfg.pipeline.idle_grace_ms);
+            LOGI(MOD, "running: rtsp://<ip>:%d%s lifecycle=%s idle_grace=%dms profile=%s", cfg.rtsp.port, cfg.rtsp.path.c_str(),
+                 lifecycle::state_name(pipeline.state()), cfg.pipeline.idle_grace_ms, power::profile_name(cfg.performance.profile));
             bool run = true;
             while (run) {
                 epoll_event out[4];
-                int n = epoll_wait(ep, out, 4, -1);          // purely event-driven
+                int n = epoll_wait(ep, out, 4, -1);
                 for (int i = 0; i < n; ++i) {
                     if (out[i].data.fd == sfd) {
                         signalfd_siginfo si;
@@ -141,22 +172,32 @@ int main(int argc, char** argv) {
                                 else { LOGI(MOD, "SIGUSR2 -> take manual hold"); Result r; hold = pipeline.acquire(ConsumerType::Manual, &r);
                                        if (!hold.active()) LOGE(MOD, "manual hold: pipeline start failed"); }
                             }
+                            else if (si.ssi_signo == SIGHUP) {
+                                AppConfig fresh; std::string e2;
+                                if (!load_config(conf, fresh, e2)) { LOGW(MOD, "SIGHUP: reload failed: %s", e2.c_str()); continue; }
+                                LOGI(MOD, "SIGHUP -> applying performance/stream configuration");
+                                perf.apply_config(fresh.performance, fresh.video);
+                                log_telemetry(perf);
+                            }
                         }
                     } else if (out[i].data.fd == timer.fd()) {
                         if (timer.consume()) pipeline.on_grace_timeout();
+                    } else if (tfd >= 0 && out[i].data.fd == tfd) {
+                        uint64_t x; while (read(tfd, &x, sizeof x) > 0) {}
+                        log_telemetry(perf);
                     }
                 }
             }
         }
-        // Reverse order: stop serving (sessions release their demand), drop the hold, then the manager.
         server.stop();
         hold.release();
         pipeline.shutdown();
         lifecycle::Stats st = pipeline.stats();
-        LOGI(MOD, "lifecycle summary: generations=%u starts=%u stops=%u failed=%u last_error='%s'",
-             st.generation, st.start_count, st.stop_count, st.failed_count, st.last_error.c_str());
+        LOGI(MOD, "lifecycle summary: generations=%u starts=%u stops=%u restarts=%u failed=%u last_error='%s'",
+             st.generation, st.start_count, st.stop_count, st.restart_count, st.failed_count, st.last_error.c_str());
+        if (tfd >= 0) close(tfd);
         close(ep);
-    }   // platform dtor: tear_down() (idempotent)
+    }
 
     close(sfd);
     LOGI(MOD, "exit %d", rc);

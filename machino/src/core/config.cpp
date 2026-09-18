@@ -38,8 +38,7 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     int n = 0; bool b = false;
 #define INT(key, dst, lo, hi) if (k == key) { if (!to_int(v, n) || n < (lo) || n > (hi)) { \
         LOGW(MOD, "line %d: %s=%s out of range [%d..%d] - ignored", line, key, v.c_str(), (int)(lo), (int)(hi)); return true; } dst = n; return true; }
-#define OPTINT(key, dst, lo, hi) if (k == key) { if (!to_int(v, n) || n < (lo) || n > (hi)) { \
-        LOGW(MOD, "line %d: %s=%s out of range [%d..%d] - ignored", line, key, v.c_str(), (int)(lo), (int)(hi)); return true; } dst = n; return true; }
+#define OPTINT(key, dst, lo, hi) INT(key, dst, lo, hi)
 #define GPIO(key, dst) if (k == key) { if (!to_gpio(v, n)) { LOGW(MOD, "line %d: %s=%s invalid (pin number or 'none') - ignored", line, key, v.c_str()); return true; } dst = n; return true; }
 #define BOOL(key, dst) if (k == key) { if (!to_bool(v, b)) { LOGW(MOD, "line %d: %s expects bool", line, key); return true; } dst = b; return true; }
 #define STR(key, dst) if (k == key) { dst = v; return true; }
@@ -53,24 +52,29 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     OPTINT("sensor.mclk",        c.hardware.wiring.mclk,     0, 7)
     GPIO  ("sensor.reset_gpio",  c.hardware.wiring.reset_gpio)
     GPIO  ("sensor.pwdn_gpio",   c.hardware.wiring.pwdn_gpio)
+    BOOL  ("sensor.allow_unverified_mode", c.hardware.allow_unverified_mode)
     if (k == "sensor.mode") {
         hw::SensorMode m;
         if (!hw::parse_mode(v, m)) { LOGW(MOD, "line %d: sensor.mode=%s invalid (WxH@fps)", line, v.c_str()); return true; }
         c.hardware.mode = m; return true;
     }
-    // legacy split keys: only meaningful together; kept for convenience
-    if (k == "sensor.width" || k == "sensor.height" || k == "sensor.fps") {
+    // sensor.fps = requested SENSOR frame rate (M5 control); sensor.width/height
+    // remain legacy parts of an explicit mode
+    INT   ("sensor.fps",         c.performance.sensor_fps, 1, 120)
+    if (k == "sensor.width" || k == "sensor.height") {
         if (!to_int(v, n) || n <= 0) { LOGW(MOD, "line %d: %s invalid", line, k.c_str()); return true; }
         hw::SensorMode m = c.hardware.mode.value_or(hw::SensorMode{});
-        if (k == "sensor.width") m.width = n; else if (k == "sensor.height") m.height = n; else m.fps = n;
+        if (k == "sensor.width") m.width = n; else m.height = n;
         c.hardware.mode = m; return true;
     }
 
     OPTINT("video.width",        c.video.width,   64, 8192)
     OPTINT("video.height",       c.video.height,  64, 8192)
     OPTINT("video.fps",          c.video.fps,     1, 120)
+    OPTINT("video0.fps",         c.video.fps,     1, 120)
     INT   ("video.gop",          c.video.gop,     1, 1000)
     INT   ("video.bitrate",      c.video.bitrate_kbps, 32, 100000)
+    INT   ("video0.bitrate",     c.video.bitrate_kbps, 32, 100000)
     INT   ("video.profile",      c.video.profile, 0, 2)
     INT   ("video.qp",           c.video.qp,      1, 51)
     INT   ("video.buffers",      c.video.buffers, 1, 8)
@@ -87,8 +91,22 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
 
     BOOL  ("pipeline.always_on", c.pipeline.always_on)
     INT   ("lifecycle.idle_grace_ms", c.pipeline.idle_grace_ms, 0, 600000)
-    INT   ("pipeline.grace_ms",  c.pipeline.idle_grace_ms, 0, 600000)      // alias (M2 name)
+    INT   ("pipeline.grace_ms",  c.pipeline.idle_grace_ms, 0, 600000)
     INT   ("pipeline.poll_timeout_ms", c.pipeline.poll_timeout_ms, 10, 5000)
+
+    if (k == "performance.profile") {
+        if (!power::parse_profile(v, c.performance.profile)) LOGW(MOD, "line %d: performance.profile=%s unknown (performance|balanced|battery|custom)", line, v.c_str());
+        return true;
+    }
+    if (k == "power.isp_performance" || k == "power.encoder_performance" || k == "power.cpu_performance") {
+        power::PerfLevel l;
+        if (!power::parse_perf_level(v, l)) { LOGW(MOD, "line %d: %s=%s unknown (auto|low|high) - ignored", line, k.c_str(), v.c_str()); return true; }
+        if (k == "power.isp_performance") c.performance.isp = l;
+        else if (k == "power.encoder_performance") c.performance.encoder = l;
+        else c.performance.cpu = l;
+        return true;
+    }
+    INT   ("telemetry.log_interval_s", c.telemetry.log_interval_s, 0, 3600)
 
     INT   ("log.level",          c.log.level,     0, 3)
     BOOL  ("log.syslog",         c.log.syslog)
@@ -119,10 +137,14 @@ bool parse_config_text(const std::string& text, AppConfig& cfg, std::string& err
         else ++applied;
     }
     if (!cfg.rtsp.path.empty() && cfg.rtsp.path[0] != '/') cfg.rtsp.path.insert(0, "/");
-    // a partially given legacy mode (e.g. only fps) is not a mode
-    if (cfg.hardware.mode && (cfg.hardware.mode->width <= 0 || cfg.hardware.mode->height <= 0 || cfg.hardware.mode->fps <= 0)) {
-        LOGW(MOD, "sensor.width/height/fps incomplete - ignoring partial sensor mode (use sensor.mode = WxH@fps)");
+    if (cfg.hardware.mode && (cfg.hardware.mode->width <= 0 || cfg.hardware.mode->height <= 0)) {
+        LOGW(MOD, "sensor.width/height incomplete - ignoring partial sensor mode (use sensor.mode = WxH@fps)");
         cfg.hardware.mode.reset();
+    }
+    if (cfg.hardware.mode && cfg.hardware.mode->fps <= 0) {
+        // legacy: mode given as width/height only -> fps from sensor.fps or the profile default
+        if (cfg.performance.sensor_fps > 0) cfg.hardware.mode->fps = cfg.performance.sensor_fps;
+        else { LOGW(MOD, "sensor.width/height without fps - ignoring partial sensor mode"); cfg.hardware.mode.reset(); }
     }
     LOGI(MOD, "loaded %d settings", applied);
     return true;
@@ -135,8 +157,8 @@ bool load_config(const char* path, AppConfig& cfg, std::string& err) {
     while (fgets(buf, sizeof buf, f)) text += buf;
     fclose(f);
     if (!parse_config_text(text, cfg, err)) return false;
-    LOGI(MOD, "config %s: board='%s' platform='%s' sensor='%s'", path, cfg.hardware.board_id.c_str(),
-         cfg.hardware.platform.c_str(), cfg.hardware.sensor.c_str());
+    LOGI(MOD, "config %s: board='%s' platform='%s' sensor='%s' profile=%s", path, cfg.hardware.board_id.c_str(),
+         cfg.hardware.platform.c_str(), cfg.hardware.sensor.c_str(), power::profile_name(cfg.performance.profile));
     return true;
 }
 

@@ -8,6 +8,7 @@
 // resolver can apply user > board > platform-default > fail-closed.
 #pragma once
 #include "core/hw/resolve.hpp"
+#include "core/power/apply.hpp"
 #include <optional>
 #include <string>
 
@@ -47,6 +48,17 @@ struct PipelineConfig {
     int  poll_timeout_ms = 500;    // encoder poll granularity
 };
 
+// Power / performance (M5). Levels: auto = adapter/kernel default, never forced.
+struct PerformanceConfig {
+    power::Profile   profile   = power::Profile::Performance;
+    int              sensor_fps = 0;                 // 0 = follow the mode / stream fps
+    power::PerfLevel isp = power::PerfLevel::Auto, encoder = power::PerfLevel::Auto, cpu = power::PerfLevel::Auto;
+};
+
+struct TelemetryConfig {
+    int log_interval_s = 0;        // 0 = off; otherwise one compact line every N seconds
+};
+
 struct LogConfig {
     int  level  = 2;
     bool syslog = false;
@@ -54,11 +66,13 @@ struct LogConfig {
 
 struct AppConfig {
     hw::UserHardwareConfig hardware;
-    std::string     board_profile_file;
-    StreamConfig    video;
-    RtspConfig      rtsp;
-    PipelineConfig  pipeline;
-    LogConfig       log;
+    std::string       board_profile_file;
+    StreamConfig      video;
+    RtspConfig        rtsp;
+    PipelineConfig    pipeline;
+    PerformanceConfig performance;
+    TelemetryConfig   telemetry;
+    LogConfig         log;
 };
 
 bool load_config(const char* path, AppConfig& cfg, std::string& err);

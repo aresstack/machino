@@ -57,6 +57,10 @@ bool parse_board_profile(const std::string& text, BoardProfile& out, std::string
         else if (k == "reset_gpio") { if (!to_gpio(v, n)) return bad("reset_gpio"); p.wiring.reset_gpio = n; }
         else if (k == "pwdn_gpio")  { if (!to_gpio(v, n)) return bad("pwdn_gpio"); p.wiring.pwdn_gpio = n; }
         else if (k == "mode")       { if (!parse_mode(v, m)) return bad("mode (WxH@fps)"); p.default_mode = m; }
+        else if (k == "preset.balanced_fps")     { if (!to_int(v, n) || n <= 0) return bad("preset.balanced_fps");     p.presets.balanced_fps = n; }
+        else if (k == "preset.battery_fps")      { if (!to_int(v, n) || n <= 0) return bad("preset.battery_fps");      p.presets.battery_fps = n; }
+        else if (k == "preset.balanced_bitrate") { if (!to_int(v, n) || n <= 0) return bad("preset.balanced_bitrate"); p.presets.balanced_bitrate = n; }
+        else if (k == "preset.battery_bitrate")  { if (!to_int(v, n) || n <= 0) return bad("preset.battery_bitrate");  p.presets.battery_bitrate = n; }
         else if (k == "hardware_verified") p.hardware_verified = (v == "1" || v == "yes" || v == "true");
         else if (k == "notes")      p.notes = v;
         else if (warnings)          *warnings += "line " + std::to_string(line) + ": unknown key '" + k + "'\n";

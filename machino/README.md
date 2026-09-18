@@ -80,6 +80,23 @@ completely while the process and the RTSP listener stay up. `SIGUSR2` /
 `SIGUSR1` take / drop a manual demand (`pipeline.always_on` holds one).
 Details: `docs/architecture/lifecycle.md`.
 
+## Power / performance for continuous streaming (M5)
+
+When consumers are permanently present the pipeline cannot sleep, so the
+lowest useful active operating point is controllable through
+`power::PerformanceService` (the layer the M6 API will expose):
+profiles `performance | balanced | battery | custom` as presets over
+`sensor.fps`, `video.fps`, `video.bitrate`; every setter is classified
+(`live`, `pipeline-restart`, `unsupported`) and returns the *effective*
+value. On Ingenic T40: bitrate and sensor fps are live (read back from the
+hardware), stream fps is a controlled pipeline restart with demand
+preserved, ISP/encoder clocks are read-only (`unsupported` — no raw register
+writes), cpufreq is probed and unsupported on the OpenIPC kernel. Telemetry
+(state, requested vs effective fps, measured fps/bitrate, drops, CPU, RSS,
+threads, known clocks) is available internally and optionally logged every
+`telemetry.log_interval_s`. `SIGHUP` re-applies the configuration. Details:
+`docs/architecture/power.md`.
+
 ## Build / test / CI
 
 ```

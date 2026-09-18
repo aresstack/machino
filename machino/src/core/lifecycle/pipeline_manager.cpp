@@ -25,7 +25,9 @@ void DemandHandle::release() {
 
 PipelineManager::PipelineManager(IPlatform& platform, const EffectiveStream& stream, const LifecycleConfig& cfg,
                                  IGraceTimer& timer, StreamHub& hub)
-    : platform_(platform), stream_(stream), cfg_(cfg), timer_(timer), hub_(hub), pool_(8, 256 * 1024) {}
+    // 16 slots > the sum of all consumer queue depths (StreamHub sinks hold at most 4 each):
+    // a stalled consumer drops its own oldest frames, it can never starve the capture path.
+    : platform_(platform), stream_(stream), cfg_(cfg), timer_(timer), hub_(hub), pool_(16, 128 * 1024) {}
 
 PipelineManager::~PipelineManager() { shutdown(); }
 
@@ -38,7 +40,6 @@ void PipelineManager::transition(State to, const char* why) {
 DemandHandle PipelineManager::acquire(ConsumerType type, Result* result) {
     std::lock_guard<std::mutex> lk(m_);
     if (shutdown_) { if (result) *result = Result::busy(); return DemandHandle(); }
-
     switch (state_) {
         case State::ColdIdle:
         case State::Failed: {
@@ -47,7 +48,7 @@ DemandHandle PipelineManager::acquire(ConsumerType type, Result* result) {
             if (!start_locked()) {
                 transition(State::Failed, last_error_.c_str());
                 if (result) *result = Result::error();
-                return DemandHandle();                   // no demand registered
+                return DemandHandle();
             }
             transition(State::Active, nullptr);
             break;
@@ -56,11 +57,7 @@ DemandHandle PipelineManager::acquire(ConsumerType type, Result* result) {
             timer_.disarm();
             transition(State::Active, "(new demand)");
             break;
-        case State::Active:
-            break;
-        case State::Starting:
-        case State::Stopping:
-            // unreachable: transitions complete while m_ is held
+        case State::Active: case State::Starting: case State::Stopping:
             break;
     }
     ++demand_[(int)type]; ++total_;
@@ -83,7 +80,7 @@ void PipelineManager::release(ConsumerType type) {
 
 void PipelineManager::on_grace_timeout() {
     std::lock_guard<std::mutex> lk(m_);
-    if (state_ != State::GraceIdle || total_ > 0) return;   // stale expiry: demand returned meanwhile
+    if (state_ != State::GraceIdle || total_ > 0) return;
     transition(State::Stopping, nullptr);
     stop_locked();
     transition(State::ColdIdle, nullptr);
@@ -107,13 +104,74 @@ Stats PipelineManager::stats() const {
     Stats s; s.state = state_; s.total_demand = total_;
     for (int i = 0; i < (int)ConsumerType::COUNT; ++i) s.demand[i] = demand_[i];
     s.generation = generation_; s.start_count = start_count_; s.stop_count = stop_count_;
-    s.failed_count = failed_count_; s.last_error = last_error_; s.frames_this_run = frames_.load();
+    s.failed_count = failed_count_; s.restart_count = restart_count_; s.last_error = last_error_;
+    s.frames_this_run = frames_.load();
     return s;
 }
 
+Measurement PipelineManager::measurement() const {
+    std::lock_guard<std::mutex> lk(win_m_);
+    Measurement m = last_win_; m.dropped_frames = dropped_.load();
+    return m;
+}
+
+EffectiveStream PipelineManager::stream() const { std::lock_guard<std::mutex> lk(m_); return stream_; }
+
+// ---- M5 controls -------------------------------------------------------------
+Result PipelineManager::update_stream(const EffectiveStream& s, bool restart_if_running, std::string& err) {
+    std::lock_guard<std::mutex> lk(m_);
+    stream_ = s;
+    bool running = (state_ == State::Active || state_ == State::GraceIdle);
+    if (!running || !restart_if_running) return Result::ok();     // cold: takes effect at next start
+    // controlled restart: same demand, same generation counter semantics
+    State back = state_;
+    transition(State::Stopping, "(restart: pipeline-restart setting)");
+    stop_locked();
+    ++restart_count_;
+    transition(State::Starting, "(restart)");
+    if (!start_locked()) {
+        err = last_error_;
+        transition(State::Failed, last_error_.c_str());
+        return Result::error();
+    }
+    transition(back, "(restart complete)");
+    if (back == State::GraceIdle) timer_.arm(cfg_.idle_grace_ms);   // keep the pending grace
+    return Result::ok();
+}
+
+Result PipelineManager::live_bitrate(int kbps, int& effective) {
+    std::lock_guard<std::mutex> lk(m_);
+    effective = -1;
+    if (!(state_ == State::Active || state_ == State::GraceIdle) || !enc_) return Result::busy();
+    Result r = enc_->set_bitrate(kbps, effective);
+    if (r) stream_.bitrate_kbps = effective > 0 ? effective : kbps;
+    return r;
+}
+
+Result PipelineManager::live_encoder_fps(int fps, int& effective) {
+    std::lock_guard<std::mutex> lk(m_);
+    effective = -1;
+    if (!(state_ == State::Active || state_ == State::GraceIdle) || !enc_) return Result::busy();
+    return enc_->set_fps(fps, effective);
+}
+
+Result PipelineManager::live_sensor_fps(int fps, int& effective) {
+    std::lock_guard<std::mutex> lk(m_);
+    effective = -1;
+    if (!(state_ == State::Active || state_ == State::GraceIdle)) return Result::busy();
+    return platform_.set_sensor_fps(fps, effective);
+}
+
+Result PipelineManager::read_sensor_fps(int& fps) {
+    std::lock_guard<std::mutex> lk(m_);
+    fps = -1;
+    if (!(state_ == State::Active || state_ == State::GraceIdle)) return Result::busy();
+    return platform_.get_sensor_fps(fps);
+}
+
+void PipelineManager::set_sensor_fps_target(int fps) { std::lock_guard<std::mutex> lk(m_); sensor_fps_target_ = fps; }
+
 // ---- media chain (m_ held) --------------------------------------------------
-// Proven order: platform bring-up -> FrameSource -> Encoder -> Bind -> FS enable
-// -> StartRecvPic -> capture thread. Any failure rolls back what exists.
 bool PipelineManager::start_locked() {
     ++start_count_;
     last_error_.clear();
@@ -138,7 +196,14 @@ bool PipelineManager::start_locked() {
     r = enc_->start();
     if (!r) return fail("encoder start", r.code);
 
-    quit_ = false; frames_ = 0;
+    if (sensor_fps_target_ > 0) {                     // sensor rate is a separate knob from the stream rate
+        int eff = -1; Result sr = platform_.set_sensor_fps(sensor_fps_target_, eff);
+        if (sr) LOGI(MOD, "sensor fps %d applied (effective %d)", sensor_fps_target_, eff);
+        else LOGW(MOD, "sensor fps %d not applied (%s)", sensor_fps_target_, status_name(sr.status));
+    }
+
+    quit_ = false; frames_ = 0; dropped_ = 0;
+    { std::lock_guard<std::mutex> wl(win_m_); last_win_ = Measurement{}; win_start_us_ = 0; win_frames_ = 0; win_bytes_ = 0; }
     thread_ = std::thread([this] { capture_loop(); });
     ++generation_;
     LOGI(MOD, "pipeline generation %u running (%dx%d@%d, %d kbps)", generation_, stream_.width, stream_.height,
@@ -146,28 +211,27 @@ bool PipelineManager::start_locked() {
     return true;
 }
 
-// Reverse order. Safe from any partially started state.
 void PipelineManager::stop_locked() {
     quit_ = true;
     if (thread_.joinable()) thread_.join();
-    if (enc_) enc_->stop();                                  // StopRecvPic
-    if (fs_)  fs_->disable();                                // FrameSource_DisableChn
+    if (enc_) enc_->stop();
+    if (fs_)  fs_->disable();
     if (bound_ && fs_ && enc_) platform_.unbind(*fs_, *enc_);
     bound_ = false;
-    enc_.reset();                                            // UnRegister/DestroyChn, DestroyGroup
-    fs_.reset();                                             // FrameSource_DestroyChn
-    platform_.tear_down();                                   // tuning, System_Exit, sensor, ISP_Close
+    enc_.reset();
+    fs_.reset();
+    platform_.tear_down();
     ++stop_count_;
     LOGI(MOD, "pipeline stopped (%u frames this run, pool exhausted %u)", frames_.load(), pool_.exhausted());
 }
 
 void PipelineManager::capture_loop() {
-    unsigned timeouts = 0, dropped = 0;
+    unsigned timeouts = 0;
     while (!quit_) {
         auto au = pool_.acquire();
         if (!au) {
             AccessUnit scratch; Result r = enc_->fetch(scratch, cfg_.poll_timeout_ms);
-            if (r) { if ((++dropped % 50) == 1) LOGW(MOD, "pool exhausted - dropped %u frames", dropped); }
+            if (r) { unsigned d = ++dropped_; if ((d % 50) == 1) LOGW(MOD, "pool exhausted - dropped %u frames", d); }
             continue;
         }
         Result r = enc_->fetch(*au, cfg_.poll_timeout_ms);
@@ -180,6 +244,19 @@ void PipelineManager::capture_loop() {
         au->seq = seq_++;
         unsigned n = ++frames_;
         if (n == 1) LOGI(MOD, "first frame: %lu bytes key=%d pts=%lld", (unsigned long)au->data.size(), (int)au->key, (long long)au->pts_us);
+        // 1 s measurement window from frame events (no polling thread)
+        {
+            std::lock_guard<std::mutex> wl(win_m_);
+            if (win_start_us_ == 0) win_start_us_ = au->pts_us;
+            ++win_frames_; win_bytes_ += au->data.size();
+            int64_t span = au->pts_us - win_start_us_;
+            if (span >= 1000000) {
+                last_win_.valid = true;
+                last_win_.encoded_fps  = (double)win_frames_ * 1e6 / (double)span;
+                last_win_.bitrate_kbps = (double)win_bytes_ * 8.0 / 1000.0 * 1e6 / (double)span;
+                win_start_us_ = au->pts_us; win_frames_ = 0; win_bytes_ = 0;
+            }
+        }
         hub_.publish(au);
     }
 }

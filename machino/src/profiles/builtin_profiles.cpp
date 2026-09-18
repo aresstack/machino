@@ -15,7 +15,9 @@ void register_builtin(hw::Registry& reg) {
     imx307.interface     = hw::SensorInterface::MipiCsi;
     imx307.native_width  = 1920;
     imx307.native_height = 1080;
-    imx307.modes         = { hw::SensorMode{1920, 1080, 20} };   // mode 0: verified 2026-09-18 (M1/M2)
+    imx307.modes         = { hw::SensorMode{1920, 1080, 20},     // mode 0: verified 2026-09-18 (M1/M2)
+                             hw::SensorMode{1920, 1080, 15},     // verified 2026-09-18 (M5: sensor fps read back 15, 60 s ffmpeg)
+                             hw::SensorMode{1920, 1080, 10} };   // verified 2026-09-18 (M5: sensor fps read back 10, 60 s ffmpeg)
     reg.add_sensor(imx307);
 
     // ---- board profiles ----------------------------------------------------
@@ -32,6 +34,10 @@ void register_builtin(hw::Registry& reg) {
     a.wiring.reset_gpio = 91;
     a.wiring.pwdn_gpio  = 0;
     a.default_mode      = hw::SensorMode{1920, 1080, 20};
+    // M5 presets (hardware verified 2026-09-18, this board): balanced 15 fps, battery 10 fps @ 2000 kbps
+    a.presets.balanced_fps    = 15;
+    a.presets.battery_fps     = 10;
+    a.presets.battery_bitrate = 2000;
     a.hardware_verified = true;
     a.notes             = "OpenIPC 4.4.94 tx-isp, libimp 1.3.1; verified H.264/RTSP 2026-09-18 (M1 timps, M2/M3 machino)";
     reg.add_board(a);

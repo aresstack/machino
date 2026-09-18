@@ -33,20 +33,24 @@ LIBS     ?= -lpthread -lrt -lm
 
 CORE_SRC := src/core/config.cpp src/core/stream_hub.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp \
-            src/core/lifecycle/pipeline_manager.cpp \
+            src/core/lifecycle/pipeline_manager.cpp src/core/power/performance_service.cpp \
             src/profiles/builtin_profiles.cpp
 SRC := src/core/log.cpp $(CORE_SRC) \
-       src/app/linux_grace_timer.cpp src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_server.cpp src/app/main.cpp \
+       src/app/linux_grace_timer.cpp src/app/linux_system_stats.cpp \
+       src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_server.cpp src/app/main.cpp \
        src/adapters/ingenic/sensor_params.cpp src/adapters/ingenic/imp_sessions.cpp \
+       src/adapters/ingenic/ingenic_power_control.cpp \
        src/adapters/ingenic/ingenic_platform.cpp src/adapters/ingenic/ingenic_framesource.cpp \
        src/adapters/ingenic/ingenic_encoder.cpp
 OBJ := $(SRC:.cpp=.o)
 
-# host unit tests: core + profiles + lifecycle (fake platform/timer) + the SDK-free adapter conversion
+# host unit tests: core + profiles + lifecycle + performance (fakes) + the SDK-free adapter conversion
 HOST_CXX      ?= g++
 HOST_CXXFLAGS ?= -std=c++17 -O1 -fno-exceptions -fno-rtti -Wall -Wextra -Wno-unused-parameter -Werror -pthread -Isrc -Itests -DMACHINO_VERSION='"test"'
-TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/log_stub.cpp src/core/config.cpp src/core/stream_hub.cpp \
+TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp tests/log_stub.cpp \
+            src/core/config.cpp src/core/stream_hub.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp src/core/lifecycle/pipeline_manager.cpp \
+            src/core/power/performance_service.cpp \
             src/profiles/builtin_profiles.cpp src/adapters/ingenic/sensor_params.cpp
 
 .PHONY: all clean strip flags test

@@ -9,12 +9,7 @@ namespace machino { namespace ingenic {
 
 static const char* MOD = "ING_PLAT";
 
-hw::PlatformDefaults IngenicPlatform::platform_defaults() {
-    hw::PlatformDefaults d;
-    // No GPIO defaults on purpose. No mclk default either: the clock index is
-    // board wiring on T40 (this board uses MCLK1, others may not).
-    return d;
-}
+hw::PlatformDefaults IngenicPlatform::platform_defaults() { return hw::PlatformDefaults{}; }
 
 IngenicPlatform::IngenicPlatform(const hw::ResolvedHardware& hw) : hw_(hw) {
     params_ok_ = sensor_params_from(hw_, params_, params_err_);
@@ -23,26 +18,23 @@ IngenicPlatform::IngenicPlatform(const hw::ResolvedHardware& hw) : hw_(hw) {
 
 IngenicPlatform::~IngenicPlatform() { tear_down(); }
 
-// What has actually been established on this platform (M1/M2 hardware runs).
-// Everything not exercised stays Unknown - unknown is not "unsupported".
+// What has actually been established on this platform (M1-M5 hardware runs).
 CapabilitySet IngenicPlatform::capabilities() const {
     CapabilitySet c;
-    c.video.h264            = Cap::Supported;    // proven: H.264 High 1080p20 via RTSP
-    c.video.h265            = Cap::Unknown;      // SDK offers it, not exercised yet
-    c.video.max_streams     = -1;                // unknown until measured
-    c.sensor.configurable_fps = Cap::Unknown;    // IMP_ISP_Tuning_SetSensorFPS not wired yet
+    c.video.h264            = Cap::Supported;
+    c.video.h265            = Cap::Unknown;
+    c.video.max_streams     = -1;
+    c.video.fps             = RangeCap{Cap::Supported, -1, -1, ApplyMode::PipelineRestart};   // FrameSource out rate: attr before enable
+    c.video.bitrate         = RangeCap{Cap::Supported, -1, -1, ApplyMode::Live};              // IMP_Encoder_SetChnAttrRcMode
+    c.sensor.configurable_fps = Cap::Supported;                                                // IMP_ISP_Tuning_SetSensorFPS (+GetSensorFPS read-back)
+    c.sensor.fps            = RangeCap{Cap::Supported, -1, -1, ApplyMode::Live};
     c.isp.available         = Cap::Supported;
     c.encoder.hardware      = Cap::Supported;
-    c.power.isp_clock_control     = Cap::Unknown;
-    c.power.encoder_clock_control = Cap::Unknown;
-    c.power.cpu_frequency_control = Cap::Unknown;
     c.ai.available          = Cap::Unknown;
+    power_.fill_capabilities(c);
     return c;
 }
 
-// Proven bring-up (M1/M2/M3 on T40NN/IMX307 board A, libimp 1.3.1, OpenIPC
-// 4.4.94 tx-isp): ISP_Open -> AddSensor+EnableSensor -> System_Init (retry)
-// -> EnableTuning. RAII sessions in locals; early return rolls back.
 Result IngenicPlatform::bring_up() {
     if (isp_) return Result::ok();
     if (!params_ok_) { LOGE(MOD, "refusing bring-up: %s", params_err_.c_str()); return Result::unsupported(); }
@@ -53,7 +45,7 @@ Result IngenicPlatform::bring_up() {
     snprintf(info_.i2c.type, sizeof info_.i2c.type, "%s", params_.name.c_str());
     info_.i2c.addr           = params_.i2c_addr;
     info_.i2c.i2c_adapter_id = params_.i2c_bus;
-    info_.rst_gpio           = params_.reset_gpio;      // -1 == vendor driver leaves the pin alone
+    info_.rst_gpio           = params_.reset_gpio;
     info_.pwdn_gpio          = params_.pwdn_gpio;
     info_.power_gpio         = params_.power_gpio;
     info_.sensor_id          = 0;
@@ -105,11 +97,33 @@ Result IngenicPlatform::bind(IFrameSource& fs, IEncoder& enc) {
     return Result::ok();
 }
 
-Result IngenicPlatform::unbind(IFrameSource&, IEncoder&) {
-    binding_.reset();
+Result IngenicPlatform::unbind(IFrameSource&, IEncoder&) { binding_.reset(); return Result::ok(); }
+
+int64_t IngenicPlatform::timestamp_us() { return IMP_System_GetTimeStamp(); }
+
+// Sensor frame rate via ISP tuning. Requires EnableSensor + EnableTuning
+// (SDK note). The effective value is read back from the ISP, so telemetry can
+// tell a real sensor-rate change from frame dropping.
+Result IngenicPlatform::set_sensor_fps(int fps, int& effective) {
+    effective = -1;
+    if (!isp_ || !tuning_ || !tuning_->ok()) return Result::busy();
+    uint32_t num = (uint32_t)fps, den = 1;
+    int32_t rc = IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &num, &den);
+    if (rc != 0) { LOGW(MOD, "IMP_ISP_Tuning_SetSensorFPS(%d) failed (%d)", fps, (int)rc); return Result::error((int)rc); }
+    uint32_t rn = 0, rd = 1;
+    if (IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &rn, &rd) == 0 && rd > 0) effective = (int)(rn / rd);
+    LOGI(MOD, "sensor fps requested=%d effective=%d (GetSensorFPS %u/%u)", fps, effective, rn, rd);
     return Result::ok();
 }
 
-int64_t IngenicPlatform::timestamp_us() { return IMP_System_GetTimeStamp(); }
+Result IngenicPlatform::get_sensor_fps(int& fps) {
+    fps = -1;
+    if (!isp_ || !tuning_ || !tuning_->ok()) return Result::busy();
+    uint32_t rn = 0, rd = 1;
+    int32_t rc = IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &rn, &rd);
+    if (rc != 0 || rd == 0) return Result::error((int)rc);
+    fps = (int)(rn / rd);
+    return Result::ok();
+}
 
 }} // namespace machino::ingenic

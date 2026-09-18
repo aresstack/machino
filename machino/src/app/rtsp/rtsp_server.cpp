@@ -238,7 +238,7 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
         if (!s.playing) {
             Result r; s.demand = pipeline_.acquire(ConsumerType::Rtsp, &r);
             if (!s.demand.active()) { LOGW(MOD, "%s PLAY: pipeline unavailable (%s)", s.peer.c_str(), status_name(r.status)); return reply("503 Service Unavailable", "", ""); }
-            s.sink = hub_.subscribe(8);
+            s.sink = hub_.subscribe(4);   // bounded; a stalled client drops its own frames only
             s.playing = true; s.wait_key = true; s.pts0_us = -1;
             LOGI(MOD, "%s PLAY (%s)", s.peer.c_str(), s.tcp ? "tcp-interleaved" : "udp");
         }

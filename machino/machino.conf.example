@@ -47,6 +47,28 @@ pipeline.always_on        = 0
 lifecycle.idle_grace_ms   = 5000
 pipeline.poll_timeout_ms  = 500
 
+# --- performance / power (continuous streaming) ------------------------------
+# Profiles are presets over sensor.fps / video.fps / video.bitrate:
+#   performance = board/sensor default point, balanced = board preset or the
+#   next lower verified point, battery = lowest verified point, custom = the
+#   explicit values below. Values outside the known range or unverified
+#   operating points are rejected (sensor.allow_unverified_mode = 1 opts in
+#   for qualification runs). Send SIGHUP to re-apply this file at runtime.
+performance.profile       = performance
+#sensor.fps               = 15        # requested SENSOR rate (live, read back from the ISP)
+#video.fps                = 15        # stream rate (pipeline restart, demand preserved)
+# power levels: auto = adapter/kernel default (nothing is forced); low/high only
+# where the platform offers a safe interface (T40: ISP/encoder clocks are
+# read-only -> unsupported; cpufreq not exposed by the OpenIPC kernel)
+power.isp_performance     = auto
+power.encoder_performance = auto
+power.cpu_performance     = auto
+
+# --- telemetry -------------------------------------------------------------
+# 0 = off; N = one compact line every N seconds (state, requested/effective fps,
+# measured fps/bitrate, drops, cpu, rss, threads, known clocks)
+telemetry.log_interval_s  = 0
+
 # --- logging ----------------------------------------------------------------
 log.level         = 2         # 0 err, 1 warn, 2 info, 3 debug (3 shows value provenance)
 log.syslog        = 0
