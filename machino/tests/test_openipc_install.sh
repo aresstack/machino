@@ -192,6 +192,16 @@ printf '<nav>a newer webui</nav>
 run_uninstall
 is "updated header kept" "$(cat "$R/var/www/cgi-bin/p/header.cgi")" "<nav>a newer webui</nav>"
 
+# --------- 13) everything shipped to the camera stays BusyBox-clean ---------
+# Both of these were found on the hardware, not in review: BusyBox tar has no
+# -z, and there is no install(1). The host runs GNU coreutils, so only a static
+# check keeps the next such regression out.
+for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/init/S95streamer" "$PKG/init/machino"; do
+    if grep -nE '(^|[^-a-z_])install +-[dm]' "$f"; then bad "$(basename "$f") uses install(1), which BusyBox does not have"; else ok; fi
+    if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
+    if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi
+done
+
 if [ "$SKIP" -gt 0 ]; then
     echo "openipc install tests: $PASS passed, $FAIL failed, $SKIP skipped"
 else

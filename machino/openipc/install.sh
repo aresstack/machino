@@ -47,6 +47,16 @@ done
 
 [ -n "$ROOT" ] || [ "$(id -u)" = "0" ] || die "run as root"
 
+# BusyBox has no install(1) - found out on the camera, not in review. Everything
+# this script needs must exist there, so it is checked up front instead of
+# failing halfway through with part of the files in place.
+for c in cp chmod mkdir mv rm grep sed awk df wc cat dirname; do
+    command -v "$c" >/dev/null 2>&1 || die "required command '$c' not found on this system"
+done
+
+# cp+chmod instead of install(1), for the same reason.
+put() { _m=$1; _s=$2; _d=$3; mkdir -p "$(dirname "$_d")" && cp "$_s" "$_d" && chmod "$_m" "$_d"; }
+
 # ------------------------------------------------------------- preflight ---
 if [ "$WEBUI_ONLY" = "1" ]; then
     [ -r "$HERE/webui/machino.cgi" ] || die "bundle incomplete: webui/machino.cgi is missing"
@@ -95,7 +105,7 @@ webui_menu_add() {
 }
 
 if [ "$WEBUI_ONLY" = "1" ]; then
-    install -m 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || die "could not install the WebUI page"
+    put 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || die "could not install the WebUI page"
     webui_menu_add || true
     say "WebUI page and menu entry refreshed; nothing else was touched."
     exit 0
@@ -118,20 +128,24 @@ fi
 
 # ------------------------------------------------------------ the daemon ---
 mkdir -p "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/var/run"
-install -m 0755 "$HERE/machino" "$ROOT/usr/bin/machino" || die "cannot install $ROOT/usr/bin/machino"
+put 0755 "$HERE/machino" "$ROOT/usr/bin/machino" || die "cannot install $ROOT/usr/bin/machino"
 if [ -f "$STATE_DIR/machino.conf" ]; then
     say "keeping existing $STATE_DIR/machino.conf"
-    install -m 0644 "$HERE/machino.conf" "$STATE_DIR/machino.conf.default"
+    put 0644 "$HERE/machino.conf" "$STATE_DIR/machino.conf.default"
 else
-    install -m 0644 "$HERE/machino.conf" "$STATE_DIR/machino.conf"
+    put 0644 "$HERE/machino.conf" "$STATE_DIR/machino.conf"
 fi
 if [ -d "$HERE/profiles" ]; then
     mkdir -p "$STATE_DIR/profiles"
-    for p in "$HERE"/profiles/*; do [ -f "$p" ] && install -m 0644 "$p" "$STATE_DIR/profiles/"; done
+    for p in "$HERE"/profiles/*; do [ -f "$p" ] && put 0644 "$p" "$STATE_DIR/profiles/"; done
 fi
 
-install -m 0755 "$HERE/sbin/streamerctl" "$ROOT/usr/sbin/streamerctl" || die "cannot install streamerctl"
-install -m 0755 "$HERE/init/machino" "$INITD/machino"          || die "cannot install $INITD/machino"
+put 0755 "$HERE/sbin/streamerctl" "$ROOT/usr/sbin/streamerctl" || die "cannot install streamerctl"
+if [ -n "$WEBUI_PASSWORD" ]; then
+    STREAMERCTL_ROOT="$ROOT" "$ROOT/usr/sbin/streamerctl" webui-password "$WEBUI_PASSWORD" ||
+        warn "could not set the WebUI password - set it later with: streamerctl webui-password <password>"
+fi
+put 0755 "$HERE/init/machino" "$INITD/machino"          || die "cannot install $INITD/machino"
 
 # ------------------------------------------------- take over the boot slot ---
 # rcS runs every /etc/init.d/S??* without testing the executable bit, so the
@@ -143,7 +157,7 @@ if [ -f "$INITD/S95majestic" ]; then
     chmod 0755 "$INITD/majestic"
     say "moved $INITD/S95majestic -> $INITD/majestic (a backup is in $BACKUP)"
 fi
-install -m 0755 "$HERE/init/S95streamer" "$INITD/S95streamer" || die "cannot install S95streamer"
+put 0755 "$HERE/init/S95streamer" "$INITD/S95streamer" || die "cannot install S95streamer"
 
 # ------------------------------------------------------- initial selection ---
 # Keep streaming whatever streams right now. Installing must not switch.
@@ -157,7 +171,7 @@ if [ ! -f "$STATE_DIR/streamer" ]; then
 fi
 
 # ------------------------------------------------------------------ WebUI ---
-install -m 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || warn "could not install the WebUI page"
+put 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || warn "could not install the WebUI page"
 
 webui_menu_add || true
 
