@@ -51,6 +51,9 @@ for a in "\$@"; do case "\$a" in -*) ;; *) name="\$a" ;; esac; done
 case "\$name" in
   majestic|machino) [ -f "$RUNDIR/\$name" ] && { echo 4242; exit 0; }; exit 1 ;;
 esac
+case "\$*" in
+  *wdtstub*) [ -f "$RUNDIR/wdt.pid" ] && { cat "$RUNDIR/wdt.pid"; exit 0; }; exit 1 ;;
+esac
 # pgrep -f "httpd ..." -> the pid our httpd stub parked
 [ -f "$RUNDIR/httpd.pid" ] && { cat "$RUNDIR/httpd.pid"; exit 0; }
 exit 1
@@ -70,6 +73,17 @@ exit 0
 EOS
     sed -i "s|@RUNDIR@|$RUNDIR|g" "$STUB/httpd" 
     chmod +x "$STUB/httpd"
+
+    # watchdog feeder stub: records argv, parks as a real process
+    cat > "$STUB/wdtstub" <<'EOS'
+#!/bin/sh
+echo "$@" >> "@RUNDIR@/wdt.argv"
+sleep 120 >/dev/null 2>&1 &
+echo $! > "@RUNDIR@/wdt.pid"
+exit 0
+EOS
+    sed -i "s|@RUNDIR@|$RUNDIR|g" "$STUB/wdtstub"
+    chmod +x "$STUB/wdtstub"
 
     # wget stub: models both endpoints the script probes - Machino's API and
     # port 80, which is served by majestic or by our own httpd, never both.
@@ -103,6 +117,7 @@ EOS
 
 ctl() {
     STREAMERCTL_ROOT="$ROOT" STREAMERCTL_HTTPD="$STUB/httpd" \
+    STREAMERCTL_WDT_FEEDER="$STUB/wdtstub" STREAMERCTL_WDT="$RUNDIR/fake-watchdog" \
     PATH="$STUB:$PATH" HEALTH_TIMEOUT=3 sh "$CTL" "$@" 2>&1
 }
 
@@ -227,6 +242,25 @@ printf 'root:$1$xx$hash
 : > "$RUNDIR/majestic"
 ctl set machino >/dev/null
 if grep -q '^/cgi-bin:root:' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "password not applied to httpd.conf"; fi
+
+# ---- 14) the watchdog feeder runs while majestic is away --------------------
+# Majestic arms the hardware watchdog and feeds it; the first real switch on
+# the T40NN reset the SoC 15 s after majestic was stopped. Never again.
+setup
+: > "$RUNDIR/majestic"
+ctl set machino >/dev/null
+[ -f "$RUNDIR/wdt.argv" ] && ok || bad "no watchdog feeder started when majestic was stopped"
+wpid=$(cat "$ROOT/var/run/machino-wdt.pid" 2>/dev/null)
+[ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && ok || bad "feeder pid not tracked/alive"
+
+# ---- 15) ... and is stopped before majestic takes the device back -----------
+ctl set majestic >/dev/null
+if [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null; then
+    bad "feeder still running while majestic owns /dev/watchdog"
+else
+    ok
+fi
+[ -r "$ROOT/var/run/machino-wdt.pid" ] && bad "stale feeder pidfile left behind" || ok
 
 echo "streamerctl tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

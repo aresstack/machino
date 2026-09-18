@@ -29,6 +29,9 @@ WWW_ROOT="$ROOT/var/www"
 HTTPD="${STREAMERCTL_HTTPD:-/usr/sbin/httpd}"
 HTTPD_PID="$ROOT/var/run/machino-httpd.pid"
 HTTPD_CONF="$STATE_DIR/httpd.conf"          # basic auth + address rules for our WebUI host
+WDT="${STREAMERCTL_WDT:-/dev/watchdog}"
+WDT_FEEDER="${STREAMERCTL_WDT_FEEDER:-watchdog}"   # busybox applet
+WDT_PID="$ROOT/var/run/machino-wdt.pid"
 
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-20}"      # seconds to wait for the new owner to come up
 
@@ -185,6 +188,40 @@ majestic_healthy() {
     return 1
 }
 
+# Majestic arms the hardware watchdog (majestic.yaml watchdog.enabled, 15 s)
+# and holds /dev/watchdog open. Killing it leaves the watchdog armed with no
+# feeder, and 15 seconds later the SoC resets without a single line of console
+# output - that is how the first real switch on the T40NN died. So whenever
+# majestic is not the one running, this script keeps a busybox watchdog feeder
+# alive, and stops it right before majestic starts, because the device allows
+# only one opener.
+wdt_feeder_start() {
+    if [ -r "$WDT_PID" ]; then
+        _p=$(cat "$WDT_PID" 2>/dev/null)
+        [ -n "$_p" ] && alive "$_p" && return 0
+    fi
+    command -v "$WDT_FEEDER" >/dev/null 2>&1 || { warn "no watchdog feeder available - a majestic-armed watchdog will reset the board"; return 1; }
+    "$WDT_FEEDER" -t 4 -T 60 "$WDT" 2>/dev/null || { warn "could not start the watchdog feeder"; return 1; }
+    sleep 1
+    _p=$(pgrep -f "$WDT_FEEDER -t 4" | head -1)
+    [ -n "$_p" ] || { warn "watchdog feeder did not come up"; return 1; }
+    mkdir -p "$(dirname "$WDT_PID")"
+    printf '%s
+' "$_p" > "$WDT_PID"
+    return 0
+}
+
+wdt_feeder_stop() {
+    [ -r "$WDT_PID" ] || return 0
+    _p=$(cat "$WDT_PID" 2>/dev/null)
+    rm -f "$WDT_PID"
+    [ -n "$_p" ] || return 0
+    kill "$_p" 2>/dev/null              # busybox watchdog disarms on SIGTERM (magic close)
+    _i=0
+    while alive "$_p" && [ "$_i" -lt 5 ]; do _i=$((_i + 1)); sleep 1; done
+    return 0
+}
+
 # --------------------------------------------------------------- switching ---
 stop_all_owners() {
     if machino_running; then
@@ -200,6 +237,7 @@ stop_all_owners() {
 
 activate_machino() {
     stop_all_owners || return 1
+    :
     webui_start || warn "WebUI is not being served - use the CLI to switch back"
     [ -x "$INIT_MACHINO" ] || { warn "$INIT_MACHINO missing"; return 1; }
     "$INIT_MACHINO" start >/dev/null 2>&1
@@ -208,6 +246,7 @@ activate_machino() {
 
 activate_majestic() {
     stop_all_owners || return 1
+    wdt_feeder_stop                        # single-opener device: majestic takes it back
     webui_stop || return 1                 # hand port 80 back before majestic claims it
     [ -x "$INIT_MAJESTIC" ] || { warn "$INIT_MAJESTIC missing"; return 1; }
     "$INIT_MAJESTIC" start >/dev/null 2>&1
@@ -218,7 +257,7 @@ activate() {
     case "$1" in
         machino)  activate_machino ;;
         majestic) activate_majestic ;;
-        none)     stop_all_owners && webui_stop ;;
+        none)     stop_all_owners && wdt_feeder_start && webui_stop ;;
         *)        warn "unknown streamer '$1'"; return 1 ;;
     esac
 }
@@ -254,6 +293,9 @@ cmd_status() {
     echo "selected:     $sel"
     echo "running:      $run"
     echo "port 80:      $(port80_owner)"
+    if [ -r "$WDT_PID" ] && _wp=$(cat "$WDT_PID" 2>/dev/null) && [ -n "$_wp" ] && alive "$_wp"; then
+        echo "watchdog:     fed by streamerctl (pid $_wp)"
+    fi
     if machino_running; then
         port=$(api_port)
         st=$(wget -q -O- -T 2 "http://127.0.0.1:$port/api/v1/state" 2>/dev/null |
