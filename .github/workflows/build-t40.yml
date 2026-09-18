@@ -3,18 +3,18 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
-    paths: [ '.github/workflows/build-t40.yml', 'src/**', 'include', 'Makefile', 'build.sh' ]
+    paths: [ '.github/workflows/build-t40.yml', 'src/**', 'Makefile', 'build.sh' ]
 jobs:
   t40-musl:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (mit Submodulen: ingenic-headers)
+      - name: "Checkout with submodules (ingenic-headers)"
         uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Build-Abhaengigkeiten
+      - name: "Install build dependencies"
         run: sudo apt-get update && sudo apt-get install -y build-essential wget curl git python3 xxd rsync bc cpio unzip file ccache
-      - name: Machino T40 (musl) bauen — nur Sensor/ISP/H264/JPEG/RTSP/Control
+      - name: "Build Machino T40 musl (sensor/ISP/H264/JPEG/RTSP/control only)"
         env:
           USE_RECORD: "0"
           USE_TLS: "0"
@@ -26,14 +26,14 @@ jobs:
         run: |
           chmod +x build.sh
           ./build.sh full T40 --libc-musl
-      - name: Artefakt-Info (Groesse, Typ, SHA256, dyn. Abhaengigkeiten)
+      - name: "Artifact info (size, type, sha256, NEEDED)"
         run: |
           cp -f timpsd machino
           ls -lh machino
           file machino
           sha256sum machino | tee machino.sha256
-          "${TOOLCHAIN_SDK:-}"/bin/mipsel-linux-readelf -d machino 2>/dev/null | grep -E 'NEEDED|SONAME' || readelf -d machino | grep NEEDED || true
-      - name: Artefakt hochladen
+          readelf -d machino 2>/dev/null | grep NEEDED || echo "no NEEDED (static)"
+      - name: "Upload artifact"
         uses: actions/upload-artifact@v4
         with:
           name: machino-t40nn-musl
