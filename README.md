@@ -1,12 +1,16 @@
 <div align="center">
 
+<img src="docs/machino_embedded_kamera_banner.png"
+     alt="Machino - media runtime for embedded IP cameras"
+     width="100%" />
+
 # Machino
 
 ### The universal media runtime for every IP camera ever made.
 
 <sub>Support may currently be limited to cameras we actually tested.</sub>
 
-**Machino Is Not Macho.**
+**Machino Is Not Macho. Yet.**
 
 Lightweight, power-aware media runtime for embedded IP cameras.
 
@@ -327,6 +331,6 @@ MIT, excluding third-party and vendor components that carry their own terms.
 **We support every camera.**  
 <sub>Or at least we plan to.</sub>
 
-**Machino Is Not Macho.**
+**Machino Is Not Macho. Yet.**
 
 </div>
