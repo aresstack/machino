@@ -57,10 +57,11 @@ grace → cold path.
 
 Sessions are bounded and reclaimed while the daemon runs:
 
-* `rtsp.max_clients` (default 4) caps the concurrent sessions. Connection
-  number *n+1* is answered with `453 Not Enough Bandwidth` and closed — it is
-  refused, not queued, so a client learns immediately instead of waiting on a
-  stream that will not come.
+* `rtsp.max_clients` (default 4) caps the concurrent client *connections* —
+  not the PLAYing sessions, because it is the connection that costs a thread.
+  Connection number *n+1* is answered with `453 Not Enough Bandwidth` and
+  closed: refused, not queued, so a client learns immediately instead of
+  waiting on a stream that will not come.
 * A client that leaves has its thread joined and its slot freed by the accept
   loop. Without that every connect/disconnect cycle would leave a finished
   thread behind and the list would only ever grow: a camera that reconnects all

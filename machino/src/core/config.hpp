@@ -43,7 +43,7 @@ struct RtspConfig {
     std::string path = "/ch0";
     int         send_buffer_bytes = 65536; // bounded kernel backlog per socket
     int         send_stall_ms = 750;       // disconnect, never accumulate seconds of stale live video
-    int         max_clients = 4;           // concurrent sessions; further connects are refused, not queued
+    int         max_clients = 4;           // concurrent connections (each costs a thread); refused, not queued
 };
 
 // Demand-driven lifecycle ("no consumer, no pipeline").
