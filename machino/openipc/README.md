@@ -9,7 +9,9 @@ repository as `machino/docs/install-openipc.md`).
 ## Quick start
 
 ```sh
-./install.sh                 # install; does not switch anything over
+# BusyBox tar has no -z, so unpack with gzip:
+#   gzip -dc machino-openipc-<target>.tar.gz | tar xf -
+./install.sh --webui-password 'PW'   # install; does not switch anything over
 streamerctl status           # what is selected, what is running, who serves port 80
 streamerctl set machino      # switch to Machino (rolls back if it fails)
 streamerctl set majestic     # switch back
@@ -17,6 +19,11 @@ streamerctl set majestic     # switch back
 ```
 
 In the camera's WebUI the switch is under **System -> Media service**.
+
+While Machino is active the WebUI is served by BusyBox httpd, so Majestic's
+login does not apply. The switch page runs streamerctl as root: with a password
+it asks for HTTP Basic auth (user `root`), without one it is restricted to the
+camera itself. Set or change it any time with `streamerctl webui-password`.
 
 ## Contents
 

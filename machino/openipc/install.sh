@@ -23,19 +23,64 @@ say()  { echo "$*"; }
 warn() { echo "install: $*" >&2; }
 die()  { echo "install: $*" >&2; exit 1; }
 
+WEBUI_ONLY=0
+WEBUI_PASSWORD=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --webui-only)     WEBUI_ONLY=1 ;;
+        --webui-password) shift; WEBUI_PASSWORD="${1:-}" ;;
+        -h|--help)
+            cat <<EOF
+usage: ./install.sh [--webui-password PASSWORD] [--webui-only]
+
+  --webui-password P  password for the switch page while Machino serves the
+                      WebUI (user 'root'). Without it that page is reachable
+                      from the camera itself only.
+  --webui-only        re-add just the WebUI page and menu entry, e.g. after an
+                      OpenIPC WebUI update removed them. Touches nothing else.
+EOF
+            exit 0 ;;
+        *) die "unknown option '$1' (try --help)" ;;
+    esac
+    shift
+done
+
 [ -n "$ROOT" ] || [ "$(id -u)" = "0" ] || die "run as root"
 
 # ------------------------------------------------------------- preflight ---
-for f in machino machino.conf sbin/streamerctl init/S95streamer init/machino webui/machino.cgi; do
-    [ -r "$HERE/$f" ] || die "bundle incomplete: $f is missing"
-done
+if [ "$WEBUI_ONLY" = "1" ]; then
+    [ -r "$HERE/webui/machino.cgi" ] || die "bundle incomplete: webui/machino.cgi is missing"
+else
+    for f in machino machino.conf sbin/streamerctl init/S95streamer init/machino webui/machino.cgi; do
+        [ -r "$HERE/$f" ] || die "bundle incomplete: $f is missing"
+    done
+fi
 [ -d "$CGI" ] || die "no $CGI - this does not look like an OpenIPC camera with the WebUI installed"
 
-need_kb=$(( ($(wc -c < "$HERE/machino") / 1024) + 256 ))
-free_kb=$(df -k / | awk 'NR==2 {print $4}')
-[ "${free_kb:-0}" -ge "$need_kb" ] || die "not enough space on / (need ~${need_kb} kB, have ${free_kb} kB)"
+if [ "$WEBUI_ONLY" != "1" ]; then
+    need_kb=$(( ($(wc -c < "$HERE/machino") / 1024) + 256 ))
+    free_kb=$(df -k / | awk 'NR==2 {print $4}')
+    [ "${free_kb:-0}" -ge "$need_kb" ] || die "not enough space on / (need ~${need_kb} kB, have ${free_kb} kB)"
+fi
 
 mkdir -p "$STATE_DIR" "$BACKUP" || die "cannot create $STATE_DIR"
+
+# The OpenIPC WebUI has no plugin registry - the ext-*.cgi files are tombstones
+# for renamed pages, not extension points. The navigation in p/header.cgi is a
+# hand-written list, so the menu entry means editing one stock file. The edit is
+# fenced with markers and the original is backed up. A WebUI update overwrites
+# that file and the entry is simply gone; the page itself keeps working at
+# /cgi-bin/machino.cgi and "install.sh --webui-only" puts the entry back.
+webui_menu_add() {
+    header="$CGI/p/header.cgi"
+    [ -w "$header" ] || { warn "cannot write $header - the page stays reachable at /cgi-bin/machino.cgi"; return 1; }
+
+if [ "$WEBUI_ONLY" = "1" ]; then
+    install -m 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || die "could not install the WebUI page"
+    webui_menu_add || true
+    say "WebUI page and menu entry refreshed; nothing else was touched."
+    exit 0
+fi
 
 # --------------------------------------------- remember the previous state ---
 # Only on the very first install, so re-running the installer (or upgrading)
@@ -94,15 +139,6 @@ fi
 # ------------------------------------------------------------------ WebUI ---
 install -m 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || warn "could not install the WebUI page"
 
-# The OpenIPC WebUI has no plugin registry - the ext-*.cgi files are tombstones
-# for renamed pages, not extension points. The navigation in p/header.cgi is a
-# hand-written list, so the menu entry means editing one stock file. The edit is
-# fenced with markers and the original is backed up. A WebUI update overwrites
-# that file and the entry is simply gone; the page itself keeps working at
-# /cgi-bin/machino.cgi and "install.sh --webui-only" puts the entry back.
-webui_menu_add() {
-    header="$CGI/p/header.cgi"
-    [ -w "$header" ] || { warn "cannot write $header - the page stays reachable at /cgi-bin/machino.cgi"; return 1; }
     if grep -q "machino:begin" "$header" 2>/dev/null; then say "menu entry already present"; return 0; fi
     [ -f "$BACKUP/header.cgi" ] || cp -p "$header" "$BACKUP/header.cgi"
 
@@ -122,9 +158,6 @@ webui_menu_add() {
     say "added the menu entry under System"
 }
 
-case "${1:-}" in
-    --webui-only) webui_menu_add; exit 0 ;;
-esac
 webui_menu_add || true
 
 # ------------------------------------------------------------------- done ---

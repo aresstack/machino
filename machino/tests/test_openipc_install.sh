@@ -151,6 +151,47 @@ run_install || bad "install failed on an unknown navigation layout"
 has "page still installed" "$R/var/www/cgi-bin/machino.cgi"
 if grep -q 'not recognised' "$WORK/out"; then ok; else bad "unknown layout was not reported"; fi
 
+# ------------------ 10) --webui-only really only touches the WebUI ----------
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" sh ./install.sh --webui-only ) >"$WORK/out" 2>&1 ||
+    bad "--webui-only exited non-zero: $(cat "$WORK/out")"
+has   "page installed"                   "$R/var/www/cgi-bin/machino.cgi"
+hasnt "no binary from --webui-only"      "$R/usr/bin/machino"
+hasnt "no boot script from --webui-only" "$R/etc/init.d/S95streamer"
+hasnt "majestic not moved by --webui-only" "$R/etc/init.d/majestic"
+has   "majestic left in its boot slot"   "$R/etc/init.d/S95majestic"
+if grep -q 'machino:begin' "$R/var/www/cgi-bin/p/header.cgi"; then ok; else bad "--webui-only did not add the menu entry"; fi
+
+# ------- 11) uninstall refuses to continue while machino is still running ---
+# Continuing would restore majestic's boot slot and could start it next to a
+# machino that still owns the media hardware.
+make_bundle; make_camera auto
+run_install
+MSTUB="$WORK/stub"; mkdir -p "$MSTUB"
+printf '#!/bin/sh
+case "$*" in *machino*) echo 1234; exit 0 ;; esac
+exit 1
+' > "$MSTUB/pgrep"
+chmod +x "$MSTUB/pgrep"
+if ( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$WORK/root" sh ./uninstall.sh ) >"$WORK/out" 2>&1; then
+    bad "uninstall continued although machino was still running"
+else
+    ok
+fi
+has   "majestic still out of the boot slot"               "$R/etc/init.d/majestic"
+hasnt "boot slot not restored behind a running machino"   "$R/etc/init.d/S95majestic"
+has   "binary not removed"                                "$R/usr/bin/machino"
+if grep -q 'still running' "$WORK/out"; then ok; else bad "no explanation why uninstall stopped"; fi
+rm -rf "$MSTUB"
+
+# --- 12) a WebUI update that dropped the markers is not rolled back ---------
+make_bundle; make_camera auto
+run_install
+printf '<nav>a newer webui</nav>
+' > "$R/var/www/cgi-bin/p/header.cgi"
+run_uninstall
+is "updated header kept" "$(cat "$R/var/www/cgi-bin/p/header.cgi")" "<nav>a newer webui</nav>"
+
 if [ "$SKIP" -gt 0 ]; then
     echo "openipc install tests: $PASS passed, $FAIL failed, $SKIP skipped"
 else

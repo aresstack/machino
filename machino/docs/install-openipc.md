@@ -56,10 +56,18 @@ Replace `CAMERA` with your camera's IP address.
 ```sh
 ssh root@CAMERA
 cd /tmp
-tar xzf machino-openipc-t40nn.tar.gz
+gzip -dc machino-openipc-t40nn.tar.gz | tar xf -
 cd machino-openipc-t40nn
-./install.sh
+./install.sh --webui-password 'YOUR-PASSWORD'
 ```
+
+> `tar xzf` does **not** work here: the camera has BusyBox tar, which has no
+> `-z`. Pipe it through `gzip -dc` as above (`tar xaf ...` works on newer
+> BusyBox builds too).
+
+`--webui-password` sets the password for the switch page for the time Machino
+serves the WebUI - see [WebUI access](#webui-access) below. You can leave it
+out and set it later with `streamerctl webui-password`.
 
 The installer prints what it did and finishes with the current status. It
 does **not** start Machino and does **not** stop Majestic.
@@ -87,6 +95,29 @@ glob. It stays fully functional as `/etc/init.d/majestic`, and the uninstaller
 moves it back.
 
 ---
+
+## WebUI access
+
+While **Majestic** is active it serves the WebUI with its own login, exactly as
+before - nothing changes.
+
+While **Machino** is active the WebUI is served by BusyBox `httpd` instead, and
+Majestic's login is not part of that. The switch page runs `streamerctl` as
+root, so it is not left open:
+
+* **With a password set** (`--webui-password`, or `streamerctl webui-password
+  <password>` later) `/cgi-bin` requires HTTP Basic auth, user `root`, that
+  password. Set it before you switch over.
+* **Without one** the CGI is restricted to the camera itself (`A:127.0.0.1`,
+  `D:*`): the switch page is then unreachable from a browser, and the CLI over
+  SSH is the way to switch. Refusing beats a root-level switch open to whoever
+  can reach the camera.
+
+`streamerctl status` says which of the two you are in, and `streamerctl set
+machino` warns when no password is set.
+
+Basic auth is not TLS. Do not expose such a camera directly to an untrusted
+network.
 
 ## 4. The WebUI after installing
 
@@ -205,6 +236,9 @@ cd /tmp/machino-openipc-t40nn
 ./install.sh --webui-only
 ```
 
+That really does only the WebUI: the page and the menu entry. The binary, the
+configuration, the init scripts and the boot slot are not touched.
+
 ---
 
 ## 9. Diagnosis
@@ -315,9 +349,10 @@ Keep your configuration for a later reinstall:
   with `install.sh`/`uninstall.sh`. A Buildroot package comes later.
 * The bundle contains no proprietary Ingenic SDK libraries. Machino links them
   statically at build time; nothing extra is installed on the camera.
-* While Machino is active, the WebUI is served by busybox `httpd` without
-  Majestic's login and session handling. Do not expose such a camera directly
-  to an untrusted network.
+* While Machino is active, the WebUI is served by BusyBox `httpd` with HTTP
+  Basic auth instead of Majestic's login and session handling - see
+  [WebUI access](#webui-access). Basic auth is not TLS; do not expose such a
+  camera directly to an untrusted network.
 * The Majestic WebUI pages that talk to Majestic's own API (dashboard, live
   preview) do not work against Machino yet. The
   [API compatibility layer](api/v1.md) covers the configuration endpoints;

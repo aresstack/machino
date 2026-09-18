@@ -34,7 +34,16 @@ if [ -x "$INITD/machino" ]; then
 fi
 i=0
 while pgrep -x machino >/dev/null 2>&1 && [ $i -lt 15 ]; do i=$((i + 1)); sleep 1; done
-pgrep -x machino >/dev/null 2>&1 && warn "machino is still running - stop it manually before rebooting"
+if pgrep -x machino >/dev/null 2>&1; then
+    # Hard stop. Continuing would restore Majestic's boot slot and possibly
+    # start it next to a Machino that still owns the media hardware - two media
+    # owners, which is the one thing this whole package exists to prevent.
+    # Nothing has been changed at this point, so aborting is safe.
+    warn "machino is still running and would not stop"
+    warn "nothing was changed. Stop it and run uninstall.sh again:"
+    warn "    /etc/init.d/machino stop     # or: kill \$(pgrep -x machino)"
+    exit 1
+fi
 
 # ---------------------------------------------------- restore the boot slot ---
 rm -f "$INITD/S95streamer"
@@ -73,8 +82,12 @@ if [ -f "$header" ] && grep -q 'machino:begin' "$header" 2>/dev/null; then
     sed '/machino:begin/,/machino:end/d' "$header" > "$header.machino.tmp" &&
         mv "$header.machino.tmp" "$header" && say "removed the menu entry" ||
         { rm -f "$header.machino.tmp"; warn "could not remove the menu entry from $header"; }
-elif [ -f "$BACKUP/header.cgi" ] && [ -f "$header" ]; then
-    cp -p "$BACKUP/header.cgi" "$header" && say "restored $header from the backup"
+elif [ -f "$header" ]; then
+    # No markers: either the entry was never added, or a WebUI update has since
+    # replaced the file. Copying the old backup over it would roll that update
+    # back, so the current file is left alone. The backup stays in
+    # $BACKUP/header.cgi as a recovery artefact, not as an automatic fallback.
+    [ -f "$BACKUP/header.cgi" ] && say "no machino markers in $header - left untouched (backup kept in $BACKUP)"
 fi
 
 # Stop the WebUI host we may have started; Majestic serves port 80 itself.

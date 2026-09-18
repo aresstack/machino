@@ -58,22 +58,46 @@ EOF
     chmod +x "$STUB/pgrep"
 
     # httpd stub: a real background process, so kill -0 / kill work for real
-    cat > "$STUB/httpd" <<EOF
+    cat > "$STUB/httpd" <<'EOS'
 #!/bin/sh
+# record how we were invoked: the tests assert that the access-control config
+# is actually passed, not merely written to disk
+echo "$@" >> "@RUNDIR@/httpd.argv"
+case "$1" in -m) echo '$1$test$hash'; exit 0 ;; esac
 sleep 120 &
-echo \$! > "$RUNDIR/httpd.pid"
+echo $! > "@RUNDIR@/httpd.pid"
 exit 0
-EOF
+EOS
+    sed -i "s|@RUNDIR@|$RUNDIR|g" "$STUB/httpd" 
     chmod +x "$STUB/httpd"
 
-    # wget stub: machino's healthcheck succeeds unless told otherwise
-    cat > "$STUB/wget" <<EOF
+    # wget stub: models both endpoints the script probes - Machino's API and
+    # port 80, which is served by majestic or by our own httpd, never both.
+    # Quoted heredoc plus a placeholder: an unquoted one would expand $* and
+    # $(cat ...) while the stub is being written instead of when it runs.
+    cat > "$STUB/wget" <<'EOS'
 #!/bin/sh
-[ -f "$RUNDIR/machino" ] || exit 1
-[ -f "$RUNDIR/api.fail" ] && exit 1
-echo '{"lifecycle":"cold_idle"}'
-exit 0
-EOF
+web_up() {
+    [ -f "@RUNDIR@/majestic" ] && return 0
+    if [ -f "@RUNDIR@/httpd.pid" ]; then
+        p=$(cat "@RUNDIR@/httpd.pid")
+        kill -0 "$p" 2>/dev/null && return 0
+    fi
+    return 1
+}
+case "$*" in
+    *api/v1/state*)
+        [ -f "@RUNDIR@/machino" ] || exit 1
+        [ -f "@RUNDIR@/api.fail" ] && exit 1
+        echo '{"lifecycle":"cold_idle"}'; exit 0 ;;
+    *index.html*)
+        [ -f "@RUNDIR@/web.fail" ] && exit 1
+        web_up || exit 1
+        echo '<html/>'; exit 0 ;;
+esac
+exit 1
+EOS
+    sed -i "s|@RUNDIR@|$RUNDIR|g" "$STUB/wget"
     chmod +x "$STUB/wget"
 }
 
@@ -167,6 +191,42 @@ printf 'api.port = 9099\n' > "$ROOT/etc/machino/machino.conf"
 : > "$RUNDIR/machino"
 out=$(ctl status)
 case "$out" in *9099*) ok ;; *) bad "api.port from machino.conf not used: $out" ;; esac
+
+# ------------------- 11) a live majestic that does not serve port 80 --------
+# This camera has shown majestic alive with its media SDK dead. A process check
+# alone would call that a healthy rollback target; port 80 is what the operator
+# actually needs to switch back with.
+setup
+: > "$RUNDIR/majestic"
+ctl set machino >/dev/null
+: > "$RUNDIR/web.fail"
+ctl set majestic >/dev/null 2>&1
+check "majestic without port 80 is not healthy" "$(selected)" "machino"
+
+# ------------------------------- 12) boot falls back instead of giving up ---
+setup
+printf 'machino
+' > "$ROOT/etc/machino/streamer"
+: > "$RUNDIR/machino.fail"
+ctl boot >/dev/null 2>&1
+check "boot falls back to majestic" "$(running)" "majestic"
+check "the selection is not rewritten" "$(selected)" "machino"
+
+# --------------------------------------- 13) the WebUI host is never open ---
+setup
+: > "$RUNDIR/majestic"
+ctl set machino >/dev/null
+conf="$ROOT/etc/machino/httpd.conf"
+[ -r "$conf" ] && ok || bad "no httpd.conf written"
+if grep -q -- "-c $conf" "$RUNDIR/httpd.argv" 2>/dev/null; then ok; else bad "httpd was started without -c $conf: $(cat "$RUNDIR/httpd.argv" 2>/dev/null)"; fi
+if grep -q '^D:\*' "$conf"; then ok; else bad "without a password the CGI is not restricted: $(cat "$conf" 2>/dev/null)"; fi
+# with a password it requires authentication instead
+setup
+printf 'root:$1$xx$hash
+' > "$ROOT/etc/machino/webui.passwd"
+: > "$RUNDIR/majestic"
+ctl set machino >/dev/null
+if grep -q '^/cgi-bin:root:' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "password not applied to httpd.conf"; fi
 
 echo "streamerctl tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
