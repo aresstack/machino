@@ -1,10 +1,12 @@
-// Ingenic adapter: IMP SDK 1.3.1 (T40/T40NN) platform. Owns the sensor/ISP
-// system state; frame-source and encoder channels are separate RAII objects.
+// Ingenic adapter: IMP SDK 1.3.1 (T40/T40NN) platform port. Sole owner of the
+// ISP/sensor/system sessions; frame-source and encoder channels are handed
+// out as RAII objects. Bring-up order == member order; tear-down is the
+// reverse and fully automatic.
 #pragma once
 #include "adapters/ingenic/board_wiring.hpp"
+#include "adapters/ingenic/imp_sessions.hpp"
 #include "ports/iplatform.hpp"
-
-#include <imp/imp_isp.h>
+#include <memory>
 
 namespace machino { namespace ingenic {
 
@@ -27,7 +29,12 @@ private:
     SensorConfig  sensor_;
     BoardWiring   wiring_;
     IMPSensorInfo info_{};
-    enum class Stage { Down, IspOpen, SensorAdded, SensorEnabled, SystemInit, TuningOn } stage_ = Stage::Down;
+    // bring-up order; destroyed in reverse (tuning, system, sensor, isp)
+    std::unique_ptr<imp::IspSession>    isp_;
+    std::unique_ptr<imp::SensorSession> sensor_session_;
+    std::unique_ptr<imp::SystemSession> system_;
+    std::unique_ptr<imp::TuningSession> tuning_;
+    std::unique_ptr<imp::Binding>       binding_;
 };
 
 }} // namespace machino::ingenic

@@ -1,7 +1,5 @@
 #include "adapters/ingenic/ingenic_framesource.hpp"
 #include "core/log.hpp"
-
-#include <imp/imp_framesource.h>
 #include <cstring>
 
 namespace machino { namespace ingenic {
@@ -23,42 +21,10 @@ std::unique_ptr<IngenicFrameSource> IngenicFrameSource::create(int chn, const St
         a.scaler.outwidth  = sc.width;
         a.scaler.outheight = sc.height;
     }
-    a.crop.enable = 0;
-    a.fcrop.enable = 0;
-
-    int rc = IMP_FrameSource_CreateChn(chn, &a);
-    if (rc < 0) { LOGE(MOD, "IMP_FrameSource_CreateChn(%d) failed (%d)", chn, rc); return nullptr; }
-    rc = IMP_FrameSource_SetChnAttr(chn, &a);
-    if (rc < 0) {
-        LOGE(MOD, "IMP_FrameSource_SetChnAttr(%d) failed (%d)", chn, rc);
-        IMP_FrameSource_DestroyChn(chn);
-        return nullptr;
-    }
-    LOGI(MOD, "chn%d created %dx%d@%d nv12 vbs=%d scaler=%d", chn, sc.width, sc.height, sc.fps,
-         a.nrVBs, a.scaler.enable);
-    return std::unique_ptr<IngenicFrameSource>(new IngenicFrameSource(chn));
-}
-
-IngenicFrameSource::~IngenicFrameSource() {
-    if (enabled_) IMP_FrameSource_DisableChn(chn_);
-    IMP_FrameSource_DestroyChn(chn_);
-    LOGD(MOD, "chn%d destroyed", chn_);
-}
-
-Result IngenicFrameSource::enable() {
-    if (enabled_) return Result::ok();
-    int rc = IMP_FrameSource_EnableChn(chn_);
-    if (rc != 0) { LOGE(MOD, "IMP_FrameSource_EnableChn(%d) failed (%d)", chn_, rc); return Result::error(rc); }
-    enabled_ = true;
-    return Result::ok();
-}
-
-Result IngenicFrameSource::disable() {
-    if (!enabled_) return Result::ok();
-    int rc = IMP_FrameSource_DisableChn(chn_);
-    enabled_ = false;
-    if (rc != 0) { LOGW(MOD, "IMP_FrameSource_DisableChn(%d) failed (%d)", chn_, rc); return Result::error(rc); }
-    return Result::ok();
+    auto c = std::make_unique<imp::FrameSourceChannel>(chn, a);
+    if (!c->ok()) return nullptr;
+    LOGI(MOD, "chn%d %dx%d@%d nv12 vbs=%d scaler=%d", chn, sc.width, sc.height, sc.fps, a.nrVBs, a.scaler.enable);
+    return std::unique_ptr<IngenicFrameSource>(new IngenicFrameSource(std::move(c)));
 }
 
 }} // namespace machino::ingenic

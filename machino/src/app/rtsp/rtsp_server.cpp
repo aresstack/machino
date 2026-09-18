@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -90,7 +91,11 @@ static bool send_all(int fd, const void* p, size_t n) {
     const uint8_t* b = (const uint8_t*)p;
     while (n) {
         ssize_t w = send(fd, b, n, MSG_NOSIGNAL);
-        if (w < 0) { if (errno == EINTR) continue; if (errno == EAGAIN) { pollfd pf{fd, POLLOUT, 0}; poll(&pf, 1, 500); continue; } return false; }
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN) { pollfd pf{fd, POLLOUT, 0}; poll(&pf, 1, 500); continue; }
+            return false;
+        }
         b += w; n -= (size_t)w;
     }
     return true;
@@ -100,7 +105,7 @@ void RtspServer::client_loop(int fd, std::string peer) {
     Session s; s.fd = fd; s.peer = peer;
     struct timeval tv; gettimeofday(&tv, nullptr);
     s.ssrc = (uint32_t)(tv.tv_sec ^ (tv.tv_usec << 8) ^ (uint32_t)fd);
-    s.session_id = std::to_string((unsigned long)(s.ssrc ^ 0x5a5a5a5a));
+    s.session_id = std::to_string((unsigned long)(s.ssrc ^ 0x5a5a5a5aUL));
     LOGI(MOD, "client %s connected", peer.c_str());
 
     bool alive = true; char buf[2048];
@@ -165,14 +170,14 @@ bool RtspServer::obtain_params(std::vector<uint8_t>& sps, std::vector<uint8_t>& 
 bool RtspServer::handle_request(Session& s, const std::string& req) {
     std::string method = req.substr(0, req.find(' '));
     std::string cseq = header(req, "CSeq"); if (cseq.empty()) cseq = "0";
-    char out[1024]; std::string body;
     LOGD(MOD, "%s %s", s.peer.c_str(), method.c_str());
 
-    auto reply = [&](const char* status, const std::string& extra, const std::string& b) {
-        int n = snprintf(out, sizeof out, "RTSP/1.0 %s\r\nCSeq: %s\r\nServer: machino/%s\r\n%s%s\r\n",
-                         status, cseq.c_str(), MACHINO_VERSION, extra.c_str(),
-                         b.empty() ? "" : ("Content-Type: application/sdp\r\nContent-Length: " + std::to_string(b.size()) + "\r\n").c_str());
-        return send_all(s.fd, out, (size_t)n) && (b.empty() || send_all(s.fd, b.data(), b.size()));
+    // One buffer, one send: header and SDP body arrive in the same segment.
+    auto reply = [&](const char* status, const std::string& extra, const std::string& body) {
+        std::string out = std::string("RTSP/1.0 ") + status + "\r\nCSeq: " + cseq + "\r\nServer: machino/" MACHINO_VERSION "\r\n" + extra;
+        if (!body.empty()) out += "Content-Type: application/sdp\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
+        out += "\r\n"; out += body;
+        return send_all(s.fd, out.data(), out.size());
     };
 
     if (method == "OPTIONS")
@@ -181,8 +186,9 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
     if (method == "DESCRIBE") {
         std::vector<uint8_t> sps, pps;
         if (!obtain_params(sps, pps)) { LOGW(MOD, "DESCRIBE: no SPS/PPS available"); return reply("503 Service Unavailable", "", ""); }
-        char plid[8]; snprintf(plid, sizeof plid, "%02X%02X%02X", sps.size() > 3 ? sps[1] : 0, sps.size() > 3 ? sps[2] : 0, sps.size() > 3 ? sps[3] : 0);
-        body = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=Machino\r\nt=0 0\r\na=control:*\r\n"
+        char plid[8]; unsigned p1 = sps.size() > 3 ? sps[1] : 0, p2 = sps.size() > 3 ? sps[2] : 0, p3 = sps.size() > 3 ? sps[3] : 0;
+        snprintf(plid, sizeof plid, "%02X%02X%02X", p1, p2, p3);
+        std::string body = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=Machino\r\nt=0 0\r\na=control:*\r\n"
                "m=video 0 RTP/AVP 96\r\nc=IN IP4 0.0.0.0\r\na=rtpmap:96 H264/90000\r\n"
                "a=fmtp:96 packetization-mode=1;profile-level-id=" + std::string(plid) +
                ";sprop-parameter-sets=" + h264::base64(sps.data(), sps.size()) + "," + h264::base64(pps.data(), pps.size()) +
@@ -205,7 +211,7 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
         s.tcp = false;
         s.udp_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
         sockaddr_in la{}; la.sin_family = AF_INET; la.sin_addr.s_addr = htonl(INADDR_ANY); la.sin_port = 0;
-        bind(s.udp_fd, (sockaddr*)&la, sizeof la);
+        if (bind(s.udp_fd, (sockaddr*)&la, sizeof la) < 0) return reply("500 Internal Server Error", "", "");
         socklen_t ll = sizeof la; getsockname(s.udp_fd, (sockaddr*)&la, &ll);
         sockaddr_in pa{}; socklen_t pl = sizeof pa; getpeername(s.fd, (sockaddr*)&pa, &pl);
         s.udp_dst = pa; s.udp_dst.sin_port = htons((uint16_t)cport);
@@ -227,7 +233,7 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
 
     if (method == "TEARDOWN") {
         reply("200 OK", "Session: " + s.session_id + "\r\n", "");
-        return false;   // close connection -> client_loop releases
+        return false;   // close connection -> client_loop releases the consumer
     }
 
     if (method == "GET_PARAMETER" || method == "SET_PARAMETER")

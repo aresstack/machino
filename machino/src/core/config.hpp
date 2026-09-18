@@ -1,6 +1,6 @@
 // Machino core: application configuration. Flat `section.key = value` file.
-// Platform-neutral: the sensor bus block describes *how the board is wired*,
-// the adapter maps it onto vendor structures.
+// Platform-neutral: `platform` selects the adapter, the sensor bus block
+// describes *how the board is wired*; the adapter maps it onto vendor structs.
 #pragma once
 #include <string>
 
@@ -13,8 +13,8 @@ struct SensorConfig {
     int fps    = 20;
 };
 
-// Board wiring of the sensor. Defaults are "unknown / no such pin" so that a
-// board without explicit values never toggles a GPIO by accident.
+// Board wiring of the sensor. Defaults are fail-closed: "no such pin" so that
+// a board without explicit values never toggles a GPIO by accident.
 struct SensorBusConfig {
     int i2c_bus    = 0;
     int i2c_addr   = 0x1a;
@@ -54,6 +54,7 @@ struct LogConfig {
 };
 
 struct AppConfig {
+    std::string     platform = "ingenic-t40nn";   // adapter selector
     SensorConfig    sensor;
     SensorBusConfig bus;
     StreamConfig    video;
@@ -63,7 +64,7 @@ struct AppConfig {
 };
 
 // Loads `path` into `cfg` (fields not present keep their defaults). Returns
-// false and fills `err` on I/O or syntax errors. Unknown keys are warnings.
+// false and fills `err` on I/O errors. Unknown keys / bad values are warnings.
 bool load_config(const char* path, AppConfig& cfg, std::string& err);
 
 } // namespace machino

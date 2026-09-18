@@ -1,5 +1,6 @@
 #include "core/config.hpp"
 #include "core/log.hpp"
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -34,6 +35,7 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
 #define BOOL(key, dst) if (k == key) { if (!to_bool(v, b)) { LOGW(MOD, "line %d: %s expects bool", line, key); return true; } dst = b; return true; }
 #define STR(key, dst) if (k == key) { dst = v; return true; }
 
+    STR ("platform",           c.platform)
     STR ("sensor.model",       c.sensor.model)
     INT ("sensor.width",       c.sensor.width,  64, 8192)
     INT ("sensor.height",      c.sensor.height, 64, 8192)
@@ -94,7 +96,7 @@ bool load_config(const char* path, AppConfig& cfg, std::string& err) {
     }
     fclose(f);
     if (!cfg.rtsp.path.empty() && cfg.rtsp.path[0] != '/') cfg.rtsp.path.insert(0, "/");
-    LOGI(MOD, "loaded %d settings from %s", applied, path);
+    LOGI(MOD, "loaded %d settings from %s (platform %s)", applied, path, cfg.platform.c_str());
     LOGI(MOD, "sensor %s %dx%d@%d i2c%d/0x%02x mclk%d rst=%d pwdn=%d | video %dx%d@%d gop=%d %dkbps",
          cfg.sensor.model.c_str(), cfg.sensor.width, cfg.sensor.height, cfg.sensor.fps,
          cfg.bus.i2c_bus, cfg.bus.i2c_addr, cfg.bus.mclk, cfg.bus.reset_gpio, cfg.bus.pwdn_gpio,

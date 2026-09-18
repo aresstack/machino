@@ -3,11 +3,12 @@
 //   RTP/AVP over interleaved TCP or UDP unicast; RFC 6184 single-NAL + FU-A.
 // Each session is a pipeline consumer: PLAY -> acquire(), TEARDOWN or
 // disconnect -> release(). DESCRIBE takes a short-lived reference to obtain
-// SPS/PPS for the SDP.
+// SPS/PPS for the SDP when none are cached yet.
 #pragma once
 #include "core/config.hpp"
 #include "core/pipeline.hpp"
 #include "core/stream_hub.hpp"
+#include "ports/stream_server.hpp"
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -17,12 +18,12 @@
 
 namespace machino {
 
-class RtspServer {
+class RtspServer final : public IStreamServer {
 public:
     RtspServer(const RtspConfig& cfg, Pipeline& pipeline, StreamHub& hub);
-    ~RtspServer();
-    Result start();
-    void   stop();
+    ~RtspServer() override;
+    Result start() override;
+    void   stop() override;
 
 private:
     struct Session;

@@ -7,7 +7,9 @@
 #        IMPLIBS="-Wl,--start-group -l:libimp.a -l:libalog.a -l:libsysutils.a -Wl,--end-group -l:libmuslshim.a"
 #
 # No exceptions, no RTTI, no third-party frameworks. libstdc++ is linked
-# statically (single self-contained drop-in on a 5 MB rootfs).
+# statically (single self-contained drop-in on a 5 MB rootfs). Non-PIE: the
+# vendor archives are non-PIC. Warnings are errors for our own sources; the
+# vendor headers are included as system headers.
 
 PLATFORM      ?= T40
 CROSS_COMPILE ?=
@@ -16,24 +18,25 @@ IMP_INC       ?= $(INC_ROOT)/$(PLATFORM)/1.3.1/en
 IMP_LIB       ?=
 IMPLIBS       ?= -Wl,--start-group -l:libimp.a -l:libalog.a -l:libsysutils.a -Wl,--end-group
 VERSION       ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo m2-dev)
+WERROR        ?= 1
 
 CXX     := $(CROSS_COMPILE)g++
 BIN     := machinod
 
 CXXFLAGS ?= -std=c++17 -Os -fno-pie -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections \
-            -Wall -Wextra -Wno-unused-parameter -D_GNU_SOURCE
-CXXFLAGS += -DMACHINO_VERSION='"$(VERSION)"' -DPLATFORM_$(PLATFORM) -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp
+            -Wall -Wextra -Wno-unused-parameter $(if $(filter 1,$(WERROR)),-Werror) -D_GNU_SOURCE
+CXXFLAGS += -DMACHINO_VERSION='"$(VERSION)"' -DPLATFORM_$(PLATFORM) -Isrc -isystem $(IMP_INC) -isystem $(IMP_INC)/imp
 LDFLAGS  ?= -no-pie -Wl,--gc-sections
 LDFLAGS  += -static-libstdc++ -static-libgcc
 LIBS     ?= -lpthread -lrt -lm
 
 SRC := src/core/log.cpp src/core/config.cpp src/core/pipeline.cpp src/core/stream_hub.cpp \
        src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_server.cpp src/app/main.cpp \
-       src/adapters/ingenic/ingenic_platform.cpp src/adapters/ingenic/ingenic_framesource.cpp \
-       src/adapters/ingenic/ingenic_encoder.cpp
+       src/adapters/ingenic/imp_sessions.cpp src/adapters/ingenic/ingenic_platform.cpp \
+       src/adapters/ingenic/ingenic_framesource.cpp src/adapters/ingenic/ingenic_encoder.cpp
 OBJ := $(SRC:.cpp=.o)
 
-.PHONY: all clean strip
+.PHONY: all clean strip flags
 all: $(BIN)
 
 $(BIN): $(OBJ)
@@ -44,6 +47,11 @@ $(BIN): $(OBJ)
 
 strip: $(BIN)
 	$(CROSS_COMPILE)strip $(BIN)
+
+# prints the effective flags (used by CI for BUILDINFO)
+flags:
+	@echo "CXXFLAGS=$(CXXFLAGS)"
+	@echo "LDFLAGS=$(LDFLAGS) $(IMPLIBS) $(LIBS)"
 
 clean:
 	rm -f $(OBJ) $(BIN)
