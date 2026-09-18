@@ -1107,6 +1107,10 @@ static int isp_init(void)
              (int)sizeof(g_sensor.i2c.type)-1, g_hcfg->sensor.model);
     config_str_unlock();
     g_sensor.i2c.addr = g_hcfg->sensor.i2c_addr;
+    g_sensor.i2c.i2c_adapter_id = g_hcfg->sensor.i2c_bus;  /* board wiring: 0=i2c0,1=i2c1 (was implicit 0) */
+#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+    g_sensor.mclk = (IMPSensorMclk)g_hcfg->sensor.mclk;     /* board mclk index (T40/T41) */
+#endif
 
     /* NOT optional on any SoC, T40/T41 included: on T41 libimp's `pool_size`
      * defaults to 1 BYTE, and that pool IS the IPU's OSD scratch buffer

@@ -257,6 +257,8 @@ void config_defaults(ms_config *c)
      * failing that, a safe fallback fills whatever the sensor registry lacks */
     c->sensor.model[0] = 0;
     c->sensor.i2c_addr = 0;
+    c->sensor.i2c_bus = 0;
+    c->sensor.mclk = 0;
     c->sensor.fps = 0;
     c->sensor.width = 0;
     c->sensor.height = 0;
@@ -651,6 +653,8 @@ static const cfg_field sensor_fields[] = {
      * override at config_finalize only guards sensor.model, not the numerics).
      * Clamp like videoN.*; lo=0 keeps 0 meaning "auto". */
     F ("i2c_addr",  "i2c_address", i2c_addr, T_INT, F_CTRL, 0,0x7F),
+    F ("i2c_bus",   "i2c_adapter", i2c_bus,  T_INT, F_CTRL, 0,4),
+    F ("mclk",      0,             mclk,     T_INT, F_CTRL, 0,2),
     F ("fps",       0,             fps,      T_INT, F_CTRL, 0,120),
     F ("width",     0,             width,    T_INT, F_CTRL, 0,8192),
     F ("height",    0,             height,   T_INT, F_CTRL, 0,8192),

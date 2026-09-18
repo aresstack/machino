@@ -131,6 +131,8 @@ typedef struct {
 typedef struct {
     char     model[MS_MAX_STR];
     int      i2c_addr;
+    int      i2c_bus;   /* IMPI2CInfo.i2c_adapter_id (board wiring) */
+    int      mclk;      /* IMPSensorMclk index (T40/T41) */
     int      fps;
     int      width, height;
 } ms_sensor_cfg;
