@@ -10,7 +10,7 @@ namespace machino { namespace ingenic {
 
 class IngenicEncoder final : public IEncoder {
 public:
-    static std::unique_ptr<IngenicEncoder> create(int chn, const StreamConfig& sc);
+    static std::unique_ptr<IngenicEncoder> create(int chn, const EffectiveStream& sc);
     ~IngenicEncoder() override = default;   // receiver, channel, group - in that order
 
     Result start() override;

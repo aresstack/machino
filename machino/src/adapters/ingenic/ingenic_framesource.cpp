@@ -6,8 +6,7 @@ namespace machino { namespace ingenic {
 
 static const char* MOD = "ING_FS";
 
-std::unique_ptr<IngenicFrameSource> IngenicFrameSource::create(int chn, const StreamConfig& sc,
-                                                               const SensorConfig& sensor) {
+std::unique_ptr<IngenicFrameSource> IngenicFrameSource::create(int chn, const EffectiveStream& sc) {
     IMPFSChnAttr a; memset(&a, 0, sizeof a);
     a.pixFmt        = PIX_FMT_NV12;
     a.outFrmRateNum = sc.fps;
@@ -16,7 +15,7 @@ std::unique_ptr<IngenicFrameSource> IngenicFrameSource::create(int chn, const St
     a.type          = FS_PHY_CHANNEL;
     a.picWidth      = sc.width;
     a.picHeight     = sc.height;
-    if (sc.width != sensor.width || sc.height != sensor.height) {
+    if (sc.width != sc.native_width || sc.height != sc.native_height) {
         a.scaler.enable    = 1;
         a.scaler.outwidth  = sc.width;
         a.scaler.outheight = sc.height;

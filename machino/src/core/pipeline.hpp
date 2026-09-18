@@ -11,8 +11,8 @@
 //   manual reference, stop drops it and forces an immediate teardown. Both
 //   work any number of times within one process.
 //
-// Teardown is deterministic and in reverse order of bring-up; every vendor
-// resource is owned through the RAII port objects.
+// The pipeline only knows the abstract EffectiveStream; it never sees a
+// board, sensor model or vendor type.
 #pragma once
 #include "core/config.hpp"
 #include "core/frame.hpp"
@@ -29,20 +29,15 @@ namespace machino {
 
 class Pipeline {
 public:
-    Pipeline(IPlatform& platform, const AppConfig& cfg, StreamHub& hub);
+    Pipeline(IPlatform& platform, const EffectiveStream& stream, const PipelineConfig& cfg, StreamHub& hub);
     ~Pipeline();
     Pipeline(const Pipeline&) = delete;
     Pipeline& operator=(const Pipeline&) = delete;
 
-    // consumer side
     Result acquire();
     void   release();
-
-    // operator side
     Result start_pipeline();
     void   stop_pipeline();
-
-    // periodic, from the main loop: deferred teardown after the grace period
     void   tick(int64_t now_ms);
 
     bool   running()   const { return running_; }
@@ -55,13 +50,14 @@ private:
     void   capture_loop();
 
     IPlatform&        platform_;
-    const AppConfig&  cfg_;
+    EffectiveStream   stream_;
+    PipelineConfig    cfg_;
     StreamHub&        hub_;
     AuPool            pool_;
 
     std::mutex        m_;
-    int               refs_          = 0;      // consumer references
-    bool              manual_        = false;  // start_pipeline() reference
+    int               refs_          = 0;
+    bool              manual_        = false;
     bool              running_       = false;
     int64_t           idle_since_ms_ = -1;
 

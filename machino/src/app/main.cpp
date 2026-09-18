@@ -1,13 +1,20 @@
-// Machino M2 entry point: config -> platform adapter -> pipeline -> RTSP.
-// Single process, event loop on signalfd + timerfd; deterministic teardown
-// on SIGINT/SIGTERM in reverse order of construction.
-//   SIGUSR1 = stop_pipeline()   SIGUSR2 = start_pipeline()   (in-process lifecycle)
+// Machino entry point: config -> registry -> resolved hardware -> platform
+// adapter -> pipeline -> RTSP. Single process, event loop on signalfd +
+// timerfd; deterministic teardown on SIGINT/SIGTERM in reverse order.
+//   SIGUSR1 = stop_pipeline()   SIGUSR2 = start_pipeline()
+// Exactly one deterministically selected profile -> one media init. No
+// probing of buses, pins or sensors.
 #include "adapters/ingenic/ingenic_platform.hpp"
 #include "app/rtsp/rtsp_server.hpp"
+#include "core/capabilities.hpp"
 #include "core/config.hpp"
+#include "core/hw/board_profile_parser.hpp"
+#include "core/hw/registry.hpp"
+#include "core/hw/resolve.hpp"
 #include "core/log.hpp"
 #include "core/pipeline.hpp"
 #include "core/stream_hub.hpp"
+#include "profiles/builtin_profiles.hpp"
 
 #include <csignal>
 #include <cstdio>
@@ -32,11 +39,22 @@ static void usage(const char* argv0) {
     fprintf(stderr, "usage: %s [-c machino.conf] [-v]\n", argv0);
 }
 
-// Adapter selection is the only place that knows concrete platform names.
-static std::unique_ptr<IPlatform> make_platform(const AppConfig& cfg) {
-    if (cfg.platform == "ingenic-t40nn" || cfg.platform == "ingenic-t40")
-        return std::make_unique<ingenic::IngenicPlatform>(cfg.sensor, ingenic::wiring_from_config(cfg.bus));
+// The only place that maps a platform vendor to a concrete adapter.
+static std::unique_ptr<IPlatform> make_platform(const hw::ResolvedHardware& hw) {
+    if (hw.platform.vendor == "ingenic") return std::make_unique<ingenic::IngenicPlatform>(hw);
     return nullptr;
+}
+
+static hw::PlatformDefaults platform_defaults_for(const std::string& vendor) {
+    if (vendor == "ingenic") return ingenic::IngenicPlatform::platform_defaults();
+    return hw::PlatformDefaults{};
+}
+
+static void log_capabilities(const CapabilitySet& c) {
+    LOGI(MOD, "capabilities: h264=%s h265=%s max_streams=%d isp=%s hw-encoder=%s sensor.fps=%s power(isp=%s enc=%s cpu=%s) ai=%s",
+         cap_name(c.video.h264), cap_name(c.video.h265), c.video.max_streams, cap_name(c.isp.available),
+         cap_name(c.encoder.hardware), cap_name(c.sensor.configurable_fps), cap_name(c.power.isp_clock_control),
+         cap_name(c.power.encoder_clock_control), cap_name(c.power.cpu_frequency_control), cap_name(c.ai.available));
 }
 
 int main(int argc, char** argv) {
@@ -52,10 +70,35 @@ int main(int argc, char** argv) {
     if (!load_config(conf, cfg, err)) { LOGE(MOD, "%s", err.c_str()); return 1; }
     log_set_level(verbose ? LogLevel::Debug : (LogLevel)cfg.log.level);
     log_set_syslog(cfg.log.syslog);
-    LOGI(MOD, "machino %s starting (pid %d, platform %s)", MACHINO_VERSION, (int)getpid(), cfg.platform.c_str());
+    LOGI(MOD, "machino %s starting (pid %d)", MACHINO_VERSION, (int)getpid());
 
-    // Block the handled signals process-wide before any thread exists so they
-    // are delivered only through the signalfd in this loop.
+    // ---- hardware description: registry -> resolver (user > board > default > fail closed)
+    hw::Registry reg;
+    profiles::register_builtin(reg);
+    if (!cfg.board_profile_file.empty()) {
+        hw::BoardProfile bp; std::string perr, warn;
+        if (!hw::load_board_profile_file(cfg.board_profile_file.c_str(), bp, perr, &warn)) { LOGE(MOD, "board profile %s: %s", cfg.board_profile_file.c_str(), perr.c_str()); return 6; }
+        if (!warn.empty()) LOGW(MOD, "board profile %s: %s", cfg.board_profile_file.c_str(), warn.c_str());
+        reg.add_board(bp);
+        if (cfg.hardware.board_id.empty()) cfg.hardware.board_id = bp.board_id;
+        LOGI(MOD, "board profile file %s registered as '%s'", cfg.board_profile_file.c_str(), bp.board_id.c_str());
+    }
+    // vendor for platform defaults: from the user platform or the selected board
+    std::string vendor;
+    if (!cfg.hardware.platform.empty()) { if (const auto* p = reg.platform(cfg.hardware.platform)) vendor = p->vendor; }
+    else if (const auto* b = reg.board(cfg.hardware.board_id)) { if (const auto* p = reg.platform(b->platform)) vendor = p->vendor; }
+
+    hw::ResolvedHardware hwr;
+    if (!hw::resolve_hardware(cfg.hardware, reg, platform_defaults_for(vendor), hwr, err)) {
+        LOGE(MOD, "hardware resolution failed: %s", err.c_str());
+        LOGE(MOD, "refusing to start: no guessing of buses or pins (set 'board = <profile>' or explicit sensor.* values)");
+        return 7;
+    }
+    hw::log_resolved_hardware(hwr);
+    EffectiveStream stream = effective_stream(cfg.video, hwr);
+    LOGI(MOD, "Stream: %dx%d@%d gop=%d %d kbps profile=%d", stream.width, stream.height, stream.fps,
+         stream.gop, stream.bitrate_kbps, stream.profile);
+
     sigset_t mask; sigemptyset(&mask);
     sigaddset(&mask, SIGINT); sigaddset(&mask, SIGTERM); sigaddset(&mask, SIGPIPE);
     sigaddset(&mask, SIGUSR1); sigaddset(&mask, SIGUSR2);
@@ -71,10 +114,11 @@ int main(int argc, char** argv) {
 
     int rc = 0;
     {
-        std::unique_ptr<IPlatform> platform = make_platform(cfg);
-        if (!platform) { LOGE(MOD, "unknown platform '%s' (supported: ingenic-t40nn, ingenic-t40)", cfg.platform.c_str()); return 5; }
+        std::unique_ptr<IPlatform> platform = make_platform(hwr);
+        if (!platform) { LOGE(MOD, "no adapter for platform vendor '%s'", hwr.platform.vendor.c_str()); return 5; }
+        log_capabilities(platform->capabilities());
         StreamHub  hub;
-        Pipeline   pipeline(*platform, cfg, hub);
+        Pipeline   pipeline(*platform, stream, cfg.pipeline, hub);
         RtspServer rtsp(cfg.rtsp, pipeline, hub);
         IStreamServer& server = rtsp;
 
@@ -103,7 +147,6 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        // Reverse order: stop serving (releases consumers), then the pipeline, then the platform (dtor).
         server.stop();
         pipeline.stop_pipeline();
     }

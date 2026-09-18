@@ -6,7 +6,7 @@ namespace machino { namespace ingenic {
 
 static const char* MOD = "ING_ENC";
 
-std::unique_ptr<IngenicEncoder> IngenicEncoder::create(int chn, const StreamConfig& sc) {
+std::unique_ptr<IngenicEncoder> IngenicEncoder::create(int chn, const EffectiveStream& sc) {
     IMPEncoderChnAttr a; memset(&a, 0, sizeof a);
     IMPEncoderProfile prof = sc.profile >= 2 ? IMP_ENC_PROFILE_AVC_HIGH
                            : sc.profile == 1 ? IMP_ENC_PROFILE_AVC_MAIN

@@ -1,10 +1,9 @@
-// Ingenic adapter: IMP SDK 1.3.1 (T40/T40NN) platform port. Sole owner of the
-// ISP/sensor/system sessions; frame-source and encoder channels are handed
-// out as RAII objects. Bring-up order == member order; tear-down is the
-// reverse and fully automatic.
+// Ingenic adapter: IMP SDK 1.3.1 (T40 family) platform port. Constructed from
+// the resolved, abstract hardware description; the only place that turns it
+// into IMPSensorInfo. Sole owner of the ISP/sensor/system sessions.
 #pragma once
-#include "adapters/ingenic/board_wiring.hpp"
 #include "adapters/ingenic/imp_sessions.hpp"
+#include "adapters/ingenic/sensor_params.hpp"
 #include "ports/iplatform.hpp"
 #include <memory>
 
@@ -12,24 +11,29 @@ namespace machino { namespace ingenic {
 
 class IngenicPlatform final : public IPlatform {
 public:
-    IngenicPlatform(const SensorConfig& sensor, const BoardWiring& wiring);
+    explicit IngenicPlatform(const hw::ResolvedHardware& hw);
     ~IngenicPlatform() override;
 
     const char* name() const override { return "ingenic-imp-1.3.1"; }
+    CapabilitySet capabilities() const override;
     Result bring_up() override;
     void   tear_down() override;
 
-    std::unique_ptr<IFrameSource> create_framesource(int chn, const StreamConfig& sc) override;
-    std::unique_ptr<IEncoder>     create_encoder(int chn, const StreamConfig& sc) override;
+    std::unique_ptr<IFrameSource> create_framesource(int chn, const EffectiveStream& sc) override;
+    std::unique_ptr<IEncoder>     create_encoder(int chn, const EffectiveStream& sc) override;
     Result bind(IFrameSource& fs, IEncoder& enc) override;
     Result unbind(IFrameSource& fs, IEncoder& enc) override;
     int64_t timestamp_us() override;
 
+    // Conservative defaults this adapter declares to the resolver.
+    static hw::PlatformDefaults platform_defaults();
+
 private:
-    SensorConfig  sensor_;
-    BoardWiring   wiring_;
+    hw::ResolvedHardware hw_;
+    SensorParams  params_;
+    bool          params_ok_ = false;
+    std::string   params_err_;
     IMPSensorInfo info_{};
-    // bring-up order; destroyed in reverse (tuning, system, sensor, isp)
     std::unique_ptr<imp::IspSession>    isp_;
     std::unique_ptr<imp::SensorSession> sensor_session_;
     std::unique_ptr<imp::SystemSession> system_;

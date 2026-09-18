@@ -5,8 +5,8 @@ namespace machino {
 
 static const char* MOD = "PIPELINE";
 
-Pipeline::Pipeline(IPlatform& platform, const AppConfig& cfg, StreamHub& hub)
-    : platform_(platform), cfg_(cfg), hub_(hub), pool_(8, 256 * 1024) {}
+Pipeline::Pipeline(IPlatform& platform, const EffectiveStream& stream, const PipelineConfig& cfg, StreamHub& hub)
+    : platform_(platform), stream_(stream), cfg_(cfg), hub_(hub), pool_(8, 256 * 1024) {}
 
 Pipeline::~Pipeline() { stop_pipeline(); }
 
@@ -23,7 +23,7 @@ void Pipeline::release() {
     std::lock_guard<std::mutex> lk(m_);
     if (refs_ > 0) --refs_;
     LOGD(MOD, "release -> consumers=%d", refs_);
-    if (refs_ == 0 && !manual_ && running_) idle_since_ms_ = 0;   // armed; tick() stamps the time
+    if (refs_ == 0 && !manual_ && running_) idle_since_ms_ = 0;
 }
 
 Result Pipeline::start_pipeline() {
@@ -46,8 +46,8 @@ void Pipeline::tick(int64_t now_ms) {
     std::lock_guard<std::mutex> lk(m_);
     if (!running_ || refs_ > 0 || manual_) return;
     if (idle_since_ms_ == 0) { idle_since_ms_ = now_ms; return; }
-    if (idle_since_ms_ > 0 && now_ms - idle_since_ms_ >= cfg_.pipeline.grace_ms) {
-        LOGI(MOD, "no consumer for %d ms - tearing down", cfg_.pipeline.grace_ms);
+    if (idle_since_ms_ > 0 && now_ms - idle_since_ms_ >= cfg_.grace_ms) {
+        LOGI(MOD, "no consumer for %d ms - tearing down", cfg_.grace_ms);
         stop_locked();
         idle_since_ms_ = -1;
     }
@@ -58,10 +58,10 @@ Result Pipeline::start_locked() {
     Result r = platform_.bring_up();
     if (!r) { LOGE(MOD, "platform bring-up failed (%s, %d)", status_name(r.status), r.code); return r; }
 
-    fs_ = platform_.create_framesource(0, cfg_.video);
+    fs_ = platform_.create_framesource(0, stream_);
     if (!fs_) { LOGE(MOD, "framesource create failed"); platform_.tear_down(); return Result::error(); }
 
-    enc_ = platform_.create_encoder(0, cfg_.video);
+    enc_ = platform_.create_encoder(0, stream_);
     if (!enc_) { LOGE(MOD, "encoder create failed"); fs_.reset(); platform_.tear_down(); return Result::error(); }
 
     r = platform_.bind(*fs_, *enc_);
@@ -77,23 +77,21 @@ Result Pipeline::start_locked() {
     quit_ = false;
     running_ = true;
     thread_ = std::thread([this] { capture_loop(); });
-    LOGI(MOD, "running (%dx%d@%d, %d kbps)", cfg_.video.width, cfg_.video.height,
-         cfg_.video.fps, cfg_.video.bitrate_kbps);
+    LOGI(MOD, "running (%dx%d@%d, %d kbps)", stream_.width, stream_.height, stream_.fps, stream_.bitrate_kbps);
     return Result::ok();
 }
 
-// Reverse order of start_locked(). Safe from a partially started state.
 void Pipeline::stop_locked() {
     quit_ = true;
     if (thread_.joinable()) thread_.join();
     running_ = false;
-    if (enc_) enc_->stop();                       // StopRecvPic
-    if (fs_)  fs_->disable();                     // FrameSource_DisableChn
+    if (enc_) enc_->stop();
+    if (fs_)  fs_->disable();
     if (bound_ && fs_ && enc_) platform_.unbind(*fs_, *enc_);
     bound_ = false;
-    enc_.reset();                                 // UnRegister/DestroyChn, DestroyGroup
-    fs_.reset();                                  // FrameSource_DestroyChn
-    platform_.tear_down();                        // tuning, system, sensor, isp
+    enc_.reset();
+    fs_.reset();
+    platform_.tear_down();
     LOGI(MOD, "stopped (%u frames this run, pool exhausted %u)", frames_.load(), pool_.exhausted());
     frames_ = 0;
 }
@@ -103,12 +101,12 @@ void Pipeline::capture_loop() {
     unsigned timeouts = 0, dropped = 0;
     while (!quit_) {
         auto au = pool_.acquire();
-        if (!au) {                                 // every slot held by slow consumers
-            AccessUnit scratch; Result r = enc_->fetch(scratch, cfg_.pipeline.poll_timeout_ms);
+        if (!au) {
+            AccessUnit scratch; Result r = enc_->fetch(scratch, cfg_.poll_timeout_ms);
             if (r) { if ((++dropped % 50) == 1) LOGW(MOD, "pool exhausted - dropped %u frames", dropped); }
             continue;
         }
-        Result r = enc_->fetch(*au, cfg_.pipeline.poll_timeout_ms);
+        Result r = enc_->fetch(*au, cfg_.poll_timeout_ms);
         if (r.status == Status::Timeout) {
             if ((++timeouts % 20) == 1) LOGW(MOD, "encoder idle (no frame for %u polls)", timeouts);
             continue;
@@ -117,7 +115,7 @@ void Pipeline::capture_loop() {
         timeouts = 0;
         au->seq = seq_++;
         unsigned n = ++frames_;
-        if (n == 1) LOGI(MOD, "first frame: %zu bytes key=%d pts=%lld", au->data.size(), (int)au->key, (long long)au->pts_us);
+        if (n == 1) LOGI(MOD, "first frame: %lu bytes key=%d pts=%lld", (unsigned long)au->data.size(), (int)au->key, (long long)au->pts_us);
         hub_.publish(au);
     }
     LOGD(MOD, "capture thread down");

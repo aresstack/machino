@@ -1,25 +1,32 @@
-# Machino M2 - example configuration (T40NN + IMX307 on OpenIPC)
+# Machino - example configuration
 # Flat "section.key = value". Unknown keys are ignored with a warning.
 
-# --- sensor: model + native geometry -------------------------------------
-sensor.model      = imx307
-sensor.width      = 1920
-sensor.height     = 1080
-sensor.fps        = 20
+# --- hardware: select ONE board profile -----------------------------------
+# The profile carries platform, sensor, wiring (i2c bus/addr, mclk, reset/pwdn
+# pins) and the default mode. t40nn-imx307-board-a is the hardware-verified
+# reference board (see docs/architecture/board-profiles.md). It describes that
+# board's wiring only; other T40NN/IMX307 cameras may differ.
+board = t40nn-imx307-board-a
 
-# --- sensor: BOARD WIRING (adapter concern, verified on T40NN/IMX307) -----
-# The T40 tx-isp driver pulses reset_gpio/pwdn_gpio before the chip-id
-# probe. -1 means "no such pin"; a wrong value here = "not an imx307".
-sensor.i2c_bus    = 1
-sensor.i2c_addr   = 0x1a
-sensor.mclk       = 1
-sensor.reset_gpio = 91
-sensor.pwdn_gpio  = 0
+# Alternative: an external profile file (registered under its board_id)
+#board_profile_file = /etc/machino/my-board.conf
+
+# Explicit overrides (user config > board profile). Uncomment only what you
+# know for your board. Pins: number or "none". Nothing here is guessed.
+#platform          = ingenic-t40nn
+#sensor.model      = imx307
+#sensor.i2c_bus    = 1
+#sensor.i2c_addr   = 0x1a
+#sensor.mclk       = 1
+#sensor.reset_gpio = 91
+#sensor.pwdn_gpio  = 0
+#sensor.mode       = 1920x1080@20      # must be a verified mode of the sensor
 
 # --- video stream 0 (H.264) ------------------------------------------------
-video.width       = 1920
-video.height      = 1080
-video.fps         = 20
+# width/height/fps default to the resolved sensor mode
+#video.width       = 1920
+#video.height      = 1080
+#video.fps         = 20
 video.gop         = 40
 video.bitrate     = 3000      # kbps
 video.profile     = 2         # 0 baseline, 1 main, 2 high
@@ -33,10 +40,11 @@ rtsp.path         = /ch0
 # --- pipeline lifecycle -----------------------------------------------------
 # always_on = 0: "no consumer, no pipeline" - sensor/ISP/encoder come up on
 # the first RTSP PLAY and go down grace_ms after the last client leaves.
+# SIGUSR2 / SIGUSR1 start/stop the pipeline explicitly.
 pipeline.always_on        = 0
 pipeline.grace_ms         = 3000
 pipeline.poll_timeout_ms  = 500
 
 # --- logging ----------------------------------------------------------------
-log.level         = 2         # 0 err, 1 warn, 2 info, 3 debug
+log.level         = 2         # 0 err, 1 warn, 2 info, 3 debug (3 shows value provenance)
 log.syslog        = 0

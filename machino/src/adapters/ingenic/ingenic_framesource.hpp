@@ -9,7 +9,7 @@ namespace machino { namespace ingenic {
 
 class IngenicFrameSource final : public IFrameSource {
 public:
-    static std::unique_ptr<IngenicFrameSource> create(int chn, const StreamConfig& sc, const SensorConfig& sensor);
+    static std::unique_ptr<IngenicFrameSource> create(int chn, const EffectiveStream& sc);
     ~IngenicFrameSource() override = default;
 
     Result enable() override  { return chan_->enable(); }

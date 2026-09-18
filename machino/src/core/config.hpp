@@ -1,34 +1,24 @@
 // Machino core: application configuration. Flat `section.key = value` file.
-// Platform-neutral: `platform` selects the adapter, the sensor bus block
-// describes *how the board is wired*; the adapter maps it onto vendor structs.
+//
+// Hardware description is layered (see core/hw/resolve.hpp):
+//   board = <profile id>          selects a registered board profile
+//   board_profile_file = <path>   loads a profile from a file (registered under its board_id)
+//   platform / sensor.* keys      explicit user values; they override the profile
+// Every hardware key is optional here: "not set" is a real state, so the
+// resolver can apply user > board > platform-default > fail-closed.
 #pragma once
+#include "core/hw/resolve.hpp"
+#include <optional>
 #include <string>
 
 namespace machino {
 
-struct SensorConfig {
-    std::string model  = "imx307";
-    int width  = 1920;
-    int height = 1080;
-    int fps    = 20;
-};
-
-// Board wiring of the sensor. Defaults are fail-closed: "no such pin" so that
-// a board without explicit values never toggles a GPIO by accident.
-struct SensorBusConfig {
-    int i2c_bus    = 0;
-    int i2c_addr   = 0x1a;
-    int mclk       = 0;
-    int reset_gpio = -1;
-    int pwdn_gpio  = -1;
-};
-
 enum class RcMode : int { Cbr = 0, Vbr = 1, FixQp = 2 };
 
+// Encoder/stream settings. width/height/fps unset -> taken from the resolved
+// sensor mode.
 struct StreamConfig {
-    int    width        = 1920;
-    int    height       = 1080;
-    int    fps          = 20;
+    std::optional<int> width, height, fps;
     int    gop          = 40;
     int    bitrate_kbps = 3000;
     int    profile      = 2;      // 0 baseline, 1 main, 2 high
@@ -37,34 +27,44 @@ struct StreamConfig {
     int    buffers      = 2;      // FrameSource video buffers
 };
 
+// Fully determined stream parameters handed to the pipeline.
+struct EffectiveStream {
+    int    width = 0, height = 0, fps = 0;
+    int    native_width = 0, native_height = 0;   // sensor native size (scaler decision)
+    int    gop = 40, bitrate_kbps = 3000, profile = 2, qp = 35, buffers = 2;
+    RcMode rc = RcMode::Cbr;
+};
+
 struct RtspConfig {
     int         port = 554;
     std::string path = "/ch0";
 };
 
 struct PipelineConfig {
-    bool always_on       = false;  // keep the pipeline up without consumers
-    int  grace_ms        = 3000;   // tear-down delay after the last consumer left
-    int  poll_timeout_ms = 500;    // encoder poll granularity
+    bool always_on       = false;
+    int  grace_ms        = 3000;
+    int  poll_timeout_ms = 500;
 };
 
 struct LogConfig {
-    int  level  = 2;    // 0 err, 1 warn, 2 info, 3 debug
+    int  level  = 2;
     bool syslog = false;
 };
 
 struct AppConfig {
-    std::string     platform = "ingenic-t40nn";   // adapter selector
-    SensorConfig    sensor;
-    SensorBusConfig bus;
+    hw::UserHardwareConfig hardware;      // board id / platform / sensor / wiring / mode (all optional)
+    std::string     board_profile_file;   // optional external profile
     StreamConfig    video;
     RtspConfig      rtsp;
     PipelineConfig  pipeline;
     LogConfig       log;
 };
 
-// Loads `path` into `cfg` (fields not present keep their defaults). Returns
-// false and fills `err` on I/O errors. Unknown keys / bad values are warnings.
 bool load_config(const char* path, AppConfig& cfg, std::string& err);
+// Same parser on in-memory text (tests).
+bool parse_config_text(const std::string& text, AppConfig& cfg, std::string& err);
+
+// Combine user stream settings with the resolved sensor mode.
+EffectiveStream effective_stream(const StreamConfig& v, const hw::ResolvedHardware& hw);
 
 } // namespace machino

@@ -1,4 +1,5 @@
 #include "core/config.hpp"
+#include "core/hw/board_profile_parser.hpp"
 #include "core/log.hpp"
 #include <cerrno>
 #include <cstdio>
@@ -28,32 +29,51 @@ static bool to_bool(const std::string& v, bool& out) {
     return false;
 }
 
+static bool to_gpio(const std::string& v, int& out) {
+    if (v == "none" || v == "-1") { out = -1; return true; }
+    return to_int(v, out) && out >= 0 && out <= 255;
+}
+
 static bool apply(AppConfig& c, const std::string& k, const std::string& v, int line) {
     int n = 0; bool b = false;
 #define INT(key, dst, lo, hi) if (k == key) { if (!to_int(v, n) || n < (lo) || n > (hi)) { \
         LOGW(MOD, "line %d: %s=%s out of range [%d..%d] - ignored", line, key, v.c_str(), (int)(lo), (int)(hi)); return true; } dst = n; return true; }
+#define OPTINT(key, dst, lo, hi) if (k == key) { if (!to_int(v, n) || n < (lo) || n > (hi)) { \
+        LOGW(MOD, "line %d: %s=%s out of range [%d..%d] - ignored", line, key, v.c_str(), (int)(lo), (int)(hi)); return true; } dst = n; return true; }
+#define GPIO(key, dst) if (k == key) { if (!to_gpio(v, n)) { LOGW(MOD, "line %d: %s=%s invalid (pin number or 'none') - ignored", line, key, v.c_str()); return true; } dst = n; return true; }
 #define BOOL(key, dst) if (k == key) { if (!to_bool(v, b)) { LOGW(MOD, "line %d: %s expects bool", line, key); return true; } dst = b; return true; }
 #define STR(key, dst) if (k == key) { dst = v; return true; }
 
-    STR ("platform",           c.platform)
-    STR ("sensor.model",       c.sensor.model)
-    INT ("sensor.width",       c.sensor.width,  64, 8192)
-    INT ("sensor.height",      c.sensor.height, 64, 8192)
-    INT ("sensor.fps",         c.sensor.fps,    1, 120)
-    INT ("sensor.i2c_bus",     c.bus.i2c_bus,   0, 4)
-    INT ("sensor.i2c_addr",    c.bus.i2c_addr,  0, 0x7f)
-    INT ("sensor.mclk",        c.bus.mclk,      0, 2)
-    INT ("sensor.reset_gpio",  c.bus.reset_gpio, -1, 255)
-    INT ("sensor.pwdn_gpio",   c.bus.pwdn_gpio,  -1, 255)
+    STR   ("board",              c.hardware.board_id)
+    STR   ("board_profile_file", c.board_profile_file)
+    STR   ("platform",           c.hardware.platform)
+    STR   ("sensor.model",       c.hardware.sensor)
+    OPTINT("sensor.i2c_bus",     c.hardware.wiring.i2c_bus,  0, 15)
+    OPTINT("sensor.i2c_addr",    c.hardware.wiring.i2c_addr, 0, 0x7f)
+    OPTINT("sensor.mclk",        c.hardware.wiring.mclk,     0, 7)
+    GPIO  ("sensor.reset_gpio",  c.hardware.wiring.reset_gpio)
+    GPIO  ("sensor.pwdn_gpio",   c.hardware.wiring.pwdn_gpio)
+    if (k == "sensor.mode") {
+        hw::SensorMode m;
+        if (!hw::parse_mode(v, m)) { LOGW(MOD, "line %d: sensor.mode=%s invalid (WxH@fps)", line, v.c_str()); return true; }
+        c.hardware.mode = m; return true;
+    }
+    // legacy split keys: only meaningful together; kept for convenience
+    if (k == "sensor.width" || k == "sensor.height" || k == "sensor.fps") {
+        if (!to_int(v, n) || n <= 0) { LOGW(MOD, "line %d: %s invalid", line, k.c_str()); return true; }
+        hw::SensorMode m = c.hardware.mode.value_or(hw::SensorMode{});
+        if (k == "sensor.width") m.width = n; else if (k == "sensor.height") m.height = n; else m.fps = n;
+        c.hardware.mode = m; return true;
+    }
 
-    INT ("video.width",        c.video.width,   64, 8192)
-    INT ("video.height",       c.video.height,  64, 8192)
-    INT ("video.fps",          c.video.fps,     1, 120)
-    INT ("video.gop",          c.video.gop,     1, 1000)
-    INT ("video.bitrate",      c.video.bitrate_kbps, 32, 100000)
-    INT ("video.profile",      c.video.profile, 0, 2)
-    INT ("video.qp",           c.video.qp,      1, 51)
-    INT ("video.buffers",      c.video.buffers, 1, 8)
+    OPTINT("video.width",        c.video.width,   64, 8192)
+    OPTINT("video.height",       c.video.height,  64, 8192)
+    OPTINT("video.fps",          c.video.fps,     1, 120)
+    INT   ("video.gop",          c.video.gop,     1, 1000)
+    INT   ("video.bitrate",      c.video.bitrate_kbps, 32, 100000)
+    INT   ("video.profile",      c.video.profile, 0, 2)
+    INT   ("video.qp",           c.video.qp,      1, 51)
+    INT   ("video.buffers",      c.video.buffers, 1, 8)
     if (k == "video.rc_mode") {
         if (v == "cbr") c.video.rc = RcMode::Cbr;
         else if (v == "vbr") c.video.rc = RcMode::Vbr;
@@ -62,28 +82,31 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
         return true;
     }
 
-    INT ("rtsp.port",          c.rtsp.port,     1, 65535)
-    STR ("rtsp.path",          c.rtsp.path)
+    INT   ("rtsp.port",          c.rtsp.port,     1, 65535)
+    STR   ("rtsp.path",          c.rtsp.path)
 
-    BOOL("pipeline.always_on", c.pipeline.always_on)
-    INT ("pipeline.grace_ms",  c.pipeline.grace_ms, 0, 600000)
-    INT ("pipeline.poll_timeout_ms", c.pipeline.poll_timeout_ms, 10, 5000)
+    BOOL  ("pipeline.always_on", c.pipeline.always_on)
+    INT   ("pipeline.grace_ms",  c.pipeline.grace_ms, 0, 600000)
+    INT   ("pipeline.poll_timeout_ms", c.pipeline.poll_timeout_ms, 10, 5000)
 
-    INT ("log.level",          c.log.level,     0, 3)
-    BOOL("log.syslog",         c.log.syslog)
+    INT   ("log.level",          c.log.level,     0, 3)
+    BOOL  ("log.syslog",         c.log.syslog)
 #undef INT
+#undef OPTINT
+#undef GPIO
 #undef BOOL
 #undef STR
     return false;
 }
 
-bool load_config(const char* path, AppConfig& cfg, std::string& err) {
-    FILE* f = fopen(path, "r");
-    if (!f) { err = std::string("cannot open ") + path + ": " + strerror(errno); return false; }
-    char buf[512]; int line = 0, applied = 0;
-    while (fgets(buf, sizeof buf, f)) {
+bool parse_config_text(const std::string& text, AppConfig& cfg, std::string& err) {
+    (void)err;
+    size_t pos = 0; int line = 0, applied = 0;
+    while (pos < text.size()) {
+        size_t nl = text.find('\n', pos);
+        std::string s = text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        pos = (nl == std::string::npos) ? text.size() : nl + 1;
         ++line;
-        std::string s(buf);
         size_t hash = s.find('#'); if (hash != std::string::npos) s.erase(hash);
         trim(s); if (s.empty()) continue;
         size_t eq = s.find('=');
@@ -94,14 +117,37 @@ bool load_config(const char* path, AppConfig& cfg, std::string& err) {
         if (!apply(cfg, k, v, line)) LOGW(MOD, "line %d: unknown key '%s' - ignored", line, k.c_str());
         else ++applied;
     }
-    fclose(f);
     if (!cfg.rtsp.path.empty() && cfg.rtsp.path[0] != '/') cfg.rtsp.path.insert(0, "/");
-    LOGI(MOD, "loaded %d settings from %s (platform %s)", applied, path, cfg.platform.c_str());
-    LOGI(MOD, "sensor %s %dx%d@%d i2c%d/0x%02x mclk%d rst=%d pwdn=%d | video %dx%d@%d gop=%d %dkbps",
-         cfg.sensor.model.c_str(), cfg.sensor.width, cfg.sensor.height, cfg.sensor.fps,
-         cfg.bus.i2c_bus, cfg.bus.i2c_addr, cfg.bus.mclk, cfg.bus.reset_gpio, cfg.bus.pwdn_gpio,
-         cfg.video.width, cfg.video.height, cfg.video.fps, cfg.video.gop, cfg.video.bitrate_kbps);
+    // a partially given legacy mode (e.g. only fps) is not a mode
+    if (cfg.hardware.mode && (cfg.hardware.mode->width <= 0 || cfg.hardware.mode->height <= 0 || cfg.hardware.mode->fps <= 0)) {
+        LOGW(MOD, "sensor.width/height/fps incomplete - ignoring partial sensor mode (use sensor.mode = WxH@fps)");
+        cfg.hardware.mode.reset();
+    }
+    LOGI(MOD, "loaded %d settings", applied);
     return true;
+}
+
+bool load_config(const char* path, AppConfig& cfg, std::string& err) {
+    FILE* f = fopen(path, "r");
+    if (!f) { err = std::string("cannot open ") + path + ": " + strerror(errno); return false; }
+    std::string text; char buf[512];
+    while (fgets(buf, sizeof buf, f)) text += buf;
+    fclose(f);
+    if (!parse_config_text(text, cfg, err)) return false;
+    LOGI(MOD, "config %s: board='%s' platform='%s' sensor='%s'", path, cfg.hardware.board_id.c_str(),
+         cfg.hardware.platform.c_str(), cfg.hardware.sensor.c_str());
+    return true;
+}
+
+EffectiveStream effective_stream(const StreamConfig& v, const hw::ResolvedHardware& hw) {
+    EffectiveStream e;
+    e.width  = v.width.value_or(hw.mode.value.width);
+    e.height = v.height.value_or(hw.mode.value.height);
+    e.fps    = v.fps.value_or(hw.mode.value.fps);
+    e.native_width  = hw.sensor.native_width  > 0 ? hw.sensor.native_width  : hw.mode.value.width;
+    e.native_height = hw.sensor.native_height > 0 ? hw.sensor.native_height : hw.mode.value.height;
+    e.gop = v.gop; e.bitrate_kbps = v.bitrate_kbps; e.profile = v.profile; e.qp = v.qp; e.buffers = v.buffers; e.rc = v.rc;
+    return e;
 }
 
 } // namespace machino
