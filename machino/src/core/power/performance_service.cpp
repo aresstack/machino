@@ -119,6 +119,12 @@ std::string PerformanceService::check_bitrate(int kbps) const {
     return "";
 }
 
+std::string PerformanceService::check_sensor_fps(int fps) const {
+    if (fps <= 0) return "fps must be > 0";
+    if (!caps_.sensor.fps.in_range(fps)) return "sensor fps outside known range";
+    return "";
+}
+
 ApplyResult PerformanceService::apply_profile(Profile p) {
     if (p == Profile::Custom) { std::lock_guard<std::mutex> lk(m_); profile_ = p; return ApplyResult::applied(ApplyMode::Live, (int)p, (int)p, "custom: individual settings apply"); }
     std::string note; int fps = preset_fps(p, note); int kbps = preset_bitrate(p);
@@ -126,24 +132,49 @@ ApplyResult PerformanceService::apply_profile(Profile p) {
     // applied in a row. Check every component before touching anything:
     // applying the fps and then rejecting the bitrate would leave the camera at
     // a point nobody asked for while the caller is told the profile was refused.
+    auto refuse = [&](ApplyMode m, int req, const char* what, const std::string& reason) {
+        return ApplyResult::rejected(m, req, std::string(profile_name(p)) + " not applied (nothing changed): " +
+                                     what + " " + std::to_string(req) + ": " + reason);
+    };
     std::string why = check_stream_fps(fps);
-    if (!why.empty()) return ApplyResult::rejected(caps_.video.fps.apply, fps,
-        std::string(profile_name(p)) + " not applied (nothing changed): stream fps " + std::to_string(fps) + ": " + why);
+    if (!why.empty()) return refuse(caps_.video.fps.apply, fps, "stream fps", why);
     why = check_bitrate(kbps);
-    if (!why.empty()) return ApplyResult::rejected(caps_.video.bitrate.apply, kbps,
-        std::string(profile_name(p)) + " not applied (nothing changed): bitrate " + std::to_string(kbps) + ": " + why);
+    if (!why.empty()) return refuse(caps_.video.bitrate.apply, kbps, "bitrate", why);
+    // Where the platform has a sensor rate control, that rate is part of the
+    // operating point and its range belongs in this check. Where it has none,
+    // the stream rate IS the operating point: the profile is then complete
+    // without it, and reporting that as a failure would make every profile
+    // change fail on such a platform.
+    const bool sensor_rate_applies = sensor_fps_mode() != ApplyMode::Unsupported;
+    if (sensor_rate_applies) {
+        why = check_sensor_fps(fps);
+        if (!why.empty()) return refuse(sensor_fps_mode(), fps, "sensor fps", why);
+    }
     LOGI(MOD, "profile %s -> fps=%d bitrate=%d%s%s", profile_name(p), fps, kbps, note.empty() ? "" : " (", note.empty() ? "" : (note + ")").c_str());
-    // Past this point only the hardware can still refuse: a pipeline restart
-    // that does not come back. The pipeline manager owns that recovery, and
-    // profile_ stays Custom because the box is then genuinely at a mixed point.
+
     ApplyResult r1 = set_stream_fps(fps);        // FrameSource + encoder rate (restart if running)
-    if (!r1.ok) return r1;
-    ApplyResult r2 = set_sensor_fps(fps);        // sensor rate (live when supported)
+    if (!r1.ok) return r1;                       // nothing else has been touched yet
+    // From here parts of the profile are in effect. Validation cannot rule out
+    // a hardware refusal, and there is no trustworthy way back: restoring the
+    // old value would go through the very setter that just failed. So no
+    // rollback is faked. The box is then at a mixed operating point - which is
+    // what "custom" means - and the caller is told which part did not take,
+    // instead of being handed a profile name that does not describe the box.
+    auto partial = [&](const ApplyResult& f, const char* which) {
+        { std::lock_guard<std::mutex> lk(m_); profile_ = Profile::Custom; }
+        LOGW(MOD, "profile %s only partially applied: %s failed (%s)", profile_name(p), which, f.message.c_str());
+        return ApplyResult::rejected(f.mode, f.requested,
+            std::string(profile_name(p)) + " only partially applied: " + which + " failed (" + f.message +
+            "); stream fps " + std::to_string(fps) + " is in effect, no rollback was attempted - reported as custom");
+    };
+    ApplyResult r2 = sensor_rate_applies
+        ? set_sensor_fps(fps)
+        : ApplyResult::applied(ApplyMode::Unsupported, fps, -1, "platform has no sensor rate control");
+    if (!r2.ok) return partial(r2, "sensor fps");
     ApplyResult r3 = set_bitrate(kbps);
-    if (!r3.ok) return r3;
+    if (!r3.ok) return partial(r3, "bitrate");
     { std::lock_guard<std::mutex> lk(m_); profile_ = p; }
     ApplyResult r = ApplyResult::applied(r1.mode, fps, r1.effective, note.c_str());
-    if (!r2.ok) r.message = "sensor fps: " + r2.message + (note.empty() ? "" : "; " + note);
     r.deferred = r1.deferred;
     return r;
 }
@@ -175,7 +206,8 @@ ApplyResult PerformanceService::set_sensor_fps(int fps) {
     ApplyMode mode = sensor_fps_mode();
     if (fps <= 0) return ApplyResult::rejected(mode, fps, "fps must be > 0");
     if (mode == ApplyMode::Unsupported) { std::lock_guard<std::mutex> lk(m_); sensor_fps_req_ = fps; return ApplyResult::rejected(mode, fps, "sensor fps control unsupported on this platform (stream fps only)"); }
-    if (!caps_.sensor.fps.in_range(fps)) return ApplyResult::rejected(mode, fps, "sensor fps outside known range");
+    std::string why = check_sensor_fps(fps);
+    if (!why.empty()) return ApplyResult::rejected(mode, fps, why);
     { std::lock_guard<std::mutex> lk(m_); sensor_fps_req_ = fps; }
     pipeline_.set_sensor_fps_target(fps);
     int eff = -1;

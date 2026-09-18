@@ -106,6 +106,7 @@ public:
     FailAt fail_at = FailAt::None;
     int    fail_times = 0;
     bool   sensor_fps_supported = true;     // set_sensor_fps works with read-back
+    bool   sensor_fps_runtime_error = false; // capabilities say supported, the hardware refuses anyway
     bool   live_bitrate = true;
     bool   gop_readback_stale = false;   // simulate the SDK's delayed GOP read-back
     int    sensor_fps_effective = -1;        // what the "hardware" reports
@@ -150,6 +151,7 @@ public:
         log_.add("platform.set_sensor_fps@" + std::to_string(fps));
         if (!up_) { effective = -1; return Result::busy(); }
         if (!sensor_fps_supported) { effective = -1; return Result::unsupported(); }
+        if (sensor_fps_runtime_error) { effective = -1; return Result::error(-9); }
         sensor_fps_effective = fps; effective = fps; return Result::ok();
     }
     Result get_sensor_fps(int& fps) override { fps = sensor_fps_effective; return (up_ && fps > 0) ? Result::ok() : Result::busy(); }

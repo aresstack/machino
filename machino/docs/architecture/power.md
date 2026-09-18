@@ -78,10 +78,10 @@ parameters — no hidden path.
 If the sensor has only one verified operating point, `balanced`/`battery`
 resolve to it and say so. No universal 10/15/20 values are hard-coded.
 
-A profile is applied **as a whole or not at all**. Every component (fps against
-the verified operating points, bitrate against the encoder range) is validated
-before anything is touched; if one of them cannot be applied, none of them is
-and the reply says so:
+Everything that **can** be decided up front is decided up front: stream fps
+against the verified operating points, bitrate against the encoder range, and -
+where the platform has that control at all - the sensor rate against its range.
+If any of them would be refused, nothing is touched:
 
 ```json
 { "status": "rejected", "requested": 999999,
@@ -89,10 +89,24 @@ and the reply says so:
 ```
 
 Otherwise a refused profile would still move the camera - the fps of the new
-profile with the bitrate of the old one - which is an operating point nobody
-chose and no one verified. Past validation only the hardware can still refuse
-(a pipeline restart that does not come back); the profile then stays `custom`,
-because that is what the box is.
+profile with the bitrate of the old one - an operating point nobody chose.
+
+Validation cannot rule out a **hardware** refusal, and this is deliberately not
+dressed up as a rollback: restoring the previous value would go through the very
+setter that just failed, which replaces one unknown with two. When a setter
+refuses after an earlier one succeeded, the parts already applied stay in
+effect, the profile is reported as `custom` - because a mixed operating point is
+exactly what custom means - and the reply names the part that did not take:
+
+```json
+{ "status": "rejected", "requested": 10,
+  "message": "battery only partially applied: sensor fps failed (platform rejected sensor fps (error)); stream fps 10 is in effect, no rollback was attempted - reported as custom" }
+```
+
+A platform with **no** sensor rate control is a different case and not a
+failure: there the stream rate is the operating point, so the profile is
+complete without it. Reporting that as an error would make every profile change
+fail on such a platform.
 
 ## M4 integration
 

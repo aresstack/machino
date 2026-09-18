@@ -123,6 +123,33 @@ void test_profile_is_transactional() {
     PCHECK(svc.effective_state().profile == Profile::Balanced);
 }
 
+// The half that only fails at the hardware. Validation cannot see it coming,
+// so the profile name must not claim the box is at that operating point.
+void test_profile_partial_apply_is_not_ok() {
+    Rig r;
+    auto d = r.mgr.acquire(ConsumerType::Rtsp);          // live path: the setter reaches the platform
+    PCHECK(d.active());
+    r.platform.sensor_fps_runtime_error = true;          // capabilities still say supported
+    ApplyResult a = r.svc.apply_profile(Profile::Battery);
+    PCHECK(!a.ok);
+    PCHECK(a.message.find("only partially applied") != std::string::npos);
+    PCHECK(a.message.find("sensor fps") != std::string::npos);
+    PCHECK(r.svc.effective_state().profile == Profile::Custom);   // the name must not lie
+    PCHECK(r.mgr.stream().fps == 10);                             // what did take effect is reported as it is
+
+    // A platform without any sensor rate control is a different case: there the
+    // stream rate is the operating point, so the profile applies completely.
+    Rig q; q.platform.sensor_fps_supported = false;
+    PerformanceService svc2(q.mgr, q.platform, q.stats, q.hw, q.video);
+    PCHECK(svc2.apply_profile(Profile::Battery).ok);
+    PCHECK(q.mgr.stream().fps == 10 && svc2.effective_state().profile == Profile::Battery);
+
+    // A sensor fps outside the verified range is caught before anything moves.
+    Rig w;
+    ApplyResult c = w.svc.set_sensor_fps(99);
+    PCHECK(!c.ok && c.message.find("outside known range") != std::string::npos);
+}
+
 void test_user_override_wins_and_invalid_rejected() {
     Rig r;
     PCHECK(r.svc.apply_profile(Profile::Battery).ok && r.mgr.stream().fps == 10);
@@ -249,6 +276,7 @@ void run_power_tests() {
     test_capabilities();
     test_profile_resolution();
     test_profile_is_transactional();
+    test_profile_partial_apply_is_not_ok();
     test_user_override_wins_and_invalid_rejected();
     test_live_and_restart_paths();
     test_cold_setting_does_not_start();
