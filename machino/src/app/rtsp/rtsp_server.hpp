@@ -13,6 +13,7 @@
 #include "ports/stream_server.hpp"
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -29,8 +30,18 @@ public:
 
 private:
     struct Session;
+    // One connected client. `done` is set by its own thread as the very last
+    // action, which is what lets the accept loop join and free the slot while
+    // the server keeps running.
+    struct Client {
+        std::thread       th;
+        int               fd = -1;          // -1 once the client thread closed it
+        std::atomic<bool> done{false};
+    };
     void accept_loop();
-    void client_loop(int fd, std::string peer);
+    void reap_finished();
+    void refuse(int fd, const std::string& peer);
+    void client_loop(Client* c, std::string peer);
     bool handle_request(Session& s, const std::string& req);
     bool obtain_params(std::vector<uint8_t>& sps, std::vector<uint8_t>& pps);
     bool send_au(Session& s, const AccessUnit& au);
@@ -43,8 +54,7 @@ private:
     std::atomic<bool> quit_{false};
     std::thread acceptor_;
     std::mutex  clients_m_;
-    std::vector<std::thread> clients_;
-    std::vector<int>         client_fds_;
+    std::vector<std::unique_ptr<Client>> clients_;
     std::mutex  params_m_;
     std::vector<uint8_t> sps_, pps_;
 };

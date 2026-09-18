@@ -259,6 +259,24 @@ void test_m7_image_latency_api() {
     ACHECK(path(tel.body, "latency.available") != nullptr && path(tel.body, "exposure.available")->as_bool());
 }
 
+// The RTSP client limit is configuration like any other: validated, persisted,
+// and honest about when it takes effect (the accept loop reads its own copy).
+void test_rtsp_client_limit_api() {
+    Rig r;
+    ACHECK(path(r.api.config().body, "rtsp.max_clients")->as_int() == 4);
+    api::Response p = r.api.patch_config("{\"rtsp\":{\"max_clients\":2}}", "");
+    ACHECK(p.status == 200 && p.body.get("changes")->at(0).get("status")->as_string() == "stored");
+    ACHECK(p.body.get("changes")->at(0).get("apply")->as_string() == "daemon_restart");
+    ACHECK(r.store.get("rtsp.max_clients") == "2" && path(r.api.config().body, "rtsp.max_clients")->as_int() == 2);
+    p = r.api.patch_config("{\"rtsp\":{\"max_clients\":0}}", "");
+    ACHECK(p.status == 422 && path(p.body, "error.code")->as_string() == "invalid_value");
+    p = r.api.patch_config("{\"rtsp\":{\"max_clients\":99}}", "");
+    ACHECK(p.status == 422 && path(p.body, "error.path")->as_string() == "rtsp.max_clients");
+    p = r.api.patch_config("{\"rtsp\":{\"max_sessions\":2}}", "");
+    ACHECK(p.status == 400 && path(p.body, "error.code")->as_string() == "unknown_field");
+    ACHECK(path(r.api.config().body, "rtsp.max_clients")->as_int() == 2);   // nothing slipped through
+}
+
 } // namespace
 
 void run_api_tests() {
@@ -270,5 +288,6 @@ void run_api_tests() {
     test_concurrent_patches();
     test_config_store_text();
     test_m7_image_latency_api();
+    test_rtsp_client_limit_api();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }

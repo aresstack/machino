@@ -91,6 +91,38 @@ void test_profile_resolution() {
     PCHECK(b.ok && m.stream().fps == 30 && b.message.find("no lower verified") != std::string::npos);
 }
 
+// A profile is one operating point: if any part of it cannot be applied, none
+// of it is. Otherwise a rejected profile still moves the camera - here the fps
+// would change while the bitrate stays behind, and /state would say "custom".
+void test_profile_is_transactional() {
+    hw::Registry rr; rr.add_platform({"fake", "f", "m"});
+    hw::SensorDescriptor s; s.model = "s"; s.interface = hw::SensorInterface::MipiCsi;
+    s.native_width = 1920; s.native_height = 1080; s.modes = { {1920, 1080, 20}, {1920, 1080, 10} };
+    rr.add_sensor(s);
+    hw::BoardProfile b; b.board_id = "b"; b.platform = "fake-m"; b.sensor = "s";
+    b.wiring.i2c_bus = 0; b.wiring.i2c_addr = 0x10; b.wiring.mclk = 0; b.default_mode = hw::SensorMode{1920, 1080, 20};
+    b.presets.battery_fps = 10;            // the sensor can do this
+    b.presets.battery_bitrate = 999999;    // the encoder cannot do this
+    rr.add_board(b);
+    hw::UserHardwareConfig u; u.board_id = "b";
+    hw::ResolvedHardware h; std::string err; PCHECK(hw::resolve_hardware(u, rr, {}, h, err));
+    CallLog log; FakePlatform fp(log); FakeTimer ft; StreamHub hub; FakeStats fs; StreamConfig v;
+    LifecycleConfig lc; PipelineManager m(fp, effective_stream(v, h), lc, ft, hub);
+    PerformanceService svc(m, fp, fs, h, v);
+
+    const int fps0 = m.stream().fps, kbps0 = m.stream().bitrate_kbps;
+    ApplyResult a = svc.apply_profile(Profile::Battery);
+    PCHECK(!a.ok && a.requested == 999999);
+    PCHECK(a.message.find("not applied (nothing changed)") != std::string::npos);
+    PCHECK(m.stream().fps == fps0 && m.stream().bitrate_kbps == kbps0);   // the valid half was not applied either
+    PCHECK(svc.effective_state().profile == Profile::Performance);        // and the profile did not move
+    PCHECK(log.count("platform.set_sensor_fps@10") == 0);
+
+    // the same service applies a profile whose parts are all within reach
+    PCHECK(svc.apply_profile(Profile::Balanced).ok && m.stream().fps == 10);
+    PCHECK(svc.effective_state().profile == Profile::Balanced);
+}
+
 void test_user_override_wins_and_invalid_rejected() {
     Rig r;
     PCHECK(r.svc.apply_profile(Profile::Battery).ok && r.mgr.stream().fps == 10);
@@ -216,6 +248,7 @@ void test_power_levels_and_telemetry() {
 void run_power_tests() {
     test_capabilities();
     test_profile_resolution();
+    test_profile_is_transactional();
     test_user_override_wins_and_invalid_rejected();
     test_live_and_restart_paths();
     test_cold_setting_does_not_start();

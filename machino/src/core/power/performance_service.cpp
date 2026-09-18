@@ -104,10 +104,38 @@ int PerformanceService::preset_bitrate(Profile p) const {
     return bitrate_default_;
 }
 
+std::string PerformanceService::check_stream_fps(int fps) const {
+    if (fps <= 0) return "fps must be > 0";
+    if (!caps_.video.fps.in_range(fps)) return "fps outside known range";
+    std::vector<int> v = verified_fps();
+    if (!v.empty() && std::find(v.begin(), v.end(), fps) == v.end() && !allow_unverified_)
+        return "not a verified operating point (set sensor.allow_unverified_mode = 1 to test)";
+    return "";
+}
+
+std::string PerformanceService::check_bitrate(int kbps) const {
+    if (kbps <= 0) return "bitrate must be > 0";
+    if (!caps_.video.bitrate.in_range(kbps)) return "bitrate outside known range";
+    return "";
+}
+
 ApplyResult PerformanceService::apply_profile(Profile p) {
     if (p == Profile::Custom) { std::lock_guard<std::mutex> lk(m_); profile_ = p; return ApplyResult::applied(ApplyMode::Live, (int)p, (int)p, "custom: individual settings apply"); }
     std::string note; int fps = preset_fps(p, note); int kbps = preset_bitrate(p);
+    // A profile is one operating point, not three settings that happen to be
+    // applied in a row. Check every component before touching anything:
+    // applying the fps and then rejecting the bitrate would leave the camera at
+    // a point nobody asked for while the caller is told the profile was refused.
+    std::string why = check_stream_fps(fps);
+    if (!why.empty()) return ApplyResult::rejected(caps_.video.fps.apply, fps,
+        std::string(profile_name(p)) + " not applied (nothing changed): stream fps " + std::to_string(fps) + ": " + why);
+    why = check_bitrate(kbps);
+    if (!why.empty()) return ApplyResult::rejected(caps_.video.bitrate.apply, kbps,
+        std::string(profile_name(p)) + " not applied (nothing changed): bitrate " + std::to_string(kbps) + ": " + why);
     LOGI(MOD, "profile %s -> fps=%d bitrate=%d%s%s", profile_name(p), fps, kbps, note.empty() ? "" : " (", note.empty() ? "" : (note + ")").c_str());
+    // Past this point only the hardware can still refuse: a pipeline restart
+    // that does not come back. The pipeline manager owns that recovery, and
+    // profile_ stays Custom because the box is then genuinely at a mixed point.
     ApplyResult r1 = set_stream_fps(fps);        // FrameSource + encoder rate (restart if running)
     if (!r1.ok) return r1;
     ApplyResult r2 = set_sensor_fps(fps);        // sensor rate (live when supported)
@@ -131,13 +159,11 @@ ApplyResult PerformanceService::apply_stream_restart(const EffectiveStream& s, c
 }
 
 ApplyResult PerformanceService::set_stream_fps(int fps) {
-    if (fps <= 0) return ApplyResult::rejected(caps_.video.fps.apply, fps, "fps must be > 0");
-    if (!caps_.video.fps.in_range(fps)) return ApplyResult::rejected(caps_.video.fps.apply, fps, "fps outside known range");
+    std::string why = check_stream_fps(fps);
+    if (!why.empty()) return ApplyResult::rejected(caps_.video.fps.apply, fps, why);
     std::vector<int> v = verified_fps();
-    if (!v.empty() && std::find(v.begin(), v.end(), fps) == v.end()) {
-        if (!allow_unverified_) return ApplyResult::rejected(caps_.video.fps.apply, fps, "not a verified operating point (set sensor.allow_unverified_mode = 1 to test)");
+    if (!v.empty() && std::find(v.begin(), v.end(), fps) == v.end())
         LOGW(MOD, "stream fps %d is not a verified operating point (allowed by config)", fps);
-    }
     EffectiveStream s = pipeline_.stream();
     if (s.fps == fps) return ApplyResult::applied(ApplyMode::Live, fps, fps, "unchanged");
     s.fps = fps;
@@ -161,8 +187,8 @@ ApplyResult PerformanceService::set_sensor_fps(int fps) {
 
 ApplyResult PerformanceService::set_bitrate(int kbps) {
     ApplyMode mode = caps_.video.bitrate.support == Cap::Supported ? caps_.video.bitrate.apply : ApplyMode::PipelineRestart;
-    if (kbps <= 0) return ApplyResult::rejected(mode, kbps, "bitrate must be > 0");
-    if (!caps_.video.bitrate.in_range(kbps)) return ApplyResult::rejected(mode, kbps, "bitrate outside known range");
+    std::string why = check_bitrate(kbps);
+    if (!why.empty()) return ApplyResult::rejected(mode, kbps, why);
     EffectiveStream s = pipeline_.stream();
     if (s.bitrate_kbps == kbps) return ApplyResult::applied(ApplyMode::Live, kbps, kbps, "unchanged");
     { std::lock_guard<std::mutex> lk(m_); profile_ = Profile::Custom; }

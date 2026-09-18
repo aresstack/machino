@@ -57,8 +57,24 @@ bool resolve_hardware(const UserHardwareConfig& user, const Registry& reg,
     if (board && !user.sensor.empty() && user.sensor != board->sensor)
         r.conflicts += "sensor=" + user.sensor + " [user-config] overrides " + board->sensor + " [board-profile]\n";
 
+    // A board profile describes one specific board: these pins, this i2c
+    // address and these presets belong to *that* sensor on *that* platform.
+    // Once the config points at a different platform or a different sensor the
+    // profile no longer describes the hardware in front of us, so none of it may
+    // be inherited - a reset pin above all, which would then be driven on a board
+    // that never wired it that way. Drop the profile and let the fail-closed
+    // checks below demand explicit values instead.
+    bool board_applies = board != nullptr;
+    if (board_applies && !user.platform.empty() && user.platform != board->platform) board_applies = false;
+    if (board_applies && !user.sensor.empty()   && user.sensor   != board->sensor)   board_applies = false;
+    if (board && !board_applies) {
+        r.board_verified = false;
+        r.conflicts += "board profile '" + board->board_id + "' no longer describes this hardware "
+                       "(platform/sensor overridden) - wiring and presets are ignored, set them explicitly\n";
+    }
+
     // wiring
-    SensorWiring bw = board ? board->wiring : SensorWiring{};
+    SensorWiring bw = board_applies ? board->wiring : SensorWiring{};
     pick("i2c_bus",    user.wiring.i2c_bus,    bw.i2c_bus,    std::nullopt,  r.i2c_bus,    r.conflicts);
     pick("i2c_addr",   user.wiring.i2c_addr,   bw.i2c_addr,   std::nullopt,  r.i2c_addr,   r.conflicts);
     pick("mclk",       user.wiring.mclk,       bw.mclk,       defaults.mclk, r.mclk,       r.conflicts);
@@ -75,11 +91,11 @@ bool resolve_hardware(const UserHardwareConfig& user, const Registry& reg,
 
     // mode: user > board default > sensor default; must be a verified sensor mode
     if (user.mode)                    { r.mode.value = *user.mode;            r.mode.source = Source::UserConfig; }
-    else if (board && board->default_mode) { r.mode.value = *board->default_mode; r.mode.source = Source::BoardProfile; }
+    else if (board_applies && board->default_mode) { r.mode.value = *board->default_mode; r.mode.source = Source::BoardProfile; }
     else if (sd->default_mode())      { r.mode.value = *sd->default_mode();   r.mode.source = Source::PlatformDefault; }
     else { err = "no sensor mode known for '" + sensor_model + "'"; return false; }
     r.allow_unverified_mode = user.allow_unverified_mode;
-    r.presets = board ? board->presets : BoardPresets{};
+    r.presets = board_applies ? board->presets : BoardPresets{};
     if (!sd->has_mode(r.mode.value)) {
         std::string what = "mode " + std::to_string(r.mode.value.width) + "x" + std::to_string(r.mode.value.height) + "@" +
               std::to_string(r.mode.value.fps) + " is not a verified mode of sensor '" + sensor_model + "'";
@@ -87,7 +103,7 @@ bool resolve_hardware(const UserHardwareConfig& user, const Registry& reg,
         r.mode_verified = false;
         r.conflicts += what + " (allowed by sensor.allow_unverified_mode)\n";
     }
-    if (user.mode && board && board->default_mode && !(*user.mode == *board->default_mode))
+    if (user.mode && board_applies && board->default_mode && !(*user.mode == *board->default_mode))
         r.conflicts += "mode [user-config] overrides board default\n";
 
     out = r;

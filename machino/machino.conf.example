@@ -51,6 +51,7 @@ rtsp.port         = 554
 rtsp.path         = /ch0
 rtsp.send_buffer_bytes = 65536      # bounded kernel backlog per client
 rtsp.send_stall_ms     = 750        # disconnect stalled client; no seconds-old backlog
+rtsp.max_clients       = 4          # concurrent sessions; further connects get 453, not a queue
 
 # --- image / ISP -----------------------------------------------------------
 # Every key is optional. Absent means "preserve the sensor tuning-bin / ISP

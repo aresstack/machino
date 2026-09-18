@@ -157,6 +157,44 @@ static void test_missing_gpio() {
     CHECK(!hw::resolve_hardware(u5, r, {}, hw, err) && err.find("unknown sensor") != std::string::npos);
 }
 
+// ---- a board profile only describes its own board --------------------------
+static void test_board_profile_scope() {
+    hw::Registry r = make_registry();
+    hw::SensorDescriptor other;                        // a second sensor to point the config at
+    other.model = "imx335"; other.interface = hw::SensorInterface::MipiCsi;
+    other.native_width = 1920; other.native_height = 1080; other.modes = { {1920, 1080, 20} };
+    r.add_sensor(other);
+    hw::ResolvedHardware hw; std::string err;
+
+    // board alone: wiring, presets and the verified flag all come from it
+    hw::UserHardwareConfig u; u.board_id = "t40nn-imx307-board-a";
+    CHECK(hw::resolve_hardware(u, r, {}, hw, err));
+    CHECK(hw.reset_gpio.value == 91 && hw.board_verified && hw.presets.battery_fps && *hw.presets.battery_fps == 10);
+
+    // same board, different sensor: pin 91 and address 0x1a describe how the
+    // imx307 is wired on this board, so they must not carry over. Nothing is
+    // left to fall back on -> fail closed instead of guessing.
+    hw::UserHardwareConfig v = u; v.sensor = "imx335";
+    CHECK(!hw::resolve_hardware(v, r, {}, hw, err) && err.find("i2c_bus") != std::string::npos);
+
+    // with explicit wiring it resolves - without any leftovers from the profile
+    v.wiring.i2c_bus = 1; v.wiring.i2c_addr = 0x20; v.wiring.mclk = 1;
+    CHECK(hw::resolve_hardware(v, r, {}, hw, err));
+    CHECK(hw.reset_gpio.value == -1 && hw.pwdn_gpio.value == -1);        // no pin is ever touched
+    CHECK(!hw.presets.battery_fps.has_value());                          // operating points were verified for imx307
+    CHECK(!hw.board_verified);                                           // the profile was not verified for this
+    CHECK(hw.conflicts.find("no longer describes this hardware") != std::string::npos);
+
+    // overriding the platform drops it just the same
+    hw::UserHardwareConfig w = u; w.platform = "ingenic-t40n";
+    CHECK(!hw::resolve_hardware(w, r, {}, hw, err) && err.find("i2c_bus") != std::string::npos);
+
+    // overriding with the value the profile already carries changes nothing
+    hw::UserHardwareConfig x = u; x.platform = "ingenic-t40nn"; x.sensor = "imx307";
+    CHECK(hw::resolve_hardware(x, r, {}, hw, err));
+    CHECK(hw.reset_gpio.value == 91 && hw.board_verified && hw.conflicts.empty());
+}
+
 // ---- conflicting values ----------------------------------------------------
 static void test_conflicts() {
     hw::Registry r = make_registry();
@@ -222,6 +260,13 @@ static void test_config_keys() {
     CHECK(m7.latency.profile == media::LatencyProfile::Low && m7.latency.gop && *m7.latency.gop == 10);
     CHECK(m7.latency.consumer_queue_depth && *m7.latency.consumer_queue_depth == 1);
     CHECK(m7.image.anti_flicker && *m7.image.anti_flicker == 50 && m7.image.white_balance_mode && *m7.image.white_balance_mode == 0);
+    AppConfig rt;
+    CHECK(parse_config_text("rtsp.max_clients = 2\n", rt, err) && rt.rtsp.max_clients == 2);
+    // out of range is warned about and ignored, like every other bounded key:
+    // one bad line in the config must not keep the daemon from coming up
+    CHECK(parse_config_text("rtsp.max_clients = 0\n", rt, err) && rt.rtsp.max_clients == 2);
+    CHECK(parse_config_text("rtsp.max_clients = 17\n", rt, err) && rt.rtsp.max_clients == 2);
+    CHECK(AppConfig{}.rtsp.max_clients == 4);                    // bounded by default, not unlimited
 
     // effective stream: video.* overrides, mode fills the rest
     hw::Registry r = make_registry(); hw::UserHardwareConfig u; u.board_id = "t40nn-imx307-board-a";
@@ -237,6 +282,7 @@ int main() {
     test_precedence();
     test_missing_gpio();
     test_conflicts();
+    test_board_profile_scope();
     test_capabilities();
     test_ingenic_conversion();
     test_config_keys();

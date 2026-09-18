@@ -71,6 +71,25 @@ Conflicts are warnings, the user value wins:
 conflict: reset_gpio=92 [user-config] overrides 91 [board-profile]
 ```
 
+### A profile only describes its own board
+
+The precedence above applies *within* one board. Overriding `platform` or
+`sensor.model` does not leave a profile that is partly valid: pin 91 and
+address 0x1a describe how **this** sensor is wired on **this** board. Point the
+config at a different sensor and the whole profile - wiring, presets and its
+`hardware_verified` flag - is dropped, and resolution falls back to the
+fail-closed rules below:
+
+```
+conflict: board profile 't40nn-imx307-board-a' no longer describes this hardware
+          (platform/sensor overridden) - wiring and presets are ignored, set them explicitly
+hardware resolution failed: sensor i2c_bus unknown (no user value, no board profile) - refusing to guess
+```
+
+Either name a profile that matches the board, or give the wiring explicitly.
+Silently reusing a reset pin across boards is exactly the way to drive a line
+that the new board never wired that way.
+
 ## Safe defaults (fail closed)
 
 * GPIO numbers are **never guessed**. Neither user nor board set → effective

@@ -232,6 +232,7 @@ Json ApiService::config_json() {
     for (int i = 0; i < (int)ImageControl::COUNT; ++i)
         image.set(image_control_name((ImageControl)i), tune.image_requested[i] >= 0 ? Json::integer(tune.image_requested[i]) : Json::null());
     j.set("image", image);
+    Json rt = Json::object(); rt.set("max_clients", Json::integer(cfg_.rtsp.max_clients)); j.set("rtsp", rt);
     Json lc = Json::object(); lc.set("idle_grace_ms", Json::integer(cfg_.pipeline.idle_grace_ms)); lc.set("always_on", Json::boolean(cfg_.pipeline.always_on)); j.set("lifecycle", lc);
     Json pw = Json::object(); pw.set("isp_performance", Json::string(power::perf_level_name(e.isp)));
     pw.set("encoder_performance", Json::string(power::perf_level_name(e.encoder))); pw.set("cpu_performance", Json::string(power::perf_level_name(e.cpu)));
@@ -390,6 +391,9 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     c.value = std::to_string(iv);
                 }
                 c.key = "image." + kv.first;
+            } else if (s == "rtsp" && kv.first == "max_clients") {
+                long long n; if (!get_int(val, n) || n < 1 || n > 16) return bad(422, "invalid_value", path, "max_clients must be an integer in 1..16");
+                c.key = "rtsp.max_clients"; c.value = std::to_string(n);
             } else if (s == "lifecycle" && kv.first == "idle_grace_ms") {
                 long long n; if (!get_int(val, n) || n < 0 || n > 600000) return bad(422, "invalid_value", path, "idle_grace_ms must be an integer in 0..600000");
                 c.key = "lifecycle.idle_grace_ms"; c.value = std::to_string(n);
@@ -420,6 +424,8 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         else if (c.key == "latency.queue_depth")         c.r = tuning_.set_queue_depth(atoi(c.value.c_str()));
         else if (c.key == "rtsp.send_buffer_bytes" || c.key == "rtsp.send_stall_ms")
             c.r = ApplyResult::stored(ApplyMode::DaemonRestart, atoi(c.value.c_str()), "persisted; applies to sockets after daemon restart");
+        else if (c.key == "rtsp.max_clients")
+            c.r = ApplyResult::stored(ApplyMode::DaemonRestart, atoi(c.value.c_str()), "persisted; the accept loop picks it up after daemon restart");
         else if (c.key.rfind("image.", 0) == 0) {
             ImageControl control; image_control_from_name(c.key.substr(6), control);
             int iv = control == ImageControl::AntiFlicker ? (c.value == "off" ? 0 : c.value == "50hz" ? 50 : 60) : atoi(c.value.c_str());
@@ -433,6 +439,7 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         if (c.r.ok) {
             if (c.key == "rtsp.send_buffer_bytes") cfg_.rtsp.send_buffer_bytes = atoi(c.value.c_str());
             else if (c.key == "rtsp.send_stall_ms") cfg_.rtsp.send_stall_ms = atoi(c.value.c_str());
+            else if (c.key == "rtsp.max_clients") cfg_.rtsp.max_clients = atoi(c.value.c_str());
             else if (c.key == "lifecycle.idle_grace_ms") cfg_.pipeline.idle_grace_ms = atoi(c.value.c_str());
         }
         if (c.r.ok && (c.key == "performance.profile" || c.key == "video.fps")) {

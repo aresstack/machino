@@ -66,6 +66,11 @@ public:
 
 private:
     ApplyResult apply_stream_restart(const EffectiveStream& s, const char* what, int requested);
+    // Policy validation that touches nothing. Returns "" when the value would
+    // be accepted, otherwise the reason. The setters and apply_profile share
+    // these so the rules cannot drift apart.
+    std::string check_stream_fps(int fps) const;
+    std::string check_bitrate(int kbps) const;
     int  preset_fps(Profile p, std::string& note) const;
     int  preset_bitrate(Profile p) const;
     ApplyMode sensor_fps_mode() const;

@@ -20,6 +20,9 @@ namespace machino {
 static const char* MOD = "RTSP";
 static const size_t RTP_MTU = 1400;
 
+// defined below, used by refuse() above the parser section
+static std::string header(const std::string& req, const char* name);
+
 static int64_t mono_us() {
     struct timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
@@ -70,18 +73,54 @@ void RtspServer::stop() {
     if (listen_fd_ < 0) return;
     quit_ = true;
     shutdown(listen_fd_, SHUT_RDWR); close(listen_fd_); listen_fd_ = -1;
-    if (acceptor_.joinable()) acceptor_.join();
+    if (acceptor_.joinable()) acceptor_.join();          // no reaping runs after this
+    std::vector<std::unique_ptr<Client>> all;
     {
         std::lock_guard<std::mutex> lk(clients_m_);
-        for (int fd : client_fds_) shutdown(fd, SHUT_RDWR);
+        all.swap(clients_);
+        // the fd is read under the same lock the client thread clears it under,
+        // so a number that was already closed (and possibly handed out again by
+        // the kernel) is never shut down here
+        for (auto& c : all) if (c->fd >= 0) shutdown(c->fd, SHUT_RDWR);
     }
-    for (auto& t : clients_) if (t.joinable()) t.join();
-    clients_.clear(); client_fds_.clear();
+    for (auto& c : all) if (c->th.joinable()) c->th.join();
     LOGI(MOD, "stopped");
+}
+
+// Join and drop the clients that have finished. Without this every
+// connect/disconnect cycle leaves a joinable std::thread behind: the list grows
+// for the lifetime of the daemon and each entry keeps its thread stack, which a
+// camera that reconnects all day notices long before a restart would clean up.
+void RtspServer::reap_finished() {
+    std::vector<std::unique_ptr<Client>> done;
+    {
+        std::lock_guard<std::mutex> lk(clients_m_);
+        for (auto it = clients_.begin(); it != clients_.end();) {
+            if ((*it)->done.load(std::memory_order_acquire)) { done.push_back(std::move(*it)); it = clients_.erase(it); }
+            else ++it;
+        }
+    }
+    for (auto& c : done) if (c->th.joinable()) c->th.join();   // never while holding clients_m_
+}
+
+// Over the configured limit. RTSP can only answer a request, so we take
+// whatever already arrived in one non-blocking read - a flood of connections
+// must not stall the accept loop - and answer that CSeq. Nothing yet: CSeq 0,
+// which at least makes the refusal visible instead of a bare reset.
+void RtspServer::refuse(int fd, const std::string& peer) {
+    char buf[1024];
+    ssize_t n = recv(fd, buf, sizeof buf - 1, MSG_DONTWAIT);
+    std::string cseq = "0";
+    if (n > 0) { buf[n] = 0; std::string got = header(std::string(buf, (size_t)n), "CSeq"); if (!got.empty()) cseq = got; }
+    std::string resp = "RTSP/1.0 453 Not Enough Bandwidth\r\nCSeq: " + cseq + "\r\n\r\n";
+    send(fd, resp.data(), resp.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
+    close(fd);
+    LOGW(MOD, "client %s refused: rtsp.max_clients = %d already connected", peer.c_str(), cfg_.max_clients);
 }
 
 void RtspServer::accept_loop() {
     while (!quit_) {
+        reap_finished();                    // free the slots of clients that left
         pollfd p{listen_fd_, POLLIN, 0};
         if (poll(&p, 1, 250) <= 0) continue;
         sockaddr_in ca{}; socklen_t cl = sizeof ca;
@@ -89,11 +128,17 @@ void RtspServer::accept_loop() {
         if (fd < 0) continue;
         char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof ip);
         std::string peer = std::string(ip) + ":" + std::to_string(ntohs(ca.sin_port));
+        size_t live; { std::lock_guard<std::mutex> lk(clients_m_); live = clients_.size(); }
+        if ((int)live >= cfg_.max_clients) { refuse(fd, peer); continue; }
         int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
         int snd = cfg_.send_buffer_bytes; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof snd);
+        auto c = std::make_unique<Client>(); c->fd = fd;
+        Client* slot = c.get();
+        // start the thread before publishing the slot: stop() must never find a
+        // Client whose thread has not been created yet and skip its join
+        slot->th = std::thread([this, slot, peer] { client_loop(slot, peer); });
         std::lock_guard<std::mutex> lk(clients_m_);
-        client_fds_.push_back(fd);
-        clients_.emplace_back([this, fd, peer] { client_loop(fd, peer); });
+        clients_.push_back(std::move(c));
     }
 }
 
@@ -117,7 +162,8 @@ static bool send_all(int fd, const void* p, size_t n, int stall_limit_ms) {
     return true;
 }
 
-void RtspServer::client_loop(int fd, std::string peer) {
+void RtspServer::client_loop(Client* c, std::string peer) {
+    const int fd = c->fd;
     Session s; s.fd = fd; s.peer = peer;
     struct timeval tv; gettimeofday(&tv, nullptr);
     s.ssrc = (uint32_t)(tv.tv_sec ^ (tv.tv_usec << 8) ^ (uint32_t)fd);
@@ -157,12 +203,12 @@ void RtspServer::client_loop(int fd, std::string peer) {
     if (s.sink) hub_.unsubscribe(s.sink);
     s.demand.release();                                     // explicit for readability; the dtor would do it too
     if (s.udp_fd >= 0) close(s.udp_fd);
+    // clear the fd before closing it: stop() must not shut down a number the
+    // kernel may already have handed to a completely different socket
+    { std::lock_guard<std::mutex> lk(clients_m_); c->fd = -1; }
     close(fd);
-    {
-        std::lock_guard<std::mutex> lk(clients_m_);
-        for (auto it = client_fds_.begin(); it != client_fds_.end(); ++it) if (*it == fd) { client_fds_.erase(it); break; }
-    }
     LOGI(MOD, "client %s closed", peer.c_str());
+    c->done.store(true, std::memory_order_release);     // last touch: the slot may be freed right after
 }
 
 static std::string header(const std::string& req, const char* name) {

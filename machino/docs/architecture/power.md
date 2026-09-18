@@ -78,6 +78,22 @@ parameters — no hidden path.
 If the sensor has only one verified operating point, `balanced`/`battery`
 resolve to it and say so. No universal 10/15/20 values are hard-coded.
 
+A profile is applied **as a whole or not at all**. Every component (fps against
+the verified operating points, bitrate against the encoder range) is validated
+before anything is touched; if one of them cannot be applied, none of them is
+and the reply says so:
+
+```json
+{ "status": "rejected", "requested": 999999,
+  "message": "battery not applied (nothing changed): bitrate 999999: bitrate outside known range" }
+```
+
+Otherwise a refused profile would still move the camera - the fps of the new
+profile with the bitrate of the old one - which is an operating point nobody
+chose and no one verified. Past validation only the hardware can still refuse
+(a pipeline restart that does not come back); the profile then stays `custom`,
+because that is what the box is.
+
 ## M4 integration
 
 * Setting anything while `COLD_IDLE` stores it; no hardware is started just

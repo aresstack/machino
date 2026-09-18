@@ -125,6 +125,7 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     STR   ("rtsp.path",          c.rtsp.path)
     INT   ("rtsp.send_buffer_bytes", c.rtsp.send_buffer_bytes, 4096, 1048576)
     INT   ("rtsp.send_stall_ms", c.rtsp.send_stall_ms, 50, 10000)
+    INT   ("rtsp.max_clients",   c.rtsp.max_clients, 1, 16)
 
     BOOL  ("pipeline.always_on", c.pipeline.always_on)
     INT   ("lifecycle.idle_grace_ms", c.pipeline.idle_grace_ms, 0, 600000)
