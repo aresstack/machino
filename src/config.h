@@ -133,6 +133,8 @@ typedef struct {
     int      i2c_addr;
     int      i2c_bus;   /* IMPI2CInfo.i2c_adapter_id (board wiring) */
     int      mclk;      /* IMPSensorMclk index (T40/T41) */
+    int      reset_gpio; /* IMPSensorInfo.rst_gpio (T40/T41 board wiring; -1 = no pin) */
+    int      pwdn_gpio;  /* IMPSensorInfo.pwdn_gpio (T40/T41 board wiring; -1 = no pin) */
     int      fps;
     int      width, height;
 } ms_sensor_cfg;

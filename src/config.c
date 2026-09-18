@@ -259,6 +259,8 @@ void config_defaults(ms_config *c)
     c->sensor.i2c_addr = 0;
     c->sensor.i2c_bus = 0;
     c->sensor.mclk = 0;
+    c->sensor.reset_gpio = -1;   /* -1 keeps the "no such pin" behaviour on boards without a wired reset */
+    c->sensor.pwdn_gpio = -1;
     c->sensor.fps = 0;
     c->sensor.width = 0;
     c->sensor.height = 0;
@@ -655,6 +657,8 @@ static const cfg_field sensor_fields[] = {
     F ("i2c_addr",  "i2c_address", i2c_addr, T_INT, F_CTRL, 0,0x7F),
     F ("i2c_bus",   "i2c_adapter", i2c_bus,  T_INT, F_CTRL, 0,4),
     F ("mclk",      0,             mclk,     T_INT, F_CTRL, 0,2),
+    F ("reset_gpio","rst_gpio",    reset_gpio,T_INT, F_CTRL, -1,255),
+    F ("pwdn_gpio", 0,             pwdn_gpio, T_INT, F_CTRL, -1,255),
     F ("fps",       0,             fps,      T_INT, F_CTRL, 0,120),
     F ("width",     0,             width,    T_INT, F_CTRL, 0,8192),
     F ("height",    0,             height,   T_INT, F_CTRL, 0,8192),
