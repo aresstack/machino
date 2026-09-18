@@ -67,3 +67,27 @@ jobs:
         with:
           name: machino-m2-t40
           path: bundle/machino-m2-t40
+      - name: "OpenIPC install bundle (machino-openipc-t40nn.tar.gz)"
+        run: |
+          O=bundle/machino-openipc-t40nn
+          mkdir -p "$O/sbin" "$O/init" "$O/webui"
+          cp -f machino/machinod                       "$O/machino"
+          cp -f machino/machino.conf.example           "$O/machino.conf"
+          cp -f machino/openipc/install.sh             "$O/install.sh"
+          cp -f machino/openipc/uninstall.sh           "$O/uninstall.sh"
+          cp -f machino/openipc/sbin/streamerctl       "$O/sbin/streamerctl"
+          cp -f machino/openipc/init/S95streamer       "$O/init/S95streamer"
+          cp -f machino/openipc/init/machino           "$O/init/machino"
+          cp -f machino/openipc/webui/machino.cgi      "$O/webui/machino.cgi"
+          cp -f machino/openipc/README.md              "$O/README.md"
+          cp -f machino/docs/install-openipc.md        "$O/INSTALL.md"
+          chmod 0755 "$O/machino" "$O/install.sh" "$O/uninstall.sh" "$O/sbin/streamerctl" "$O/init/"* "$O/webui/machino.cgi"
+          cp -f bundle/machino-m2-t40/BUILDINFO        "$O/BUILDINFO"
+          (cd "$O" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          (cd bundle && tar czf machino-openipc-t40nn.tar.gz machino-openipc-t40nn)
+          ls -l bundle/machino-openipc-t40nn.tar.gz; cat "$O/SHA256SUMS"
+      - name: "Upload OpenIPC install bundle"
+        uses: actions/upload-artifact@v4
+        with:
+          name: machino-openipc-t40nn
+          path: bundle/machino-openipc-t40nn.tar.gz

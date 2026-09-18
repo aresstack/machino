@@ -1,0 +1,67 @@
+#!/bin/sh
+# Machino daemon control. Deliberately NOT named S??* : rcS would then start it
+# unconditionally and the camera would have two media owners whenever Majestic
+# is the selected one. /etc/init.d/S95streamer decides who runs; this script
+# only knows how to start and stop Machino.
+[ -r /etc/TZ ] && export TZ=$(cat /etc/TZ)
+
+DAEMON="machino"
+DAEMON_PATH="/usr/bin/$DAEMON"
+CONF="/etc/machino/machino.conf"
+LOGFILE="/var/log/machino.log"
+PIDFILE="/var/run/$DAEMON.pid"
+
+running() {
+	start-stop-daemon -t -K -q -x "$DAEMON_PATH"
+}
+
+start() {
+	echo -n "Starting $DAEMON: "
+	if running; then echo "OK (already running)"; return 0; fi
+	if [ ! -x "$DAEMON_PATH" ]; then echo "FAIL (no $DAEMON_PATH)"; return 1; fi
+	if [ ! -r "$CONF" ]; then echo "FAIL (no $CONF)"; return 1; fi
+	(
+		trap '' HUP
+		start-stop-daemon -b -S -q -m -p "$PIDFILE" -x "$DAEMON_PATH" -- -c "$CONF" >>"$LOGFILE" 2>&1
+	)
+	case $? in
+		0|1) echo "OK" ;;
+		*)   echo "FAIL"; return 1 ;;
+	esac
+}
+
+stop() {
+	echo -n "Stopping $DAEMON: "
+	# SIGTERM: Machino tears the pipeline down in order, so the ISP is released
+	# before anything else may claim it.
+	start-stop-daemon -K -q -x "$DAEMON_PATH"
+	i=0
+	while running && [ $i -lt 15 ]; do
+		i=$((i + 1))
+		sleep 1
+	done
+	if running; then
+		echo "FAIL (still running)"
+		return 1
+	fi
+	rm -f "$PIDFILE"
+	echo "OK"
+}
+
+case "$1" in
+	start|stop)
+		$1
+		;;
+	restart)
+		stop || exit 1
+		sleep 2
+		start
+		;;
+	status)
+		if running; then echo "$DAEMON is running"; else echo "$DAEMON is not running"; exit 1; fi
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|status}"
+		exit 1
+		;;
+esac

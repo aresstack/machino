@@ -1,0 +1,244 @@
+#!/bin/sh
+# streamerctl - select the media owner on an OpenIPC camera.
+#
+# Machino and Majestic may both be installed, but never both own the media
+# hardware: on a T40NN a second owner has been observed to reset the board.
+# This script is the single place that switches between them, and it is
+# deliberately NOT part of the Machino daemon: when Majestic is active and
+# Machino is stopped, a Machino web API could not be reached to switch back.
+#
+# Majestic also serves the OpenIPC WebUI on port 80 (system.webPort, staticDir
+# /var/www). Stopping it therefore takes the WebUI down with it - including the
+# page you would use to switch back. So while Machino is the selected owner we
+# run busybox httpd on port 80 over the same /var/www, and hand port 80 back to
+# Majestic when it is selected again. Exactly one process serves port 80, and
+# exactly one process owns the media hardware, at any time.
+set -u
+
+# STREAMERCTL_ROOT lets the host tests run the real logic against a throwaway
+# tree. Empty in production, so every path below is absolute as usual.
+ROOT="${STREAMERCTL_ROOT:-}"
+
+STATE_DIR="$ROOT/etc/machino"
+SELECTED="$STATE_DIR/streamer"              # majestic | machino
+MACHINO_CONF="$STATE_DIR/machino.conf"
+
+INIT_MAJESTIC="$ROOT/etc/init.d/majestic"   # moved here by install.sh so rcS no longer auto-starts it
+INIT_MACHINO="$ROOT/etc/init.d/machino"
+WWW_ROOT="$ROOT/var/www"
+HTTPD="${STREAMERCTL_HTTPD:-/usr/sbin/httpd}"
+HTTPD_PID="$ROOT/var/run/machino-httpd.pid"
+
+HEALTH_TIMEOUT=20                           # seconds to wait for the new owner to come up
+
+log()  { echo "$*"; }
+warn() { echo "streamerctl: $*" >&2; }
+die()  { echo "streamerctl: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- helpers ---
+api_port() {
+    # api.port from the Machino config; 8080 is the documented default
+    p=""
+    [ -r "$MACHINO_CONF" ] && p=$(sed -n 's/^[[:space:]]*api\.port[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$MACHINO_CONF" | tail -1)
+    [ -n "$p" ] || p=8080
+    echo "$p"
+}
+
+majestic_running() { pgrep -x majestic >/dev/null 2>&1; }
+machino_running()  { pgrep -x machino  >/dev/null 2>&1; }
+
+# kill -0 rather than /proc: it is the portable liveness test and does not
+# assume /proc is mounted.
+alive() { kill -0 "$1" 2>/dev/null; }
+
+our_httpd_pid() {
+    [ -r "$HTTPD_PID" ] || return 1
+    pid=$(cat "$HTTPD_PID" 2>/dev/null)
+    [ -n "$pid" ] && alive "$pid" || return 1
+    echo "$pid"
+}
+
+port80_owner() {
+    if majestic_running; then echo majestic
+    elif our_httpd_pid >/dev/null 2>&1; then echo httpd
+    else echo none
+    fi
+}
+
+# Wait until a process is really gone. A half-stopped media owner is exactly
+# the state that must never overlap with the next one.
+wait_gone() {
+    _name=$1; _limit=${2:-15}; _i=0
+    while pgrep -x "$_name" >/dev/null 2>&1; do
+        _i=$((_i + 1))
+        [ "$_i" -ge "$_limit" ] && return 1
+        sleep 1
+    done
+    return 0
+}
+
+read_selection() {
+    if [ -r "$SELECTED" ]; then cat "$SELECTED"; else echo majestic; fi
+}
+
+write_selection() {
+    mkdir -p "$STATE_DIR"
+    printf '%s\n' "$1" > "$SELECTED.tmp" && mv "$SELECTED.tmp" "$SELECTED"
+}
+
+# ------------------------------------------------------------ webui host ---
+webui_start() {
+    [ -x "$HTTPD" ] || { warn "no $HTTPD - WebUI will not be served while Machino is active"; return 0; }
+    if our_httpd_pid >/dev/null 2>&1; then return 0; fi
+    if majestic_running; then warn "majestic still holds port 80 - not starting a second server"; return 1; fi
+    "$HTTPD" -p 80 -h "$WWW_ROOT" || { warn "httpd failed to start on port 80"; return 1; }
+    sleep 1
+    pid=$(pgrep -f "httpd -p 80 -h $WWW_ROOT" | head -1)
+    [ -n "$pid" ] || { warn "httpd did not come up"; return 1; }
+    mkdir -p "$(dirname "$HTTPD_PID")"
+    printf '%s\n' "$pid" > "$HTTPD_PID"
+    return 0
+}
+
+webui_stop() {
+    pid=$(our_httpd_pid 2>/dev/null) || { rm -f "$HTTPD_PID"; return 0; }
+    kill "$pid" 2>/dev/null
+    _i=0
+    while alive "$pid" && [ "$_i" -lt 10 ]; do _i=$((_i + 1)); sleep 1; done
+    rm -f "$HTTPD_PID"
+    alive "$pid" && { warn "httpd $pid would not stop"; return 1; }
+    return 0
+}
+
+# ----------------------------------------------------------- healthchecks ---
+# Machino is healthy as soon as its API answers. COLD_IDLE is a healthy state:
+# "no consumer, no pipeline" means an idle camera has no pipeline by design.
+machino_healthy() {
+    port=$(api_port); _i=0
+    while [ "$_i" -lt "$HEALTH_TIMEOUT" ]; do
+        machino_running || { _i=$((_i + 1)); sleep 1; continue; }
+        if wget -q -O /dev/null -T 2 "http://127.0.0.1:$port/api/v1/state" 2>/dev/null; then return 0; fi
+        _i=$((_i + 1)); sleep 1
+    done
+    machino_running && warn "machino runs but its API on port $port did not answer"
+    return 1
+}
+
+majestic_healthy() {
+    _i=0
+    while [ "$_i" -lt "$HEALTH_TIMEOUT" ]; do
+        majestic_running && return 0
+        _i=$((_i + 1)); sleep 1
+    done
+    return 1
+}
+
+# --------------------------------------------------------------- switching ---
+stop_all_owners() {
+    if machino_running; then
+        [ -x "$INIT_MACHINO" ] && "$INIT_MACHINO" stop >/dev/null 2>&1
+        wait_gone machino || { warn "machino would not stop"; return 1; }
+    fi
+    if majestic_running; then
+        [ -x "$INIT_MAJESTIC" ] && "$INIT_MAJESTIC" stop >/dev/null 2>&1
+        wait_gone majestic || { warn "majestic would not stop"; return 1; }
+    fi
+    return 0
+}
+
+activate_machino() {
+    stop_all_owners || return 1
+    webui_start || warn "WebUI is not being served - use the CLI to switch back"
+    [ -x "$INIT_MACHINO" ] || { warn "$INIT_MACHINO missing"; return 1; }
+    "$INIT_MACHINO" start >/dev/null 2>&1
+    machino_healthy
+}
+
+activate_majestic() {
+    stop_all_owners || return 1
+    webui_stop || return 1                 # hand port 80 back before majestic claims it
+    [ -x "$INIT_MAJESTIC" ] || { warn "$INIT_MAJESTIC missing"; return 1; }
+    "$INIT_MAJESTIC" start >/dev/null 2>&1
+    majestic_healthy
+}
+
+activate() {
+    case "$1" in
+        machino)  activate_machino ;;
+        majestic) activate_majestic ;;
+        none)     stop_all_owners && webui_stop ;;
+        *)        warn "unknown streamer '$1'"; return 1 ;;
+    esac
+}
+
+cmd_set() {
+    want=$1
+    case "$want" in machino|majestic|none) ;; *) die "usage: streamerctl set {machino|majestic|none}" ;; esac
+    previous=$(read_selection)
+    log "switching: $previous -> $want"
+    if activate "$want"; then
+        write_selection "$want"
+        log "active streamer: $want"
+        cmd_status
+        return 0
+    fi
+    warn "$want did not come up - rolling back to $previous"
+    if [ "$want" != "$previous" ] && activate "$previous"; then
+        write_selection "$previous"
+        warn "rolled back to $previous"
+    else
+        warn "rollback to $previous FAILED - camera has no active streamer"
+        warn "recover with: streamerctl set majestic   (see docs/install-openipc.md)"
+    fi
+    cmd_status
+    return 1
+}
+
+cmd_status() {
+    sel=$(read_selection)
+    run=none
+    machino_running  && run=machino
+    majestic_running && run=majestic
+    echo "selected:     $sel"
+    echo "running:      $run"
+    echo "port 80:      $(port80_owner)"
+    if machino_running; then
+        port=$(api_port)
+        st=$(wget -q -O- -T 2 "http://127.0.0.1:$port/api/v1/state" 2>/dev/null |
+             sed -n 's/.*"lifecycle"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
+        echo "machino api:  ${st:-no answer} (port $port)"
+    fi
+    [ "$sel" = "$run" ] || echo "note:         selection and running process differ"
+    if [ "$run" = machino ] && [ "$(port80_owner)" = none ]; then
+        echo "warning:      nothing serves port 80 - the WebUI is unreachable"
+    fi
+}
+
+cmd_boot() {
+    # called by /etc/init.d/S95streamer at boot: bring up exactly the selection
+    sel=$(read_selection)
+    log "streamerctl: boot selection '$sel'"
+    activate "$sel" || warn "boot: '$sel' did not come up"
+}
+
+usage() {
+    cat <<EOF
+usage: streamerctl <command>
+
+  status              show selected/running streamer and who serves port 80
+  set machino         stop majestic, serve the WebUI, start machino (rolls back on failure)
+  set majestic        stop machino, hand port 80 back, start majestic (rolls back on failure)
+  set none            stop every media owner (WebUI stays on whatever serves it)
+  boot                apply the stored selection (used by /etc/init.d/S95streamer)
+
+The selection is stored in $SELECTED and survives a reboot.
+EOF
+}
+
+case "${1:-}" in
+    status)  cmd_status ;;
+    set)     [ $# -ge 2 ] || die "usage: streamerctl set {machino|majestic|none}"; cmd_set "$2" ;;
+    boot)    cmd_boot ;;
+    ""|-h|--help|help) usage ;;
+    *)       die "unknown command '$1' (try: streamerctl help)" ;;
+esac

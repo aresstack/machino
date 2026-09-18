@@ -71,6 +71,8 @@ strip: $(BIN)
 test:
 	$(HOST_CXX) $(HOST_CXXFLAGS) $(TEST_SRC) -o tests/machino-tests
 	./tests/machino-tests
+	sh tests/test_streamerctl.sh
+	sh tests/test_openipc_install.sh
 
 flags:
 	@echo "CXXFLAGS=$(CXXFLAGS)"
@@ -78,3 +80,4 @@ flags:
 
 clean:
 	rm -f $(OBJ) $(BIN) tests/machino-tests tests/machino-tests.exe tests/tmp_machino.conf tests/tmp_machino.conf.tmp
+	rm -rf tests/tmp-streamerctl tests/tmp-openipc-install
