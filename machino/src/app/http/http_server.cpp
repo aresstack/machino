@@ -1,4 +1,5 @@
 #include "app/http/http_server.hpp"
+#include "app/compat/majestic_webui.hpp"
 #include "app/http/http_parse.hpp"
 #include "core/log.hpp"
 
@@ -103,7 +104,7 @@ bool HttpServer::handle_request(Client& c) {
 
     const std::string& path = req.path; const std::string& m = req.method;
     api::Response r;
-    if (m == "OPTIONS") { queue(c, response(204, "text/plain", "", req.keep_alive, "Access-Control-Allow-Methods: GET, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, If-Match\r\n")); if (!req.keep_alive) c.close_after_flush = true; return true; }
+    if (m == "OPTIONS") { queue(c, response(204, "text/plain", "", req.keep_alive, "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, If-Match\r\n")); if (!req.keep_alive) c.close_after_flush = true; return true; }
     if (path == "/api/v1/events") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         else {
@@ -117,9 +118,19 @@ bool HttpServer::handle_request(Client& c) {
     else if (path == "/api/v1/capabilities") { r = (m == "GET") ? api_.capabilities() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/state")        { r = (m == "GET") ? api_.state() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/telemetry")    { r = (m == "GET") ? api_.telemetry() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
-    else if (path == "/api/v1/config") {
+    else if (path == "/api/v1/config.schema.json") {
+        r = (m == "GET") ? api::Response{200, compat::majestic_schema(api_.capabilities().body)}
+                         : api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    } else if (path == "/api/v1/config.json") {
+        r = (m == "GET") ? api::Response{200, compat::majestic_config(api_.config().body, api_.state().body)}
+                         : api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    } else if (path == "/api/v1/config") {
         if (m == "GET") r = api_.config();
-        else if (m == "PATCH" || m == "PUT") r = api_.patch_config(req.body, req.header("if-match"));
+        else if (m == "POST") {
+            compat::MajesticTranslation t = compat::majestic_post_to_native(req.body);
+            r = t.ok ? api_.patch_config(t.patch.dump(), "")
+                     : api::ApiService::fail(t.status, t.code.c_str(), t.path, t.message);
+        } else if (m == "PATCH" || m == "PUT") r = api_.patch_config(req.body, req.header("if-match"));
         else r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
     } else r = api::ApiService::fail(404, "unknown_field", path, "unknown endpoint");
 

@@ -2,6 +2,7 @@
 // config file. Exercises the full PATCH path through PerformanceService and
 // PipelineManager (no HTTP sockets - the transport is tested on hardware).
 #include "app/api/api_service.hpp"
+#include "app/compat/majestic_webui.hpp"
 #include "core/config_store.hpp"
 #include "core/events.hpp"
 #include "core/hw/registry.hpp"
@@ -259,6 +260,41 @@ void test_m7_image_latency_api() {
     ACHECK(path(tel.body, "latency.available") != nullptr && path(tel.body, "exposure.available")->as_bool());
 }
 
+// The OpenIPC WebUI does not consume Machino's native config shape directly.
+// Keep the bridge thin: capabilities decide what is shown; writes translate
+// into the same native PATCH path so validation/lifecycle semantics stay single-source.
+void test_majestic_webui_compat() {
+    Rig r;
+
+    Json schema = compat::majestic_schema(r.api.capabilities().body);
+    ACHECK(schema.get("x-groups") && schema.get("x-groups")->size() == 3);
+    ACHECK(path(schema, "properties.video0.properties.fps") != nullptr);
+    ACHECK(path(schema, "properties.video0.properties.bitrate_kbps") != nullptr);
+    ACHECK(path(schema, "properties.sensor.properties.fps") != nullptr);
+    ACHECK(path(schema, "properties.image.properties.brightness") != nullptr);
+    ACHECK(path(schema, "properties.image.properties.wdr") == nullptr); // unsupported is never advertised
+    ACHECK(path(schema, "properties.video0.properties.fps.minimum")->as_int() == 10);
+    ACHECK(path(schema, "properties.video0.properties.fps.maximum")->as_int() == 20);
+
+    Json web = compat::majestic_config(r.api.config().body, r.api.state().body);
+    ACHECK(path(web, "video0.bitrate_kbps")->as_int() == 3000);
+    ACHECK(path(web, "video0.fps")->as_int() == 20);
+    ACHECK(web.get("video") == nullptr); // renderer is intentionally one section deep
+
+    compat::MajesticTranslation t = compat::majestic_post_to_native(
+        "{\"video0\":{\"bitrate_kbps\":1500}}");
+    ACHECK(t.ok && path(t.patch, "video.0.bitrate_kbps")->as_int() == 1500);
+    api::Response applied = r.api.patch_config(t.patch.dump(), "");
+    ACHECK(applied.status == 200 && r.store.get("video.bitrate") == "1500");
+
+    t = compat::majestic_post_to_native("{\"sensor\":{\"fps\":15}}");
+    ACHECK(t.ok && path(t.patch, "sensor.fps")->as_int() == 15);
+    t = compat::majestic_post_to_native("{\"mystery\":{\"x\":1}}");
+    ACHECK(!t.ok && t.status == 400 && t.code == "unknown_field" && t.path == "mystery");
+    t = compat::majestic_post_to_native("{bad");
+    ACHECK(!t.ok && t.code == "invalid_json");
+}
+
 // The RTSP client limit is configuration like any other: validated, persisted,
 // and honest about when it takes effect (the accept loop reads its own copy).
 void test_rtsp_client_limit_api() {
@@ -288,6 +324,7 @@ void run_api_tests() {
     test_concurrent_patches();
     test_config_store_text();
     test_m7_image_latency_api();
+    test_majestic_webui_compat();
     test_rtsp_client_limit_api();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }
