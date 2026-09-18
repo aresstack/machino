@@ -23,7 +23,7 @@
       <rect x="150" y="0" width="128" height="44" rx="22" fill="#0d2d3b" stroke="#3fd9cc" stroke-opacity="0.55"/><text x="214" y="29" fill="#a8f4e7" font-size="18" font-weight="700" text-anchor="middle">OpenIPC</text>
       <rect x="292" y="0" width="164" height="44" rx="22" fill="#0d2d3b" stroke="#3fd9cc" stroke-opacity="0.55"/><text x="374" y="29" fill="#a8f4e7" font-size="18" font-weight="700" text-anchor="middle">Ingenic first</text>
     </g>
-    <text x="50" y="356" fill="#7894a6" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="19" font-weight="600" letter-spacing="0.5">MACHINO IS NOT MACHO. <tspan fill="#49d7ff">YET.</tspan></text>
+    <text x="50" y="356" fill="#7894a6" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="19" font-weight="600" letter-spacing="0.5">MACHINO IS NOT MACHO.<tspan fill="#79e9dc" font-weight="800"> YET.</tspan></text>
   </g>
   <g transform="translate(1065 102)">
     <rect x="0" y="68" width="356" height="250" rx="34" fill="#0b1a25" stroke="#2d6674" stroke-width="3"/><rect x="22" y="90" width="312" height="206" rx="25" fill="#0c2230" stroke="#327382" stroke-opacity="0.55"/>
