@@ -7,6 +7,7 @@
 #include "core/hw/registry.hpp"
 #include "core/hw/resolve.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
+#include "core/media/tuning_service.hpp"
 #include "core/power/performance_service.hpp"
 #include "core/stream_hub.hpp"
 #include "fake_platform.hpp"
@@ -47,9 +48,10 @@ struct Rig {
     CallLog log; FakePowerControl power; FakePlatform platform{log, &power}; FakeTimer timer; StreamHub hub; FakeStats stats;
     EventBus bus; ConfigStore store{TMP_CONF};
     hw::ResolvedHardware hw; AppConfig cfg; EffectiveStream stream; LifecycleConfig lc;
-    PipelineManager mgr; power::PerformanceService perf; api::ApiService api;
+    PipelineManager mgr; power::PerformanceService perf; media::TuningService tuning; api::ApiService api;
     Rig() : hw(make_hw()), stream(effective_stream(cfg.video, hw)), mgr(platform, stream, mk_lc(), timer, hub),
-            perf(mgr, platform, stats, hw, cfg.video), api(perf, mgr, store, bus, hw, cfg) {
+            perf(mgr, platform, stats, hw, cfg.video), tuning(mgr, platform, hub, stream, cfg.image, cfg.latency),
+            api(perf, tuning, mgr, store, bus, hw, cfg) {
         FILE* f = fopen(TMP_CONF, "w"); if (f) { fputs("# test\nboard = board-x\nvideo.bitrate = 3000\nlog.level = 2\n", f); fclose(f); }
         std::string err; store.load(err);
         mgr.set_state_listener([this](State a, State b) { Json j = Json::object(); j.set("from", Json::string(state_name(a))); j.set("to", Json::string(state_name(b))); bus.publish("lifecycle", j.dump()); });
@@ -222,6 +224,41 @@ void test_config_store_text() {
     ACHECK(config_text_get("x = \"quoted\"\n", "x") == "quoted");
 }
 
+void test_m7_image_latency_api() {
+    Rig r;
+    api::Response caps = r.api.capabilities();
+    ACHECK(path(caps.body, "image.brightness.status")->as_string() == "supported");
+    ACHECK(path(caps.body, "image.wdr.status")->as_string() == "unsupported");
+    ACHECK(path(caps.body, "latency.profiles")->size() == 3);
+    ACHECK(path(caps.body, "controls.gop.apply")->as_string() == "live");
+
+    api::Response p = r.api.patch_config("{\"image\":{\"brightness\":100}}", "");
+    ACHECK(p.status == 200 && p.body.get("changes")->at(0).get("status")->as_string() == "stored");
+    ACHECK(r.mgr.state() == State::ColdIdle && r.log.count("platform.bring_up") == 0);
+    ACHECK(r.store.get("image.brightness") == "100" && path(r.api.config().body, "image.brightness")->as_int() == 100);
+    p = r.api.patch_config("{\"image\":{\"wdr\":1}}", "");
+    ACHECK(p.status == 422 && path(p.body, "error.code")->as_string() == "unsupported_control");
+    p = r.api.patch_config("{\"image\":{\"anti_flicker\":\"55hz\"}}", "");
+    ACHECK(p.status == 422 && path(p.body, "error.code")->as_string() == "invalid_value");
+
+    auto demand = r.mgr.acquire(ConsumerType::Rtsp);
+    ACHECK(demand.active() && r.log.count("image.set.brightness@100") == 1);
+    p = r.api.patch_config("{\"image\":{\"brightness\":110}}", "");
+    ACHECK(p.status == 200 && p.body.get("changes")->at(0).get("effective")->as_int() == 110);
+    unsigned restarts = r.mgr.stats().restart_count;
+    p = r.api.patch_config("{\"video\":{\"0\":{\"gop\":10}}}", "");
+    ACHECK(p.status == 200 && r.mgr.stream().gop == 10 && r.log.count("enc.set_gop@10") == 1);
+    ACHECK(r.mgr.stats().restart_count == restarts && r.store.get("latency.gop") == "10");
+    p = r.api.patch_config("{\"latency\":{\"profile\":\"low\"}}", "");
+    ACHECK(p.status == 200 && r.mgr.stats().restart_count == restarts + 1);
+    ACHECK(path(r.api.state().body, "latency.profile")->as_string() == "low");
+    ACHECK(path(r.api.state().body, "latency.gop")->as_int() == 10); // explicit GOP wins over low preset
+    p = r.api.patch_config("{\"latency\":{\"consumer_queue_depth\":2}}", "");
+    ACHECK(p.status == 200 && r.hub.default_depth() == 2 && r.mgr.stats().restart_count == restarts + 1);
+    api::Response tel = r.api.telemetry();
+    ACHECK(path(tel.body, "latency.available") != nullptr && path(tel.body, "exposure.available")->as_bool());
+}
+
 } // namespace
 
 void run_api_tests() {
@@ -232,5 +269,6 @@ void run_api_tests() {
     test_failed_restart_structured();
     test_concurrent_patches();
     test_config_store_text();
+    test_m7_image_latency_api();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }

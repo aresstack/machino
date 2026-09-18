@@ -1,6 +1,7 @@
 #include "app/api/api_service.hpp"
 #include "core/log.hpp"
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
@@ -34,9 +35,9 @@ static int64_t now_ms_realtime() { struct timespec ts; clock_gettime(CLOCK_REALT
 
 template <typename T> static Json opt(const Optional<T>& o) { return o.available ? Json::number((double)o.value) : Json::null(); }
 
-ApiService::ApiService(power::PerformanceService& perf, lifecycle::PipelineManager& pipeline, ConfigStore& store,
+ApiService::ApiService(power::PerformanceService& perf, media::TuningService& tuning, lifecycle::PipelineManager& pipeline, ConfigStore& store,
                        EventBus& bus, const hw::ResolvedHardware& hw, const AppConfig& cfg)
-    : perf_(perf), pipeline_(pipeline), store_(store), bus_(bus), hw_(hw), cfg_(cfg) {}
+    : perf_(perf), tuning_(tuning), pipeline_(pipeline), store_(store), bus_(bus), hw_(hw), cfg_(cfg) {}
 
 Json ApiService::error(const char* code, const std::string& path, const std::string& message) {
     Json e = Json::object(); e.set("code", Json::string(code));
@@ -77,6 +78,7 @@ static Json perf_control(const PerfCap& c) {
 
 Json ApiService::capabilities_json() const {
     CapabilitySet c = perf_.capabilities();
+    ImageCaps image_caps = tuning_.image_caps();
     Json j = Json::object();
     j.set("api", Json::integer(1));
     Json p = Json::object(); p.set("vendor", Json::string(hw_.platform.vendor)); p.set("family", Json::string(hw_.platform.family)); p.set("model", Json::string(hw_.platform.model));
@@ -109,11 +111,46 @@ Json ApiService::capabilities_json() const {
     ctl.set("sensor_fps", range_control(c.sensor.fps));
     ctl.set("stream_fps", range_control(c.video.fps));
     ctl.set("bitrate", range_control(c.video.bitrate));
+    ctl.set("gop", range_control(c.video.gop));
+    ctl.set("framesource_buffers", range_control(c.video.framesource_buffers));
+    ctl.set("encoder_buffers", range_control(c.video.encoder_buffers));
     ctl.set("isp_clock", perf_control(c.isp.performance));
     ctl.set("encoder_clock", perf_control(c.encoder.performance));
     ctl.set("cpu_frequency", perf_control(c.power.cpu_frequency));
     Json lg = Json::object(); lg.set("status", Json::string("supported")); lg.set("apply", Json::string("daemon_restart")); ctl.set("idle_grace_ms", lg);
     j.set("controls", ctl);
+    Json image = Json::object();
+    for (int i = 0; i < (int)ImageControl::COUNT; ++i) {
+        ImageControl k = (ImageControl)i;
+        Json cap = range_control(image_caps.control[i]);
+        if (k == ImageControl::AntiFlicker) {
+            Json values = Json::array(); values.push(Json::string("off")); values.push(Json::string("50hz")); values.push(Json::string("60hz"));
+            cap.set("values", values);
+        }
+        if (k == ImageControl::WhiteBalanceMode) {
+            Json values = Json::array();
+            for (const char* n : {"auto", "manual", "daylight", "cloudy", "incandescent", "fluorescent", "twilight", "shade", "warm_fluorescent", "color_tendency"})
+                values.push(Json::string(n));
+            cap.set("values", values);
+        }
+        image.set(image_control_name(k), cap);
+    }
+    j.set("image", image);
+    Json latency = Json::object();
+    Json lp = Json::array(); for (const char* n : {"normal", "low", "custom"}) lp.push(Json::string(n));
+    latency.set("profiles", lp);
+    latency.set("gop", range_control(c.video.gop));
+    latency.set("framesource_buffers", range_control(c.video.framesource_buffers));
+    latency.set("encoder_buffers", range_control(c.video.encoder_buffers));
+    Json q = Json::object(); q.set("status", Json::string("supported")); q.set("apply", Json::string("live")); q.set("min", Json::integer(1)); q.set("max", Json::integer(32));
+    latency.set("consumer_queue_depth", q);
+    Json sb = Json::object(); sb.set("status", Json::string("supported")); sb.set("apply", Json::string("daemon_restart")); sb.set("min", Json::integer(4096)); sb.set("max", Json::integer(1048576));
+    latency.set("socket_send_buffer_bytes", sb);
+    Json stall = Json::object(); stall.set("status", Json::string("supported")); stall.set("apply", Json::string("daemon_restart")); stall.set("min", Json::integer(50)); stall.set("max", Json::integer(10000));
+    latency.set("send_stall_ms", stall);
+    Json unsupported = Json::object(); unsupported.set("status", Json::string("unsupported")); unsupported.set("apply", Json::string("unsupported"));
+    latency.set("b_frames", unsupported); latency.set("sdk_low_latency_mode", unsupported);
+    j.set("latency", latency);
     Json profiles = Json::array(); for (const char* n : {"performance", "balanced", "battery", "custom"}) profiles.push(Json::string(n));
     j.set("profiles", profiles);
     Json vf = Json::array(); for (int f : perf_.verified_fps()) vf.push(Json::integer(f));
@@ -126,6 +163,7 @@ Json ApiService::state_json() {
     lifecycle::Stats st = pipeline_.stats();
     power::EffectiveState e = perf_.effective_state();
     EffectiveStream s = pipeline_.stream();
+    media::TuningState tune = tuning_.state();
     bool running = st.state == lifecycle::State::Active || st.state == lifecycle::State::GraceIdle;
     Json j = Json::object();
     j.set("lifecycle", Json::string(lifecycle_name_lc(st.state)));
@@ -141,9 +179,27 @@ Json ApiService::state_json() {
     m.set("sensor_fps", e.sensor_fps_readback ? Json::integer(e.sensor_fps_effective) : Json::null());   // effective (hardware) or null when cold/unreadable
     m.set("stream_fps", Json::integer(s.fps));
     m.set("bitrate_kbps", Json::integer(s.bitrate_kbps));
+    m.set("gop", Json::integer(s.gop));
+    m.set("framesource_buffers", Json::integer(s.buffers));
+    m.set("encoder_buffers", s.encoder_buffers > 0 ? Json::integer(s.encoder_buffers) : Json::null());
     m.set("width", Json::integer(s.width)); m.set("height", Json::integer(s.height));
     m.set("encoder_active", Json::boolean(running));
     j.set("media", m);
+    Json lat = Json::object(); lat.set("profile", Json::string(media::latency_profile_name(tune.latency.profile)));
+    lat.set("gop", Json::integer(tune.latency.gop)); lat.set("framesource_buffers", Json::integer(tune.latency.framesource_buffers));
+    lat.set("encoder_buffers", tune.latency.encoder_buffers > 0 ? Json::integer(tune.latency.encoder_buffers) : Json::null());
+    lat.set("consumer_queue_depth", Json::integer(tune.latency.consumer_queue_depth)); j.set("latency", lat);
+    Json image = Json::object();
+    for (int i = 0; i < (int)ImageControl::COUNT; ++i)
+        image.set(image_control_name((ImageControl)i), tune.image_effective[i] >= 0 ? Json::integer(tune.image_effective[i]) : Json::null());
+    ExposureReadback ex; Result er = tuning_.exposure(ex);
+    Json ae = Json::object();
+    ae.set("available", Json::boolean((bool)er && ex.available));
+    ae.set("luma", ex.available ? Json::integer(ex.luma) : Json::null()); ae.set("target", ex.available ? Json::integer(ex.target) : Json::null());
+    ae.set("stable", ex.available ? Json::boolean(ex.stable) : Json::null()); ae.set("integration_time", ex.available ? Json::integer(ex.integration_time) : Json::null());
+    ae.set("analog_gain", ex.available ? Json::integer(ex.again) : Json::null()); ae.set("digital_gain", ex.available ? Json::integer(ex.dgain) : Json::null());
+    ae.set("isp_digital_gain", ex.available ? Json::integer(ex.isp_dgain) : Json::null()); ae.set("total_gain_db", ex.available ? Json::integer(ex.total_gain_db) : Json::null());
+    image.set("exposure", ae); j.set("image", image);
     j.set("revision", Json::integer(store_.revision()));
     return j;
 }
@@ -152,6 +208,7 @@ Response ApiService::state() { return Response{200, state_json()}; }
 Json ApiService::config_json() {
     power::EffectiveState e = perf_.effective_state();
     EffectiveStream s = pipeline_.stream();
+    media::TuningState tune = tuning_.state();
     Json j = Json::object();
     j.set("revision", Json::integer(store_.revision()));
     Json perf = Json::object(); perf.set("profile", Json::string(power::profile_name(e.profile))); j.set("performance", perf);
@@ -159,6 +216,22 @@ Json ApiService::config_json() {
     Json v0 = Json::object(); v0.set("fps", Json::integer(s.fps)); v0.set("bitrate_kbps", Json::integer(s.bitrate_kbps));
     v0.set("width", Json::integer(s.width)); v0.set("height", Json::integer(s.height)); v0.set("gop", Json::integer(s.gop));
     Json video = Json::object(); video.set("0", v0); j.set("video", video);
+    Json lat = Json::object(); lat.set("profile", Json::string(media::latency_profile_name(tune.requested_latency.profile)));
+    lat.set("gop", tune.requested_latency.gop ? Json::integer(*tune.requested_latency.gop) : Json::null());
+    lat.set("framesource_buffers", tune.requested_latency.framesource_buffers ? Json::integer(*tune.requested_latency.framesource_buffers) : Json::null());
+    lat.set("encoder_buffers", tune.requested_latency.encoder_buffers ? Json::integer(*tune.requested_latency.encoder_buffers) : Json::null());
+    lat.set("consumer_queue_depth", tune.requested_latency.consumer_queue_depth ? Json::integer(*tune.requested_latency.consumer_queue_depth) : Json::null());
+    lat.set("socket_send_buffer_bytes", Json::integer(cfg_.rtsp.send_buffer_bytes));
+    lat.set("send_stall_ms", Json::integer(cfg_.rtsp.send_stall_ms));
+    Json le = Json::object(); le.set("gop", Json::integer(tune.latency.gop)); le.set("framesource_buffers", Json::integer(tune.latency.framesource_buffers));
+    le.set("encoder_buffers", tune.latency.encoder_buffers > 0 ? Json::integer(tune.latency.encoder_buffers) : Json::null());
+    le.set("consumer_queue_depth", Json::integer(tune.latency.consumer_queue_depth));
+    le.set("socket_send_buffer_bytes", Json::integer(cfg_.rtsp.send_buffer_bytes)); le.set("send_stall_ms", Json::integer(cfg_.rtsp.send_stall_ms));
+    lat.set("effective", le); j.set("latency", lat);
+    Json image = Json::object();
+    for (int i = 0; i < (int)ImageControl::COUNT; ++i)
+        image.set(image_control_name((ImageControl)i), tune.image_requested[i] >= 0 ? Json::integer(tune.image_requested[i]) : Json::null());
+    j.set("image", image);
     Json lc = Json::object(); lc.set("idle_grace_ms", Json::integer(cfg_.pipeline.idle_grace_ms)); lc.set("always_on", Json::boolean(cfg_.pipeline.always_on)); j.set("lifecycle", lc);
     Json pw = Json::object(); pw.set("isp_performance", Json::string(power::perf_level_name(e.isp)));
     pw.set("encoder_performance", Json::string(power::perf_level_name(e.encoder))); pw.set("cpu_performance", Json::string(power::perf_level_name(e.cpu)));
@@ -177,6 +250,20 @@ Json ApiService::telemetry_json() {
     Json m = Json::object(); m.set("encoded_fps", opt(t.measured_encoded_fps)); m.set("bitrate_kbps", opt(t.measured_bitrate_kbps));
     m.set("dropped_frames", Json::integer(t.dropped_frames)); m.set("stream_fps_requested", Json::integer(t.requested_stream_fps));
     m.set("bitrate_kbps_requested", Json::integer(t.requested_bitrate_kbps)); j.set("media", m);
+    LatencyStats ls = tuning_.latency_stats();
+    Json lat = Json::object(); lat.set("available", Json::boolean(ls.valid)); lat.set("samples", Json::integer(ls.samples));
+    lat.set("capture_to_encoder_output_avg_ms", ls.valid ? Json::number(ls.capture_to_out_avg_ms) : Json::null());
+    lat.set("capture_to_encoder_output_max_ms", ls.valid ? Json::number(ls.capture_to_out_max_ms) : Json::null());
+    lat.set("encoder_output_to_socket_avg_ms", ls.valid ? Json::number(ls.out_to_send_avg_ms) : Json::null());
+    lat.set("encoder_output_to_socket_max_ms", ls.valid ? Json::number(ls.out_to_send_max_ms) : Json::null());
+    lat.set("discontinuities", Json::integer(ls.discontinuities)); j.set("latency", lat);
+    ExposureReadback ex; Result xr = tuning_.exposure(ex);
+    Json ae = Json::object(); ae.set("available", Json::boolean((bool)xr && ex.available));
+    ae.set("luma", ex.available ? Json::integer(ex.luma) : Json::null()); ae.set("target", ex.available ? Json::integer(ex.target) : Json::null());
+    ae.set("stable", ex.available ? Json::boolean(ex.stable) : Json::null()); ae.set("integration_time", ex.available ? Json::integer(ex.integration_time) : Json::null());
+    ae.set("analog_gain", ex.available ? Json::integer(ex.again) : Json::null()); ae.set("digital_gain", ex.available ? Json::integer(ex.dgain) : Json::null());
+    ae.set("isp_digital_gain", ex.available ? Json::integer(ex.isp_dgain) : Json::null()); ae.set("total_gain_db", ex.available ? Json::integer(ex.total_gain_db) : Json::null());
+    j.set("exposure", ae);
     Json pw = Json::object(); pw.set("sensor_fps", opt(t.effective_sensor_fps)); pw.set("sensor_fps_requested", Json::integer(t.requested_sensor_fps));
     pw.set("isp_clock_hz", opt(t.isp_clock_hz)); pw.set("encoder_clock_hz", opt(t.encoder_clock_hz));
     pw.set("cpu_frequency_hz", t.cpu_freq_khz.available ? Json::number((double)t.cpu_freq_khz.value * 1000.0) : Json::null());
@@ -191,6 +278,20 @@ namespace {
 struct Change { std::string path; Json requested; ApplyResult r; bool has_result = false; std::string key, value; };
 
 bool get_int(const Json& v, long long& out) { if (!v.is_integer()) return false; out = v.as_int(); return true; }
+
+bool image_control_from_name(const std::string& n, ImageControl& out) {
+    for (int i = 0; i < (int)ImageControl::COUNT; ++i) {
+        ImageControl c = (ImageControl)i;
+        if (n == image_control_name(c)) { out = c; return true; }
+    }
+    return false;
+}
+
+bool wb_mode(const std::string& s, int& out) {
+    const char* names[] = {"auto", "manual", "daylight", "cloudy", "incandescent", "fluorescent", "twilight", "shade", "warm_fluorescent", "color_tendency"};
+    for (int i = 0; i < 10; ++i) if (s == names[i]) { out = i; return true; }
+    return false;
+}
 
 Json change_json(const Change& c) {
     Json j = Json::object();
@@ -248,10 +349,47 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     Change d; d.path = path + "." + f.first; d.requested = f.second; long long n;
                     if (f.first == "fps") { if (!get_int(f.second, n) || n <= 0 || n > 240) return bad(422, "invalid_value", d.path, "fps must be an integer in 1..240"); d.key = "video.fps"; d.value = std::to_string(n); }
                     else if (f.first == "bitrate_kbps") { if (!get_int(f.second, n) || n <= 0 || n > 200000) return bad(422, "invalid_value", d.path, "bitrate_kbps must be an integer in 1..200000"); d.key = "video.bitrate"; d.value = std::to_string(n); }
+                    else if (f.first == "gop") { if (!get_int(f.second, n) || n < 1 || n > 1000) return bad(422, "invalid_value", d.path, "gop must be an integer in 1..1000"); d.key = "latency.gop"; d.value = std::to_string(n); }
                     else return bad(400, "unknown_field", d.path, "unknown field");
                     changes.push_back(d);
                 }
                 continue;
+            } else if (s == "latency") {
+                if (kv.first == "profile") {
+                    if (!val.is_string()) return bad(422, "invalid_value", path, "profile must be normal|low|custom");
+                    media::LatencyProfile p; if (!media::parse_latency_profile(val.as_string(), p)) return bad(422, "invalid_value", path, "unknown latency profile (normal|low|custom)");
+                    c.key = "latency.profile"; c.value = val.as_string();
+                } else {
+                    long long n; if (!get_int(val, n)) return bad(422, "invalid_value", path, "value must be an integer");
+                    if (kv.first == "gop") { if (n < 1 || n > 1000) return bad(422, "invalid_value", path, "gop must be in 1..1000"); c.key = "latency.gop"; }
+                    else if (kv.first == "framesource_buffers") { if (n < 1 || n > 8) return bad(422, "invalid_value", path, "framesource_buffers must be in 1..8"); c.key = "latency.framesource_buffers"; }
+                    else if (kv.first == "encoder_buffers") { if (n < 1 || n > 8) return bad(422, "invalid_value", path, "encoder_buffers must be in 1..8"); c.key = "latency.encoder_buffers"; }
+                    else if (kv.first == "consumer_queue_depth") { if (n < 1 || n > 32) return bad(422, "invalid_value", path, "consumer_queue_depth must be in 1..32"); c.key = "latency.queue_depth"; }
+                    else if (kv.first == "socket_send_buffer_bytes") { if (n < 4096 || n > 1048576) return bad(422, "invalid_value", path, "socket_send_buffer_bytes must be in 4096..1048576"); c.key = "rtsp.send_buffer_bytes"; }
+                    else if (kv.first == "send_stall_ms") { if (n < 50 || n > 10000) return bad(422, "invalid_value", path, "send_stall_ms must be in 50..10000"); c.key = "rtsp.send_stall_ms"; }
+                    else return bad(400, "unknown_field", path, "unknown field");
+                    c.value = std::to_string(n);
+                }
+            } else if (s == "image") {
+                ImageControl control;
+                if (!image_control_from_name(kv.first, control)) return bad(400, "unknown_field", path, "unknown image control");
+                ImageCaps ic = tuning_.image_caps(); const RangeCap cap = ic.control[(int)control];
+                if (cap.support != Cap::Supported) return bad(422, "unsupported_control", path, "image control is not supported by this adapter/mode");
+                int iv = -1;
+                if (control == ImageControl::AntiFlicker) {
+                    if (!val.is_string()) return bad(422, "invalid_value", path, "anti_flicker must be off|50hz|60hz");
+                    iv = val.as_string() == "off" ? 0 : val.as_string() == "50hz" ? 50 : val.as_string() == "60hz" ? 60 : -1;
+                    if (iv < 0) return bad(422, "invalid_value", path, "anti_flicker must be off|50hz|60hz");
+                    c.value = val.as_string();
+                } else if (control == ImageControl::WhiteBalanceMode && val.is_string()) {
+                    if (!wb_mode(val.as_string(), iv)) return bad(422, "invalid_value", path, "unknown white-balance mode");
+                    c.value = std::to_string(iv);
+                } else {
+                    long long n; if (!get_int(val, n)) return bad(422, "invalid_value", path, "image control must be an integer"); iv = (int)n;
+                    if (!cap.in_range(iv)) return bad(422, "invalid_value", path, "image control outside capability range");
+                    c.value = std::to_string(iv);
+                }
+                c.key = "image." + kv.first;
             } else if (s == "lifecycle" && kv.first == "idle_grace_ms") {
                 long long n; if (!get_int(val, n) || n < 0 || n > 600000) return bad(422, "invalid_value", path, "idle_grace_ms must be an integer in 0..600000");
                 c.key = "lifecycle.idle_grace_ms"; c.value = std::to_string(n);
@@ -275,11 +413,32 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         else if (c.key == "sensor.fps")          c.r = perf_.set_sensor_fps((int)n);
         else if (c.key == "video.fps")           c.r = perf_.set_stream_fps((int)n);
         else if (c.key == "video.bitrate")       c.r = perf_.set_bitrate((int)n);
+        else if (c.key == "latency.profile")     { media::LatencyProfile p; media::parse_latency_profile(c.value, p); c.r = tuning_.set_latency_profile(p); }
+        else if (c.key == "latency.gop")         c.r = tuning_.set_gop(atoi(c.value.c_str()));
+        else if (c.key == "latency.framesource_buffers") c.r = tuning_.set_framesource_buffers(atoi(c.value.c_str()));
+        else if (c.key == "latency.encoder_buffers")     c.r = tuning_.set_encoder_buffers(atoi(c.value.c_str()));
+        else if (c.key == "latency.queue_depth")         c.r = tuning_.set_queue_depth(atoi(c.value.c_str()));
+        else if (c.key == "rtsp.send_buffer_bytes" || c.key == "rtsp.send_stall_ms")
+            c.r = ApplyResult::stored(ApplyMode::DaemonRestart, atoi(c.value.c_str()), "persisted; applies to sockets after daemon restart");
+        else if (c.key.rfind("image.", 0) == 0) {
+            ImageControl control; image_control_from_name(c.key.substr(6), control);
+            int iv = control == ImageControl::AntiFlicker ? (c.value == "off" ? 0 : c.value == "50hz" ? 50 : 60) : atoi(c.value.c_str());
+            c.r = tuning_.set_image(control, iv);
+        }
         else if (c.key == "lifecycle.idle_grace_ms") { c.r = ApplyResult::stored(ApplyMode::DaemonRestart, (int)n, "persisted; takes effect after daemon restart"); }
         else if (c.key == "power.isp_performance")     { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_isp_performance(l); }
         else if (c.key == "power.encoder_performance") { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_encoder_performance(l); }
         else if (c.key == "power.cpu_performance")     { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_cpu_performance(l); }
         c.has_result = true;
+        if (c.r.ok) {
+            if (c.key == "rtsp.send_buffer_bytes") cfg_.rtsp.send_buffer_bytes = atoi(c.value.c_str());
+            else if (c.key == "rtsp.send_stall_ms") cfg_.rtsp.send_stall_ms = atoi(c.value.c_str());
+            else if (c.key == "lifecycle.idle_grace_ms") cfg_.pipeline.idle_grace_ms = atoi(c.value.c_str());
+        }
+        if (c.r.ok && (c.key == "performance.profile" || c.key == "video.fps")) {
+            ApplyResult lr = tuning_.refresh_after_stream_change();
+            if (!lr.ok) LOGW(MOD, "latency preset refresh after %s failed: %s", c.key.c_str(), lr.message.c_str());
+        }
         if (!c.r.ok) { any_rejected = true; if (!first_rejected) first_rejected = &c; }
         LOGI(MOD, "PATCH %s=%s -> %s (%s, effective=%d%s) %s", c.path.c_str(), c.value.c_str(), c.r.ok ? "ok" : "REJECTED",
              apply_api_name(c.r.mode), c.r.effective, c.r.deferred ? ", deferred" : "", c.r.message.c_str());

@@ -32,10 +32,43 @@ video.bitrate     = 3000      # kbps
 video.profile     = 2         # 0 baseline, 1 main, 2 high
 video.rc_mode     = cbr       # cbr | vbr | fixqp
 video.buffers     = 2
+#video.encoder_buffers = 2 # absent = SDK default; explicit 1..8 requires pipeline restart
+
+# --- latency ---------------------------------------------------------------
+# A profile is only a documented preset; explicit latency.* values win:
+#   normal: video GOP/buffers, SDK encoder-buffer default, queue depth 4
+#   low:    GOP = current FPS (one-second IDR cadence), FrameSource buffers 1,
+#           encoder stream buffers 1, per-client AU queue depth 1
+#   custom: video GOP/buffers plus explicit overrides below
+latency.profile = normal            # normal | low | custom
+#latency.gop = 20
+#latency.framesource_buffers = 1
+#latency.encoder_buffers = 1
+#latency.queue_depth = 1
 
 # --- rtsp -------------------------------------------------------------------
 rtsp.port         = 554
 rtsp.path         = /ch0
+rtsp.send_buffer_bytes = 65536      # bounded kernel backlog per client
+rtsp.send_stall_ms     = 750        # disconnect stalled client; no seconds-old backlog
+
+# --- image / ISP -----------------------------------------------------------
+# Every key is optional. Absent means "preserve the sensor tuning-bin / ISP
+# default"; Machino does not impose magic colour or exposure values.
+#image.brightness = 128
+#image.contrast = 128
+#image.saturation = 128
+#image.sharpness = 128
+#image.hue = 128
+#image.anti_flicker = 50hz          # off | 50hz | 60hz; explicit regional choice
+#image.ae_compensation = 128         # 0 disables compensation; AE remains automatic
+#image.highlight_depress = 0
+#image.backlight_comp = 0
+#image.white_balance_mode = 0        # 0 auto; other SDK modes are capability-backed
+#image.temporal_nr = 1
+#image.spatial_nr = 1
+#image.dpc = 1
+#image.defog = 0
 
 # --- media lifecycle: "no consumer, no pipeline" -----------------------------
 # The daemon and the RTSP listener are always up; sensor/ISP/encoder come up

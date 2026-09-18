@@ -1,5 +1,6 @@
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/log.hpp"
+#include <ctime>
 
 namespace machino { namespace lifecycle {
 
@@ -173,6 +174,42 @@ Result PipelineManager::read_sensor_fps(int& fps) {
 
 void PipelineManager::set_sensor_fps_target(int fps) { std::lock_guard<std::mutex> lk(m_); sensor_fps_target_ = fps; }
 
+Result PipelineManager::live_gop(int frames, int& effective) {
+    std::lock_guard<std::mutex> lk(m_);
+    effective = -1;
+    if (frames < 1 || frames > 1000) return Result::error();
+    if (!(state_ == State::Active || state_ == State::GraceIdle) || !enc_) return Result::busy();
+    Result r = enc_->set_gop(frames, effective);
+    // A successful set means the encoder accepted this GOP and will use it.
+    // Encoders may still report the previous length for up to one GOP (the
+    // Ingenic SDK does), so that transient must not become the effective
+    // value: it would make /state report the old GOP forever and let a later
+    // restart recreate the channel with it, silently undoing the change.
+    if (r) { stream_.gop = frames; effective = frames; }
+    return r;
+}
+
+Result PipelineManager::live_image(ImageControl c, int value, int& effective) {
+    std::lock_guard<std::mutex> lk(m_);
+    effective = -1;
+    if (!(state_ == State::Active || state_ == State::GraceIdle)) return Result::busy();
+    IImageControl* image = platform_.image();
+    return image ? image->set(c, value, effective) : Result::unsupported();
+}
+
+Result PipelineManager::read_exposure(ExposureReadback& out) {
+    std::lock_guard<std::mutex> lk(m_);
+    out = ExposureReadback{};
+    if (!(state_ == State::Active || state_ == State::GraceIdle)) return Result::busy();
+    IImageControl* image = platform_.image();
+    return image ? image->exposure(out) : Result::unsupported();
+}
+
+void PipelineManager::request_idr() {
+    std::lock_guard<std::mutex> lk(m_);
+    if ((state_ == State::Active || state_ == State::GraceIdle) && enc_) enc_->request_idr();
+}
+
 // ---- media chain (m_ held) --------------------------------------------------
 bool PipelineManager::start_locked() {
     ++start_count_;
@@ -203,6 +240,8 @@ bool PipelineManager::start_locked() {
         if (sr) LOGI(MOD, "sensor fps %d applied (effective %d)", sensor_fps_target_, eff);
         else LOGW(MOD, "sensor fps %d not applied (%s)", sensor_fps_target_, status_name(sr.status));
     }
+
+    if (post_start_) post_start_();
 
     quit_ = false; frames_ = 0; dropped_ = 0;
     { std::lock_guard<std::mutex> wl(win_m_); last_win_ = Measurement{}; win_start_us_ = 0; win_frames_ = 0; win_bytes_ = 0; }
@@ -243,6 +282,14 @@ void PipelineManager::capture_loop() {
         }
         if (!r) { LOGW(MOD, "fetch failed (%d)", r.code); continue; }
         timeouts = 0;
+        struct timespec mt{}; clock_gettime(CLOCK_MONOTONIC, &mt);
+        au->fetched_us = (int64_t)mt.tv_sec * 1000000 + mt.tv_nsec / 1000;
+        // IMP timestamps and IMP_System_GetTimeStamp are the same platform
+        // time domain. Reject nonsensical deltas rather than publishing a
+        // made-up latency number on adapters that cannot guarantee that.
+        int64_t platform_now = platform_.timestamp_us();
+        if (au->pts_us > 0 && platform_now >= au->pts_us)
+            hub_.record_capture_to_out(platform_now - au->pts_us);
         au->seq = seq_++;
         unsigned n = ++frames_;
         if (n == 1) LOGI(MOD, "first frame: %lu bytes key=%d pts=%lld", (unsigned long)au->data.size(), (int)au->key, (long long)au->pts_us);

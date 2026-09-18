@@ -94,6 +94,17 @@ public:
     // Sensor fps to (re)apply after every start (-1 = platform default).
     void   set_sensor_fps_target(int fps);
 
+    // --- M7: encoder/latency
+    Result live_gop(int frames, int& effective);
+    Result live_image(ImageControl c, int value, int& effective);
+    Result read_exposure(ExposureReadback& out);
+    // Ask the encoder for a key frame (new consumer / reconnect). No-op when cold.
+    void   request_idr();
+    // Called after every successful start with the manager lock held; used by
+    // the ImageService to re-apply image settings. Must not call back in.
+    using PostStartHook = std::function<void()>;
+    void   set_post_start_hook(PostStartHook h) { std::lock_guard<std::mutex> lk(m_); post_start_ = std::move(h); }
+
 private:
     friend class DemandHandle;
     void release(ConsumerType type);
@@ -118,6 +129,7 @@ private:
     bool             shutdown_ = false;
     int              sensor_fps_target_ = -1;
     StateListener    listener_;
+    PostStartHook    post_start_;
 
     std::unique_ptr<IFrameSource> fs_;
     std::unique_ptr<IEncoder>     enc_;

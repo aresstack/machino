@@ -19,6 +19,8 @@ public:
     // Default: unsupported - the service then classifies the control honestly.
     virtual Result set_bitrate(int kbps, int& effective) { (void)kbps; effective = -1; return Result::unsupported(); }
     virtual Result set_fps(int fps, int& effective)      { (void)fps;  effective = -1; return Result::unsupported(); }
+    // GOP / keyframe interval (M7). Live when the encoder supports it.
+    virtual Result set_gop(int frames, int& effective)   { (void)frames; effective = -1; return Result::unsupported(); }
 };
 
 } // namespace machino

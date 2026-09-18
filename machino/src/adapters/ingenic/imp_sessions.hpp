@@ -12,6 +12,7 @@
 #include <imp/imp_framesource.h>
 #include <imp/imp_isp.h>
 #include <imp/imp_system.h>
+#include <atomic>
 
 namespace machino { namespace ingenic { namespace imp {
 
@@ -126,9 +127,9 @@ public:
     int    rc() const { return rc_; }
     // Waits up to timeout_ms; fills `out` (reusing its capacity). Timeout when idle.
     Result fetch(AccessUnit& out, int timeout_ms);
-    void   request_idr() { idr_pending_ = true; }
+    void   request_idr() { idr_pending_.store(true, std::memory_order_release); }
 private:
-    int chn_; bool ok_ = false; int rc_ = 0; bool idr_pending_ = true;
+    int chn_; bool ok_ = false; int rc_ = 0; std::atomic<bool> idr_pending_{true};
 };
 
 }}} // namespace machino::ingenic::imp

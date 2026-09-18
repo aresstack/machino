@@ -24,13 +24,19 @@ std::unique_ptr<IngenicEncoder> IngenicEncoder::create(int chn, const EffectiveS
 
     auto group = std::make_unique<imp::EncoderGroup>(chn);
     if (!group->ok()) return nullptr;
+    if (sc.encoder_buffers > 0) {
+        r = IMP_Encoder_SetMaxStreamCnt(chn, sc.encoder_buffers);   // required before CreateChn by SDK 1.3.1
+        if (r != 0) { LOGE(MOD, "IMP_Encoder_SetMaxStreamCnt(%d,%d) failed (%d)", chn, sc.encoder_buffers, r); return nullptr; }
+    }
     auto channel = std::make_unique<imp::EncoderChannel>(chn, chn, a);
     if (!channel->ok()) return nullptr;
 
-    LOGI(MOD, "chn%d h264 %s %dx%d@%d gop=%d %s %dkbps", chn,
+    int effective_buffers = 0;
+    if (IMP_Encoder_GetMaxStreamCnt(chn, &effective_buffers) != 0) effective_buffers = -1;
+    LOGI(MOD, "chn%d h264 %s %dx%d@%d gop=%d %s %dkbps stream-buffers=%d", chn,
          sc.profile >= 2 ? "high" : sc.profile == 1 ? "main" : "baseline",
          sc.width, sc.height, sc.fps, sc.gop,
-         sc.rc == RcMode::Vbr ? "vbr" : sc.rc == RcMode::FixQp ? "fixqp" : "cbr", sc.bitrate_kbps);
+         sc.rc == RcMode::Vbr ? "vbr" : sc.rc == RcMode::FixQp ? "fixqp" : "cbr", sc.bitrate_kbps, effective_buffers);
     return std::unique_ptr<IngenicEncoder>(new IngenicEncoder(std::move(group), std::move(channel), sc.rc));
 }
 
@@ -45,6 +51,7 @@ Result IngenicEncoder::start() {
 Result IngenicEncoder::stop() { rx_.reset(); return Result::ok(); }
 
 Result IngenicEncoder::fetch(AccessUnit& out, int timeout_ms) {
+    std::lock_guard<std::mutex> lk(sdk_m_);
     if (!rx_) return Result::busy();
     return rx_->fetch(out, timeout_ms);
 }
@@ -52,6 +59,7 @@ Result IngenicEncoder::fetch(AccessUnit& out, int timeout_ms) {
 // Live bitrate: read the current RC attributes, change only the target bit
 // rate of the active mode, write back, read back the effective value.
 Result IngenicEncoder::set_bitrate(int kbps, int& effective) {
+    std::lock_guard<std::mutex> lk(sdk_m_);
     effective = -1;
     if (rc_ == RcMode::FixQp) return Result::unsupported();     // no bitrate in fixed-QP mode
     IMPEncoderAttrRcMode rc; memset(&rc, 0, sizeof rc);
@@ -79,6 +87,7 @@ Result IngenicEncoder::set_bitrate(int kbps, int& effective) {
 // Encoder-side frame rate (takes effect in the next GOP per SDK). This alone
 // does NOT lower the sensor/ISP rate - the service accounts for that.
 Result IngenicEncoder::set_fps(int fps, int& effective) {
+    std::lock_guard<std::mutex> lk(sdk_m_);
     effective = -1;
     IMPEncoderFrmRate fr; fr.frmRateNum = (uint32_t)fps; fr.frmRateDen = 1;
     int r = IMP_Encoder_SetChnFrmRate(chan_->chn(), &fr);
@@ -86,6 +95,25 @@ Result IngenicEncoder::set_fps(int fps, int& effective) {
     IMPEncoderFrmRate back; memset(&back, 0, sizeof back);
     if (IMP_Encoder_GetChnFrmRate(chan_->chn(), &back) == 0 && back.frmRateDen > 0) effective = (int)(back.frmRateNum / back.frmRateDen);
     LOGI(MOD, "chn%d encoder fps live: requested=%d effective=%d", chan_->chn(), fps, effective);
+    return Result::ok();
+}
+
+// GOP length live (takes effect at the next GOP per SDK); read back via GopAttr.
+Result IngenicEncoder::set_gop(int frames, int& effective) {
+    std::lock_guard<std::mutex> lk(sdk_m_);
+    effective = -1;
+    int r = IMP_Encoder_SetChnGopLength(chan_->chn(), frames);
+    if (r != 0) { LOGW(MOD, "IMP_Encoder_SetChnGopLength(%d, %d) failed (%d)", chan_->chn(), frames, r); return Result::error(r); }
+    // The encoder switches at the next GOP boundary, so an immediate
+    // GetChnGopAttr still reports the previous length. Reading it back here
+    // and calling that "effective" made /state report the old GOP forever and
+    // let a later pipeline restart recreate the channel with the stale value.
+    // A successful Set is the acceptance; the read-back is diagnostics only.
+    effective = frames;
+    IMPEncoderGopAttr g; memset(&g, 0, sizeof g);
+    int still = (IMP_Encoder_GetChnGopAttr(chan_->chn(), &g) == 0) ? (int)g.uGopLength : -1;
+    LOGI(MOD, "chn%d gop live: requested=%d accepted (encoder still reports %d until the next GOP boundary)",
+         chan_->chn(), frames, still);
     return Result::ok();
 }
 

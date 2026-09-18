@@ -21,6 +21,7 @@ void run_json_tests();
 void run_event_tests();
 void run_http_parse_tests();
 void run_api_tests();
+void run_tuning_tests();
 #define CHECK(cond) do { if (cond) { ++g_pass; } else { ++g_fail; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
 static hw::Registry make_registry() { hw::Registry r; profiles::register_builtin(r); return r; }
@@ -216,6 +217,11 @@ static void test_config_keys() {
     AppConfig e;
     CHECK(parse_config_text("sensor.fps = 20\n", e, err));      // partial legacy mode is discarded
     CHECK(!e.hardware.mode.has_value());
+    AppConfig m7;
+    CHECK(parse_config_text("latency.profile=low\nlatency.gop=10\nlatency.queue_depth=1\nimage.anti_flicker=50hz\nimage.white_balance_mode=0\n", m7, err));
+    CHECK(m7.latency.profile == media::LatencyProfile::Low && m7.latency.gop && *m7.latency.gop == 10);
+    CHECK(m7.latency.consumer_queue_depth && *m7.latency.consumer_queue_depth == 1);
+    CHECK(m7.image.anti_flicker && *m7.image.anti_flicker == 50 && m7.image.white_balance_mode && *m7.image.white_balance_mode == 0);
 
     // effective stream: video.* overrides, mode fills the rest
     hw::Registry r = make_registry(); hw::UserHardwareConfig u; u.board_id = "t40nn-imx307-board-a";
@@ -240,6 +246,7 @@ int main() {
     run_event_tests();
     run_http_parse_tests();
     run_api_tests();
+    run_tuning_tests();
     g_pass += g_pass_ext; g_fail += g_fail_ext;
     fprintf(stderr, "machino unit tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail;

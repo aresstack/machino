@@ -78,6 +78,7 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("video.profile",      c.video.profile, 0, 2)
     INT   ("video.qp",           c.video.qp,      1, 51)
     INT   ("video.buffers",      c.video.buffers, 1, 8)
+    INT   ("video.encoder_buffers", c.video.encoder_buffers, 1, 8)
     if (k == "video.rc_mode") {
         if (v == "cbr") c.video.rc = RcMode::Cbr;
         else if (v == "vbr") c.video.rc = RcMode::Vbr;
@@ -86,8 +87,44 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
         return true;
     }
 
+    if (k == "latency.profile") {
+        if (!media::parse_latency_profile(v, c.latency.profile))
+            LOGW(MOD, "line %d: latency.profile=%s unknown (normal|low|custom)", line, v.c_str());
+        return true;
+    }
+    OPTINT("latency.gop",                 c.latency.gop,                 1, 1000)
+    OPTINT("latency.framesource_buffers", c.latency.framesource_buffers, 1, 8)
+    OPTINT("latency.encoder_buffers",     c.latency.encoder_buffers,     1, 8)
+    OPTINT("latency.queue_depth",         c.latency.consumer_queue_depth, 1, 32)
+
+    OPTINT("image.brightness",        c.image.brightness,        0, 255)
+    OPTINT("image.contrast",          c.image.contrast,          0, 255)
+    OPTINT("image.saturation",        c.image.saturation,        0, 255)
+    OPTINT("image.sharpness",         c.image.sharpness,         0, 255)
+    OPTINT("image.hue",               c.image.hue,               0, 255)
+    OPTINT("image.hflip",             c.image.hflip,             0, 1)
+    OPTINT("image.vflip",             c.image.vflip,             0, 1)
+    if (k == "image.anti_flicker") {
+        if (v == "off") c.image.anti_flicker = 0;
+        else if (v == "50hz") c.image.anti_flicker = 50;
+        else if (v == "60hz") c.image.anti_flicker = 60;
+        else LOGW(MOD, "line %d: image.anti_flicker=%s unknown (off|50hz|60hz)", line, v.c_str());
+        return true;
+    }
+    OPTINT("image.ae_compensation",    c.image.ae_compensation,    0, 255)
+    OPTINT("image.highlight_depress",  c.image.highlight_depress,  0, 10)
+    OPTINT("image.backlight_comp",     c.image.backlight_comp,     0, 10)
+    OPTINT("image.white_balance_mode",c.image.white_balance_mode, 0, 9)
+    OPTINT("image.running_mode",       c.image.running_mode,       0, 1)
+    OPTINT("image.temporal_nr",        c.image.temporal_nr,        0, 1)
+    OPTINT("image.spatial_nr",         c.image.spatial_nr,         0, 1)
+    OPTINT("image.dpc",                c.image.dpc,                0, 1)
+    OPTINT("image.defog",              c.image.defog,              0, 1)
+
     INT   ("rtsp.port",          c.rtsp.port,     1, 65535)
     STR   ("rtsp.path",          c.rtsp.path)
+    INT   ("rtsp.send_buffer_bytes", c.rtsp.send_buffer_bytes, 4096, 1048576)
+    INT   ("rtsp.send_stall_ms", c.rtsp.send_stall_ms, 50, 10000)
 
     BOOL  ("pipeline.always_on", c.pipeline.always_on)
     INT   ("lifecycle.idle_grace_ms", c.pipeline.idle_grace_ms, 0, 600000)
@@ -174,7 +211,8 @@ EffectiveStream effective_stream(const StreamConfig& v, const hw::ResolvedHardwa
     e.fps    = v.fps.value_or(hw.mode.value.fps);
     e.native_width  = hw.sensor.native_width  > 0 ? hw.sensor.native_width  : hw.mode.value.width;
     e.native_height = hw.sensor.native_height > 0 ? hw.sensor.native_height : hw.mode.value.height;
-    e.gop = v.gop; e.bitrate_kbps = v.bitrate_kbps; e.profile = v.profile; e.qp = v.qp; e.buffers = v.buffers; e.rc = v.rc;
+    e.gop = v.gop; e.bitrate_kbps = v.bitrate_kbps; e.profile = v.profile; e.qp = v.qp; e.buffers = v.buffers;
+    e.encoder_buffers = v.encoder_buffers; e.rc = v.rc;
     return e;
 }
 

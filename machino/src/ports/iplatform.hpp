@@ -8,6 +8,7 @@
 #include "core/result.hpp"
 #include "ports/iencoder.hpp"
 #include "ports/iframesource.hpp"
+#include "ports/iimage_control.hpp"
 #include "ports/ipower_control.hpp"
 #include <cstdint>
 #include <memory>
@@ -38,6 +39,8 @@ public:
 
     // Power/performance control, or nullptr when the adapter has none.
     virtual IPowerControl* power() { return nullptr; }
+    // Image (ISP) control, or nullptr when the adapter has none.
+    virtual IImageControl* image() { return nullptr; }
 };
 
 } // namespace machino

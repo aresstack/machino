@@ -1,4 +1,4 @@
-# Machino — C++ runtime (M2 foundation, M3 board/sensor abstraction)
+# Machino — C++ runtime (M2–M7)
 
 This directory is the Machino runtime. It is **not** a rename of the C
 prototype in `../src` (timps); that prototype stays as the reference that
@@ -17,19 +17,22 @@ M3: the core no longer knows any board. Hardware is described by
 `SensorWiring`, resolved with a strict precedence and reported through a
 tri-state `CapabilitySet`. See `docs/architecture/board-profiles.md`.
 
-Out of scope: audio, JPEG, substream, OSD, recording, WebRTC, SRT, AI, ONVIF,
-Majestic compatibility, WebUI/HTTP API, power profiles, ISP/exposure tuning,
-low-latency tuning.
+M4 adds demand-driven lifecycle, M5 performance/power controls, M6 the native
+HTTP API, and M7 capability-backed ISP image controls plus a measured,
+bounded low-latency stream path.
+
+Out of scope through M7: audio, JPEG, substream, OSD, recording, WebRTC, SRT,
+AI, ONVIF, Majestic compatibility and a full WebUI.
 
 ## Layout
 
 ```
-src/core/               platform-neutral: log, result, frame (+AuPool), config, stream_hub, pipeline,
-                        capabilities, hw/ (descriptors, registry, board-profile parser, resolver)
-src/ports/              iplatform (sensor+ISP+system+capabilities), iframesource, iencoder, stream_server
+src/core/               platform-neutral: log, result, frame (+AuPool), config, stream_hub, lifecycle,
+                        media/tuning_service, power, capabilities, hw/
+src/ports/              iplatform, iframesource, iencoder, iimage_control, stream_server
 src/profiles/           DATA: built-in platforms, sensors, board profiles (outside the core)
 src/adapters/ingenic/   imp_sessions (RAII over IMP), sensor_params (abstract -> IMP, host-testable),
-                        ingenic_platform/framesource/encoder
+                        ingenic_platform/framesource/encoder/image_control
 src/app/                main (event loop, signals), rtsp/ (RTSP/RTP H.264 server = IStreamServer)
 tests/                  host unit tests (make test)
 docs/architecture/      board-profiles.md
@@ -111,6 +114,26 @@ persists atomically (temp → fsync → rename) with a `revision` (optimistic
 an SSE connection is never media demand. Small poll()-based server, one
 thread, bounded buffers/clients. Docs: `docs/api/v1.md`; test client:
 `tools/webui_sim.py`.
+
+## Image quality and low latency (M7)
+
+`media::TuningService` is the platform-neutral policy layer;
+`IImageControl` is the port and the Ingenic adapter alone calls
+`IMP_ISP_Tuning_*`. Image settings are optional: omission preserves the ISP
+tuning-bin defaults. The API exposes requested/effective values and live AE
+read-back (luma, target, stability, integration time and gains). Anti-flicker
+is an explicit `off|50hz|60hz` deployment choice; it is not globally forced.
+
+`latency.profile=low` is not a hidden encoder mode. It resolves to visible
+individual settings: one-second GOP, one FrameSource buffer, one encoder
+stream buffer and a one-AU consumer queue. Explicit `latency.*` values win
+over the preset. Every queue is bounded; a slow consumer drops stale frames,
+discards the now-undecodable P-frame tail, requests/resumes at a fresh IDR,
+and cannot block other consumers. RTSP uses TCP_NODELAY, a bounded socket
+send buffer and a bounded send-stall timeout, with no packet-pacing sleeps.
+Camera capture→encoder-output and encoder-output→socket latency are reported
+separately from client buffering. Details and the hardware matrix are in
+`docs/architecture/image-latency.md`.
 
 ## Build / test / CI
 

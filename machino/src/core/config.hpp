@@ -8,6 +8,7 @@
 // resolver can apply user > board > platform-default > fail-closed.
 #pragma once
 #include "core/hw/resolve.hpp"
+#include "core/media/settings.hpp"
 #include "core/power/apply.hpp"
 #include <optional>
 #include <string>
@@ -26,19 +27,22 @@ struct StreamConfig {
     RcMode rc           = RcMode::Cbr;
     int    qp           = 35;     // FixQp only
     int    buffers      = 2;      // FrameSource video buffers
+    int    encoder_buffers = 0;   // 0 = vendor default; otherwise stream buffers
 };
 
 // Fully determined stream parameters handed to the pipeline.
 struct EffectiveStream {
     int    width = 0, height = 0, fps = 0;
     int    native_width = 0, native_height = 0;   // sensor native size (scaler decision)
-    int    gop = 40, bitrate_kbps = 3000, profile = 2, qp = 35, buffers = 2;
+    int    gop = 40, bitrate_kbps = 3000, profile = 2, qp = 35, buffers = 2, encoder_buffers = 0;
     RcMode rc = RcMode::Cbr;
 };
 
 struct RtspConfig {
     int         port = 554;
     std::string path = "/ch0";
+    int         send_buffer_bytes = 65536; // bounded kernel backlog per socket
+    int         send_stall_ms = 750;       // disconnect, never accumulate seconds of stale live video
 };
 
 // Demand-driven lifecycle ("no consumer, no pipeline").
@@ -78,6 +82,8 @@ struct AppConfig {
     RtspConfig        rtsp;
     PipelineConfig    pipeline;
     PerformanceConfig performance;
+    media::ImageSettings image;
+    media::LatencySettings latency;
     TelemetryConfig   telemetry;
     ApiConfig         api;
     LogConfig         log;

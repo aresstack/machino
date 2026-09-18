@@ -23,6 +23,7 @@
 #include "core/json.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/log.hpp"
+#include "core/media/tuning_service.hpp"
 #include "core/power/performance_service.hpp"
 #include "core/stream_hub.hpp"
 #include "profiles/builtin_profiles.hpp"
@@ -154,7 +155,8 @@ int main(int argc, char** argv) {
         power::PerformanceService perf(pipeline, *platform, sysstats, hwr, cfg.video);
         log_capabilities(perf.capabilities());
         perf.apply_config(cfg.performance, cfg.video);
-        api::ApiService api(perf, pipeline, store, bus, hwr, cfg);
+        media::TuningService tuning(pipeline, *platform, hub, pipeline.stream(), cfg.image, cfg.latency);
+        api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg);
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         http::HttpServer httpd(hc, api, bus);
         RtspServer rtsp(cfg.rtsp, pipeline, hub);
@@ -204,6 +206,20 @@ int main(int argc, char** argv) {
                                 if (!load_config(conf, fresh, e2)) { LOGW(MOD, "SIGHUP: reload failed: %s", e2.c_str()); continue; }
                                 LOGI(MOD, "SIGHUP -> applying performance/stream configuration");
                                 perf.apply_config(fresh.performance, fresh.video);
+                                tuning.set_latency_profile(fresh.latency.profile);
+                                if (fresh.latency.gop) tuning.set_gop(*fresh.latency.gop);
+                                if (fresh.latency.framesource_buffers) tuning.set_framesource_buffers(*fresh.latency.framesource_buffers);
+                                if (fresh.latency.encoder_buffers) tuning.set_encoder_buffers(*fresh.latency.encoder_buffers);
+                                if (fresh.latency.consumer_queue_depth) tuning.set_queue_depth(*fresh.latency.consumer_queue_depth);
+                                const media::ImageSettings& im = fresh.image;
+                                auto image = [&](ImageControl c, const std::optional<int>& v) { if (v) tuning.set_image(c, *v); };
+                                image(ImageControl::Brightness, im.brightness); image(ImageControl::Contrast, im.contrast);
+                                image(ImageControl::Saturation, im.saturation); image(ImageControl::Sharpness, im.sharpness); image(ImageControl::Hue, im.hue);
+                                image(ImageControl::HFlip, im.hflip); image(ImageControl::VFlip, im.vflip); image(ImageControl::AntiFlicker, im.anti_flicker);
+                                image(ImageControl::AeCompensation, im.ae_compensation); image(ImageControl::HighlightDepress, im.highlight_depress);
+                                image(ImageControl::BacklightComp, im.backlight_comp); image(ImageControl::WhiteBalanceMode, im.white_balance_mode);
+                                image(ImageControl::RunningMode, im.running_mode); image(ImageControl::TemporalNr, im.temporal_nr);
+                                image(ImageControl::SpatialNr, im.spatial_nr); image(ImageControl::Dpc, im.dpc); image(ImageControl::Defog, im.defog);
                                 store.load(e2);
                                 Json j = Json::object(); j.set("revision", Json::integer(store.revision())); j.set("source", Json::string("sighup"));
                                 bus.publish("config_changed", j.dump());

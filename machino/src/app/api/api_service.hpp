@@ -13,6 +13,7 @@
 #include "core/hw/resolve.hpp"
 #include "core/json.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
+#include "core/media/tuning_service.hpp"
 #include "core/power/performance_service.hpp"
 #include <mutex>
 #include <string>
@@ -26,7 +27,7 @@ struct Response {
 
 class ApiService {
 public:
-    ApiService(power::PerformanceService& perf, lifecycle::PipelineManager& pipeline, ConfigStore& store,
+    ApiService(power::PerformanceService& perf, media::TuningService& tuning, lifecycle::PipelineManager& pipeline, ConfigStore& store,
                EventBus& bus, const hw::ResolvedHardware& hw, const AppConfig& cfg);
 
     Response discovery() const;
@@ -47,6 +48,7 @@ private:
     Json config_json();
 
     power::PerformanceService&  perf_;
+    media::TuningService&       tuning_;
     lifecycle::PipelineManager& pipeline_;
     ConfigStore&                store_;
     EventBus&                   bus_;

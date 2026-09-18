@@ -6,6 +6,7 @@
 #include "core/config.hpp"
 #include "ports/iencoder.hpp"
 #include <memory>
+#include <mutex>
 
 namespace machino { namespace ingenic {
 
@@ -22,6 +23,7 @@ public:
 
     Result set_bitrate(int kbps, int& effective) override;
     Result set_fps(int fps, int& effective) override;
+    Result set_gop(int frames, int& effective) override;
 
 private:
     IngenicEncoder(std::unique_ptr<imp::EncoderGroup> g, std::unique_ptr<imp::EncoderChannel> c, RcMode rc)
@@ -30,6 +32,7 @@ private:
     std::unique_ptr<imp::EncoderChannel> chan_;
     std::unique_ptr<imp::StreamReceiver> rx_;
     RcMode rc_;
+    std::mutex sdk_m_;   // libimp encoder calls are serialized across fetch/control threads
 };
 
 }} // namespace machino::ingenic

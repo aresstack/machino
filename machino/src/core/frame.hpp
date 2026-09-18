@@ -12,7 +12,8 @@ namespace machino {
 
 struct AccessUnit {
     std::vector<uint8_t> data;   // Annex-B (00 00 00 01 NAL ...)
-    int64_t  pts_us = 0;         // platform timestamp, microseconds
+    int64_t  pts_us = 0;         // platform timestamp, microseconds (capture time domain)
+    int64_t  fetched_us = 0;     // CLOCK_MONOTONIC when the encoder handed it over (latency accounting)
     bool     key    = false;     // contains an IDR slice
     uint32_t seq    = 0;         // encoder frame sequence
 };

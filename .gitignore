@@ -4,6 +4,7 @@ timpsd-sim
 # host-only test binary (make dn-props), built at the repo root
 dn-probe-props
 *.o
+machino/tests/machino-tests.exe
 outputs/
 3rdparty/
 toolchain/

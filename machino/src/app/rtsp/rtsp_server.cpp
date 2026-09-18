@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -18,7 +19,11 @@ namespace machino {
 
 static const char* MOD = "RTSP";
 static const size_t RTP_MTU = 1400;
-static const int    SEND_STALL_MS = 5000;   // unwritable this long = dead client
+
+static int64_t mono_us() {
+    struct timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
 
 using lifecycle::ConsumerType;
 using lifecycle::DemandHandle;
@@ -85,6 +90,7 @@ void RtspServer::accept_loop() {
         char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof ip);
         std::string peer = std::string(ip) + ":" + std::to_string(ntohs(ca.sin_port));
         int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+        int snd = cfg_.send_buffer_bytes; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof snd);
         std::lock_guard<std::mutex> lk(clients_m_);
         client_fds_.push_back(fd);
         clients_.emplace_back([this, fd, peer] { client_loop(fd, peer); });
@@ -93,7 +99,7 @@ void RtspServer::accept_loop() {
 
 // Non-blocking send with a bounded stall: a client that stops reading for
 // SEND_STALL_MS is treated as dead (false) so its demand gets released.
-static bool send_all(int fd, const void* p, size_t n) {
+static bool send_all(int fd, const void* p, size_t n, int stall_limit_ms) {
     const uint8_t* b = (const uint8_t*)p; int stalled = 0;
     while (n) {
         ssize_t w = send(fd, b, n, MSG_NOSIGNAL | MSG_DONTWAIT);
@@ -101,7 +107,7 @@ static bool send_all(int fd, const void* p, size_t n) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 pollfd pf{fd, POLLOUT, 0};
-                if (poll(&pf, 1, 250) <= 0) { stalled += 250; if (stalled >= SEND_STALL_MS) return false; }
+                if (poll(&pf, 1, 50) <= 0) { stalled += 50; if (stalled >= stall_limit_ms) return false; }
                 continue;
             }
             return false;
@@ -138,11 +144,13 @@ void RtspServer::client_loop(int fd, std::string peer) {
             }
         }
         if (alive && s.playing && s.sink) {
-            AuPtr au;
-            if (s.sink->pop(au, 20)) {
+            AuPtr au; bool discontinuity = false;
+            if (s.sink->pop(au, 20, &discontinuity)) {
+                if (discontinuity) { hub_.record_discontinuity(); s.wait_key = true; }
                 if (s.wait_key && !au->key) continue;
                 s.wait_key = false;
                 if (!send_au(s, *au)) { LOGW(MOD, "%s: send stalled/failed - dropping client", peer.c_str()); alive = false; }
+                else if (au->fetched_us > 0) hub_.record_out_to_send(mono_us() - au->fetched_us);
             }
         }
     }
@@ -171,7 +179,8 @@ bool RtspServer::obtain_params(std::vector<uint8_t>& sps, std::vector<uint8_t>& 
     { std::lock_guard<std::mutex> lk(params_m_); if (!sps_.empty() && !pps_.empty()) { sps = sps_; pps = pps_; return true; } }
     DemandHandle d = pipeline_.acquire(ConsumerType::Rtsp);
     if (!d.active()) return false;
-    auto sink = hub_.subscribe(4);
+    auto sink = hub_.subscribe();
+    pipeline_.request_idr();
     bool ok = false;
     for (int i = 0; i < 150 && !ok && !quit_; ++i) {      // <= ~3 s
         AuPtr au; if (!sink->pop(au, 20)) continue;
@@ -191,7 +200,7 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
         std::string out = std::string("RTSP/1.0 ") + status + "\r\nCSeq: " + cseq + "\r\nServer: machino/" MACHINO_VERSION "\r\n" + extra;
         if (!body.empty()) out += "Content-Type: application/sdp\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
         out += "\r\n"; out += body;
-        return send_all(s.fd, out.data(), out.size());
+        return send_all(s.fd, out.data(), out.size(), cfg_.send_stall_ms);
     };
 
     if (method == "OPTIONS")
@@ -224,6 +233,7 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
         int cport = atoi(tr.c_str() + p + 12);
         s.tcp = false;
         s.udp_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        int snd = cfg_.send_buffer_bytes; setsockopt(s.udp_fd, SOL_SOCKET, SO_SNDBUF, &snd, sizeof snd);
         sockaddr_in la{}; la.sin_family = AF_INET; la.sin_addr.s_addr = htonl(INADDR_ANY); la.sin_port = 0;
         if (bind(s.udp_fd, (sockaddr*)&la, sizeof la) < 0) return reply("500 Internal Server Error", "", "");
         socklen_t ll = sizeof la; getsockname(s.udp_fd, (sockaddr*)&la, &ll);
@@ -238,8 +248,9 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
         if (!s.playing) {
             Result r; s.demand = pipeline_.acquire(ConsumerType::Rtsp, &r);
             if (!s.demand.active()) { LOGW(MOD, "%s PLAY: pipeline unavailable (%s)", s.peer.c_str(), status_name(r.status)); return reply("503 Service Unavailable", "", ""); }
-            s.sink = hub_.subscribe(4);   // bounded; a stalled client drops its own frames only
+            s.sink = hub_.subscribe();   // bounded profile depth; a stalled client drops its own frames only
             s.playing = true; s.wait_key = true; s.pts0_us = -1;
+            pipeline_.request_idr();
             LOGI(MOD, "%s PLAY (%s)", s.peer.c_str(), s.tcp ? "tcp-interleaved" : "udp");
         }
         return reply("200 OK", "Session: " + s.session_id + "\r\nRange: npt=0.000-\r\nRTP-Info: url=" + cfg_.path + "/trackID=0;seq=" + std::to_string(s.rtp_seq) + "\r\n", "");
@@ -266,7 +277,7 @@ bool RtspServer::send_rtp(Session& s, const uint8_t* payload, size_t len, uint32
     h[8] = (uint8_t)(s.ssrc >> 24); h[9] = (uint8_t)(s.ssrc >> 16); h[10] = (uint8_t)(s.ssrc >> 8); h[11] = (uint8_t)s.ssrc;
     memcpy(h + 12, payload, len);
     size_t total = off + 12 + len;
-    if (s.tcp) return send_all(s.fd, pkt, total);
+    if (s.tcp) return send_all(s.fd, pkt, total, cfg_.send_stall_ms);
     return sendto(s.udp_fd, pkt, total, MSG_NOSIGNAL, (sockaddr*)&s.udp_dst, sizeof s.udp_dst) == (ssize_t)total;
 }
 

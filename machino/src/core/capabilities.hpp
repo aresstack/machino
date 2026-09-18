@@ -53,6 +53,9 @@ struct CapabilitySet {
     struct Video   { Cap h264 = Cap::Unknown; Cap h265 = Cap::Unknown; int max_streams = -1;
                      RangeCap fps;        // stream / FrameSource output fps
                      RangeCap bitrate;    // kbps
+                     RangeCap gop;        // keyframe interval, frames
+                     RangeCap framesource_buffers;
+                     RangeCap encoder_buffers;
                    } video;
     struct Sensor  { Cap configurable_fps = Cap::Unknown; RangeCap fps; } sensor;
     struct Isp     { Cap available = Cap::Unknown; PerfCap performance; } isp;

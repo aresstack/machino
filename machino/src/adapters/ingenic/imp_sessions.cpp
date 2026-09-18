@@ -131,7 +131,7 @@ StreamReceiver::~StreamReceiver() { if (ok_) IMP_Encoder_StopRecvPic(chn_); }
 // fetching thread only (the flag may be set from anywhere).
 Result StreamReceiver::fetch(AccessUnit& out, int timeout_ms) {
     if (!ok_) return Result::busy();
-    if (idr_pending_) { idr_pending_ = false; IMP_Encoder_RequestIDR(chn_); }
+    if (idr_pending_.exchange(false, std::memory_order_acq_rel)) IMP_Encoder_RequestIDR(chn_);
     if (IMP_Encoder_PollingStream(chn_, (uint32_t)timeout_ms) != 0) return Result::timeout();
 
     IMPEncoderStream st; memset(&st, 0, sizeof st);

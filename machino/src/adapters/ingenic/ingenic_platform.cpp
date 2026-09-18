@@ -26,6 +26,9 @@ CapabilitySet IngenicPlatform::capabilities() const {
     c.video.max_streams     = -1;
     c.video.fps             = RangeCap{Cap::Supported, -1, -1, ApplyMode::PipelineRestart};   // FrameSource out rate: attr before enable
     c.video.bitrate         = RangeCap{Cap::Supported, -1, -1, ApplyMode::Live};              // IMP_Encoder_SetChnAttrRcMode
+    c.video.gop             = RangeCap{Cap::Supported, 1, 1000, ApplyMode::Live};              // SetChnGopLength + read-back
+    c.video.framesource_buffers = RangeCap{Cap::Supported, 1, 8, ApplyMode::PipelineRestart}; // IMPFSChnAttr::nrVBs
+    c.video.encoder_buffers = RangeCap{Cap::Supported, 1, 8, ApplyMode::PipelineRestart};      // SetMaxStreamCnt before CreateChn
     c.sensor.configurable_fps = Cap::Supported;                                                // IMP_ISP_Tuning_SetSensorFPS (+GetSensorFPS read-back)
     c.sensor.fps            = RangeCap{Cap::Supported, -1, -1, ApplyMode::Live};
     c.isp.available         = Cap::Supported;
@@ -63,6 +66,11 @@ Result IngenicPlatform::bring_up() {
 
     isp_ = std::move(isp); sensor_session_ = std::move(sensor);
     system_ = std::move(system); tuning_ = std::move(tuning);
+    image_.set_active(tuning_->ok());
+    char binpath[256] = {0};
+    if (IMP_ISP_GetDefaultBinPath(IMPVI_MAIN, binpath) == 0 && binpath[0])
+        LOGI(MOD, "ISP tuning bin (kernel default path): %s", binpath);
+    else LOGW(MOD, "ISP tuning bin path not reported by the driver");
     LOGI(MOD, "up: %s i2c%d/0x%02x mclk%d rst=%d pwdn=%d %s tuning=%d", info_.name, params_.i2c_bus,
          params_.i2c_addr, params_.mclk, params_.reset_gpio, params_.pwdn_gpio,
          params_.mipi ? "mipi" : "dvp", (int)tuning_->ok());
@@ -71,6 +79,7 @@ Result IngenicPlatform::bring_up() {
 
 void IngenicPlatform::tear_down() {
     if (!isp_) return;
+    image_.set_active(false);
     binding_.reset();
     tuning_.reset();
     system_.reset();

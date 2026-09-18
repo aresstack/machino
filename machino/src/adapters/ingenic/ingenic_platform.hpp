@@ -5,6 +5,7 @@
 // power-control port (read-only clocks, cpufreq probe).
 #pragma once
 #include "adapters/ingenic/imp_sessions.hpp"
+#include "adapters/ingenic/ingenic_image_control.hpp"
 #include "adapters/ingenic/ingenic_power_control.hpp"
 #include "adapters/ingenic/sensor_params.hpp"
 #include "ports/iplatform.hpp"
@@ -31,6 +32,7 @@ public:
     Result set_sensor_fps(int fps, int& effective) override;
     Result get_sensor_fps(int& fps) override;
     IPowerControl* power() override { return &power_; }
+    IImageControl* image() override { return &image_; }
 
     static hw::PlatformDefaults platform_defaults();
 
@@ -41,6 +43,7 @@ private:
     std::string   params_err_;
     IMPSensorInfo info_{};
     IngenicPowerControl power_;
+    IngenicImageControl image_;
     std::unique_ptr<imp::IspSession>    isp_;
     std::unique_ptr<imp::SensorSession> sensor_session_;
     std::unique_ptr<imp::SystemSession> system_;
