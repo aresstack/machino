@@ -200,8 +200,11 @@ wdt_feeder_start() {
         _p=$(cat "$WDT_PID" 2>/dev/null)
         [ -n "$_p" ] && alive "$_p" && return 0
     fi
-    command -v "$WDT_FEEDER" >/dev/null 2>&1 || { warn "no watchdog feeder available - a majestic-armed watchdog will reset the board"; return 1; }
-    "$WDT_FEEDER" -t 4 -T 60 "$WDT" 2>/dev/null || { warn "could not start the watchdog feeder"; return 1; }
+    case "$WDT_FEEDER" in
+        /*) [ -x "$WDT_FEEDER" ] || { warn "no watchdog feeder at $WDT_FEEDER - a majestic-armed watchdog will reset the board"; return 1; } ;;
+        *)  command -v "$WDT_FEEDER" >/dev/null 2>&1 || { warn "no watchdog feeder available - a majestic-armed watchdog will reset the board"; return 1; } ;;
+    esac
+    "$WDT_FEEDER" -t 4 -T 60 "$WDT" || { warn "could not start the watchdog feeder"; return 1; }
     sleep 1
     _p=$(pgrep -f "$WDT_FEEDER -t 4" | head -1)
     [ -n "$_p" ] || { warn "watchdog feeder did not come up"; return 1; }
@@ -237,7 +240,7 @@ stop_all_owners() {
 
 activate_machino() {
     stop_all_owners || return 1
-    :
+    wdt_feeder_start                     # majestic may have left the watchdog armed
     webui_start || warn "WebUI is not being served - use the CLI to switch back"
     [ -x "$INIT_MACHINO" ] || { warn "$INIT_MACHINO missing"; return 1; }
     "$INIT_MACHINO" start >/dev/null 2>&1

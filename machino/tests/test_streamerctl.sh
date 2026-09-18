@@ -248,8 +248,10 @@ if grep -q '^/cgi-bin:root:' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "
 # the T40NN reset the SoC 15 s after majestic was stopped. Never again.
 setup
 : > "$RUNDIR/majestic"
-ctl set machino >/dev/null
-[ -f "$RUNDIR/wdt.argv" ] && ok || bad "no watchdog feeder started when majestic was stopped"
+out=$(ctl set machino)
+if [ -f "$RUNDIR/wdt.argv" ]; then ok; else
+    bad "no watchdog feeder started when majestic was stopped; ctl said: $out"
+fi
 wpid=$(cat "$ROOT/var/run/machino-wdt.pid" 2>/dev/null)
 [ -n "$wpid" ] && kill -0 "$wpid" 2>/dev/null && ok || bad "feeder pid not tracked/alive"
 
