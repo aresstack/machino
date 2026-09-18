@@ -18,17 +18,21 @@ namespace machino {
 
 static const char* MOD = "RTSP";
 static const size_t RTP_MTU = 1400;
+static const int    SEND_STALL_MS = 5000;   // unwritable this long = dead client
+
+using lifecycle::ConsumerType;
+using lifecycle::DemandHandle;
 
 struct RtspServer::Session {
     int         fd = -1;
     std::string peer;
     std::string session_id;
-    bool        tcp = true;           // interleaved
+    bool        tcp = true;
     int         rtp_ch = 0, rtcp_ch = 1;
-    int         udp_fd = -1;          // UDP unicast
+    int         udp_fd = -1;
     sockaddr_in udp_dst{};
     bool        playing = false;
-    bool        acquired = false;
+    DemandHandle demand;               // RAII: alive only while PLAYing
     std::shared_ptr<Sink> sink;
     uint16_t    rtp_seq = 0;
     uint32_t    ssrc = 0;
@@ -37,7 +41,7 @@ struct RtspServer::Session {
     std::string inbuf;
 };
 
-RtspServer::RtspServer(const RtspConfig& cfg, Pipeline& pipeline, StreamHub& hub)
+RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub)
     : cfg_(cfg), pipeline_(pipeline), hub_(hub) {}
 
 RtspServer::~RtspServer() { stop(); }
@@ -53,7 +57,7 @@ Result RtspServer::start() {
     }
     quit_ = false;
     acceptor_ = std::thread([this] { accept_loop(); });
-    LOGI(MOD, "listening on :%d path %s", cfg_.port, cfg_.path.c_str());
+    LOGI(MOD, "listening on :%d path %s (pipeline stays cold until PLAY)", cfg_.port, cfg_.path.c_str());
     return Result::ok();
 }
 
@@ -76,7 +80,7 @@ void RtspServer::accept_loop() {
         pollfd p{listen_fd_, POLLIN, 0};
         if (poll(&p, 1, 250) <= 0) continue;
         sockaddr_in ca{}; socklen_t cl = sizeof ca;
-        int fd = accept4(listen_fd_, (sockaddr*)&ca, &cl, SOCK_CLOEXEC);
+        int fd = accept4(listen_fd_, (sockaddr*)&ca, &cl, SOCK_CLOEXEC | SOCK_NONBLOCK);
         if (fd < 0) continue;
         char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof ip);
         std::string peer = std::string(ip) + ":" + std::to_string(ntohs(ca.sin_port));
@@ -87,16 +91,22 @@ void RtspServer::accept_loop() {
     }
 }
 
+// Non-blocking send with a bounded stall: a client that stops reading for
+// SEND_STALL_MS is treated as dead (false) so its demand gets released.
 static bool send_all(int fd, const void* p, size_t n) {
-    const uint8_t* b = (const uint8_t*)p;
+    const uint8_t* b = (const uint8_t*)p; int stalled = 0;
     while (n) {
-        ssize_t w = send(fd, b, n, MSG_NOSIGNAL);
+        ssize_t w = send(fd, b, n, MSG_NOSIGNAL | MSG_DONTWAIT);
         if (w < 0) {
             if (errno == EINTR) continue;
-            if (errno == EAGAIN) { pollfd pf{fd, POLLOUT, 0}; poll(&pf, 1, 500); continue; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                pollfd pf{fd, POLLOUT, 0};
+                if (poll(&pf, 1, 250) <= 0) { stalled += 250; if (stalled >= SEND_STALL_MS) return false; }
+                continue;
+            }
             return false;
         }
-        b += w; n -= (size_t)w;
+        b += w; n -= (size_t)w; stalled = 0;
     }
     return true;
 }
@@ -115,26 +125,29 @@ void RtspServer::client_loop(int fd, std::string peer) {
         if (pr > 0) {
             if (p.revents & (POLLHUP | POLLERR)) break;
             ssize_t n = recv(fd, buf, sizeof buf, 0);
-            if (n <= 0) break;
-            s.inbuf.append(buf, (size_t)n);
-            size_t end;
-            while ((end = s.inbuf.find("\r\n\r\n")) != std::string::npos) {
-                std::string req = s.inbuf.substr(0, end + 4);
-                s.inbuf.erase(0, end + 4);
-                if (!handle_request(s, req)) { alive = false; break; }
+            if (n == 0) break;
+            if (n < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) break; }
+            else {
+                s.inbuf.append(buf, (size_t)n);
+                size_t end;
+                while ((end = s.inbuf.find("\r\n\r\n")) != std::string::npos) {
+                    std::string req = s.inbuf.substr(0, end + 4);
+                    s.inbuf.erase(0, end + 4);
+                    if (!handle_request(s, req)) { alive = false; break; }
+                }
             }
         }
-        if (s.playing && s.sink) {
+        if (alive && s.playing && s.sink) {
             AuPtr au;
             if (s.sink->pop(au, 20)) {
                 if (s.wait_key && !au->key) continue;
                 s.wait_key = false;
-                send_au(s, *au);
+                if (!send_au(s, *au)) { LOGW(MOD, "%s: send stalled/failed - dropping client", peer.c_str()); alive = false; }
             }
         }
     }
     if (s.sink) hub_.unsubscribe(s.sink);
-    if (s.acquired) pipeline_.release();
+    s.demand.release();                                     // explicit for readability; the dtor would do it too
     if (s.udp_fd >= 0) close(s.udp_fd);
     close(fd);
     {
@@ -152,9 +165,12 @@ static std::string header(const std::string& req, const char* name) {
     return req.substr(p, e == std::string::npos ? std::string::npos : e - p);
 }
 
+// SPS/PPS for the SDP: from the cache, or via a scoped demand (the pipeline
+// may start for it; the handle is released before returning - no leak).
 bool RtspServer::obtain_params(std::vector<uint8_t>& sps, std::vector<uint8_t>& pps) {
     { std::lock_guard<std::mutex> lk(params_m_); if (!sps_.empty() && !pps_.empty()) { sps = sps_; pps = pps_; return true; } }
-    if (!pipeline_.acquire()) return false;
+    DemandHandle d = pipeline_.acquire(ConsumerType::Rtsp);
+    if (!d.active()) return false;
     auto sink = hub_.subscribe(4);
     bool ok = false;
     for (int i = 0; i < 150 && !ok && !quit_; ++i) {      // <= ~3 s
@@ -162,9 +178,8 @@ bool RtspServer::obtain_params(std::vector<uint8_t>& sps, std::vector<uint8_t>& 
         if (au->key && h264::extract_params(au->data.data(), au->data.size(), sps, pps)) ok = true;
     }
     hub_.unsubscribe(sink);
-    pipeline_.release();
     if (ok) { std::lock_guard<std::mutex> lk(params_m_); sps_ = sps; pps_ = pps; }
-    return ok;
+    return ok;                                              // d released here
 }
 
 bool RtspServer::handle_request(Session& s, const std::string& req) {
@@ -172,7 +187,6 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
     std::string cseq = header(req, "CSeq"); if (cseq.empty()) cseq = "0";
     LOGD(MOD, "%s %s", s.peer.c_str(), method.c_str());
 
-    // One buffer, one send: header and SDP body arrive in the same segment.
     auto reply = [&](const char* status, const std::string& extra, const std::string& body) {
         std::string out = std::string("RTSP/1.0 ") + status + "\r\nCSeq: " + cseq + "\r\nServer: machino/" MACHINO_VERSION "\r\n" + extra;
         if (!body.empty()) out += "Content-Type: application/sdp\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
@@ -222,8 +236,8 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
 
     if (method == "PLAY") {
         if (!s.playing) {
-            if (!pipeline_.acquire()) return reply("503 Service Unavailable", "", "");
-            s.acquired = true;
+            Result r; s.demand = pipeline_.acquire(ConsumerType::Rtsp, &r);
+            if (!s.demand.active()) { LOGW(MOD, "%s PLAY: pipeline unavailable (%s)", s.peer.c_str(), status_name(r.status)); return reply("503 Service Unavailable", "", ""); }
             s.sink = hub_.subscribe(8);
             s.playing = true; s.wait_key = true; s.pts0_us = -1;
             LOGI(MOD, "%s PLAY (%s)", s.peer.c_str(), s.tcp ? "tcp-interleaved" : "udp");
@@ -233,7 +247,7 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
 
     if (method == "TEARDOWN") {
         reply("200 OK", "Session: " + s.session_id + "\r\n", "");
-        return false;   // close connection -> client_loop releases the consumer
+        return false;   // close connection -> client_loop releases the demand
     }
 
     if (method == "GET_PARAMETER" || method == "SET_PARAMETER")
@@ -256,18 +270,18 @@ bool RtspServer::send_rtp(Session& s, const uint8_t* payload, size_t len, uint32
     return sendto(s.udp_fd, pkt, total, MSG_NOSIGNAL, (sockaddr*)&s.udp_dst, sizeof s.udp_dst) == (ssize_t)total;
 }
 
-void RtspServer::send_au(Session& s, const AccessUnit& au) {
+bool RtspServer::send_au(Session& s, const AccessUnit& au) {
     if (s.pts0_us < 0) s.pts0_us = au.pts_us;
     uint32_t ts = (uint32_t)((au.pts_us - s.pts0_us) * 90 / 1000);
     h264::Nal nal[32]; size_t c = h264::split(au.data.data(), au.data.size(), nal, 32);
     for (size_t i = 0; i < c; ++i) {
         bool last = (i + 1 == c);
         const uint8_t* p = nal[i].p; size_t n = nal[i].len;
-        if (nal[i].type == 7 || nal[i].type == 8) {   // refresh SDP cache opportunistically
+        if (nal[i].type == 7 || nal[i].type == 8) {
             std::lock_guard<std::mutex> lk(params_m_);
             (nal[i].type == 7 ? sps_ : pps_).assign(p, p + n);
         }
-        if (n <= RTP_MTU) { if (!send_rtp(s, p, n, ts, last)) return; continue; }
+        if (n <= RTP_MTU) { if (!send_rtp(s, p, n, ts, last)) return false; continue; }
         uint8_t hdr = p[0]; uint8_t fu_ind = (uint8_t)((hdr & 0xe0) | 28);
         size_t pos = 1; bool first = true;
         uint8_t buf[RTP_MTU];
@@ -277,10 +291,11 @@ void RtspServer::send_au(Session& s, const AccessUnit& au) {
             buf[0] = fu_ind;
             buf[1] = (uint8_t)((first ? 0x80 : 0) | (end ? 0x40 : 0) | (hdr & 0x1f));
             memcpy(buf + 2, p + pos, chunk);
-            if (!send_rtp(s, buf, chunk + 2, ts, last && end)) return;
+            if (!send_rtp(s, buf, chunk + 2, ts, last && end)) return false;
             pos += chunk; first = false;
         }
     }
+    return true;
 }
 
 } // namespace machino

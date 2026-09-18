@@ -37,12 +37,14 @@ video.buffers     = 2
 rtsp.port         = 554
 rtsp.path         = /ch0
 
-# --- pipeline lifecycle -----------------------------------------------------
-# always_on = 0: "no consumer, no pipeline" - sensor/ISP/encoder come up on
-# the first RTSP PLAY and go down grace_ms after the last client leaves.
-# SIGUSR2 / SIGUSR1 start/stop the pipeline explicitly.
+# --- media lifecycle: "no consumer, no pipeline" -----------------------------
+# The daemon and the RTSP listener are always up; sensor/ISP/encoder come up
+# on the first consumer (RTSP PLAY) and are torn down completely
+# lifecycle.idle_grace_ms after the last consumer left (GRACE_IDLE bridges
+# reconnects). always_on = 1 holds a permanent manual demand; SIGUSR2 / SIGUSR1
+# take / drop that manual demand at runtime.
 pipeline.always_on        = 0
-pipeline.grace_ms         = 3000
+lifecycle.idle_grace_ms   = 5000
 pipeline.poll_timeout_ms  = 500
 
 # --- logging ----------------------------------------------------------------

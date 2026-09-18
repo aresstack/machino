@@ -86,7 +86,8 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     STR   ("rtsp.path",          c.rtsp.path)
 
     BOOL  ("pipeline.always_on", c.pipeline.always_on)
-    INT   ("pipeline.grace_ms",  c.pipeline.grace_ms, 0, 600000)
+    INT   ("lifecycle.idle_grace_ms", c.pipeline.idle_grace_ms, 0, 600000)
+    INT   ("pipeline.grace_ms",  c.pipeline.idle_grace_ms, 0, 600000)      // alias (M2 name)
     INT   ("pipeline.poll_timeout_ms", c.pipeline.poll_timeout_ms, 10, 5000)
 
     INT   ("log.level",          c.log.level,     0, 3)

@@ -14,6 +14,8 @@
 using namespace machino;
 
 static int g_fail = 0, g_pass = 0;
+int g_fail_ext = 0, g_pass_ext = 0;     // shared with test_lifecycle.cpp
+void run_lifecycle_tests();
 #define CHECK(cond) do { if (cond) { ++g_pass; } else { ++g_fail; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
 static hw::Registry make_registry() { hw::Registry r; profiles::register_builtin(r); return r; }
@@ -227,6 +229,8 @@ int main() {
     test_capabilities();
     test_ingenic_conversion();
     test_config_keys();
+    run_lifecycle_tests();
+    g_pass += g_pass_ext; g_fail += g_fail_ext;
     fprintf(stderr, "machino unit tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail;
 }

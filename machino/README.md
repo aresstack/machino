@@ -65,13 +65,20 @@ EncoderGroup · EncoderChannel · Binding · StreamReceiver
 Bring-up constructs them into locals in order; any failure returns early and
 the locals roll back in reverse. No `goto fail_x` chains.
 
-## Lifecycle
+## Lifecycle — "no consumer, no pipeline" (M4)
 
-`Pipeline` is the single owner of the media resources. Consumers (RTSP
-sessions) `acquire()` / `release()`; the last release arms a grace timer after
-which everything is torn down ("no consumer, no pipeline"). `start_pipeline()`
-/ `stop_pipeline()` (`SIGUSR2` / `SIGUSR1`, `pipeline.always_on`) are the
-explicit controls and work repeatedly in one process.
+> An open Machino daemon is not equivalent to an active camera pipeline.
+> Media hardware is activated by demand, not by process lifetime.
+
+`lifecycle::PipelineManager` is the single owner of the media chain and runs
+the state machine `COLD_IDLE → STARTING → ACTIVE → GRACE_IDLE → STOPPING →
+COLD_IDLE` (+ `FAILED`). Consumers hold RAII `DemandHandle`s (`PLAY` takes
+one, TEARDOWN/disconnect/dead socket releases it; a bare TCP connection is
+no demand). The last release arms a one-shot `timerfd` (`lifecycle.idle_grace_ms`,
+default 5 s); returning demand cancels it, expiry tears the chain down
+completely while the process and the RTSP listener stay up. `SIGUSR2` /
+`SIGUSR1` take / drop a manual demand (`pipeline.always_on` holds one).
+Details: `docs/architecture/lifecycle.md`.
 
 ## Build / test / CI
 

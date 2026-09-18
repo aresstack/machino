@@ -40,10 +40,11 @@ struct RtspConfig {
     std::string path = "/ch0";
 };
 
+// Demand-driven lifecycle ("no consumer, no pipeline").
 struct PipelineConfig {
-    bool always_on       = false;
-    int  grace_ms        = 3000;
-    int  poll_timeout_ms = 500;
+    bool always_on       = false;  // hold a permanent manual demand
+    int  idle_grace_ms   = 5000;   // GRACE_IDLE duration after the last consumer left
+    int  poll_timeout_ms = 500;    // encoder poll granularity
 };
 
 struct LogConfig {
@@ -52,8 +53,8 @@ struct LogConfig {
 };
 
 struct AppConfig {
-    hw::UserHardwareConfig hardware;      // board id / platform / sensor / wiring / mode (all optional)
-    std::string     board_profile_file;   // optional external profile
+    hw::UserHardwareConfig hardware;
+    std::string     board_profile_file;
     StreamConfig    video;
     RtspConfig      rtsp;
     PipelineConfig  pipeline;
@@ -61,10 +62,7 @@ struct AppConfig {
 };
 
 bool load_config(const char* path, AppConfig& cfg, std::string& err);
-// Same parser on in-memory text (tests).
 bool parse_config_text(const std::string& text, AppConfig& cfg, std::string& err);
-
-// Combine user stream settings with the resolved sensor mode.
 EffectiveStream effective_stream(const StreamConfig& v, const hw::ResolvedHardware& hw);
 
 } // namespace machino
