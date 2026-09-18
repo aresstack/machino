@@ -1,0 +1,42 @@
+# Machino M2 - example configuration (T40NN + IMX307 on OpenIPC)
+# Flat "section.key = value". Unknown keys are ignored with a warning.
+
+# --- sensor: model + native geometry -------------------------------------
+sensor.model      = imx307
+sensor.width      = 1920
+sensor.height     = 1080
+sensor.fps        = 20
+
+# --- sensor: BOARD WIRING (adapter concern, verified on T40NN/IMX307) -----
+# The T40 tx-isp driver pulses reset_gpio/pwdn_gpio before the chip-id
+# probe. -1 means "no such pin"; a wrong value here = "not an imx307".
+sensor.i2c_bus    = 1
+sensor.i2c_addr   = 0x1a
+sensor.mclk       = 1
+sensor.reset_gpio = 91
+sensor.pwdn_gpio  = 0
+
+# --- video stream 0 (H.264) ------------------------------------------------
+video.width       = 1920
+video.height      = 1080
+video.fps         = 20
+video.gop         = 40
+video.bitrate     = 3000      # kbps
+video.profile     = 2         # 0 baseline, 1 main, 2 high
+video.rc_mode     = cbr       # cbr | vbr | fixqp
+video.buffers     = 2
+
+# --- rtsp -------------------------------------------------------------------
+rtsp.port         = 554
+rtsp.path         = /ch0
+
+# --- pipeline lifecycle -----------------------------------------------------
+# always_on = 0: "no consumer, no pipeline" - sensor/ISP/encoder come up on
+# the first RTSP PLAY and go down grace_ms after the last client leaves.
+pipeline.always_on        = 0
+pipeline.grace_ms         = 3000
+pipeline.poll_timeout_ms  = 500
+
+# --- logging ----------------------------------------------------------------
+log.level         = 2         # 0 err, 1 warn, 2 info, 3 debug
+log.syslog        = 0

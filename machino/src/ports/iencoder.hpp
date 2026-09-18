@@ -1,0 +1,19 @@
+// Port: a hardware video encoder channel producing access units.
+#pragma once
+#include "core/frame.hpp"
+#include "core/result.hpp"
+
+namespace machino {
+
+class IEncoder {
+public:
+    virtual ~IEncoder() = default;
+    virtual Result start() = 0;   // begin receiving pictures
+    virtual Result stop()  = 0;
+    // Waits up to timeout_ms for one encoded frame. Status::Timeout when none.
+    virtual Result fetch(AccessUnit& out, int timeout_ms) = 0;
+    virtual void   request_idr() = 0;
+    virtual int    channel() const = 0;
+};
+
+} // namespace machino
