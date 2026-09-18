@@ -97,6 +97,21 @@ threads, known clocks) is available internally and optionally logged every
 `telemetry.log_interval_s`. `SIGHUP` re-applies the configuration. Details:
 `docs/architecture/power.md`.
 
+## HTTP control & telemetry API (M6)
+
+`/api/v1` (default `0.0.0.0:8080`, `api.*` in the conf): `capabilities`,
+`state`, `config` (GET/PATCH), `telemetry`, `events` (SSE). Platform-neutral
+schema: a UI shows/hides controls from `capabilities.controls[*].status`
+(`supported | unsupported | unknown`) and knows how a change lands from
+`apply` (`live | pipeline_restart | …`). PATCH is partial, validated as a
+whole before anything is applied, goes exclusively through the
+PerformanceService/PipelineManager, returns requested vs effective per change,
+persists atomically (temp → fsync → rename) with a `revision` (optimistic
+`If-Match`). Unknown telemetry values are `null`. Reading the API or holding
+an SSE connection is never media demand. Small poll()-based server, one
+thread, bounded buffers/clients. Docs: `docs/api/v1.md`; test client:
+`tools/webui_sim.py`.
+
 ## Build / test / CI
 
 ```

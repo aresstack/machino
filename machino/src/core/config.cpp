@@ -108,6 +108,11 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     }
     INT   ("telemetry.log_interval_s", c.telemetry.log_interval_s, 0, 3600)
 
+    BOOL  ("api.enabled",        c.api.enabled)
+    STR   ("api.bind",           c.api.bind)
+    INT   ("api.port",           c.api.port,      1, 65535)
+    if (k == "config.revision") { if (to_int(v, n) && n > 0) c.revision = (unsigned)n; return true; }
+
     INT   ("log.level",          c.log.level,     0, 3)
     BOOL  ("log.syslog",         c.log.syslog)
 #undef INT

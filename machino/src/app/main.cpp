@@ -1,20 +1,26 @@
 // Machino entry point: config -> registry -> resolved hardware -> platform
-// adapter -> PipelineManager -> PerformanceService -> RTSP. Single process,
-// event loop on signalfd + lifecycle grace timerfd + optional telemetry
-// timerfd (epoll); no polling.
+// adapter -> PipelineManager -> PerformanceService -> ApiService/HTTP -> RTSP.
+// Single process, event loop on signalfd + lifecycle grace timerfd + optional
+// telemetry timerfd (epoll); no polling in the main loop.
 //
 //   SIGUSR1 = drop the manual hold    SIGUSR2 = take a manual hold
 //   SIGHUP  = re-read the configuration and apply performance/stream changes
-//             through the PerformanceService (LIVE / PIPELINE_RESTART / rejected)
+// The HTTP API (/api/v1) is served by its own bounded poll() thread; API
+// access is never media demand.
 #include "adapters/ingenic/ingenic_platform.hpp"
+#include "app/api/api_service.hpp"
+#include "app/http/http_server.hpp"
 #include "app/linux_grace_timer.hpp"
 #include "app/linux_system_stats.hpp"
 #include "app/rtsp/rtsp_server.hpp"
 #include "core/capabilities.hpp"
 #include "core/config.hpp"
+#include "core/config_store.hpp"
+#include "core/events.hpp"
 #include "core/hw/board_profile_parser.hpp"
 #include "core/hw/registry.hpp"
 #include "core/hw/resolve.hpp"
+#include "core/json.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/log.hpp"
 #include "core/power/performance_service.hpp"
@@ -75,6 +81,15 @@ static void log_telemetry(power::PerformanceService& perf) {
          t.dropped_frames, cpu, rss, thr, isp, enc, cf);
 }
 
+static const char* lc_lower(lifecycle::State s) {
+    switch (s) {
+        case lifecycle::State::ColdIdle: return "cold_idle"; case lifecycle::State::Starting: return "starting";
+        case lifecycle::State::Active: return "active"; case lifecycle::State::GraceIdle: return "grace_idle";
+        case lifecycle::State::Stopping: return "stopping"; case lifecycle::State::Failed: return "failed";
+    }
+    return "?";
+}
+
 int main(int argc, char** argv) {
     const char* conf = "/etc/machino.conf";
     bool verbose = false;
@@ -127,11 +142,21 @@ int main(int argc, char** argv) {
         app::LinuxGraceTimer timer;
         app::LinuxSystemStats sysstats;
         StreamHub  hub;
+        EventBus   bus;
+        ConfigStore store(conf);
+        if (!store.load(err)) LOGW(MOD, "config store: %s (API changes will not persist)", err.c_str());
         lifecycle::LifecycleConfig lc; lc.idle_grace_ms = cfg.pipeline.idle_grace_ms; lc.poll_timeout_ms = cfg.pipeline.poll_timeout_ms;
         lifecycle::PipelineManager pipeline(*platform, stream, lc, timer, hub);
+        pipeline.set_state_listener([&bus](lifecycle::State from, lifecycle::State to) {
+            Json j = Json::object(); j.set("from", Json::string(lc_lower(from))); j.set("to", Json::string(lc_lower(to)));
+            bus.publish("lifecycle", j.dump());
+        });
         power::PerformanceService perf(pipeline, *platform, sysstats, hwr, cfg.video);
         log_capabilities(perf.capabilities());
-        perf.apply_config(cfg.performance, cfg.video);      // profile / sensor fps / power levels (cold: stored)
+        perf.apply_config(cfg.performance, cfg.video);
+        api::ApiService api(perf, pipeline, store, bus, hwr, cfg);
+        http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
+        http::HttpServer httpd(hc, api, bus);
         RtspServer rtsp(cfg.rtsp, pipeline, hub);
         IStreamServer& server = rtsp;
 
@@ -152,11 +177,13 @@ int main(int argc, char** argv) {
             Result r; hold = pipeline.acquire(ConsumerType::Manual, &r);
             if (!hold.active()) { LOGE(MOD, "always_on: pipeline bring-up failed"); rc = 3; }
         }
+        if (rc == 0 && cfg.api.enabled && !httpd.start()) { LOGE(MOD, "API server start failed"); rc = 8; }
         if (rc == 0 && !server.start()) { LOGE(MOD, "stream server start failed"); rc = 4; }
 
         if (rc == 0) {
-            LOGI(MOD, "running: rtsp://<ip>:%d%s lifecycle=%s idle_grace=%dms profile=%s", cfg.rtsp.port, cfg.rtsp.path.c_str(),
-                 lifecycle::state_name(pipeline.state()), cfg.pipeline.idle_grace_ms, power::profile_name(cfg.performance.profile));
+            LOGI(MOD, "running: rtsp://<ip>:%d%s api=http://<ip>:%d/api/v1 lifecycle=%s idle_grace=%dms profile=%s revision=%u",
+                 cfg.rtsp.port, cfg.rtsp.path.c_str(), cfg.api.port, lifecycle::state_name(pipeline.state()),
+                 cfg.pipeline.idle_grace_ms, power::profile_name(cfg.performance.profile), store.revision());
             bool run = true;
             while (run) {
                 epoll_event out[4];
@@ -177,6 +204,9 @@ int main(int argc, char** argv) {
                                 if (!load_config(conf, fresh, e2)) { LOGW(MOD, "SIGHUP: reload failed: %s", e2.c_str()); continue; }
                                 LOGI(MOD, "SIGHUP -> applying performance/stream configuration");
                                 perf.apply_config(fresh.performance, fresh.video);
+                                store.load(e2);
+                                Json j = Json::object(); j.set("revision", Json::integer(store.revision())); j.set("source", Json::string("sighup"));
+                                bus.publish("config_changed", j.dump());
                                 log_telemetry(perf);
                             }
                         }
@@ -189,6 +219,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        httpd.stop();
         server.stop();
         hold.release();
         pipeline.shutdown();

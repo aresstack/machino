@@ -31,11 +31,12 @@ LDFLAGS  ?= -no-pie -Wl,--gc-sections
 LDFLAGS  += -static-libstdc++ -static-libgcc
 LIBS     ?= -lpthread -lrt -lm
 
-CORE_SRC := src/core/config.cpp src/core/stream_hub.cpp \
+CORE_SRC := src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp \
             src/core/lifecycle/pipeline_manager.cpp src/core/power/performance_service.cpp \
             src/profiles/builtin_profiles.cpp
 SRC := src/core/log.cpp $(CORE_SRC) \
+       src/app/api/api_service.cpp src/app/http/http_parse.cpp src/app/http/http_server.cpp \
        src/app/linux_grace_timer.cpp src/app/linux_system_stats.cpp \
        src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_server.cpp src/app/main.cpp \
        src/adapters/ingenic/sensor_params.cpp src/adapters/ingenic/imp_sessions.cpp \
@@ -44,13 +45,14 @@ SRC := src/core/log.cpp $(CORE_SRC) \
        src/adapters/ingenic/ingenic_encoder.cpp
 OBJ := $(SRC:.cpp=.o)
 
-# host unit tests: core + profiles + lifecycle + performance (fakes) + the SDK-free adapter conversion
+# host unit tests: core + profiles + lifecycle + performance + API (fakes) + the SDK-free adapter conversion
 HOST_CXX      ?= g++
 HOST_CXXFLAGS ?= -std=c++17 -O1 -fno-exceptions -fno-rtti -Wall -Wextra -Wno-unused-parameter -Werror -pthread -Isrc -Itests -DMACHINO_VERSION='"test"'
-TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp tests/log_stub.cpp \
-            src/core/config.cpp src/core/stream_hub.cpp \
+TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp tests/test_json.cpp tests/test_events.cpp \
+            tests/test_http_parse.cpp tests/test_api.cpp tests/log_stub.cpp \
+            src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp src/core/lifecycle/pipeline_manager.cpp \
-            src/core/power/performance_service.cpp \
+            src/core/power/performance_service.cpp src/app/api/api_service.cpp src/app/http/http_parse.cpp \
             src/profiles/builtin_profiles.cpp src/adapters/ingenic/sensor_params.cpp
 
 .PHONY: all clean strip flags test
@@ -74,4 +76,4 @@ flags:
 	@echo "LDFLAGS=$(LDFLAGS) $(IMPLIBS) $(LIBS)"
 
 clean:
-	rm -f $(OBJ) $(BIN) tests/machino-tests tests/machino-tests.exe
+	rm -f $(OBJ) $(BIN) tests/machino-tests tests/machino-tests.exe tests/tmp_machino.conf tests/tmp_machino.conf.tmp

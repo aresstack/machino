@@ -59,6 +59,13 @@ struct TelemetryConfig {
     int log_interval_s = 0;        // 0 = off; otherwise one compact line every N seconds
 };
 
+// HTTP control/telemetry API (M6). Reads are never media demand.
+struct ApiConfig {
+    bool        enabled = true;
+    std::string bind = "0.0.0.0";
+    int         port = 8080;
+};
+
 struct LogConfig {
     int  level  = 2;
     bool syslog = false;
@@ -72,7 +79,9 @@ struct AppConfig {
     PipelineConfig    pipeline;
     PerformanceConfig performance;
     TelemetryConfig   telemetry;
+    ApiConfig         api;
     LogConfig         log;
+    unsigned          revision = 1;     // config.revision (managed by the ConfigStore)
 };
 
 bool load_config(const char* path, AppConfig& cfg, std::string& err);

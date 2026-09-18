@@ -23,6 +23,7 @@
 #include "ports/iplatform.hpp"
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -61,8 +62,13 @@ struct Measurement {
 
 class PipelineManager {
 public:
+    // Notified on every state transition (called with the manager lock held:
+    // the listener must only enqueue, never call back into the manager).
+    using StateListener = std::function<void(State from, State to)>;
+
     PipelineManager(IPlatform& platform, const EffectiveStream& stream, const LifecycleConfig& cfg,
                     IGraceTimer& timer, StreamHub& hub);
+    void set_state_listener(StateListener l) { std::lock_guard<std::mutex> lk(m_); listener_ = std::move(l); }
     ~PipelineManager();
     PipelineManager(const PipelineManager&) = delete;
     PipelineManager& operator=(const PipelineManager&) = delete;
@@ -111,6 +117,7 @@ private:
     std::string      last_error_;
     bool             shutdown_ = false;
     int              sensor_fps_target_ = -1;
+    StateListener    listener_;
 
     std::unique_ptr<IFrameSource> fs_;
     std::unique_ptr<IEncoder>     enc_;

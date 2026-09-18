@@ -61,8 +61,11 @@ void IngenicPowerControl::fill_capabilities(CapabilitySet& caps) const {
     caps.encoder.performance = PerfCap{Cap::Unsupported, ApplyMode::Unsupported, enc_r};
     caps.power.isp_clock_control     = Cap::Unsupported;
     caps.power.encoder_clock_control = Cap::Unsupported;
-    if (cpufreq_) { caps.power.cpu_frequency = PerfCap{Cap::Supported, ApplyMode::Live, true}; caps.power.cpu_frequency_control = Cap::Supported; }
-    else          { caps.power.cpu_frequency = PerfCap{Cap::Unsupported, ApplyMode::Unsupported, false}; caps.power.cpu_frequency_control = Cap::Unsupported; }
+    // "readable" reflects what telemetry can actually show: with cpufreq the
+    // scaling frequency, otherwise the read-only div_cpu clock from /proc/jz.
+    bool cpu_r = cpufreq_ || self->read_clock("div_cpu", hz);
+    if (cpufreq_) { caps.power.cpu_frequency = PerfCap{Cap::Supported, ApplyMode::Live, cpu_r}; caps.power.cpu_frequency_control = Cap::Supported; }
+    else          { caps.power.cpu_frequency = PerfCap{Cap::Unsupported, ApplyMode::Unsupported, cpu_r}; caps.power.cpu_frequency_control = Cap::Unsupported; }
 }
 
 PowerState IngenicPowerControl::current_state() {

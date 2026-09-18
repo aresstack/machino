@@ -1,0 +1,88 @@
+#include "app/http/http_parse.hpp"
+#include <cstdlib>
+#include <cstring>
+
+namespace machino { namespace http {
+
+std::string Request::header(const std::string& n) const {
+    for (const auto& h : headers) if (h.first == n) return h.second;
+    return "";
+}
+
+static std::string lower(std::string s) { for (auto& c : s) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a'); return s; }
+static void trim(std::string& s) { size_t a = s.find_first_not_of(" \t"), b = s.find_last_not_of(" \t\r"); s = (a == std::string::npos) ? std::string() : s.substr(a, b - a + 1); }
+
+Parse parse_request(const std::string& buf, size_t& consumed, Request& out, const Limits& lim) {
+    size_t end = buf.find("\r\n\r\n");
+    if (end == std::string::npos) return buf.size() > lim.max_head ? Parse::TooLarge : Parse::Incomplete;
+    if (end > lim.max_head) return Parse::TooLarge;
+    Request r;
+    size_t p = 0, nl = buf.find("\r\n");
+    std::string line = buf.substr(0, nl);
+    size_t s1 = line.find(' '), s2 = line.rfind(' ');
+    if (s1 == std::string::npos || s2 == s1 || line.size() > 2048) return Parse::Bad;
+    r.method = line.substr(0, s1);
+    std::string target = line.substr(s1 + 1, s2 - s1 - 1);
+    std::string version = line.substr(s2 + 1);
+    if (version != "HTTP/1.1" && version != "HTTP/1.0") return Parse::Bad;
+    if (target.empty() || target[0] != '/') return Parse::Bad;
+    size_t q = target.find('?'); r.path = target.substr(0, q); if (q != std::string::npos) r.query = target.substr(q + 1);
+    for (char c : r.method) if (c < 'A' || c > 'Z') return Parse::Bad;
+    r.keep_alive = (version == "HTTP/1.1");
+    p = nl + 2;
+    while (p < end) {
+        size_t e = buf.find("\r\n", p); if (e == std::string::npos || e > end) e = end;
+        std::string h = buf.substr(p, e - p); p = e + 2;
+        size_t c = h.find(':'); if (c == std::string::npos) return Parse::Bad;
+        std::string name = lower(h.substr(0, c)), val = h.substr(c + 1); trim(name); trim(val);
+        if (name.empty() || r.headers.size() >= lim.max_headers) return Parse::Bad;
+        r.headers.emplace_back(name, val);
+    }
+    std::string conn = lower(r.header("connection"));
+    if (conn == "close") r.keep_alive = false; else if (conn == "keep-alive") r.keep_alive = true;
+    size_t body_len = 0;
+    std::string cl = r.header("content-length");
+    if (!cl.empty()) {
+        char* ep = nullptr; unsigned long long v = strtoull(cl.c_str(), &ep, 10);
+        if (ep == cl.c_str() || *ep) return Parse::Bad;
+        if (v > lim.max_body) return Parse::TooLarge;
+        body_len = (size_t)v;
+    }
+    if (!r.header("transfer-encoding").empty()) return Parse::Bad;     // chunked not supported (bounded API)
+    size_t total = end + 4 + body_len;
+    if (buf.size() < total) return Parse::Incomplete;
+    r.body = buf.substr(end + 4, body_len);
+    consumed = total;
+    out = r;
+    return Parse::Ok;
+}
+
+const char* status_text(int s) {
+    switch (s) {
+        case 200: return "OK"; case 204: return "No Content"; case 400: return "Bad Request"; case 404: return "Not Found";
+        case 405: return "Method Not Allowed"; case 409: return "Conflict"; case 413: return "Payload Too Large";
+        case 422: return "Unprocessable Entity"; case 500: return "Internal Server Error"; case 503: return "Service Unavailable";
+    }
+    return "Unknown";
+}
+
+std::string response(int status, const std::string& ct, const std::string& body, bool keep_alive, const std::string& extra) {
+    std::string r = "HTTP/1.1 " + std::to_string(status) + " " + status_text(status) + "\r\n";
+    r += "Content-Type: " + ct + "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
+    r += "Cache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n";
+    r += extra;
+    r += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    r += "\r\n"; r += body;
+    return r;
+}
+
+std::string sse_headers() {
+    return "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\n"
+           "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n: connected\n\n";
+}
+
+std::string sse_event(const std::string& type, const std::string& data) {
+    return "event: " + type + "\ndata: " + data + "\n\n";
+}
+
+}} // namespace machino::http

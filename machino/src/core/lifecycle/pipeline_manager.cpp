@@ -33,7 +33,9 @@ PipelineManager::~PipelineManager() { shutdown(); }
 
 void PipelineManager::transition(State to, const char* why) {
     LOGI(MOD, "%s -> %s%s%s", state_name(state_), state_name(to), why ? " " : "", why ? why : "");
+    State from = state_;
     state_ = to;
+    if (listener_) listener_(from, to);
 }
 
 // ---- demand ---------------------------------------------------------------

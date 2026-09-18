@@ -64,6 +64,13 @@ power.isp_performance     = auto
 power.encoder_performance = auto
 power.cpu_performance     = auto
 
+# --- HTTP control / telemetry API (/api/v1) ---------------------------------
+# Reads and SSE connections are never media demand. PATCH /api/v1/config
+# persists the managed keys of THIS file atomically and bumps config.revision.
+api.enabled               = 1
+api.bind                  = 0.0.0.0
+api.port                  = 8080
+
 # --- telemetry -------------------------------------------------------------
 # 0 = off; N = one compact line every N seconds (state, requested/effective fps,
 # measured fps/bitrate, drops, cpu, rss, threads, known clocks)
