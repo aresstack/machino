@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/machino_embedded_kamera_banner.png"
+<img src="docs/machino_embedded_kamera_banner.svg"
      alt="Machino - media runtime for embedded IP cameras"
      width="100%" />
 

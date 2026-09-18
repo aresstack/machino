@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+  <title id="title">Machino — universal media runtime for embedded IP cameras</title>
+  <desc id="desc">A dark technical banner with the Machino name, streaming pipeline, camera lens and chip motif.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#07111f"/><stop offset="0.55" stop-color="#0b1f2d"/><stop offset="1" stop-color="#102a33"/></linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#49d7ff"/><stop offset="0.52" stop-color="#59f1c8"/><stop offset="1" stop-color="#9cf57f"/></linearGradient>
+    <radialGradient id="lens" cx="50%" cy="50%" r="55%"><stop offset="0" stop-color="#61f5d0"/><stop offset="0.18" stop-color="#1ca7c7"/><stop offset="0.48" stop-color="#0d4968"/><stop offset="0.76" stop-color="#092034"/><stop offset="1" stop-color="#020912"/></radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="18"/></filter>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#8ddcd2" stroke-opacity="0.05" stroke-width="1"/></pattern>
+  </defs>
+  <rect width="1600" height="520" rx="28" fill="url(#bg)"/><rect width="1600" height="520" rx="28" fill="url(#grid)"/>
+  <circle cx="1315" cy="265" r="270" fill="#18d5bf" opacity="0.055" filter="url(#soft)"/><circle cx="1210" cy="170" r="155" fill="#3cc9ff" opacity="0.05" filter="url(#soft)"/>
+  <g fill="none" stroke="#65e7d5" stroke-opacity="0.26" stroke-width="2"><path d="M1040 90h160l34 34h110"/><path d="M1008 132h112l40 40h100"/><path d="M1015 395h130l32-32h95"/><path d="M1110 438h135l40-40h90"/><path d="M1430 120v75l-28 28v72"/><path d="M1480 182v66l-30 30v115"/></g>
+  <g fill="#61efd3"><circle cx="1040" cy="90" r="4"/><circle cx="1344" cy="124" r="4"/><circle cx="1008" cy="132" r="4"/><circle cx="1260" cy="172" r="4"/><circle cx="1015" cy="395" r="4"/><circle cx="1272" cy="363" r="4"/><circle cx="1110" cy="438" r="4"/><circle cx="1375" cy="398" r="4"/></g>
+  <g transform="translate(92 98)">
+    <rect x="0" y="0" width="10" height="278" rx="5" fill="url(#accent)"/>
+    <text x="46" y="94" fill="#f4fbff" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="94" font-weight="800" letter-spacing="-3">Machino</text>
+    <text x="50" y="143" fill="#79e9dc" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="25" font-weight="700" letter-spacing="3">MEDIA RUNTIME FOR EMBEDDED IP CAMERAS</text>
+    <text x="50" y="205" fill="#c9d9e3" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="27">Sensor → ISP → Encoder → Stream</text>
+    <g transform="translate(50 246)" font-family="Inter, Segoe UI, Arial, sans-serif">
+      <rect x="0" y="0" width="136" height="44" rx="22" fill="#0d2d3b" stroke="#3fd9cc" stroke-opacity="0.55"/><text x="68" y="29" fill="#a8f4e7" font-size="18" font-weight="700" text-anchor="middle">C++ runtime</text>
+      <rect x="150" y="0" width="128" height="44" rx="22" fill="#0d2d3b" stroke="#3fd9cc" stroke-opacity="0.55"/><text x="214" y="29" fill="#a8f4e7" font-size="18" font-weight="700" text-anchor="middle">OpenIPC</text>
+      <rect x="292" y="0" width="164" height="44" rx="22" fill="#0d2d3b" stroke="#3fd9cc" stroke-opacity="0.55"/><text x="374" y="29" fill="#a8f4e7" font-size="18" font-weight="700" text-anchor="middle">Ingenic first</text>
+    </g>
+    <text x="50" y="356" fill="#7894a6" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="19" font-weight="600" letter-spacing="0.5">MACHINO IS NOT MACHO. <tspan fill="#49d7ff">YET.</tspan></text>
+  </g>
+  <g transform="translate(1065 102)">
+    <rect x="0" y="68" width="356" height="250" rx="34" fill="#0b1a25" stroke="#2d6674" stroke-width="3"/><rect x="22" y="90" width="312" height="206" rx="25" fill="#0c2230" stroke="#327382" stroke-opacity="0.55"/>
+    <g transform="translate(35 185)"><rect width="92" height="82" rx="12" fill="#0b111a" stroke="#59e9d5" stroke-opacity="0.6"/><path d="M12 16h68M12 28h68M12 40h68M12 52h68M12 64h68" stroke="#2d5661" stroke-width="3"/><text x="46" y="49" fill="#95f5e6" font-family="monospace" font-size="16" font-weight="700" text-anchor="middle">T40NN</text><g stroke="#5eead4" stroke-width="2" stroke-opacity="0.55"><path d="M-8 16H0M-8 32H0M-8 48H0M-8 64H0M92 16h8M92 32h8M92 48h8M92 64h8"/></g></g>
+    <g transform="translate(226 182)"><circle r="87" fill="#06101a" stroke="#66f0d6" stroke-opacity="0.65" stroke-width="4"/><circle r="69" fill="url(#lens)" stroke="#2c7c91" stroke-width="3"/><circle r="47" fill="#03111b" stroke="#28a3bd" stroke-opacity="0.8" stroke-width="2"/><circle r="25" fill="#02070d"/><circle cx="-16" cy="-18" r="11" fill="#c7fff4" opacity="0.34"/><circle cx="-31" cy="-34" r="5" fill="#fff" opacity="0.6"/></g>
+    <g fill="none" stroke="url(#accent)" stroke-width="5" stroke-linecap="round" opacity="0.95" filter="url(#glow)"><path d="M317 76c26 13 47 34 61 60"/><path d="M332 49c41 19 75 52 94 94"/><path d="M345 22c57 26 103 72 129 128"/></g>
+    <circle cx="54" cy="119" r="6" fill="#5ff0cd" filter="url(#glow)"/><circle cx="80" cy="119" r="6" fill="#4ecaff"/><circle cx="106" cy="119" r="6" fill="#26404f"/>
+  </g>
+  <rect x="92" y="471" width="1416" height="2" rx="1" fill="url(#accent)" opacity="0.32"/>
+</svg>
