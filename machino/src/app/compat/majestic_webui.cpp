@@ -196,7 +196,7 @@ Json majestic_config(const Json& native_config, const Json& state) {
             if (const Json* x = vu->get("width");  x && x->is_number()) w = x->as_int();
             if (const Json* x = vu->get("height"); x && x->is_number()) h = x->as_int();
             if (w > 0 && h > 0) {
-                char sz[32]; std::snprintf(sz, sizeof sz, "%lldx%lld", w, h);
+                char sz[48]; std::snprintf(sz, sizeof sz, "%lldx%lld", w, h);
                 v.set("size", Json::string(sz));
             }
             if (const Json* br = vu->get("bitrate_kbps"); br && br->is_number()) v.set("bitrate", *br);
