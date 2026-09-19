@@ -141,8 +141,10 @@ int main(int argc, char** argv) {
         if (!platform) { LOGE(MOD, "no adapter for platform vendor '%s'", hwr.platform.vendor.c_str()); return 5; }
 
         app::LinuxGraceTimer timer;
+        app::LinuxGraceTimer sub_timer, jpeg_timer;   // M8: per-unit grace
         app::LinuxSystemStats sysstats;
         StreamHub  hub;
+        StreamHub  sub_hub;
         EventBus   bus;
         ConfigStore store(conf);
         if (!store.load(err)) LOGW(MOD, "config store: %s (API changes will not persist)", err.c_str());
@@ -152,6 +154,21 @@ int main(int argc, char** argv) {
             Json j = Json::object(); j.set("from", Json::string(lc_lower(from))); j.set("to", Json::string(lc_lower(to)));
             bus.publish("lifecycle", j.dump());
         });
+        // M8: substream (unit 1) - only when enabled and its geometry is valid;
+        // geometry is never invented, so a bad config disables it with a warning.
+        EffectiveStream sub_stream; std::string sub_err; bool sub_ok = false;
+        if (cfg.video1.enabled) {
+            sub_ok = effective_sub_stream(cfg.video1, stream, sub_stream, sub_err);
+            if (sub_ok) { pipeline.configure_sub(sub_stream, sub_hub, &sub_timer);
+                          LOGI(MOD, "substream ch1: %dx%d@%d %d kbps", sub_stream.width, sub_stream.height, sub_stream.fps, sub_stream.bitrate_kbps); }
+            else        LOGW(MOD, "substream disabled: %s", sub_err.c_str());
+        }
+        // M8: hardware JPEG for snapshots - ephemeral, created on demand only.
+        if (platform->capabilities().jpeg.supported == Cap::Supported) {
+            JpegParams jp; jp.quality = cfg.jpeg.quality;
+            pipeline.configure_jpeg(jp, cfg.snapshot.cache_ms, cfg.snapshot.grace_ms, &jpeg_timer);
+            LOGI(MOD, "jpeg snapshots available (quality %d, cache %dms, grace %dms)", cfg.jpeg.quality, cfg.snapshot.cache_ms, cfg.snapshot.grace_ms);
+        }
         power::PerformanceService perf(pipeline, *platform, sysstats, hwr, cfg.video);
         log_capabilities(perf.capabilities());
         perf.apply_config(cfg.performance, cfg.video);
@@ -159,7 +176,7 @@ int main(int argc, char** argv) {
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg);
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         http::HttpServer httpd(hc, api, bus);
-        RtspServer rtsp(cfg.rtsp, pipeline, hub);
+        RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr);
         IStreamServer& server = rtsp;
 
         int tfd = -1;
@@ -172,6 +189,8 @@ int main(int argc, char** argv) {
         epoll_event ev{}; ev.events = EPOLLIN;
         ev.data.fd = sfd;        epoll_ctl(ep, EPOLL_CTL_ADD, sfd, &ev);
         ev.data.fd = timer.fd(); epoll_ctl(ep, EPOLL_CTL_ADD, timer.fd(), &ev);
+        ev.data.fd = sub_timer.fd();  epoll_ctl(ep, EPOLL_CTL_ADD, sub_timer.fd(), &ev);
+        ev.data.fd = jpeg_timer.fd(); epoll_ctl(ep, EPOLL_CTL_ADD, jpeg_timer.fd(), &ev);
         if (tfd >= 0) { ev.data.fd = tfd; epoll_ctl(ep, EPOLL_CTL_ADD, tfd, &ev); }
 
         lifecycle::DemandHandle hold;
@@ -188,8 +207,8 @@ int main(int argc, char** argv) {
                  cfg.pipeline.idle_grace_ms, power::profile_name(cfg.performance.profile), store.revision());
             bool run = true;
             while (run) {
-                epoll_event out[4];
-                int n = epoll_wait(ep, out, 4, -1);
+                epoll_event out[8];
+                int n = epoll_wait(ep, out, 8, -1);
                 for (int i = 0; i < n; ++i) {
                     if (out[i].data.fd == sfd) {
                         signalfd_siginfo si;
@@ -228,6 +247,10 @@ int main(int argc, char** argv) {
                         }
                     } else if (out[i].data.fd == timer.fd()) {
                         if (timer.consume()) pipeline.on_grace_timeout();
+                    } else if (out[i].data.fd == sub_timer.fd()) {
+                        if (sub_timer.consume()) pipeline.on_unit_grace(lifecycle::UNIT_SUB);
+                    } else if (out[i].data.fd == jpeg_timer.fd()) {
+                        if (jpeg_timer.consume()) pipeline.on_jpeg_grace();
                     } else if (tfd >= 0 && out[i].data.fd == tfd) {
                         uint64_t x; while (read(tfd, &x, sizeof x) > 0) {}
                         log_telemetry(perf);

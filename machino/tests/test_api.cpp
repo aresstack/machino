@@ -313,6 +313,47 @@ void test_rtsp_client_limit_api() {
     ACHECK(path(r.api.config().body, "rtsp.max_clients")->as_int() == 2);   // nothing slipped through
 }
 
+// M8: multi-stream + snapshot surface. The Rig wires a substream and jpeg the
+// way main.cpp does, then checks the API reports and serves them.
+void test_m8_streams_and_snapshot() {
+    Rig r;
+    EffectiveStream sub = r.stream; sub.width = 640; sub.height = 360; sub.bitrate_kbps = 512;
+    r.mgr.configure_sub(sub, r.hub, &r.timer);
+    JpegParams jp; jp.quality = 80; r.mgr.configure_jpeg(jp, 300, 2000, &r.timer);
+
+    api::Response caps = r.api.capabilities();
+    ACHECK(path(caps.body, "jpeg.status")->as_string() == "supported");
+    ACHECK(path(caps.body, "video.streams.0.configured")->as_bool());
+    ACHECK(path(caps.body, "video.streams.1.configured")->as_bool());
+
+    // snapshot from cold: a valid JPEG (SOI..EOI), pipeline returns to idle
+    std::vector<uint8_t> jpg; std::string err;
+    Result sr = r.api.snapshot(jpg, err);
+    ACHECK(sr && jpg.size() >= 4);
+    ACHECK(jpg[0] == 0xFF && jpg[1] == 0xD8 && jpg[jpg.size()-2] == 0xFF && jpg[jpg.size()-1] == 0xD9);
+
+    // main + sub play: state reports both units
+    auto m = r.mgr.acquire_unit(lifecycle::UNIT_MAIN, ConsumerType::Rtsp);
+    auto s2 = r.mgr.acquire_unit(lifecycle::UNIT_SUB, ConsumerType::Rtsp);
+    ACHECK(m.active() && s2.active());
+    api::Response st = r.api.state();
+    ACHECK(path(st.body, "media.streams.0.active")->as_bool());
+    ACHECK(path(st.body, "media.streams.1.active")->as_bool());
+    ACHECK(path(st.body, "media.streams.1.width")->as_int() == 640);
+    api::Response tel = r.api.telemetry();
+    ACHECK(path(tel.body, "media.streams.0") != nullptr);
+    ACHECK(path(tel.body, "jpeg.captures_total")->as_int() >= 1);
+}
+
+// snapshot must be refused cleanly where the platform has no jpeg
+void test_m8_snapshot_unsupported() {
+    Rig r;
+    r.platform.jpeg_supported = false;     // no jpeg cap; pipeline never configured for it
+    std::vector<uint8_t> jpg; std::string err;
+    Result sr = r.api.snapshot(jpg, err);
+    ACHECK(!sr && sr.status == Status::Unsupported);
+}
+
 } // namespace
 
 void run_api_tests() {
@@ -326,5 +367,7 @@ void run_api_tests() {
     test_m7_image_latency_api();
     test_majestic_webui_compat();
     test_rtsp_client_limit_api();
+    test_m8_streams_and_snapshot();
+    test_m8_snapshot_unsupported();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }

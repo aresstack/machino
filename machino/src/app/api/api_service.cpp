@@ -106,7 +106,26 @@ Json ApiService::capabilities_json() const {
     j.set("sensor", s);
     Json v = Json::object(); v.set("h264", Json::string(cap_name(c.video.h264))); v.set("h265", Json::string(cap_name(c.video.h265)));
     v.set("max_streams", c.video.max_streams >= 0 ? Json::integer(c.video.max_streams) : Json::null());
+    // Per-unit presence: which stream units this build actually wired. Modes
+    // stay unknown (null) - they are not invented, only reported when known.
+    Json streams = Json::object();
+    for (int u = 0; u <= lifecycle::UNIT_SUB; ++u) {
+        if (!pipeline_.unit_configured(u)) continue;
+        EffectiveStream us = pipeline_.stream_unit(u);
+        Json su = Json::object();
+        su.set("configured", Json::boolean(true));
+        su.set("width", us.width > 0 ? Json::integer(us.width) : Json::null());
+        su.set("height", us.height > 0 ? Json::integer(us.height) : Json::null());
+        su.set("supported_modes", Json::null());
+        streams.set(std::to_string(u), su);
+    }
+    v.set("streams", streams);
     j.set("video", v);
+    Json jp = Json::object();
+    jp.set("status", Json::string(cap_name(c.jpeg.supported)));
+    jp.set("max_width", c.jpeg.max_width >= 0 ? Json::integer(c.jpeg.max_width) : Json::null());
+    jp.set("max_height", c.jpeg.max_height >= 0 ? Json::integer(c.jpeg.max_height) : Json::null());
+    j.set("jpeg", jp);
     Json ctl = Json::object();
     ctl.set("sensor_fps", range_control(c.sensor.fps));
     ctl.set("stream_fps", range_control(c.video.fps));
@@ -159,6 +178,10 @@ Json ApiService::capabilities_json() const {
 }
 Response ApiService::capabilities() const { return Response{200, capabilities_json()}; }
 
+Result ApiService::snapshot(std::vector<uint8_t>& out, std::string& err) {
+    return pipeline_.snapshot(out, err);
+}
+
 Json ApiService::state_json() {
     lifecycle::Stats st = pipeline_.stats();
     power::EffectiveState e = perf_.effective_state();
@@ -184,6 +207,25 @@ Json ApiService::state_json() {
     m.set("encoder_buffers", s.encoder_buffers > 0 ? Json::integer(s.encoder_buffers) : Json::null());
     m.set("width", Json::integer(s.width)); m.set("height", Json::integer(s.height));
     m.set("encoder_active", Json::boolean(running));
+    m.set("sensor_active", Json::boolean(running));
+    // M8: per-unit runtime view. The flat fields above stay for compatibility
+    // and describe the main stream (unit 0).
+    Json streams = Json::object();
+    for (int u = 0; u <= lifecycle::UNIT_SUB; ++u) {
+        if (!pipeline_.unit_configured(u)) continue;
+        EffectiveStream us = pipeline_.stream_unit(u);
+        Json su = Json::object();
+        su.set("active", Json::boolean(st.unit_active[u]));
+        su.set("consumers", Json::integer(st.unit_demand[u]));
+        su.set("width", Json::integer(us.width)); su.set("height", Json::integer(us.height));
+        su.set("fps", Json::integer(us.fps)); su.set("bitrate_kbps", Json::integer(us.bitrate_kbps));
+        streams.set(std::to_string(u), su);
+    }
+    m.set("streams", streams);
+    Json mj = Json::object();
+    mj.set("active", Json::boolean(st.unit_active[lifecycle::UNIT_JPEG]));
+    mj.set("consumers", Json::integer(st.unit_demand[lifecycle::UNIT_JPEG]));
+    m.set("jpeg", mj);
     j.set("media", m);
     Json lat = Json::object(); lat.set("profile", Json::string(media::latency_profile_name(tune.latency.profile)));
     lat.set("gop", Json::integer(tune.latency.gop)); lat.set("framesource_buffers", Json::integer(tune.latency.framesource_buffers));
@@ -250,7 +292,28 @@ Json ApiService::telemetry_json() {
     Json pr = Json::object(); pr.set("cpu_percent", opt(t.cpu_percent)); pr.set("rss_kb", opt(t.rss_kb)); pr.set("threads", opt(t.threads)); j.set("process", pr);
     Json m = Json::object(); m.set("encoded_fps", opt(t.measured_encoded_fps)); m.set("bitrate_kbps", opt(t.measured_bitrate_kbps));
     m.set("dropped_frames", Json::integer(t.dropped_frames)); m.set("stream_fps_requested", Json::integer(t.requested_stream_fps));
-    m.set("bitrate_kbps_requested", Json::integer(t.requested_bitrate_kbps)); j.set("media", m);
+    m.set("bitrate_kbps_requested", Json::integer(t.requested_bitrate_kbps));
+    // M8: per-stream and jpeg counters, straight from the pipeline stats.
+    lifecycle::Stats st = pipeline_.stats();
+    Json streams = Json::object();
+    for (int u = 0; u <= lifecycle::UNIT_SUB; ++u) {
+        if (!pipeline_.unit_configured(u)) continue;
+        lifecycle::Measurement mu = pipeline_.measurement_unit(u);
+        Json su = Json::object();
+        su.set("active", Json::boolean(st.unit_active[u]));
+        su.set("encoded_fps", mu.valid ? Json::number(mu.encoded_fps) : Json::null());
+        su.set("bitrate_kbps", mu.valid ? Json::number(mu.bitrate_kbps) : Json::null());
+        su.set("dropped_frames", Json::integer(mu.dropped_frames));
+        streams.set(std::to_string(u), su);
+    }
+    m.set("streams", streams);
+    j.set("media", m);
+    Json tj = Json::object();
+    tj.set("active", Json::boolean(st.unit_active[lifecycle::UNIT_JPEG]));
+    tj.set("captures_total", Json::integer(st.jpeg_captures));
+    tj.set("capture_failures", Json::integer(st.jpeg_failures));
+    tj.set("last_capture_ms", st.jpeg_last_capture_ms >= 0 ? Json::integer(st.jpeg_last_capture_ms) : Json::null());
+    j.set("jpeg", tj);
     LatencyStats ls = tuning_.latency_stats();
     Json lat = Json::object(); lat.set("available", Json::boolean(ls.valid)); lat.set("samples", Json::integer(ls.samples));
     lat.set("capture_to_encoder_output_avg_ms", ls.valid ? Json::number(ls.capture_to_out_avg_ms) : Json::null());

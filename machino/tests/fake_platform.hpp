@@ -125,6 +125,7 @@ public:
     bool   sensor_fps_runtime_error = false; // capabilities say supported, the hardware refuses anyway
     bool   live_bitrate = true;
     bool   gop_readback_stale = false;   // simulate the SDK's delayed GOP read-back
+    bool   jpeg_supported = true;        // create_jpeg + jpeg capability
     int    sensor_fps_effective = -1;        // what the "hardware" reports
     IPowerControl* power_ptr = nullptr;
 
@@ -140,6 +141,7 @@ public:
         c.sensor.configurable_fps = sensor_fps_supported ? Cap::Supported : Cap::Unsupported;
         c.sensor.fps = RangeCap{sensor_fps_supported ? Cap::Supported : Cap::Unsupported, -1, -1, sensor_fps_supported ? ApplyMode::Live : ApplyMode::Unsupported};
         c.isp.available = Cap::Supported; c.encoder.hardware = Cap::Supported;
+        if (jpeg_supported) { c.jpeg.supported = Cap::Supported; c.jpeg.max_width = 1920; c.jpeg.max_height = 1080; }
         return c;
     }
     Result bring_up() override {

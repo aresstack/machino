@@ -30,9 +30,11 @@ static int64_t mono_us() {
 
 using lifecycle::ConsumerType;
 using lifecycle::DemandHandle;
+using lifecycle::unit_name;
 
 struct RtspServer::Session {
     int         fd = -1;
+    int         unit = lifecycle::UNIT_MAIN;   // chosen by the request URL
     std::string peer;
     std::string session_id;
     bool        tcp = true;
@@ -50,7 +52,17 @@ struct RtspServer::Session {
 };
 
 RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub)
-    : cfg_(cfg), pipeline_(pipeline), hub_(hub) {}
+    : cfg_(cfg), pipeline_(pipeline), hub_(hub), sub_hub_(sub_hub) {}
+
+int RtspServer::unit_from_url(const std::string& url) const {
+    // The substream path is the specific one; match it first. ch0/ch1 are
+    // disjoint, so a substring test on the mount identifies the unit.
+    if (sub_hub_ && !cfg_.sub_path.empty() && url.find(cfg_.sub_path) != std::string::npos)
+        return lifecycle::UNIT_SUB;
+    return lifecycle::UNIT_MAIN;
+}
+StreamHub* RtspServer::hub_for(int unit) const { return unit == lifecycle::UNIT_SUB ? sub_hub_ : &hub_; }
+const std::string& RtspServer::path_for(int unit) const { return unit == lifecycle::UNIT_SUB ? cfg_.sub_path : cfg_.path; }
 
 RtspServer::~RtspServer() { stop(); }
 
@@ -65,7 +77,8 @@ Result RtspServer::start() {
     }
     quit_ = false;
     acceptor_ = std::thread([this] { accept_loop(); });
-    LOGI(MOD, "listening on :%d path %s (pipeline stays cold until PLAY)", cfg_.port, cfg_.path.c_str());
+    if (sub_hub_) LOGI(MOD, "listening on :%d paths %s (main) %s (sub) (pipeline stays cold until PLAY)", cfg_.port, cfg_.path.c_str(), cfg_.sub_path.c_str());
+    else          LOGI(MOD, "listening on :%d path %s (pipeline stays cold until PLAY)", cfg_.port, cfg_.path.c_str());
     return Result::ok();
 }
 
@@ -192,15 +205,15 @@ void RtspServer::client_loop(Client* c, std::string peer) {
         if (alive && s.playing && s.sink) {
             AuPtr au; bool discontinuity = false;
             if (s.sink->pop(au, 20, &discontinuity)) {
-                if (discontinuity) { hub_.record_discontinuity(); s.wait_key = true; }
+                if (discontinuity) { if (StreamHub* h = hub_for(s.unit)) h->record_discontinuity(); s.wait_key = true; }
                 if (s.wait_key && !au->key) continue;
                 s.wait_key = false;
                 if (!send_au(s, *au)) { LOGW(MOD, "%s: send stalled/failed - dropping client", peer.c_str()); alive = false; }
-                else if (au->fetched_us > 0) hub_.record_out_to_send(mono_us() - au->fetched_us);
+                else if (au->fetched_us > 0) { if (StreamHub* h = hub_for(s.unit)) h->record_out_to_send(mono_us() - au->fetched_us); }
             }
         }
     }
-    if (s.sink) hub_.unsubscribe(s.sink);
+    if (s.sink) { StreamHub* h = hub_for(s.unit); if (h) h->unsubscribe(s.sink); }
     s.demand.release();                                     // explicit for readability; the dtor would do it too
     if (s.udp_fd >= 0) close(s.udp_fd);
     // clear the fd before closing it: stop() must not shut down a number the
@@ -221,19 +234,21 @@ static std::string header(const std::string& req, const char* name) {
 
 // SPS/PPS for the SDP: from the cache, or via a scoped demand (the pipeline
 // may start for it; the handle is released before returning - no leak).
-bool RtspServer::obtain_params(std::vector<uint8_t>& sps, std::vector<uint8_t>& pps) {
-    { std::lock_guard<std::mutex> lk(params_m_); if (!sps_.empty() && !pps_.empty()) { sps = sps_; pps = pps_; return true; } }
-    DemandHandle d = pipeline_.acquire(ConsumerType::Rtsp);
+bool RtspServer::obtain_params(int unit, std::vector<uint8_t>& sps, std::vector<uint8_t>& pps) {
+    StreamHub* h = hub_for(unit);
+    if (!h) return false;
+    { std::lock_guard<std::mutex> lk(params_m_); if (!sps_[unit].empty() && !pps_[unit].empty()) { sps = sps_[unit]; pps = pps_[unit]; return true; } }
+    DemandHandle d = pipeline_.acquire_unit(unit, ConsumerType::Rtsp);
     if (!d.active()) return false;
-    auto sink = hub_.subscribe();
-    pipeline_.request_idr();
+    auto sink = h->subscribe();
+    pipeline_.request_idr(unit);
     bool ok = false;
     for (int i = 0; i < 150 && !ok && !quit_; ++i) {      // <= ~3 s
         AuPtr au; if (!sink->pop(au, 20)) continue;
         if (au->key && h264::extract_params(au->data.data(), au->data.size(), sps, pps)) ok = true;
     }
-    hub_.unsubscribe(sink);
-    if (ok) { std::lock_guard<std::mutex> lk(params_m_); sps_ = sps; pps_ = pps; }
+    h->unsubscribe(sink);
+    if (ok) { std::lock_guard<std::mutex> lk(params_m_); sps_[unit] = sps; pps_[unit] = pps; }
     return ok;                                              // d released here
 }
 
@@ -241,6 +256,19 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
     std::string method = req.substr(0, req.find(' '));
     std::string cseq = header(req, "CSeq"); if (cseq.empty()) cseq = "0";
     LOGD(MOD, "%s %s", s.peer.c_str(), method.c_str());
+    // The request line is "METHOD url RTSP/1.0"; the url selects main vs sub.
+    // A stream request for the substream mount when it is not configured is a
+    // 404, not a silent fall-through to the main stream.
+    {
+        size_t a = req.find(' '), b = (a == std::string::npos) ? std::string::npos : req.find(' ', a + 1);
+        std::string url = (a != std::string::npos && b != std::string::npos) ? req.substr(a + 1, b - a - 1) : "";
+        if (method == "DESCRIBE" || method == "SETUP" || method == "PLAY") {
+            if (!sub_hub_ && !cfg_.sub_path.empty() && url.find(cfg_.sub_path) != std::string::npos)
+                return send_all(s.fd, ("RTSP/1.0 404 Not Found\r\nCSeq: " + cseq + "\r\n\r\n").data(),
+                                cseq.size() + 30, cfg_.send_stall_ms), false;
+            s.unit = unit_from_url(url);
+        }
+    }
 
     auto reply = [&](const char* status, const std::string& extra, const std::string& body) {
         std::string out = std::string("RTSP/1.0 ") + status + "\r\nCSeq: " + cseq + "\r\nServer: machino/" MACHINO_VERSION "\r\n" + extra;
@@ -254,7 +282,7 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
 
     if (method == "DESCRIBE") {
         std::vector<uint8_t> sps, pps;
-        if (!obtain_params(sps, pps)) { LOGW(MOD, "DESCRIBE: no SPS/PPS available"); return reply("503 Service Unavailable", "", ""); }
+        if (!obtain_params(s.unit, sps, pps)) { LOGW(MOD, "DESCRIBE %s: no SPS/PPS available", unit_name(s.unit)); return reply("503 Service Unavailable", "", ""); }
         char plid[8]; unsigned p1 = sps.size() > 3 ? sps[1] : 0, p2 = sps.size() > 3 ? sps[2] : 0, p3 = sps.size() > 3 ? sps[3] : 0;
         snprintf(plid, sizeof plid, "%02X%02X%02X", p1, p2, p3);
         std::string body = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=Machino\r\nt=0 0\r\na=control:*\r\n"
@@ -292,14 +320,16 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
 
     if (method == "PLAY") {
         if (!s.playing) {
-            Result r; s.demand = pipeline_.acquire(ConsumerType::Rtsp, &r);
-            if (!s.demand.active()) { LOGW(MOD, "%s PLAY: pipeline unavailable (%s)", s.peer.c_str(), status_name(r.status)); return reply("503 Service Unavailable", "", ""); }
-            s.sink = hub_.subscribe();   // bounded profile depth; a stalled client drops its own frames only
+            StreamHub* h = hub_for(s.unit);
+            if (!h) return reply("404 Not Found", "", "");
+            Result r; s.demand = pipeline_.acquire_unit(s.unit, ConsumerType::Rtsp, &r);
+            if (!s.demand.active()) { LOGW(MOD, "%s PLAY %s: pipeline unavailable (%s)", s.peer.c_str(), unit_name(s.unit), status_name(r.status)); return reply("503 Service Unavailable", "", ""); }
+            s.sink = h->subscribe();   // bounded profile depth; a stalled client drops its own frames only
             s.playing = true; s.wait_key = true; s.pts0_us = -1;
-            pipeline_.request_idr();
-            LOGI(MOD, "%s PLAY (%s)", s.peer.c_str(), s.tcp ? "tcp-interleaved" : "udp");
+            pipeline_.request_idr(s.unit);
+            LOGI(MOD, "%s PLAY %s (%s)", s.peer.c_str(), unit_name(s.unit), s.tcp ? "tcp-interleaved" : "udp");
         }
-        return reply("200 OK", "Session: " + s.session_id + "\r\nRange: npt=0.000-\r\nRTP-Info: url=" + cfg_.path + "/trackID=0;seq=" + std::to_string(s.rtp_seq) + "\r\n", "");
+        return reply("200 OK", "Session: " + s.session_id + "\r\nRange: npt=0.000-\r\nRTP-Info: url=" + path_for(s.unit) + "/trackID=0;seq=" + std::to_string(s.rtp_seq) + "\r\n", "");
     }
 
     if (method == "TEARDOWN") {

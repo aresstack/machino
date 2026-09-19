@@ -15,8 +15,10 @@
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/media/tuning_service.hpp"
 #include "core/power/performance_service.hpp"
+#include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace machino { namespace api {
 
@@ -37,6 +39,10 @@ public:
     Response telemetry();
     // Partial update. `if_match` = expected revision ("" = none). Serialised.
     Response patch_config(const std::string& body, const std::string& if_match);
+
+    // M8: one current frame as JPEG (binary, not JSON). Delegates to the
+    // pipeline's snapshot path; the transport builds the image/jpeg response.
+    Result snapshot(std::vector<uint8_t>& out, std::string& err);
 
     Json telemetry_json();                         // also used for SSE telemetry events
     static Json error(const char* code, const std::string& path, const std::string& message);

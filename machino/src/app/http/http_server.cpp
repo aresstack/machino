@@ -132,6 +132,20 @@ bool HttpServer::handle_request(Client& c) {
                      : api::ApiService::fail(t.status, t.code.c_str(), t.path, t.message);
         } else if (m == "PATCH" || m == "PUT") r = api_.patch_config(req.body, req.header("if-match"));
         else r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    } else if (path == "/snapshot" || path == "/snapshot.jpg" || path == "/api/v1/snapshot") {
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else {
+            std::vector<uint8_t> jpg; std::string serr;
+            Result sr = api_.snapshot(jpg, serr);
+            if (sr) {
+                std::string body(reinterpret_cast<const char*>(jpg.data()), jpg.size());
+                bool ok = queue(c, response(200, "image/jpeg", body, req.keep_alive));
+                if (!req.keep_alive) c.close_after_flush = true;
+                return ok;
+            }
+            int code = sr.status == Status::Unsupported ? 501 : 503;
+            r = api::ApiService::fail(code, "unavailable", path, serr.empty() ? "snapshot failed" : serr);
+        }
     } else r = api::ApiService::fail(404, "unknown_field", path, "unknown endpoint");
 
     std::string body = r.body.dump();
