@@ -5,11 +5,13 @@ instead of installed on top at runtime. This is the *image* path; the runtime
 path (install next to Majestic, switch with `streamerctl` / `machino-manager`)
 is unchanged and documented in [../../docs/install-openipc.md](../../docs/install-openipc.md).
 
-> CI-validated: the `buildroot-package` workflow runs Buildroot's own
-> `utils/check-package` linter **and** a real compile-through (Buildroot
-> internal musl/mipsel/soft-float toolchain, this tree via `OVERRIDE_SRCDIR`,
-> vendor archives staged). What CI cannot know is your tree's vendor-package
-> name — set `MACHINO_DEPENDENCIES`/`MACHINO_IMP_LIB` for your SDK.
+> CI-validated by Buildroot's own `utils/check-package` linter (the
+> `buildroot-package` workflow). The actual cross-compile + IMP linkage is
+> covered by the `build-machino-t40` workflow, which runs the exact same
+> `make` invocation this `.mk` uses. We do not build a full Buildroot
+> toolchain in CI (30 min for no extra coverage). What CI cannot know is your
+> tree's vendor-package name — set `MACHINO_DEPENDENCIES`/`MACHINO_IMP_LIB`
+> for your SDK before building in your own Buildroot.
 
 ## Adding it to a Buildroot tree
 

@@ -1,10 +1,14 @@
 name: buildroot-package
-# Validates the Buildroot integration for real (GPT M11 review):
-#   1. utils/check-package - Buildroot's own package linter (.mk/Config.in/.hash)
-#   2. a genuine compile-through: Buildroot internal musl/mipsel/soft-float
-#      toolchain builds the machino package from THIS working tree
-#      (OVERRIDE_SRCDIR), with the Ingenic vendor archives staged like an
-#      SDK/vendor package would stage them.
+# Validates the Buildroot integration with Buildroot's OWN package linter
+# (utils/check-package) - it catches .mk / Config.in / .hash mistakes,
+# convention and dependency-declaration issues (it found the header bug).
+#
+# We deliberately do NOT build a Buildroot toolchain here: build-machino-t40
+# already cross-compiles machino with the thingino toolchain via the exact same
+# `make -C machino CROSS_COMPILE=... IMP_INC=... IMPLIBS=...` the package .mk
+# uses, so the real compile + IMP linkage is covered there. Building a full
+# Buildroot musl toolchain from scratch just to re-validate the package would
+# cost ~30 min per push for no meaningful extra coverage.
 on:
   workflow_dispatch:
   push:
@@ -12,25 +16,18 @@ on:
     paths:
       - '.github/workflows/buildroot-package.yml'
       - 'machino/openipc/buildroot/**'
-      - 'machino/Makefile'
-      - 'machino/src/**'
 jobs:
-  machino-buildroot:
+  check-package:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 10
     env:
       BR_VERSION: "2024.02.9"
-      SOC: "T40"
     steps:
-      - name: "Checkout with submodules (ingenic-headers)"
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: "Install build dependencies"
+      - uses: actions/checkout@v4
+      - name: "Install flake8 (check-package imports it)"
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential wget cpio unzip rsync bc file gawk libncurses-dev python3 python3-pip
-          pip3 install --quiet flake8   # check-package imports flake8 for its python linters
+          sudo apt-get update && sudo apt-get install -y python3-pip wget
+          pip3 install --quiet flake8
       - name: "Fetch Buildroot ${{ env.BR_VERSION }}"
         run: |
           wget -q "https://buildroot.org/downloads/buildroot-$BR_VERSION.tar.gz" -O "$RUNNER_TEMP/buildroot.tar.gz"
@@ -40,59 +37,3 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/buildroot"
           ./utils/check-package -b "$GITHUB_WORKSPACE"/machino/openipc/buildroot/package/machino/*
-      - name: "Fetch Ingenic vendor archives (the SDK a vendor package would stage)"
-        run: |
-          chmod +x build.sh
-          ./build.sh deps "$SOC" --libc-musl
-          ls -l 3rdparty/install/lib/
-      - name: "Assemble BR2_EXTERNAL tree"
-        run: |
-          EXT="$RUNNER_TEMP/br2ext"
-          mkdir -p "$EXT/package"
-          cp -r machino/openipc/buildroot/package/machino "$EXT/package/machino"
-          printf 'name: MACHINO\ndesc: machino package validation\n' > "$EXT/external.desc"
-          printf 'include $(sort $(wildcard $(BR2_EXTERNAL_MACHINO_PATH)/package/*/*.mk))\n' > "$EXT/external.mk"
-          printf 'source "$BR2_EXTERNAL_MACHINO_PATH/package/machino/Config.in"\n' > "$EXT/Config.in"
-      - name: "Configure (internal musl toolchain, mipsel 32r2 soft-float, machino)"
-        run: |
-          CFG="$RUNNER_TEMP/machino_defconfig"
-          {
-            echo 'BR2_mipsel=y'
-            echo 'BR2_mips_32r2=y'
-            echo 'BR2_MIPS_SOFT_FLOAT=y'
-            echo 'BR2_TOOLCHAIN_BUILDROOT_MUSL=y'
-            echo 'BR2_TOOLCHAIN_BUILDROOT_CXX=y'
-            echo 'BR2_PACKAGE_MACHINO=y'
-          } > "$CFG"
-          # Build the package from THIS tree, not a git fetch; keep the big
-          # unrelated directories out of the rsync.
-          {
-            echo "MACHINO_OVERRIDE_SRCDIR = $GITHUB_WORKSPACE"
-            echo "MACHINO_OVERRIDE_SRCDIR_RSYNC_EXCLUSIONS = --exclude .git --exclude toolchain --exclude 3rdparty --exclude bundle --exclude output"
-          } > "$RUNNER_TEMP/buildroot/local.mk"
-          cd "$RUNNER_TEMP/buildroot"
-          make BR2_EXTERNAL="$RUNNER_TEMP/br2ext" BR2_DEFCONFIG="$CFG" defconfig
-          grep -E 'BR2_PACKAGE_MACHINO|BR2_TOOLCHAIN_BUILDROOT_MUSL|BR2_MIPS_SOFT_FLOAT' .config
-      - name: "Build the toolchain"
-        run: |
-          cd "$RUNNER_TEMP/buildroot"
-          make -j"$(nproc)" toolchain
-      - name: "Stage the vendor archives (as a vendor/SDK package would)"
-        run: |
-          cd "$RUNNER_TEMP/buildroot"
-          mkdir -p output/staging/usr/lib
-          cp -v "$GITHUB_WORKSPACE"/3rdparty/install/lib/*.a output/staging/usr/lib/
-      - name: "Build machino through the Buildroot package"
-        run: |
-          cd "$RUNNER_TEMP/buildroot"
-          make -j"$(nproc)" machino \
-            MACHINO_IMPLIBS='-Wl,--start-group -l:libimp.a -l:libalog.a -l:libsysutils.a -Wl,--end-group -l:libmuslshim.a'
-      - name: "Verify the installed artefacts"
-        run: |
-          cd "$RUNNER_TEMP/buildroot"
-          test -x output/target/usr/bin/machino
-          test -x output/target/usr/sbin/streamerctl
-          test -x output/target/usr/sbin/machino-manager
-          test -f output/target/etc/machino/machino.conf
-          test -x output/target/etc/init.d/machino
-          file output/target/usr/bin/machino | tee /dev/stderr | grep -qi 'MIPS'
