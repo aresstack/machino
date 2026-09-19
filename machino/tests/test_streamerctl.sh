@@ -213,21 +213,27 @@ ctl boot >/dev/null 2>&1
 check "boot falls back to majestic" "$(running)" "majestic"
 check "the selection is not rewritten" "$(selected)" "machino"
 
-# --------------------------------------- 13) the WebUI host is never open ---
+# ------- 13) the WebUI host: open by default, password locks only the switch --
+# The WebUI must behave like the stock OpenIPC WebUI (reachable on the LAN); a
+# separate login over the whole WebUI was the login-loop bug. An optional
+# password locks ONLY the privileged switch page.
 setup
 : > "$RUNDIR/majestic"
 ctl set machino >/dev/null
 conf="$ROOT/etc/machino/httpd.conf"
 [ -r "$conf" ] && ok || bad "no httpd.conf written"
 if grep -q -- "-c $conf" "$RUNDIR/httpd.argv" 2>/dev/null; then ok; else bad "httpd was started without -c $conf: $(cat "$RUNDIR/httpd.argv" 2>/dev/null)"; fi
-if grep -q '^D:\*' "$conf"; then ok; else bad "without a password the CGI is not restricted: $(cat "$conf" 2>/dev/null)"; fi
-# with a password it requires authentication instead
+if grep -q '^A:\*' "$conf"; then ok; else bad "without a password the WebUI is not served openly: $(cat "$conf" 2>/dev/null)"; fi
+# with a password it locks ONLY the switch page, not the whole WebUI
 setup
 printf 'root:$1$xx$hash
 ' > "$ROOT/etc/machino/webui.passwd"
 : > "$RUNDIR/majestic"
 ctl set machino >/dev/null
-if grep -q '^/cgi-bin:root:' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "password not applied to httpd.conf"; fi
+if grep -q '^/cgi-bin/machino.cgi:root:' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "password not applied to the switch page: $(cat "$ROOT/etc/machino/httpd.conf" 2>/dev/null)"; fi
+# clearing the password reopens the WebUI
+ctl webui-password --clear >/dev/null 2>&1
+if grep -q '^A:\*' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "--clear did not reopen the WebUI"; fi
 
 # ---- 14) select sets the boot selection only, never a process ---------------
 # The safe way back where a live switch cannot succeed. Unlike set, it must
