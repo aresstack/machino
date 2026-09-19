@@ -170,13 +170,15 @@ private:
         uint32_t        seq = 0;
         std::atomic<unsigned> frames{0};
         std::atomic<unsigned> dropped{0};
-        std::atomic<uint64_t> total_bytes{0};   // monotonic encoded bytes (metrics)
         // 1 s measurement window (written by the capture thread)
         mutable std::mutex win_m;
         Measurement     last_win;
         int64_t         win_start_us = 0;
         unsigned        win_frames = 0;
         uint64_t        win_bytes = 0;
+        uint64_t        total_bytes = 0;    // monotonic encoded bytes, guarded by win_m
+                                            // (plain u64, not atomic: 64-bit atomics need
+                                            //  libatomic on the 32-bit MIPS target)
     };
 
     struct JpegUnit {

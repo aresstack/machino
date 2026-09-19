@@ -232,8 +232,12 @@ Stats PipelineManager::stats() const {
     s.failed_count = failed_count_; s.restart_count = restart_count_; s.sub_restart_count = sub_restart_count_;
     s.last_error = last_error_;
     s.frames_this_run = units_[UNIT_MAIN].frames.load();
-    s.total_bytes[UNIT_MAIN] = units_[UNIT_MAIN].total_bytes.load();
-    s.total_bytes[UNIT_SUB]  = units_[UNIT_SUB].total_bytes.load();
+    // total_bytes is a plain u64 guarded by each unit's win_m (avoids a 64-bit
+    // atomic that would need libatomic on MIPS); take a brief per-unit lock.
+    for (int u = UNIT_MAIN; u <= UNIT_SUB; ++u) {
+        std::lock_guard<std::mutex> wl(units_[u].win_m);
+        s.total_bytes[u] = units_[u].total_bytes;
+    }
     s.jpeg_captures = jpeg_.captures; s.jpeg_failures = jpeg_.failures; s.jpeg_last_capture_ms = jpeg_.last_capture_ms;
     return s;
 }
@@ -591,7 +595,6 @@ void PipelineManager::capture_loop(Unit& u) {
         if (au->pts_us > 0 && platform_now >= au->pts_us)
             u.hub->record_capture_to_out(platform_now - au->pts_us);
         au->seq = u.seq++;
-        u.total_bytes += au->data.size();      // monotonic, for /metrics venc*_rcvd_bytes
         unsigned n = ++u.frames;
         if (n == 1) LOGI(MOD, "first frame: %lu bytes key=%d pts=%lld", (unsigned long)au->data.size(), (int)au->key, (long long)au->pts_us);
         // 1 s measurement window from frame events (no polling thread)
@@ -599,6 +602,8 @@ void PipelineManager::capture_loop(Unit& u) {
             std::lock_guard<std::mutex> wl(u.win_m);
             if (u.win_start_us == 0) u.win_start_us = au->pts_us;
             ++u.win_frames; u.win_bytes += au->data.size();
+            u.total_bytes += au->data.size();      // monotonic, for /metrics venc*_rcvd_bytes
+
             int64_t span = au->pts_us - u.win_start_us;
             if (span >= 1000000) {
                 u.last_win.valid = true;
