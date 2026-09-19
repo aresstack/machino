@@ -59,41 +59,49 @@ manifest_get() {
 selected() { [ -f "$STATE_DIR/streamer" ] && cat "$STATE_DIR/streamer" || echo unknown; }
 
 # OFF      - nothing installed
-# ON       - our manifest + every component healthy
-# BROKEN   - our manifest present but a component is missing/failing
+# ON       - our manifest + every component healthy + Machino is the SELECTED
+#            streamer AND actually running (truly active, not just "files present")
+# BROKEN   - our manifest present but any of the ON conditions is missing/failing
 # EXTERNAL - Machino present but NOT installed by us (no manifest): do not touch
 compute_state() {
     if manifest_ok; then
-        if bin_ok && [ -n "$(version)" ] && init_ok && conf_ok; then echo ON; else echo BROKEN; fi
+        if bin_ok && [ -n "$(version)" ] && init_ok && conf_ok && [ "$(selected)" = machino ] && running; then
+            echo ON
+        else
+            echo BROKEN
+        fi
     else
         if bin_ok || init_ok; then echo EXTERNAL; else echo OFF; fi
     fi
 }
 
 emit_status() {
-    _state=$(compute_state)
-    _ver=$(version); [ -n "$_ver" ] || _ver=""
-    _mb=$(manifest_get managedBy 2>/dev/null); [ -n "$_mb" ] || _mb=""
-    _plat=$(manifest_get platform 2>/dev/null); [ -n "$_plat" ] || _plat=""
-    _mwe=$(manifest_get majesticWasEnabled 2>/dev/null); [ -n "$_mwe" ] || _mwe="false"
+    # Compute the expensive probes ONCE (version spawns the binary; running
+    # spawns pgrep) - cheaper for the tool and much faster in the host tests.
+    _ver=$(version)
     _run=false; running && _run=true
-    printf '{'
-    printf '"schema":%s,' "$SCHEMA"
-    printf '"product":"%s",' "$PRODUCT"
-    printf '"state":"%s",' "$_state"
-    printf '"version":"%s",' "$_ver"
-    printf '"platform":"%s",' "$_plat"
-    printf '"managedBy":"%s",' "$_mb"
-    printf '"selected":"%s",' "$(selected)"
-    printf '"running":%s,' "$_run"
-    printf '"majesticWasEnabled":%s,' "$_mwe"
-    printf '"components":{"binary":%s,"version":%s,"init":%s,"config":%s,"manifest":%s}' \
-        "$(bin_ok && echo true || echo false)" \
-        "$([ -n "$(version)" ] && echo true || echo false)" \
-        "$(init_ok && echo true || echo false)" \
-        "$(conf_ok && echo true || echo false)" \
-        "$(manifest_ok && echo true || echo false)"
-    printf '}\n'
+    _sel=$(selected)
+    _bin=false; bin_ok && _bin=true
+    _init=false; init_ok && _init=true
+    _conf=false; conf_ok && _conf=true
+    _man=false; manifest_ok && _man=true
+    _vok=false; [ -n "$_ver" ] && _vok=true
+
+    if [ "$_man" = true ]; then
+        if [ "$_bin" = true ] && [ "$_vok" = true ] && [ "$_init" = true ] && [ "$_conf" = true ] && [ "$_sel" = machino ] && [ "$_run" = true ]; then
+            _state=ON
+        else
+            _state=BROKEN
+        fi
+    else
+        if [ "$_bin" = true ] || [ "$_init" = true ]; then _state=EXTERNAL; else _state=OFF; fi
+    fi
+
+    _mb=$(manifest_get managedBy 2>/dev/null)
+    _plat=$(manifest_get platform 2>/dev/null)
+    _mwe=$(manifest_get majesticWasEnabled 2>/dev/null); [ -n "$_mwe" ] || _mwe="false"
+    printf '{"schema":%s,"product":"%s","state":"%s","version":"%s","platform":"%s","managedBy":"%s","selected":"%s","running":%s,"majesticWasEnabled":%s,"components":{"binary":%s,"version":%s,"init":%s,"config":%s,"manifest":%s}}\n' \
+        "$SCHEMA" "$PRODUCT" "$_state" "$_ver" "$_plat" "$_mb" "$_sel" "$_run" "$_mwe" "$_bin" "$_vok" "$_init" "$_conf" "$_man"
 }
 
 write_manifest() {  # owner platform
@@ -144,16 +152,25 @@ cmd_install() {
     # install.sh has placed the on-camera control surface (machino-manager) and
     # a stored uninstaller under $STATE_DIR already.
 
-    # Activate: switch the camera to Machino now (idempotent). The test hook
-    # MACHINO_MANAGER_NO_ACTIVATE skips this (host tests have no real streamer).
-    if [ -z "${MACHINO_MANAGER_NO_ACTIVATE:-}" ] && [ -x "$STREAMERCTL" ]; then
-        MACHINO_ROOT="$ROOT" "$STREAMERCTL" set machino || warn "could not switch to machino now; it will start on next boot"
+    # Activate: switch the camera to Machino now. A failure here is NOT a warning
+    # we shrug off - "installed" must mean "active", or the toggle would show a
+    # false green. The test hook MACHINO_MANAGER_NO_ACTIVATE simulates the
+    # selection switch without a real streamer (host tests have no daemon).
+    if [ -n "${MACHINO_MANAGER_NO_ACTIVATE:-}" ]; then
+        printf 'machino\n' > "$STATE_DIR/streamer"
+    elif [ -x "$STREAMERCTL" ]; then
+        MACHINO_ROOT="$ROOT" "$STREAMERCTL" set machino || warn "streamerctl could not switch to machino"
     fi
 
     write_manifest "$owner" "$platform"
 
+    # Verify it is truly active (selected + running), not merely present.
     state=$(compute_state)
-    [ "$state" = "ON" ] || die "post-install verification failed (state=$state)"
+    if [ "$state" != "ON" ]; then
+        warn "post-install verification failed: state=$state (Machino is installed but not active)"
+        emit_status
+        exit 1
+    fi
     say "Machino installed and active (owner=$owner platform=${platform:-unknown})." >&2
     emit_status
 }

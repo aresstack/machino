@@ -26,13 +26,20 @@ config, and a versioned ownership manifest (`/etc/machino/install-state.json`):
 | state | meaning | toggle shows |
 |-------|---------|--------------|
 | `OFF` | nothing installed | Off |
-| `ON` | our manifest present **and** every component healthy | On |
-| `BROKEN` | our manifest present but a component is missing/failing | On, error badge — not a false Off |
+| `ON` | our manifest **and** all components healthy **and** `selected == machino` **and** `running == true` | On |
+| `BROKEN` | our manifest present but any ON condition fails (missing binary, not selected, not running, …) | On + error badge — never a false Off |
 | `EXTERNAL` | Machino present but **not** installed by us (no manifest) | disabled / "installed outside the tool" |
 
-`BROKEN` exists precisely so a crashed or half-installed Machino never shows a
-misleading `OFF`. `EXTERNAL` exists so the toggle never deletes an installation
+`ON` means **truly active**, not merely "files present": Machino must be the
+selected streamer and actually running. `install` verifies this and returns a
+non-zero exit with `state:BROKEN` if activation did not take — so the toggle can
+never show a false green. `BROKEN` also catches a crashed/half-installed Machino
+(never a misleading `OFF`). `EXTERNAL` stops the toggle deleting an installation
 it does not own.
+
+A caller (the Cam-Tool) adds one more state of its own: **`UNKNOWN`** when
+`machino-manager status` could not be run at all (no shell, timeout) — the
+toggle is then disabled, never shown as Off.
 
 ## Ownership
 

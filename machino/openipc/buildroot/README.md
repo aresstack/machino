@@ -5,9 +5,11 @@ instead of installed on top at runtime. This is the *image* path; the runtime
 path (install next to Majestic, switch with `streamerctl` / `machino-manager`)
 is unchanged and documented in [../../docs/install-openipc.md](../../docs/install-openipc.md).
 
-> This package is an integration artifact. It follows Buildroot conventions but
-> is **not built by this repo's CI** (our CI cross-builds with the thingino
-> toolchain directly). Verify it in your own Buildroot tree before shipping.
+> CI-validated: the `buildroot-package` workflow runs Buildroot's own
+> `utils/check-package` linter **and** a real compile-through (Buildroot
+> internal musl/mipsel/soft-float toolchain, this tree via `OVERRIDE_SRCDIR`,
+> vendor archives staged). What CI cannot know is your tree's vendor-package
+> name — set `MACHINO_DEPENDENCIES`/`MACHINO_IMP_LIB` for your SDK.
 
 ## Adding it to a Buildroot tree
 
@@ -41,7 +43,7 @@ is unchanged and documented in [../../docs/install-openipc.md](../../docs/instal
 | `/usr/sbin/machino-manager` | idempotent install/uninstall/status control surface |
 | `/etc/init.d/machino`, `/etc/init.d/S95streamer` | service + boot selector |
 | `/var/www/cgi-bin/machino.cgi` | WebUI switch page |
-| `/etc/machino.conf` | default config (persisted edits belong on the overlay) |
+| `/etc/machino/machino.conf` | default config (canonical path; persisted edits belong on the overlay) |
 
 ## Upgrade safety
 
@@ -50,4 +52,4 @@ ignored, missing keys take defaults, and `config.revision` is preserved. A newer
 Machino therefore reads an older `machino.conf` unchanged, and an older Machino
 tolerates a newer file. The runtime installer never overwrites an existing
 `machino.conf` (it keeps the shipped one as `machino.conf.default`); on a
-read-only image, persist `/etc/machino.conf` via your overlay as usual.
+read-only image, persist `/etc/machino/machino.conf` via your overlay as usual.

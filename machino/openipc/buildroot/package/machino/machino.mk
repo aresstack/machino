@@ -13,8 +13,10 @@
 # Pin to a released tag or a commit. Bump on upgrade; the on-camera config is
 # preserved by the installer, never by re-flashing (see docs/majestic-compat.md
 # and openipc/install.sh).
-MACHINO_VERSION = 0.11.0
-MACHINO_SITE = $(call github,aresstack,machino,v$(MACHINO_VERSION))
+# git (not a github tarball): the IMP headers live in a submodule, which
+# tarballs do not contain. Pin MACHINO_VERSION to a tag or commit on upgrade.
+MACHINO_VERSION = main
+MACHINO_SITE = https://github.com/aresstack/machino.git
 MACHINO_SITE_METHOD = git
 MACHINO_GIT_SUBMODULES = YES
 MACHINO_LICENSE = MIT
@@ -48,7 +50,7 @@ define MACHINO_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/machino/openipc/init/machino         $(TARGET_DIR)/etc/init.d/machino
 	$(INSTALL) -D -m 0755 $(@D)/machino/openipc/init/S95streamer     $(TARGET_DIR)/etc/init.d/S95streamer
 	$(INSTALL) -D -m 0755 $(@D)/machino/openipc/webui/machino.cgi    $(TARGET_DIR)/var/www/cgi-bin/machino.cgi
-	$(INSTALL) -D -m 0644 $(@D)/machino/machino.conf.example         $(TARGET_DIR)/etc/machino.conf
+	$(INSTALL) -D -m 0644 $(@D)/machino/machino.conf.example         $(TARGET_DIR)/etc/machino/machino.conf
 endef
 
 $(eval $(generic-package))

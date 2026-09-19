@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
     if (argc >= 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-V"))) { printf("machino %s\n", MACHINO_VERSION); return 0; }
     if (argc >= 2 && !strcmp(argv[1], "--migrate-majestic")) return run_migration(argc, argv);
 
-    const char* conf = "/etc/machino.conf";
+    const char* conf = "/etc/machino/machino.conf";   // canonical path (init, streamerctl, installer, manager all use it)
     bool verbose = false;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-c") && i + 1 < argc) conf = argv[++i];

@@ -245,31 +245,48 @@ if grep -q 'migrated from majestic.yaml' "$R/etc/machino/machino.conf"; then ok;
 has "shipped default kept for reference" "$R/etc/machino/machino.conf.default"
 
 # ---- 15) machino-manager: live status, ownership, reversal -----------------
-mgr_status() { MACHINO_ROOT="$R" sh "${1:-$R/usr/sbin/machino-manager}" status 2>/dev/null; }
+# ON is now "truly active": manifest + components + selected==machino + running.
+# A pgrep stub stands in for the running daemon; NO_ACTIVATE writes the selection
+# (host tests have no real streamer). running/selected only affect the ON verdict.
+MSTUB="$WORK/mgrstub"; mkdir -p "$MSTUB"
+printf '#!/bin/sh\ncase "$*" in *machino*) echo 4321; exit 0 ;; esac\nexit 1\n' > "$MSTUB/pgrep"; chmod +x "$MSTUB/pgrep"
+# with the pgrep stub reporting machino "running", streamerctl status probes the
+# API over the network; stub wget so that never blocks the host test.
+printf '#!/bin/sh\nexit 1\n' > "$MSTUB/wget"; chmod +x "$MSTUB/wget"
+mgr_status() { PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" sh "${1:-$R/usr/sbin/machino-manager}" status 2>/dev/null; }
 
 # 15a) OFF on a bare camera
 make_bundle; make_camera auto
-S=$(MACHINO_ROOT="$R" sh "$WORK/bundle/sbin/machino-manager" status 2>/dev/null)
+S=$(mgr_status "$WORK/bundle/sbin/machino-manager")
 case "$S" in *'"state":"OFF"'*) ok ;; *) bad "manager status not OFF on a bare camera: $S" ;; esac
 
 # 15b) install.sh alone (no manifest) => EXTERNAL, and uninstall refuses it
 run_install
 S=$(mgr_status)
 case "$S" in *'"state":"EXTERNAL"'*) ok ;; *) bad "unmanaged install not EXTERNAL: $S" ;; esac
+# uninstall runs WITHOUT the running-stub: on the host machino is genuinely not
+# running, so uninstall.sh's safety check passes (the stub would make it refuse).
 if MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-manager" uninstall --owner cam-tool >"$WORK/out" 2>&1; then
     bad "manager removed an EXTERNAL (unowned) install"
 else ok; fi
 has "external install untouched" "$R/usr/bin/machino"
 
-# 15c) a full manager install writes the ownership manifest and reports ON
+# 15c) a full manager install writes the ownership manifest and reports ON (active)
 make_bundle; make_camera auto
-( cd "$WORK/bundle" && MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
     bad "manager install exited non-zero: $(cat "$WORK/out")"
 has "ownership manifest written" "$R/etc/machino/install-state.json"
 if grep -q '"managedBy": "cam-tool"' "$R/etc/machino/install-state.json"; then ok; else bad "manifest missing owner"; fi
 if grep -q '"platform": "t40nn"' "$R/etc/machino/install-state.json"; then ok; else bad "manifest missing platform"; fi
+is "selection switched to machino" "$(cat "$R/etc/machino/streamer")" "machino"
 S=$(mgr_status)
 case "$S" in *'"state":"ON"'*) ok ;; *) bad "manager status not ON after install: $S" ;; esac
+
+# 15c-2) not selected => BROKEN, not a false ON (the hardened semantics)
+printf 'majestic\n' > "$R/etc/machino/streamer"
+S=$(mgr_status)
+case "$S" in *'"state":"BROKEN"'*) ok ;; *) bad "selected!=machino not reported BROKEN: $S" ;; esac
+printf 'machino\n' > "$R/etc/machino/streamer"
 
 # 15d) BROKEN when a component goes missing under a valid manifest
 mv "$R/usr/bin/machino" "$R/usr/bin/machino.bak"
@@ -278,6 +295,7 @@ case "$S" in *'"state":"BROKEN"'*) ok ;; *) bad "missing binary not reported BRO
 mv "$R/usr/bin/machino.bak" "$R/usr/bin/machino"
 
 # 15e) the wrong owner cannot uninstall; the right owner can, and it reverses
+# (uninstall without the running-stub, as in 15b)
 if MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-manager" uninstall --owner someone-else >"$WORK/out" 2>&1; then
     bad "manager uninstalled under the wrong owner"
 else ok; fi
@@ -287,8 +305,9 @@ MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-manager" uninstall --owner cam-tool >"
 hasnt "binary removed by manager"    "$R/usr/bin/machino"
 hasnt "manifest removed by manager"  "$R/etc/machino/install-state.json"
 has   "majestic restored by manager" "$R/etc/init.d/S95majestic"
-S=$(MACHINO_ROOT="$R" sh "$WORK/bundle/sbin/machino-manager" status 2>/dev/null)
+S=$(mgr_status "$WORK/bundle/sbin/machino-manager")
 case "$S" in *'"state":"OFF"'*) ok ;; *) bad "manager status not OFF after uninstall: $S" ;; esac
+rm -rf "$MSTUB"
 
 # --------- 13) everything shipped to the camera stays BusyBox-clean ---------
 # Both of these were found on the hardware, not in review: BusyBox tar has no
