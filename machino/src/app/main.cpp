@@ -9,6 +9,7 @@
 // access is never media demand.
 #include "adapters/ingenic/ingenic_platform.hpp"
 #include "app/api/api_service.hpp"
+#include "app/compat/majestic_migrate.hpp"
 #include "app/http/http_server.hpp"
 #include "app/linux_grace_timer.hpp"
 #include "app/linux_system_stats.hpp"
@@ -32,7 +33,9 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <memory>
+#include <sstream>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
 #include <sys/timerfd.h>
@@ -43,7 +46,40 @@ using lifecycle::ConsumerType;
 
 static const char* MOD = "MAIN";
 
-static void usage(const char* argv0) { fprintf(stderr, "usage: %s [-c machino.conf] [-v]\n", argv0); }
+static void usage(const char* argv0) {
+    fprintf(stderr, "usage: %s [-c machino.conf] [-v]\n"
+                    "       %s --migrate-majestic <majestic.yaml> [-o machino.conf]\n", argv0, argv0);
+}
+
+// One-way import of an existing OpenIPC majestic.yaml. Prints a full
+// classification report to stderr and the resulting machino.conf to the output
+// file (or stdout). Never touches the running system.
+static int run_migration(int argc, char** argv) {
+    const char* in = nullptr; const char* out = nullptr;
+    for (int i = 2; i < argc; ++i) {
+        if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+        else if (argv[i][0] != '-' && !in) in = argv[i];
+        else { usage(argv[0]); return 2; }
+    }
+    if (!in) { usage(argv[0]); return 2; }
+    std::ifstream f(in);
+    if (!f) { fprintf(stderr, "migrate: cannot open %s\n", in); return 1; }
+    std::stringstream ss; ss << f.rdbuf();
+    compat::MigrationResult r = compat::migrate_majestic_yaml(ss.str());
+    fputs(compat::migration_report(r).c_str(), stderr);
+    if (!r.ok) return 1;
+    std::string conf = compat::to_machino_conf(r);
+    if (out) {
+        std::ofstream o(out);
+        if (!o) { fprintf(stderr, "migrate: cannot write %s\n", out); return 1; }
+        o << conf;
+        fprintf(stderr, "migrate: wrote %s (%d mapped, %d converted, %d unsupported, %d invalid)\n",
+                out, r.mapped, r.converted, r.unsupported, r.invalid);
+    } else {
+        fputs(conf.c_str(), stdout);
+    }
+    return 0;
+}
 
 static std::unique_ptr<IPlatform> make_platform(const hw::ResolvedHardware& hw) {
     if (hw.platform.vendor == "ingenic") return std::make_unique<ingenic::IngenicPlatform>(hw);
@@ -93,6 +129,8 @@ static const char* lc_lower(lifecycle::State s) {
 }
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && !strcmp(argv[1], "--migrate-majestic")) return run_migration(argc, argv);
+
     const char* conf = "/etc/machino.conf";
     bool verbose = false;
     for (int i = 1; i < argc; ++i) {

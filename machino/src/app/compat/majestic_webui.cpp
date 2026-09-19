@@ -44,6 +44,13 @@ Json enum_field(const std::string& title, const Json& values) {
     return f;
 }
 
+Json bool_field(const std::string& title) {
+    Json f = Json::object();
+    f.set("type", Json::string("boolean"));
+    f.set("title", Json::string(title));
+    return f;
+}
+
 bool add_range(Json& fields, const char* key, const char* title, const Json* cap) {
     if (!supported(cap)) return false;
     fields.set(key, integer_field(title, cap));
@@ -134,15 +141,29 @@ Json majestic_schema(const Json& capabilities) {
     rtsp.set("max_clients", integer_field("Maximum RTSP clients", 1, 16));
     add_section(properties, "rtsp", rtsp);
 
+    // M9/M10: detection is advertised only when the platform proved it.
+    Json ai_fields = Json::object();
+    if (const Json* ai = capabilities.get("ai"); ai && ai->is_object()) {
+        const Json* avail = ai->get("available");
+        if (avail && avail->is_string() && avail->as_string() == "supported") {
+            ai_fields.set("enabled", bool_field("Enable detection"));
+            if (const Json* dets = ai->get("detectors"); dets && dets->is_array() && dets->size() > 0)
+                ai_fields.set("detector", enum_field("Detector", *dets));
+            if (const Json* fps = ai->get("inference_fps"))
+                ai_fields.set("inference_fps", integer_field("Inference rate (fps)", fps));
+        }
+    }
+    add_section(properties, "ai", ai_fields);
+
     schema.set("properties", properties);
 
     Json groups = Json::array();
     const char* media_sections[] = {"video0", "sensor", "latency"};
     const char* image_sections[] = {"image"};
-    const char* runtime_sections[] = {"performance", "lifecycle", "rtsp"};
+    const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai"};
     Json media = group("media", "Media", properties, media_sections, 3);
     Json image = group("image", "Image", properties, image_sections, 1);
-    Json runtime = group("runtime", "Runtime", properties, runtime_sections, 3);
+    Json runtime = group("runtime", "Runtime", properties, runtime_sections, 4);
     if (media.get("sections")->size()) groups.push(media);
     if (image.get("sections")->size()) groups.push(image);
     if (runtime.get("sections")->size()) groups.push(runtime);
@@ -157,6 +178,7 @@ Json majestic_config(const Json& native_config, const Json& state) {
     copy_if(native_config, out, "performance");
     copy_if(native_config, out, "sensor");
     copy_if(native_config, out, "rtsp");
+    copy_if(native_config, out, "ai");
 
     if (const Json* video = native_config.get("video")) {
         if (const Json* v0 = video->get("0")) out.set("video0", *v0);
@@ -233,7 +255,7 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
             continue;
         }
         if (name == "performance" || name == "sensor" || name == "image" ||
-            name == "latency" || name == "rtsp" || name == "lifecycle" || name == "power") {
+            name == "latency" || name == "rtsp" || name == "lifecycle" || name == "power" || name == "ai") {
             patch.set(name, value);
             continue;
         }

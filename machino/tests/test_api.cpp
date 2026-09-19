@@ -277,11 +277,23 @@ void test_majestic_webui_compat() {
     ACHECK(path(schema, "properties.image.properties.wdr") == nullptr); // unsupported is never advertised
     ACHECK(path(schema, "properties.video0.properties.fps.minimum")->as_int() == 10);
     ACHECK(path(schema, "properties.video0.properties.fps.maximum")->as_int() == 20);
+    // M9/M10: detection surfaces in the WebUI when the platform proves it
+    ACHECK(path(schema, "properties.ai.properties.enabled") != nullptr);
+    ACHECK(path(schema, "properties.ai.properties.enabled.type")->as_string() == "boolean");
+    ACHECK(path(schema, "properties.ai.properties.detector.enum")->size() == 1);
+    ACHECK(path(schema, "properties.ai.properties.inference_fps.maximum")->as_int() == 60);
 
     Json web = compat::majestic_config(r.api.config().body, r.api.state().body);
     ACHECK(path(web, "video0.bitrate_kbps")->as_int() == 3000);
     ACHECK(path(web, "video0.fps")->as_int() == 20);
     ACHECK(web.get("video") == nullptr); // renderer is intentionally one section deep
+    ACHECK(path(web, "ai.detector")->as_string() == "motion" && path(web, "ai.enabled")->as_bool() == false);
+
+    // a detection toggle round-trips through the same native PATCH path
+    compat::MajesticTranslation ai = compat::majestic_post_to_native("{\"ai\":{\"enabled\":true}}");
+    ACHECK(ai.ok && path(ai.patch, "ai.enabled")->as_bool());
+    api::Response ai_applied = r.api.patch_config(ai.patch.dump(), "");
+    ACHECK(ai_applied.status == 200 && path(r.api.state().body, "ai.state")->as_string() == "active");
 
     compat::MajesticTranslation t = compat::majestic_post_to_native(
         "{\"video0\":{\"bitrate_kbps\":1500}}");
