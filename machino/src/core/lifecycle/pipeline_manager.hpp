@@ -61,6 +61,7 @@ struct Stats {
     unsigned sub_restart_count = 0;
     std::string last_error;
     unsigned frames_this_run = 0;                            // main unit
+    uint64_t total_bytes[UNIT_COUNT] = {};                   // monotonic encoded bytes per unit
     unsigned jpeg_captures = 0, jpeg_failures = 0;
     int64_t  jpeg_last_capture_ms = -1;                      // duration of the last capture
 };
@@ -169,6 +170,7 @@ private:
         uint32_t        seq = 0;
         std::atomic<unsigned> frames{0};
         std::atomic<unsigned> dropped{0};
+        std::atomic<uint64_t> total_bytes{0};   // monotonic encoded bytes (metrics)
         // 1 s measurement window (written by the capture thread)
         mutable std::mutex win_m;
         Measurement     last_win;

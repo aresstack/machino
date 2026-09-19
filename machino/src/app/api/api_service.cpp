@@ -233,6 +233,7 @@ Json ApiService::state_json() {
         su.set("consumers", Json::integer(st.unit_demand[u]));
         su.set("width", Json::integer(us.width)); su.set("height", Json::integer(us.height));
         su.set("fps", Json::integer(us.fps)); su.set("bitrate_kbps", Json::integer(us.bitrate_kbps));
+        su.set("total_bytes", Json::integer((int64_t)st.total_bytes[u]));   // monotonic, for /metrics
         streams.set(std::to_string(u), su);
     }
     m.set("streams", streams);

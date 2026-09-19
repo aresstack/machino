@@ -5,12 +5,17 @@
 
 #include <arpa/inet.h>
 #include <cerrno>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <sstream>
+#include <string>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -20,6 +25,80 @@ static const char* MOD = "HTTP";
 static const size_t MAX_IN = 16 * 1024;
 
 static int64_t now_ms() { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
+
+// Sample the Linux side the majestic-webui Dashboard reads via /metrics. Every
+// source is best-effort: a file that is missing (e.g. no thermal zone on this
+// SoC) simply leaves its have_* flag false and the metric is omitted.
+static compat::LinuxSample read_linux_sample() {
+    compat::LinuxSample s;
+    s.now_unix = (double)time(nullptr);
+    if (FILE* f = fopen("/proc/uptime", "r")) {
+        double up = 0; if (fscanf(f, "%lf", &up) == 1) { s.have_boot = true; s.boot_unix = s.now_unix - up; }
+        fclose(f);
+    }
+    if (s.have_boot) {                        // process start -> app_boot (field 22 of /proc/self/stat, jiffies)
+        if (FILE* f = fopen("/proc/self/stat", "r")) {
+            std::string line; int ch; while ((ch = fgetc(f)) != EOF) line.push_back((char)ch); fclose(f);
+            size_t rp = line.rfind(')');       // comm can contain spaces/parens; skip past it
+            if (rp != std::string::npos) {
+                std::istringstream rest(line.substr(rp + 1));
+                std::string tok; int field = 2; unsigned long long starttime = 0;
+                while (rest >> tok) { if (++field == 22) { starttime = strtoull(tok.c_str(), nullptr, 10); break; } }
+                if (starttime) { s.have_app_boot = true; s.app_boot_unix = s.boot_unix + (double)starttime / 100.0; }
+            }
+        }
+    }
+    if (FILE* f = fopen("/proc/loadavg", "r")) {
+        if (fscanf(f, "%lf %lf %lf", &s.load1, &s.load5, &s.load15) == 3) s.have_load = true;
+        fclose(f);
+    }
+    if (FILE* f = fopen("/proc/meminfo", "r")) {
+        char line[256]; unsigned long long kb;
+        while (fgets(line, sizeof line, f)) {
+            if      (sscanf(line, "MemTotal: %llu kB", &kb) == 1)        s.mem_total = kb * 1024ull;
+            else if (sscanf(line, "MemFree: %llu kB", &kb) == 1)         s.mem_free = kb * 1024ull;
+            else if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1)    s.mem_avail = kb * 1024ull;
+            else if (sscanf(line, "SReclaimable: %llu kB", &kb) == 1)    s.mem_sreclaim = kb * 1024ull;
+            else if (sscanf(line, "Active(file): %llu kB", &kb) == 1)    s.mem_active_file = kb * 1024ull;
+            else if (sscanf(line, "Inactive(file): %llu kB", &kb) == 1)  s.mem_inactive_file = kb * 1024ull;
+        }
+        fclose(f);
+        s.have_mem = s.mem_total > 0;
+    }
+    if (FILE* f = fopen("/proc/stat", "r")) {
+        char line[256];
+        while (fgets(line, sizeof line, f)) {
+            if (strncmp(line, "cpu", 3) != 0 || line[3] == ' ') continue;   // skip the aggregate "cpu " line
+            compat::LinuxSample::Cpu c;
+            unsigned long long u=0,n=0,sy=0,id=0,io=0,ir=0,so=0,st=0;
+            if (sscanf(line, "cpu%d %llu %llu %llu %llu %llu %llu %llu %llu",
+                       &c.index, &u, &n, &sy, &id, &io, &ir, &so, &st) >= 5) {
+                c.user=u; c.nice=n; c.system=sy; c.idle=id; c.iowait=io; c.irq=ir; c.softirq=so; c.steal=st;
+                s.cpus.push_back(c);
+            }
+        }
+        fclose(f);
+    }
+    if (FILE* f = fopen("/proc/net/dev", "r")) {
+        char line[512];
+        while (fgets(line, sizeof line, f)) {
+            char* colon = strchr(line, ':'); if (!colon) continue;
+            *colon = 0; char dev[64];
+            if (sscanf(line, " %63s", dev) != 1 || strcmp(dev, "lo") == 0) continue;
+            unsigned long long fld[16] = {0};
+            int got = sscanf(colon + 1, "%llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                             &fld[0],&fld[1],&fld[2],&fld[3],&fld[4],&fld[5],&fld[6],&fld[7],
+                             &fld[8],&fld[9],&fld[10],&fld[11],&fld[12],&fld[13],&fld[14],&fld[15]);
+            if (got >= 9) { compat::LinuxSample::Net nn; nn.dev = dev; nn.rx = fld[0]; nn.tx = fld[8]; s.nets.push_back(nn); }
+        }
+        fclose(f);
+    }
+    if (FILE* f = fopen("/sys/class/thermal/thermal_zone0/temp", "r")) {
+        long milli = 0; if (fscanf(f, "%ld", &milli) == 1 && milli > 0) { s.have_temp = true; s.temp_c = (double)milli / 1000.0; }
+        fclose(f);
+    }
+    return s;
+}
 
 struct HttpServer::Client {
     int fd = -1;
@@ -130,6 +209,19 @@ bool HttpServer::handle_request(Client& c) {
     } else if (path == "/api/v1/config.json") {
         r = (m == "GET") ? api::Response{200, compat::majestic_config(api_.config().body, api_.state().body)}
                          : api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    } else if (path == "/api/v1/sources") {
+        r = (m == "GET") ? api::Response{200, compat::majestic_sources(compat::majestic_config(api_.config().body, api_.state().body))}
+                         : api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    } else if (path == "/metrics") {
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else {
+            // majestic-webui heartbeat: node-exporter text from Linux + Machino
+            // telemetry. This is what clears "Camera is not responding".
+            std::string body = compat::majestic_metrics(api_.telemetry().body, api_.state().body, read_linux_sample());
+            bool ok = queue(c, response(200, "text/plain; version=0.0.4", body, req.keep_alive));
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
+        }
     } else if (path == "/api/v1/config") {
         if (m == "GET") r = api_.config();
         else if (m == "POST") {

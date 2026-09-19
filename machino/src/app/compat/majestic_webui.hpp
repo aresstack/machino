@@ -6,9 +6,30 @@
 // writes back into native partial patches.
 #pragma once
 #include "core/json.hpp"
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace machino { namespace compat {
+
+// A snapshot of the Linux side that majestic-webui's Dashboard reads from
+// /metrics (node-exporter names). Filled by the app layer from /proc + sysfs
+// so this compat unit stays pure and host-testable. Fields left at their
+// "have_*" = false are simply omitted from the output.
+struct LinuxSample {
+    double now_unix = 0;                 // node_time_seconds
+    bool   have_boot = false; double boot_unix = 0;       // node_boot_time_seconds
+    bool   have_app_boot = false; double app_boot_unix = 0; // app_boot_time_seconds (daemon start)
+    bool   have_load = false; double load1 = 0, load5 = 0, load15 = 0;
+    bool   have_mem = false;
+    uint64_t mem_total = 0, mem_free = 0, mem_avail = 0,
+             mem_sreclaim = 0, mem_active_file = 0, mem_inactive_file = 0;   // bytes
+    bool   have_temp = false; double temp_c = 0;          // node_hwmon_temp_celsius
+    struct Cpu { int index = 0; uint64_t user=0,nice=0,system=0,idle=0,iowait=0,irq=0,softirq=0,steal=0; };
+    std::vector<Cpu> cpus;               // node_cpu_seconds_total{cpu,mode}
+    struct Net { std::string dev; uint64_t rx = 0, tx = 0; };
+    std::vector<Net> nets;               // node_network_{receive,transmit}_bytes_total{device}
+};
 
 struct MajesticTranslation {
     bool ok = false;
@@ -31,5 +52,15 @@ Json majestic_config(const Json& native_config, const Json& state);
 // Translate a majestic-webui POST body back into a native Machino PATCH body.
 // Validation of values remains exclusively in ApiService::patch_config().
 MajesticTranslation majestic_post_to_native(const std::string& body);
+
+// Prometheus text (node-exporter names) for majestic-webui's Dashboard
+// heartbeat. Combines the Linux sample with Machino telemetry/state so CPU,
+// memory, uptime, network, ISP and encoder tiles populate and the
+// "Camera is not responding" banner (a failing /metrics poll) clears.
+std::string majestic_metrics(const Json& telemetry, const Json& state, const LinuxSample& lin);
+
+// The {"sources":[...]} document majestic-webui optionally fetches to enrich
+// the stream list. Built from the flattened majestic config (video0/video1).
+Json majestic_sources(const Json& majestic_config);
 
 }} // namespace machino::compat

@@ -1,5 +1,9 @@
 #include "app/compat/majestic_webui.hpp"
 
+#include <cstdio>
+#include <sstream>
+#include <string>
+
 namespace machino { namespace compat {
 
 namespace {
@@ -180,8 +184,27 @@ Json majestic_config(const Json& native_config, const Json& state) {
     copy_if(native_config, out, "rtsp");
     copy_if(native_config, out, "ai");
 
+    // majestic-webui's Dashboard/Streams read video0/video1 with the field
+    // names size ("WxH"), codec, bitrate (kbit/s) and enabled, so alias the
+    // native width/height/bitrate_kbps into those on top of the native fields.
     if (const Json* video = native_config.get("video")) {
-        if (const Json* v0 = video->get("0")) out.set("video0", *v0);
+        for (int u = 0; u < 2; ++u) {
+            const Json* vu = video->get(std::to_string(u));
+            if (!vu || !vu->is_object()) continue;
+            Json v = *vu;
+            long long w = 0, h = 0;
+            if (const Json* x = vu->get("width");  x && x->is_number()) w = x->as_int();
+            if (const Json* x = vu->get("height"); x && x->is_number()) h = x->as_int();
+            if (w > 0 && h > 0) {
+                char sz[32]; std::snprintf(sz, sizeof sz, "%lldx%lld", w, h);
+                v.set("size", Json::string(sz));
+            }
+            if (const Json* br = vu->get("bitrate_kbps"); br && br->is_number()) v.set("bitrate", *br);
+            if (const Json* codec = vu->get("codec"); codec && codec->is_string()) v.set("codec", *codec);
+            else v.set("codec", Json::string("h264"));
+            if (!v.get("enabled")) v.set("enabled", Json::boolean(true));
+            out.set(u == 0 ? "video0" : "video1", v);
+        }
     }
 
     Json image = Json::object();
@@ -269,6 +292,112 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
     r.status = 200;
     r.patch = patch;
     return r;
+}
+
+namespace {
+
+std::string num(double d) { char b[64]; std::snprintf(b, sizeof b, "%.10g", d); return b; }
+
+// Read telemetry[section][key] as a number; returns false when absent/null so
+// the metric is simply omitted (an absent value must not print as 0).
+bool tel_num(const Json& root, const char* section, const char* key, double& out) {
+    const Json* s = root.get(section);
+    if (!s || !s->is_object()) return false;
+    const Json* v = s->get(key);
+    if (!v || !v->is_number()) return false;
+    out = v->as_number();
+    return true;
+}
+
+// state.media.streams["<u>"].total_bytes
+bool stream_bytes(const Json& state, const char* unit, double& out) {
+    const Json* m = state.get("media"); if (!m || !m->is_object()) return false;
+    const Json* s = m->get("streams");  if (!s || !s->is_object()) return false;
+    const Json* u = s->get(unit);       if (!u || !u->is_object()) return false;
+    const Json* v = u->get("total_bytes");
+    if (!v || !v->is_number()) return false;
+    out = v->as_number();
+    return true;
+}
+
+} // namespace
+
+std::string majestic_metrics(const Json& telemetry, const Json& state, const LinuxSample& lin) {
+    std::ostringstream o;
+    auto g = [&](const char* name, double v) { o << name << ' ' << num(v) << '\n'; };
+
+    // --- clock / uptime -----------------------------------------------------
+    g("node_time_seconds", lin.now_unix);
+    if (lin.have_boot)     g("node_boot_time_seconds", lin.boot_unix);
+    if (lin.have_app_boot) g("app_boot_time_seconds", lin.app_boot_unix);
+    if (lin.have_load) { g("node_load1", lin.load1); g("node_load5", lin.load5); g("node_load15", lin.load15); }
+
+    // --- memory (node-exporter meminfo names, bytes) ------------------------
+    if (lin.have_mem) {
+        g("node_memory_MemTotal_bytes",       (double)lin.mem_total);
+        g("node_memory_MemFree_bytes",        (double)lin.mem_free);
+        g("node_memory_MemAvailable_bytes",   (double)lin.mem_avail);
+        g("node_memory_SReclaimable_bytes",   (double)lin.mem_sreclaim);
+        g("node_memory_Active_file_bytes",    (double)lin.mem_active_file);
+        g("node_memory_Inactive_file_bytes",  (double)lin.mem_inactive_file);
+    }
+
+    // --- SoC temperature (real hardware value or nothing) -------------------
+    if (lin.have_temp) g("node_hwmon_temp_celsius", lin.temp_c);
+
+    // --- CPU (jiffies/USER_HZ -> seconds; the WebUI only needs idle/total) --
+    for (const auto& c : lin.cpus) {
+        const std::string cpu = std::to_string(c.index);
+        auto cline = [&](const char* mode, uint64_t j) {
+            o << "node_cpu_seconds_total{cpu=\"" << cpu << "\",mode=\"" << mode << "\"} "
+              << num((double)j / 100.0) << '\n';
+        };
+        cline("user", c.user);    cline("nice", c.nice);   cline("system", c.system);
+        cline("idle", c.idle);    cline("iowait", c.iowait); cline("irq", c.irq);
+        cline("softirq", c.softirq); cline("steal", c.steal);
+    }
+
+    // --- network (per non-loopback interface) -------------------------------
+    for (const auto& n : lin.nets) {
+        o << "node_network_receive_bytes_total{device=\""  << n.dev << "\"} " << num((double)n.rx) << '\n';
+        o << "node_network_transmit_bytes_total{device=\"" << n.dev << "\"} " << num((double)n.tx) << '\n';
+    }
+
+    // --- ISP / AE (from Machino telemetry.exposure + power) -----------------
+    double v = 0;
+    if (tel_num(telemetry, "exposure", "luma", v))             g("isp_avelum", v);
+    if (tel_num(telemetry, "exposure", "analog_gain", v))      g("isp_again", v);
+    if (tel_num(telemetry, "exposure", "digital_gain", v))     g("isp_dgain", v);
+    if (tel_num(telemetry, "exposure", "isp_digital_gain", v)) g("isp_ispdgain", v);
+    if (tel_num(telemetry, "exposure", "integration_time", v)) g("isp_exptime", v);
+    if (tel_num(telemetry, "power", "sensor_fps", v))          g("isp_fps", v);
+
+    // --- encoder throughput (monotonic byte counters, one per stream) -------
+    if (stream_bytes(state, "0", v)) g("venc0_rcvd_bytes", v);
+    if (stream_bytes(state, "1", v)) g("venc1_rcvd_bytes", v);
+
+    return o.str();
+}
+
+Json majestic_sources(const Json& majestic_config) {
+    Json arr = Json::array();
+    const char* keys[] = {"video0", "video1"};
+    for (int u = 0; u < 2; ++u) {
+        const Json* vu = majestic_config.get(keys[u]);
+        if (!vu || !vu->is_object()) continue;
+        if (const Json* en = vu->get("enabled"); en && en->is_bool() && !en->as_bool()) continue;
+        Json s = Json::object();
+        s.set("id", Json::string(u == 0 ? "video0" : "video1"));
+        s.set("camera", Json::integer(u + 1));   // 1-based; the WebUI keeps camera>0
+        s.set("channel", Json::integer(u));
+        s.set("name", Json::string(u == 0 ? "Main stream" : "Sub stream"));
+        for (const char* k : {"codec", "size", "fps", "bitrate", "width", "height"})
+            if (const Json* x = vu->get(k)) s.set(k, *x);
+        arr.push(s);
+    }
+    Json out = Json::object();
+    out.set("sources", arr);
+    return out;
 }
 
 }} // namespace machino::compat
