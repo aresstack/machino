@@ -229,5 +229,22 @@ printf 'root:$1$xx$hash
 ctl set machino >/dev/null
 if grep -q '^/cgi-bin:root:' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "password not applied to httpd.conf"; fi
 
+# ---- 14) select sets the boot selection only, never a process ---------------
+# The safe way back where a live switch cannot succeed. Unlike set, it must
+# persist unconditionally and must not start or stop anything.
+setup
+: > "$RUNDIR/majestic"           # majestic is the current owner
+ctl select machino >/dev/null
+check "select persists the choice"    "$(selected)" "machino"
+check "select started nothing"        "$(running)"  "majestic"
+check "select stopped nothing"        "$(events)"   ""
+
+# ---- 15) boot returns non-zero when even the majestic fallback fails --------
+setup
+printf 'machino
+' > "$ROOT/etc/machino/streamer"
+: > "$RUNDIR/machino.fail"; : > "$RUNDIR/majestic.fail"    # neither can start
+if ctl boot >/dev/null 2>&1; then bad "boot returned success with no media owner"; else ok; fi
+
 echo "streamerctl tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

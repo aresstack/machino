@@ -244,6 +244,20 @@ activate() {
     esac
 }
 
+# Set the boot selection ONLY - no media owner is started or stopped. This is
+# the safe way back on hardware where a live switch cannot succeed (e.g. a
+# T40NN whose majestic media stack resets the board on start): pick the owner,
+# then reboot, and S95streamer brings it up on a fresh ISP. Unlike "set", this
+# always persists, because it never depends on a live start that might fail and
+# roll the selection back.
+cmd_select() {
+    want=$1
+    case "$want" in machino|majestic|none) ;; *) die "usage: streamerctl select {machino|majestic|none}" ;; esac
+    write_selection "$want"
+    log "boot selection set to '$want' (nothing started or stopped; applies at next boot)"
+    cmd_status
+}
+
 cmd_set() {
     want=$1
     case "$want" in machino|majestic|none) ;; *) die "usage: streamerctl set {machino|majestic|none}" ;; esac
@@ -261,7 +275,7 @@ cmd_set() {
         warn "rolled back to $previous"
     else
         warn "rollback to $previous FAILED - camera has no active streamer"
-        warn "recover with: streamerctl set majestic   (see docs/install-openipc.md)"
+        warn "recover with: streamerctl set majestic  (or: streamerctl select majestic && reboot - see docs/install-openipc.md)"
     fi
     cmd_status
     return 1
@@ -299,7 +313,9 @@ cmd_boot() {
     # one again, and "streamerctl status" keeps showing that the two disagree
     # instead of quietly pretending majestic was the choice all along.
     warn "boot: falling back to majestic (the selection stays '$sel')"
-    activate majestic || warn "boot: majestic did not come up either - no media owner"
+    if activate majestic; then return 0; fi
+    warn "boot: majestic did not come up either - no media owner"
+    return 1
 }
 
 usage() {
@@ -310,6 +326,8 @@ usage: streamerctl <command>
   set machino         stop majestic, serve the WebUI, start machino (rolls back on failure)
   set majestic        stop machino, hand port 80 back, start majestic (rolls back on failure)
   set none            stop every media owner (WebUI stays on whatever serves it)
+  select machino|majestic|none   set the boot selection only; start/stop nothing
+                                 (the safe way back where a live switch cannot succeed)
   boot                apply the stored selection (used by /etc/init.d/S95streamer)
   webui-password P    set the password for the switch page while Machino is active
 
@@ -321,6 +339,7 @@ case "${1:-}" in
     status)  cmd_status ;;
     webui-password) cmd_webui_password "${2:-}" ;;
     set)     [ $# -ge 2 ] || die "usage: streamerctl set {machino|majestic|none}"; cmd_set "$2" ;;
+    select)  [ $# -ge 2 ] || die "usage: streamerctl select {machino|majestic|none}"; cmd_select "$2" ;;
     boot)    cmd_boot ;;
     ""|-h|--help|help) usage ;;
     *)       die "unknown command '$1' (try: streamerctl help)" ;;

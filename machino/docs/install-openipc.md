@@ -294,12 +294,15 @@ Majestic **does** start cleanly at boot (a fresh ISP). So on such hardware the
 reliable way back is a reboot rather than a live switch:
 
 ```sh
-streamerctl set majestic     # records the selection; may not come up live here
+streamerctl select majestic   # sets the boot selection only - starts/stops nothing
 reboot                        # Majestic starts cleanly from a fresh boot
 ```
 
-The selection is persisted, so after the reboot the camera comes up on
-Majestic. This is specific to cameras whose Majestic cannot re-init the media
+`select` is used instead of `set` on purpose: `set majestic` only persists the
+choice if the live start succeeds, and on this hardware it does not - the
+rollback would restore `machino` and the reboot would bring Machino back up.
+`select` writes the boot selection unconditionally and touches no process, so
+after the reboot the camera comes up on Majestic. This is specific to cameras whose Majestic cannot re-init the media
 hardware; where Majestic works, the live switch back is immediate.
 
 ## Recovery
@@ -323,7 +326,7 @@ by hand:
 
 ```sh
 /etc/init.d/machino stop         # make sure Machino is gone
-pgrep -x machino                 # must print nothing
+pgrep -f /usr/bin/machino        # must print nothing
 killall httpd                    # free port 80
 /etc/init.d/majestic start       # Majestic takes port 80 and the camera back
 ```
