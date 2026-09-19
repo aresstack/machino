@@ -6,6 +6,8 @@ namespace machino { namespace lifecycle {
 
 static const char* MOD = "lifecycle";
 
+static int64_t mono_us() { struct timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000; }
+
 const char* state_name(State s) {
     switch (s) {
         case State::ColdIdle:  return "COLD_IDLE";
@@ -21,16 +23,40 @@ const char* state_name(State s) {
 void DemandHandle::release() {
     if (!mgr_) return;
     PipelineManager* m = mgr_; mgr_ = nullptr;
-    m->release(type_);
+    m->release(type_, unit_);
 }
 
 PipelineManager::PipelineManager(IPlatform& platform, const EffectiveStream& stream, const LifecycleConfig& cfg,
                                  IGraceTimer& timer, StreamHub& hub)
-    // 16 slots > the sum of all consumer queue depths (StreamHub sinks hold at most 4 each):
-    // a stalled consumer drops its own oldest frames, it can never starve the capture path.
-    : platform_(platform), stream_(stream), cfg_(cfg), timer_(timer), hub_(hub), pool_(16, 128 * 1024) {}
+    : platform_(platform), cfg_(cfg), timer_(timer) {
+    // 16 slots > the sum of all consumer queue depths (StreamHub sinks hold at
+    // most 4 each): a stalled consumer drops its own oldest frames, it can
+    // never starve the capture path.
+    units_[UNIT_MAIN].configured = true;
+    units_[UNIT_MAIN].stream = stream;
+    units_[UNIT_MAIN].hub = &hub;
+    units_[UNIT_MAIN].pool = std::make_unique<AuPool>(16, 128 * 1024);
+}
 
 PipelineManager::~PipelineManager() { shutdown(); }
+
+void PipelineManager::configure_sub(const EffectiveStream& s, StreamHub& hub, IGraceTimer* timer) {
+    std::lock_guard<std::mutex> lk(m_);
+    units_[UNIT_SUB].configured = true;
+    units_[UNIT_SUB].stream = s;
+    units_[UNIT_SUB].hub = &hub;
+    units_[UNIT_SUB].timer = timer;
+    if (!units_[UNIT_SUB].pool) units_[UNIT_SUB].pool = std::make_unique<AuPool>(16, 64 * 1024);
+}
+
+void PipelineManager::configure_jpeg(const JpegParams& p, int cache_ms, int grace_ms, IGraceTimer* timer) {
+    std::lock_guard<std::mutex> lk(m_);
+    jpeg_.configured = true;
+    jpeg_.params = p;
+    jpeg_.cache_ms = cache_ms;
+    jpeg_.grace_ms = grace_ms;
+    jpeg_.timer = timer;
+}
 
 void PipelineManager::transition(State to, const char* why) {
     LOGI(MOD, "%s -> %s%s%s", state_name(state_), state_name(to), why ? " " : "", why ? why : "");
@@ -39,63 +65,121 @@ void PipelineManager::transition(State to, const char* why) {
     if (listener_) listener_(from, to);
 }
 
+int PipelineManager::total_all_locked() const {
+    return units_[UNIT_MAIN].total + units_[UNIT_SUB].total + jpeg_.demand;
+}
+
 // ---- demand ---------------------------------------------------------------
 DemandHandle PipelineManager::acquire(ConsumerType type, Result* result) {
-    std::lock_guard<std::mutex> lk(m_);
-    if (shutdown_) { if (result) *result = Result::busy(); return DemandHandle(); }
+    return acquire_unit(UNIT_MAIN, type, result);
+}
+
+bool PipelineManager::ensure_base_locked(ConsumerType type, int unit) {
     switch (state_) {
         case State::ColdIdle:
         case State::Failed: {
-            char why[48]; snprintf(why, sizeof why, "(consumer=%s)", consumer_name(type));
+            char why[64]; snprintf(why, sizeof why, "(consumer=%s unit=%s)", consumer_name(type), unit_name(unit));
             transition(State::Starting, why);
-            if (!start_locked()) {
+            if (!start_base_locked(unit)) {
                 transition(State::Failed, last_error_.c_str());
-                if (result) *result = Result::error();
-                return DemandHandle();
+                return false;
             }
             transition(State::Active, nullptr);
-            break;
+            return true;
         }
         case State::GraceIdle:
             timer_.disarm();
             transition(State::Active, "(new demand)");
-            break;
+            return true;
         case State::Active: case State::Starting: case State::Stopping:
-            break;
+            return true;
     }
-    ++demand_[(int)type]; ++total_;
-    LOGI(MOD, "demand +1 type=%s total=%d", consumer_name(type), total_);
-    if (result) *result = Result::ok();
-    return DemandHandle(this, type);
+    return true;
 }
 
-void PipelineManager::release(ConsumerType type) {
+DemandHandle PipelineManager::acquire_unit(int unit, ConsumerType type, Result* result) {
     std::lock_guard<std::mutex> lk(m_);
-    if (demand_[(int)type] > 0) --demand_[(int)type];
-    if (total_ > 0) --total_;
-    LOGI(MOD, "demand -1 type=%s total=%d", consumer_name(type), total_);
-    if (total_ == 0 && state_ == State::Active && !shutdown_) {
+    if (shutdown_ || unit < 0 || unit > UNIT_SUB || !units_[unit].configured) {
+        if (result) *result = shutdown_ ? Result::busy() : Result::unsupported();
+        return DemandHandle();
+    }
+    if (!ensure_base_locked(type, unit)) {
+        if (result) *result = Result::error();
+        return DemandHandle();
+    }
+    Unit& u = units_[unit];
+    if (u.grace_armed && u.timer) { u.timer->disarm(); u.grace_armed = false; }
+    if (!u.running && !start_unit_locked(unit)) {
+        // The base may have just been brought up for this very request; a base
+        // with no running unit and no other demand must not stay up.
+        if (total_all_locked() == 0 && state_ == State::Active) {
+            transition(State::Stopping, "(unit start failed)");
+            stop_base_locked();
+            transition(State::Failed, last_error_.c_str());
+        }
+        if (result) *result = Result::error();
+        return DemandHandle();
+    }
+    ++u.demand[(int)type]; ++u.total;
+    LOGI(MOD, "demand +1 type=%s unit=%s unit_total=%d all=%d", consumer_name(type), unit_name(unit), u.total, total_all_locked());
+    if (result) *result = Result::ok();
+    return DemandHandle(this, type, unit);
+}
+
+void PipelineManager::release(ConsumerType type, int unit) {
+    std::lock_guard<std::mutex> lk(m_);
+    Unit& u = units_[unit];
+    if (u.demand[(int)type] > 0) --u.demand[(int)type];
+    if (u.total > 0) --u.total;
+    LOGI(MOD, "demand -1 type=%s unit=%s unit_total=%d all=%d", consumer_name(type), unit_name(unit), u.total, total_all_locked());
+    if (shutdown_) return;
+    if (total_all_locked() == 0 && state_ == State::Active) {
+        // Base grace, every started unit stays warm - unchanged M4 semantics.
+        // A pending per-unit grace makes no sense any more.
+        for (Unit& x : units_) if (x.grace_armed && x.timer) { x.timer->disarm(); x.grace_armed = false; }
         char why[48]; snprintf(why, sizeof why, "timeout=%dms", cfg_.idle_grace_ms);
         transition(State::GraceIdle, why);
         timer_.arm(cfg_.idle_grace_ms);
+        return;
+    }
+    // Others still need the base: this unit winds down on its own grace.
+    if (u.total == 0 && u.running && state_ == State::Active && unit != UNIT_MAIN) {
+        if (u.timer) { u.timer->arm(cfg_.idle_grace_ms); u.grace_armed = true; }
+        else stop_unit_locked(unit);
     }
 }
 
 void PipelineManager::on_grace_timeout() {
     std::lock_guard<std::mutex> lk(m_);
-    if (state_ != State::GraceIdle || total_ > 0) return;
+    if (state_ != State::GraceIdle || total_all_locked() > 0) return;
     transition(State::Stopping, nullptr);
-    stop_locked();
+    stop_base_locked();
     transition(State::ColdIdle, nullptr);
+}
+
+void PipelineManager::on_unit_grace(int unit) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (unit < 0 || unit > UNIT_SUB) return;
+    Unit& u = units_[unit];
+    u.grace_armed = false;
+    if (u.total == 0 && u.running && state_ == State::Active) stop_unit_locked(unit);
+}
+
+void PipelineManager::on_jpeg_grace() {
+    std::lock_guard<std::mutex> lk(m_);
+    jpeg_.grace_armed = false;
+    if (jpeg_.demand == 0 && jpeg_.enc && state_ == State::Active) stop_jpeg_locked();
 }
 
 void PipelineManager::shutdown() {
     std::lock_guard<std::mutex> lk(m_);
     shutdown_ = true;
     timer_.disarm();
+    for (Unit& u : units_) if (u.grace_armed && u.timer) { u.timer->disarm(); u.grace_armed = false; }
+    if (jpeg_.grace_armed && jpeg_.timer) { jpeg_.timer->disarm(); jpeg_.grace_armed = false; }
     if (state_ == State::Active || state_ == State::GraceIdle) {
         transition(State::Stopping, "(shutdown)");
-        stop_locked();
+        stop_base_locked();
         transition(State::ColdIdle, nullptr);
     }
 }
@@ -104,35 +188,65 @@ State PipelineManager::state() const { std::lock_guard<std::mutex> lk(m_); retur
 
 Stats PipelineManager::stats() const {
     std::lock_guard<std::mutex> lk(m_);
-    Stats s; s.state = state_; s.total_demand = total_;
-    for (int i = 0; i < (int)ConsumerType::COUNT; ++i) s.demand[i] = demand_[i];
+    Stats s; s.state = state_; s.total_demand = total_all_locked();
+    for (int i = 0; i < (int)ConsumerType::COUNT; ++i) s.demand[i] = units_[UNIT_MAIN].demand[i];
+    s.unit_demand[UNIT_MAIN] = units_[UNIT_MAIN].total;
+    s.unit_demand[UNIT_SUB]  = units_[UNIT_SUB].total;
+    s.unit_demand[UNIT_JPEG] = jpeg_.demand;
+    s.unit_active[UNIT_MAIN] = units_[UNIT_MAIN].running;
+    s.unit_active[UNIT_SUB]  = units_[UNIT_SUB].running;
+    s.unit_active[UNIT_JPEG] = jpeg_.enc != nullptr;
     s.generation = generation_; s.start_count = start_count_; s.stop_count = stop_count_;
-    s.failed_count = failed_count_; s.restart_count = restart_count_; s.last_error = last_error_;
-    s.frames_this_run = frames_.load();
+    s.failed_count = failed_count_; s.restart_count = restart_count_; s.sub_restart_count = sub_restart_count_;
+    s.last_error = last_error_;
+    s.frames_this_run = units_[UNIT_MAIN].frames.load();
+    s.jpeg_captures = jpeg_.captures; s.jpeg_failures = jpeg_.failures; s.jpeg_last_capture_ms = jpeg_.last_capture_ms;
     return s;
 }
 
-Measurement PipelineManager::measurement() const {
-    std::lock_guard<std::mutex> lk(win_m_);
-    Measurement m = last_win_; m.dropped_frames = dropped_.load();
+Measurement PipelineManager::measurement() const { return measurement_unit(UNIT_MAIN); }
+
+Measurement PipelineManager::measurement_unit(int unit) const {
+    if (unit < 0 || unit > UNIT_SUB) return Measurement{};
+    const Unit& u = units_[unit];
+    std::lock_guard<std::mutex> lk(u.win_m);
+    Measurement m = u.last_win; m.dropped_frames = u.dropped.load();
     return m;
 }
 
-EffectiveStream PipelineManager::stream() const { std::lock_guard<std::mutex> lk(m_); return stream_; }
+EffectiveStream PipelineManager::stream() const { return stream_unit(UNIT_MAIN); }
+
+EffectiveStream PipelineManager::stream_unit(int unit) const {
+    std::lock_guard<std::mutex> lk(m_);
+    if (unit < 0 || unit > UNIT_SUB) return EffectiveStream{};
+    return units_[unit].stream;
+}
+
+bool PipelineManager::unit_configured(int unit) const {
+    std::lock_guard<std::mutex> lk(m_);
+    if (unit == UNIT_JPEG) return jpeg_.configured;
+    return unit >= 0 && unit <= UNIT_SUB && units_[unit].configured;
+}
+
+bool PipelineManager::unit_active(int unit) const {
+    std::lock_guard<std::mutex> lk(m_);
+    if (unit == UNIT_JPEG) return jpeg_.enc != nullptr;
+    return unit >= 0 && unit <= UNIT_SUB && units_[unit].running;
+}
 
 // ---- M5 controls -------------------------------------------------------------
 Result PipelineManager::update_stream(const EffectiveStream& s, bool restart_if_running, std::string& err) {
     std::lock_guard<std::mutex> lk(m_);
-    stream_ = s;
+    units_[UNIT_MAIN].stream = s;
     bool running = (state_ == State::Active || state_ == State::GraceIdle);
     if (!running || !restart_if_running) return Result::ok();     // cold: takes effect at next start
     // controlled restart: same demand, same generation counter semantics
     State back = state_;
     transition(State::Stopping, "(restart: pipeline-restart setting)");
-    stop_locked();
+    stop_base_locked();
     ++restart_count_;
     transition(State::Starting, "(restart)");
-    if (!start_locked()) {
+    if (!start_base_locked(UNIT_MAIN)) {
         err = last_error_;
         transition(State::Failed, last_error_.c_str());
         return Result::error();
@@ -142,20 +256,42 @@ Result PipelineManager::update_stream(const EffectiveStream& s, bool restart_if_
     return Result::ok();
 }
 
+Result PipelineManager::update_sub_stream(const EffectiveStream& s, bool enabled, std::string& err) {
+    std::lock_guard<std::mutex> lk(m_);
+    Unit& u = units_[UNIT_SUB];
+    if (!enabled) {
+        if (u.running) stop_unit_locked(UNIT_SUB);
+        u.configured = false;
+        return Result::ok();
+    }
+    if (!u.configured) { err = "substream not configured (no hub/timer wired)"; return Result::unsupported(); }
+    u.stream = s;
+    if (!u.running) return Result::ok();          // cold unit: applies at next unit start
+    stop_unit_locked(UNIT_SUB);
+    ++sub_restart_count_;
+    if (!start_unit_locked(UNIT_SUB)) {
+        err = last_error_;
+        return Result::error();
+    }
+    return Result::ok();
+}
+
 Result PipelineManager::live_bitrate(int kbps, int& effective) {
     std::lock_guard<std::mutex> lk(m_);
     effective = -1;
-    if (!(state_ == State::Active || state_ == State::GraceIdle) || !enc_) return Result::busy();
-    Result r = enc_->set_bitrate(kbps, effective);
-    if (r) stream_.bitrate_kbps = effective > 0 ? effective : kbps;
+    Unit& u = units_[UNIT_MAIN];
+    if (!(state_ == State::Active || state_ == State::GraceIdle) || !u.enc) return Result::busy();
+    Result r = u.enc->set_bitrate(kbps, effective);
+    if (r) u.stream.bitrate_kbps = effective > 0 ? effective : kbps;
     return r;
 }
 
 Result PipelineManager::live_encoder_fps(int fps, int& effective) {
     std::lock_guard<std::mutex> lk(m_);
     effective = -1;
-    if (!(state_ == State::Active || state_ == State::GraceIdle) || !enc_) return Result::busy();
-    return enc_->set_fps(fps, effective);
+    Unit& u = units_[UNIT_MAIN];
+    if (!(state_ == State::Active || state_ == State::GraceIdle) || !u.enc) return Result::busy();
+    return u.enc->set_fps(fps, effective);
 }
 
 Result PipelineManager::live_sensor_fps(int fps, int& effective) {
@@ -178,14 +314,15 @@ Result PipelineManager::live_gop(int frames, int& effective) {
     std::lock_guard<std::mutex> lk(m_);
     effective = -1;
     if (frames < 1 || frames > 1000) return Result::error();
-    if (!(state_ == State::Active || state_ == State::GraceIdle) || !enc_) return Result::busy();
-    Result r = enc_->set_gop(frames, effective);
+    Unit& u = units_[UNIT_MAIN];
+    if (!(state_ == State::Active || state_ == State::GraceIdle) || !u.enc) return Result::busy();
+    Result r = u.enc->set_gop(frames, effective);
     // A successful set means the encoder accepted this GOP and will use it.
     // Encoders may still report the previous length for up to one GOP (the
     // Ingenic SDK does), so that transient must not become the effective
     // value: it would make /state report the old GOP forever and let a later
     // restart recreate the channel with it, silently undoing the change.
-    if (r) { stream_.gop = frames; effective = frames; }
+    if (r) { u.stream.gop = frames; effective = frames; }
     return r;
 }
 
@@ -205,35 +342,102 @@ Result PipelineManager::read_exposure(ExposureReadback& out) {
     return image ? image->exposure(out) : Result::unsupported();
 }
 
-void PipelineManager::request_idr() {
+void PipelineManager::request_idr(int unit) {
     std::lock_guard<std::mutex> lk(m_);
-    if ((state_ == State::Active || state_ == State::GraceIdle) && enc_) enc_->request_idr();
+    if (unit < 0 || unit > UNIT_SUB) return;
+    Unit& u = units_[unit];
+    if ((state_ == State::Active || state_ == State::GraceIdle) && u.enc) u.enc->request_idr();
+}
+
+// ---- snapshot ----------------------------------------------------------------
+Result PipelineManager::snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms) {
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        if (shutdown_) { err = "shutting down"; return Result::busy(); }
+        if (!jpeg_.configured) { err = "jpeg not configured on this platform"; return Result::unsupported(); }
+        if (!ensure_base_locked(ConsumerType::Snapshot, UNIT_JPEG)) { err = last_error_; return Result::error(); }
+        if (jpeg_.grace_armed && jpeg_.timer) { jpeg_.timer->disarm(); jpeg_.grace_armed = false; }
+        if (!jpeg_.enc && !start_jpeg_locked()) {
+            err = last_error_;
+            if (total_all_locked() == 0 && state_ == State::Active) {
+                transition(State::Stopping, "(jpeg start failed)");
+                stop_base_locked();
+                transition(State::Failed, last_error_.c_str());
+            }
+            return Result::error();
+        }
+        ++jpeg_.demand;
+        LOGI(MOD, "demand +1 type=snapshot unit=jpeg all=%d", total_all_locked());
+    }
+
+    // The capture itself runs without the manager lock: it can block for a
+    // frame interval, and the H.264 paths must not stall behind it. snap_m_
+    // serialises concurrent snapshot requests; within cache_ms they all get
+    // the same image instead of hammering the hardware.
+    Result r = Result::ok();
+    {
+        std::lock_guard<std::mutex> cap(snap_m_);
+        int64_t now = mono_us();
+        bool fresh = jpeg_.cache_at_us > 0 && (now - jpeg_.cache_at_us) < (int64_t)jpeg_.cache_ms * 1000 && !jpeg_.cache.empty();
+        if (fresh) {
+            out = jpeg_.cache;
+        } else {
+            IJpegEncoder* enc = jpeg_.enc.get();     // stays alive: demand > 0
+            int64_t t0 = mono_us();
+            r = enc ? enc->capture(out, timeout_ms) : Result::busy();
+            std::lock_guard<std::mutex> lk(m_);
+            jpeg_.last_capture_ms = (mono_us() - t0) / 1000;
+            if (r) { ++jpeg_.captures; jpeg_.cache = out; jpeg_.cache_at_us = mono_us(); }
+            else   { ++jpeg_.failures; err = "jpeg capture failed"; }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        if (jpeg_.demand > 0) --jpeg_.demand;
+        LOGI(MOD, "demand -1 type=snapshot unit=jpeg all=%d", total_all_locked());
+        if (!shutdown_) {
+            if (total_all_locked() == 0 && state_ == State::Active) {
+                for (Unit& x : units_) if (x.grace_armed && x.timer) { x.timer->disarm(); x.grace_armed = false; }
+                char why[48]; snprintf(why, sizeof why, "timeout=%dms", cfg_.idle_grace_ms);
+                transition(State::GraceIdle, why);
+                timer_.arm(cfg_.idle_grace_ms);
+            } else if (jpeg_.demand == 0 && jpeg_.enc && state_ == State::Active) {
+                if (jpeg_.timer) { jpeg_.timer->arm(jpeg_.grace_ms); jpeg_.grace_armed = true; }
+                else stop_jpeg_locked();
+            }
+        }
+    }
+    return r;
 }
 
 // ---- media chain (m_ held) --------------------------------------------------
-bool PipelineManager::start_locked() {
+bool PipelineManager::start_base_locked(int first_unit) {
     ++start_count_;
     last_error_.clear();
-    auto fail = [&](const char* stage, int code) {
-        last_error_ = std::string(stage) + " failed (" + std::to_string(code) + ")";
+    Result r = platform_.bring_up();
+    if (!r) {
+        last_error_ = "platform bring-up failed (" + std::to_string(r.code) + ")";
         LOGE(MOD, "start: %s - rolling back", last_error_.c_str());
-        stop_locked();
+        stop_base_locked();
         ++failed_count_;
         return false;
-    };
-    Result r = platform_.bring_up();
-    if (!r) return fail("platform bring-up", r.code);
-    fs_ = platform_.create_framesource(0, stream_);
-    if (!fs_) return fail("framesource create", -1);
-    enc_ = platform_.create_encoder(0, stream_);
-    if (!enc_) return fail("encoder create", -1);
-    r = platform_.bind(*fs_, *enc_);
-    if (!r) return fail("bind", r.code);
-    bound_ = true;
-    r = fs_->enable();
-    if (!r) return fail("framesource enable", r.code);
-    r = enc_->start();
-    if (!r) return fail("encoder start", r.code);
+    }
+
+    // Start the requesting unit plus every unit that still holds demand - a
+    // controlled base restart must bring the substream back too, not just the
+    // main stream. Order main before sub, so the pre-M8 call sequence (and the
+    // tests that pin it) stays identical when only the main stream exists.
+    for (int unit = UNIT_MAIN; unit <= UNIT_SUB; ++unit) {
+        Unit& u = units_[unit];
+        bool wanted = (unit == first_unit) || (u.configured && u.total > 0);
+        if (!wanted || u.running) continue;
+        if (!start_unit_locked(unit)) {
+            stop_base_locked();
+            ++failed_count_;
+            return false;
+        }
+    }
 
     if (sensor_fps_target_ > 0) {                     // sensor rate is a separate knob from the stream rate
         int eff = -1; Result sr = platform_.set_sensor_fps(sensor_fps_target_, eff);
@@ -243,39 +447,100 @@ bool PipelineManager::start_locked() {
 
     if (post_start_) post_start_();
 
-    quit_ = false; frames_ = 0; dropped_ = 0;
-    { std::lock_guard<std::mutex> wl(win_m_); last_win_ = Measurement{}; win_start_us_ = 0; win_frames_ = 0; win_bytes_ = 0; }
-    thread_ = std::thread([this] { capture_loop(); });
     ++generation_;
-    LOGI(MOD, "pipeline generation %u running (%dx%d@%d, %d kbps)", generation_, stream_.width, stream_.height,
-         stream_.fps, stream_.bitrate_kbps);
+    const EffectiveStream& s = units_[UNIT_MAIN].stream;
+    LOGI(MOD, "pipeline generation %u running (%dx%d@%d, %d kbps)", generation_, s.width, s.height, s.fps, s.bitrate_kbps);
     return true;
 }
 
-void PipelineManager::stop_locked() {
-    quit_ = true;
-    if (thread_.joinable()) thread_.join();
-    if (enc_) enc_->stop();
-    if (fs_)  fs_->disable();
-    if (bound_ && fs_ && enc_) platform_.unbind(*fs_, *enc_);
-    bound_ = false;
-    enc_.reset();
-    fs_.reset();
+void PipelineManager::stop_base_locked() {
+    stop_unit_locked(UNIT_SUB);
+    stop_unit_locked(UNIT_MAIN);
+    stop_jpeg_locked();
     platform_.tear_down();
     ++stop_count_;
-    LOGI(MOD, "pipeline stopped (%u frames this run, pool exhausted %u)", frames_.load(), pool_.exhausted());
+    LOGI(MOD, "pipeline stopped (%u frames this run, pool exhausted %u)",
+         units_[UNIT_MAIN].frames.load(), units_[UNIT_MAIN].pool ? units_[UNIT_MAIN].pool->exhausted() : 0);
 }
 
-void PipelineManager::capture_loop() {
+bool PipelineManager::start_unit_locked(int unit) {
+    Unit& u = units_[unit];
+    if (u.running) return true;
+    auto fail = [&](const char* stage, int code) {
+        last_error_ = std::string(unit_name(unit)) + " " + stage + " failed (" + std::to_string(code) + ")";
+        LOGE(MOD, "start: %s - rolling back this unit", last_error_.c_str());
+        stop_unit_locked(unit);
+        return false;
+    };
+    u.fs = platform_.create_framesource(unit, u.stream);
+    if (!u.fs) return fail("framesource create", -1);
+    u.enc = platform_.create_encoder(unit, u.stream);
+    if (!u.enc) return fail("encoder create", -1);
+    Result r = platform_.bind(*u.fs, *u.enc);
+    if (!r) return fail("bind", r.code);
+    u.bound = true;
+    r = u.fs->enable();
+    if (!r) return fail("framesource enable", r.code);
+    r = u.enc->start();
+    if (!r) return fail("encoder start", r.code);
+
+    u.quit = false; u.frames = 0; u.dropped = 0;
+    {
+        std::lock_guard<std::mutex> wl(u.win_m);
+        u.last_win = Measurement{}; u.win_start_us = 0; u.win_frames = 0; u.win_bytes = 0;
+    }
+    u.thread = std::thread([this, &u] { capture_loop(u); });
+    u.running = true;
+    LOGI(MOD, "unit %s running (%dx%d@%d, %d kbps)", unit_name(unit), u.stream.width, u.stream.height, u.stream.fps, u.stream.bitrate_kbps);
+    return true;
+}
+
+void PipelineManager::stop_unit_locked(int unit) {
+    Unit& u = units_[unit];
+    u.quit = true;
+    if (u.thread.joinable()) u.thread.join();
+    if (u.enc) u.enc->stop();
+    if (u.fs)  u.fs->disable();
+    if (u.bound && u.fs && u.enc) platform_.unbind(*u.fs, *u.enc);
+    u.bound = false;
+    u.enc.reset();
+    u.fs.reset();
+    if (u.running) LOGI(MOD, "unit %s stopped (%u frames)", unit_name(unit), u.frames.load());
+    u.running = false;
+}
+
+bool PipelineManager::start_jpeg_locked() {
+    if (jpeg_.enc) return true;
+    JpegParams p = jpeg_.params;
+    if (p.width <= 0 || p.height <= 0) { p.width = units_[UNIT_MAIN].stream.width; p.height = units_[UNIT_MAIN].stream.height; }
+    jpeg_.enc = platform_.create_jpeg(UNIT_JPEG, p);
+    if (!jpeg_.enc) {
+        last_error_ = "jpeg encoder create failed";
+        LOGE(MOD, "start: %s", last_error_.c_str());
+        return false;
+    }
+    LOGI(MOD, "unit jpeg running (%dx%d q=%d)", p.width, p.height, p.quality);
+    return true;
+}
+
+void PipelineManager::stop_jpeg_locked() {
+    if (!jpeg_.enc) return;
+    jpeg_.enc.reset();
+    jpeg_.cache.clear();
+    jpeg_.cache_at_us = -1;
+    LOGI(MOD, "unit jpeg stopped (%u captures, %u failures)", jpeg_.captures, jpeg_.failures);
+}
+
+void PipelineManager::capture_loop(Unit& u) {
     unsigned timeouts = 0;
-    while (!quit_) {
-        auto au = pool_.acquire();
+    while (!u.quit) {
+        auto au = u.pool->acquire();
         if (!au) {
-            AccessUnit scratch; Result r = enc_->fetch(scratch, cfg_.poll_timeout_ms);
-            if (r) { unsigned d = ++dropped_; if ((d % 50) == 1) LOGW(MOD, "pool exhausted - dropped %u frames", d); }
+            AccessUnit scratch; Result r = u.enc->fetch(scratch, cfg_.poll_timeout_ms);
+            if (r) { unsigned d = ++u.dropped; if ((d % 50) == 1) LOGW(MOD, "pool exhausted - dropped %u frames", d); }
             continue;
         }
-        Result r = enc_->fetch(*au, cfg_.poll_timeout_ms);
+        Result r = u.enc->fetch(*au, cfg_.poll_timeout_ms);
         if (r.status == Status::Timeout) {
             if ((++timeouts % 20) == 1) LOGW(MOD, "encoder idle (no frame for %u polls)", timeouts);
             continue;
@@ -289,24 +554,24 @@ void PipelineManager::capture_loop() {
         // made-up latency number on adapters that cannot guarantee that.
         int64_t platform_now = platform_.timestamp_us();
         if (au->pts_us > 0 && platform_now >= au->pts_us)
-            hub_.record_capture_to_out(platform_now - au->pts_us);
-        au->seq = seq_++;
-        unsigned n = ++frames_;
+            u.hub->record_capture_to_out(platform_now - au->pts_us);
+        au->seq = u.seq++;
+        unsigned n = ++u.frames;
         if (n == 1) LOGI(MOD, "first frame: %lu bytes key=%d pts=%lld", (unsigned long)au->data.size(), (int)au->key, (long long)au->pts_us);
         // 1 s measurement window from frame events (no polling thread)
         {
-            std::lock_guard<std::mutex> wl(win_m_);
-            if (win_start_us_ == 0) win_start_us_ = au->pts_us;
-            ++win_frames_; win_bytes_ += au->data.size();
-            int64_t span = au->pts_us - win_start_us_;
+            std::lock_guard<std::mutex> wl(u.win_m);
+            if (u.win_start_us == 0) u.win_start_us = au->pts_us;
+            ++u.win_frames; u.win_bytes += au->data.size();
+            int64_t span = au->pts_us - u.win_start_us;
             if (span >= 1000000) {
-                last_win_.valid = true;
-                last_win_.encoded_fps  = (double)win_frames_ * 1e6 / (double)span;
-                last_win_.bitrate_kbps = (double)win_bytes_ * 8.0 / 1000.0 * 1e6 / (double)span;
-                win_start_us_ = au->pts_us; win_frames_ = 0; win_bytes_ = 0;
+                u.last_win.valid = true;
+                u.last_win.encoded_fps  = (double)u.win_frames * 1e6 / (double)span;
+                u.last_win.bitrate_kbps = (double)u.win_bytes * 8.0 / 1000.0 * 1e6 / (double)span;
+                u.win_start_us = au->pts_us; u.win_frames = 0; u.win_bytes = 0;
             }
         }
-        hub_.publish(au);
+        u.hub->publish(au);
     }
 }
 

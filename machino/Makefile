@@ -50,7 +50,7 @@ OBJ := $(SRC:.cpp=.o)
 HOST_CXX      ?= g++
 HOST_CXXFLAGS ?= -std=c++17 -O1 -fno-exceptions -fno-rtti -Wall -Wextra -Wno-unused-parameter -Werror -pthread -Isrc -Itests -DMACHINO_VERSION='"test"'
 TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp tests/test_json.cpp tests/test_events.cpp \
-            tests/test_http_parse.cpp tests/test_api.cpp tests/test_tuning.cpp tests/log_stub.cpp \
+            tests/test_http_parse.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/log_stub.cpp \
             src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp src/core/lifecycle/pipeline_manager.cpp \
             src/core/power/performance_service.cpp src/core/media/tuning_service.cpp src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/http/http_parse.cpp \

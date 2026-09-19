@@ -99,9 +99,25 @@ private:
     CallLog& log_; int chn_; bool fail_start_, live_bitrate_;
 };
 
+class FakeJpegEncoder final : public IJpegEncoder {
+public:
+    FakeJpegEncoder(CallLog& l, int chn, bool fail) : log_(l), chn_(chn), fail_(fail) { log_.add("jpeg.create"); }
+    ~FakeJpegEncoder() override { log_.add("jpeg.destroy"); }
+    Result capture(std::vector<uint8_t>& out, int) override {
+        log_.add("jpeg.capture");
+        if (fail_) return Result::error(-5);
+        // minimal but real JPEG markers, so a validator can check SOI/EOI
+        out.assign({0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0xFF, 0xD9});
+        return Result::ok();
+    }
+    int channel() const override { return chn_; }
+private:
+    CallLog& log_; int chn_; bool fail_;
+};
+
 class FakePlatform final : public IPlatform {
 public:
-    enum class FailAt { None, BringUp, FrameSource, Encoder, Bind, EncoderStart };
+    enum class FailAt { None, BringUp, FrameSource, Encoder, Bind, EncoderStart, Jpeg };
     explicit FakePlatform(CallLog& l, IPowerControl* p = nullptr) : image_control(l), log_(l) { power_ptr = p; }
     FailAt fail_at = FailAt::None;
     int    fail_times = 0;
@@ -137,6 +153,11 @@ public:
         last_stream = s;
         return std::make_unique<FakeFrameSource>(log_, chn, s.fps);
     }
+    std::unique_ptr<IJpegEncoder> create_jpeg(int chn, const JpegParams& p) override {
+        last_jpeg_params = p;
+        if (take(FailAt::Jpeg)) return nullptr;
+        return std::make_unique<FakeJpegEncoder>(log_, chn, jpeg_capture_fails);
+    }
     std::unique_ptr<IEncoder> create_encoder(int chn, const EffectiveStream& s) override {
         if (take(FailAt::Encoder)) return nullptr;
         last_encoder_stream = s;
@@ -160,6 +181,8 @@ public:
     bool is_up() const { return up_; }
     EffectiveStream last_stream{};
     EffectiveStream last_encoder_stream{};
+    JpegParams      last_jpeg_params{};
+    bool            jpeg_capture_fails = false;
     FakeImageControl image_control;
 private:
     bool take(FailAt f) { if (fail_at != f) return false; if (fail_times > 0) { --fail_times; return true; } return false; }

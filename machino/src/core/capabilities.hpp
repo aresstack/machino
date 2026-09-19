@@ -63,6 +63,9 @@ struct CapabilitySet {
     struct Power   { Cap isp_clock_control = Cap::Unknown; Cap encoder_clock_control = Cap::Unknown;
                      Cap cpu_frequency_control = Cap::Unknown; PerfCap cpu_frequency; } power;
     struct Ai      { Cap available = Cap::Unknown; } ai;
+    // M8: hardware JPEG. max_* stay -1 (unknown) unless the adapter has
+    // established real limits - they are never invented.
+    struct Jpeg    { Cap supported = Cap::Unknown; int max_width = -1, max_height = -1; } jpeg;
 };
 
 } // namespace machino

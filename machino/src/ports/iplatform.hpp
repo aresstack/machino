@@ -9,6 +9,7 @@
 #include "ports/iencoder.hpp"
 #include "ports/iframesource.hpp"
 #include "ports/iimage_control.hpp"
+#include "ports/ijpeg.hpp"
 #include "ports/ipower_control.hpp"
 #include <cstdint>
 #include <memory>
@@ -26,6 +27,9 @@ public:
 
     virtual std::unique_ptr<IFrameSource> create_framesource(int chn, const EffectiveStream& sc) = 0;
     virtual std::unique_ptr<IEncoder>     create_encoder(int chn, const EffectiveStream& sc) = 0;
+    // M8: hardware JPEG bound to its own framesource channel. nullptr =
+    // unsupported on this platform (the default).
+    virtual std::unique_ptr<IJpegEncoder> create_jpeg(int chn, const JpegParams& p) { (void)chn; (void)p; return nullptr; }
 
     virtual Result bind(IFrameSource& fs, IEncoder& enc)   = 0;
     virtual Result unbind(IFrameSource& fs, IEncoder& enc) = 0;

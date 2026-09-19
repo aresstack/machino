@@ -38,9 +38,36 @@ struct EffectiveStream {
     RcMode rc = RcMode::Cbr;
 };
 
+// M8: the substream is off by default and has NO invented geometry: enabling
+// it requires an explicit width/height (or a board preset that provides one) -
+// the resolver refuses to guess, like everywhere else.
+struct SubStreamConfig {
+    bool enabled = false;
+    std::optional<int> width, height, fps;   // fps unset = follow the main stream
+    int    gop          = 40;
+    int    bitrate_kbps = 512;
+    int    profile      = 2;
+    RcMode rc           = RcMode::Cbr;
+    int    qp           = 35;
+    int    buffers      = 2;
+    int    encoder_buffers = 0;
+};
+
+// M8: JPEG snapshots. The encoder is ephemeral - created on demand, torn down
+// after snapshot.grace_ms - never kept alive because the endpoint exists.
+struct JpegConfig {
+    int quality = 80;              // 1..99
+};
+
+struct SnapshotConfig {
+    int cache_ms = 300;            // serve the same JPEG to near-simultaneous requests
+    int grace_ms = 2000;           // keep the hardware encoder warm this long after the last capture
+};
+
 struct RtspConfig {
     int         port = 554;
     std::string path = "/ch0";
+    std::string sub_path = "/ch1";         // substream mount point (when video.1 is enabled)
     int         send_buffer_bytes = 65536; // bounded kernel backlog per socket
     int         send_stall_ms = 750;       // disconnect, never accumulate seconds of stale live video
     int         max_clients = 4;           // concurrent connections (each costs a thread); refused, not queued
@@ -80,6 +107,9 @@ struct AppConfig {
     hw::UserHardwareConfig hardware;
     std::string       board_profile_file;
     StreamConfig      video;
+    SubStreamConfig   video1;
+    JpegConfig        jpeg;
+    SnapshotConfig    snapshot;
     RtspConfig        rtsp;
     PipelineConfig    pipeline;
     PerformanceConfig performance;
@@ -94,5 +124,10 @@ struct AppConfig {
 bool load_config(const char* path, AppConfig& cfg, std::string& err);
 bool parse_config_text(const std::string& text, AppConfig& cfg, std::string& err);
 EffectiveStream effective_stream(const StreamConfig& v, const hw::ResolvedHardware& hw);
+// Substream geometry is validated, not invented: returns false with `err` when
+// video.1 is enabled without an explicit width/height, or when it does not fit
+// into the sensor's native size.
+bool effective_sub_stream(const SubStreamConfig& v, const EffectiveStream& main,
+                          EffectiveStream& out, std::string& err);
 
 } // namespace machino

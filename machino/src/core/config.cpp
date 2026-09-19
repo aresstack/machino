@@ -126,6 +126,19 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("rtsp.send_buffer_bytes", c.rtsp.send_buffer_bytes, 4096, 1048576)
     INT   ("rtsp.send_stall_ms", c.rtsp.send_stall_ms, 50, 10000)
     INT   ("rtsp.max_clients",   c.rtsp.max_clients, 1, 16)
+    STR   ("rtsp.sub_path",      c.rtsp.sub_path)
+    BOOL  ("video.1.enabled",    c.video1.enabled)
+    OPTINT("video.1.width",      c.video1.width,  128, 4096)
+    OPTINT("video.1.height",     c.video1.height, 96, 4096)
+    OPTINT("video.1.fps",        c.video1.fps,    1, 240)
+    INT   ("video.1.gop",        c.video1.gop,    1, 1000)
+    INT   ("video.1.bitrate",    c.video1.bitrate_kbps, 1, 200000)
+    INT   ("video.1.profile",    c.video1.profile, 0, 2)
+    INT   ("video.1.buffers",    c.video1.buffers, 1, 8)
+    INT   ("video.1.encoder_buffers", c.video1.encoder_buffers, 0, 8)
+    INT   ("jpeg.quality",       c.jpeg.quality, 1, 99)
+    INT   ("snapshot.cache_ms",  c.snapshot.cache_ms, 0, 5000)
+    INT   ("snapshot.grace_ms",  c.snapshot.grace_ms, 0, 30000)
 
     BOOL  ("pipeline.always_on", c.pipeline.always_on)
     INT   ("lifecycle.idle_grace_ms", c.pipeline.idle_grace_ms, 0, 600000)
@@ -202,6 +215,26 @@ bool load_config(const char* path, AppConfig& cfg, std::string& err) {
     if (!parse_config_text(text, cfg, err)) return false;
     LOGI(MOD, "config %s: board='%s' platform='%s' sensor='%s' profile=%s", path, cfg.hardware.board_id.c_str(),
          cfg.hardware.platform.c_str(), cfg.hardware.sensor.c_str(), power::profile_name(cfg.performance.profile));
+    return true;
+}
+
+bool effective_sub_stream(const SubStreamConfig& v, const EffectiveStream& main,
+                          EffectiveStream& out, std::string& err) {
+    if (!v.enabled) { err = "video.1 is not enabled"; return false; }
+    if (!v.width || !v.height) {
+        err = "video.1 enabled without explicit video.1.width/height - refusing to guess a substream geometry";
+        return false;
+    }
+    if (*v.width > main.native_width || *v.height > main.native_height) {
+        err = "video.1 geometry exceeds the sensor's native size";
+        return false;
+    }
+    out = EffectiveStream{};
+    out.width = *v.width; out.height = *v.height;
+    out.fps = v.fps.value_or(main.fps);
+    out.native_width = main.native_width; out.native_height = main.native_height;
+    out.gop = v.gop; out.bitrate_kbps = v.bitrate_kbps; out.profile = v.profile;
+    out.qp = v.qp; out.buffers = v.buffers; out.encoder_buffers = v.encoder_buffers; out.rc = v.rc;
     return true;
 }
 
