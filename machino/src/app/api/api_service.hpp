@@ -44,7 +44,10 @@ public:
 
     // M8: one current frame as JPEG (binary, not JSON). Delegates to the
     // pipeline's snapshot path; the transport builds the image/jpeg response.
-    Result snapshot(std::vector<uint8_t>& out, std::string& err);
+    // timeout_ms bounds the capture wait - streaming callers (MJPEG in the
+    // single-threaded HTTP loop) pass a SHORT value and skip the tick on
+    // Timeout, so a slow/never-arriving frame can not stall the server.
+    Result snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms = 5000);
 
     Json telemetry_json();                         // also used for SSE telemetry events
     static Json error(const char* code, const std::string& path, const std::string& message);

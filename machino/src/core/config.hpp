@@ -56,6 +56,10 @@ struct SubStreamConfig {
 // M8: JPEG snapshots. The encoder is ephemeral - created on demand, torn down
 // after snapshot.grace_ms - never kept alive because the endpoint exists.
 struct JpegConfig {
+    // OFF by default: creating the extra FrameSource/encoder pair live-wedged
+    // the whole daemon on the T40NN (IMP hang under the manager lock, RTSP and
+    // API dead until power-cycle). Stays opt-in until it is hardware-verified.
+    bool enabled = false;
     int quality = 80;              // 1..99
 };
 

@@ -205,7 +205,11 @@ int main(int argc, char** argv) {
             else        LOGW(MOD, "substream disabled: %s", sub_err.c_str());
         }
         // M8: hardware JPEG for snapshots - ephemeral, created on demand only.
-        if (platform->capabilities().jpeg.supported == Cap::Supported) {
+        // Gated behind jpeg.enabled (default OFF): the live T40NN wedged whole-
+        // daemon when the extra FS/encoder pair came up; opt-in until verified.
+        if (!cfg.jpeg.enabled) {
+            LOGI(MOD, "jpeg snapshots disabled (jpeg.enabled=false; MJPEG/snapshot report unsupported)");
+        } else if (platform->capabilities().jpeg.supported == Cap::Supported) {
             JpegParams jp; jp.quality = cfg.jpeg.quality;
             pipeline.configure_jpeg(jp, cfg.snapshot.cache_ms, cfg.snapshot.grace_ms, &jpeg_timer);
             LOGI(MOD, "jpeg snapshots available (quality %d, cache %dms, grace %dms)", cfg.jpeg.quality, cfg.snapshot.cache_ms, cfg.snapshot.grace_ms);

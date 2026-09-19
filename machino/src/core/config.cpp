@@ -136,6 +136,7 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("video.1.profile",    c.video1.profile, 0, 2)
     INT   ("video.1.buffers",    c.video1.buffers, 1, 8)
     INT   ("video.1.encoder_buffers", c.video1.encoder_buffers, 0, 8)
+    BOOL  ("jpeg.enabled",       c.jpeg.enabled)
     INT   ("jpeg.quality",       c.jpeg.quality, 1, 99)
     INT   ("snapshot.cache_ms",  c.snapshot.cache_ms, 0, 5000)
     INT   ("snapshot.grace_ms",  c.snapshot.grace_ms, 0, 30000)

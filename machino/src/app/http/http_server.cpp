@@ -150,7 +150,9 @@ bool HttpServer::handle_request(Client& c) {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         else {
             std::vector<uint8_t> jpg; std::string serr;
-            Result sr = api_.snapshot(jpg, serr);
+            // 2s bound: one-shot request, but still inside the single poll
+            // loop - never let it hang the server for the full default wait.
+            Result sr = api_.snapshot(jpg, serr, 2000);
             if (sr) {
                 std::string body(reinterpret_cast<const char*>(jpg.data()), jpg.size());
                 bool ok = queue(c, response(200, "image/jpeg", body, req.keep_alive), cfg_.max_snapshot_bytes);
@@ -184,7 +186,11 @@ void HttpServer::push_mjpeg(Client& c) {
     const int interval = cfg_.mjpeg_max_fps > 0 ? 1000 / cfg_.mjpeg_max_fps : 100;
     if (t < c.next_frame_ms || !c.out.empty()) return;
     std::vector<uint8_t> jpg; std::string err;
-    Result sr = api_.snapshot(jpg, err);
+    // SHORT capture bound: this runs in the single poll loop, so a frame that
+    // is not ready within 300ms must not stall every other client - skip this
+    // tick and try again on the next one. Only real failures end the stream.
+    Result sr = api_.snapshot(jpg, err, 300);
+    if (sr.status == Status::Timeout) { c.next_frame_ms = t + interval; return; }
     if (!sr) {
         LOGW(MOD, "%s: MJPEG ending - no JPEG (%s)", c.peer.c_str(), err.empty() ? "unavailable" : err.c_str());
         c.close_after_flush = true;

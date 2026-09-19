@@ -192,8 +192,8 @@ Json ApiService::capabilities_json() const {
 }
 Response ApiService::capabilities() const { return Response{200, capabilities_json()}; }
 
-Result ApiService::snapshot(std::vector<uint8_t>& out, std::string& err) {
-    return pipeline_.snapshot(out, err);
+Result ApiService::snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms) {
+    return pipeline_.snapshot(out, err, timeout_ms);
 }
 
 Json ApiService::state_json() {
