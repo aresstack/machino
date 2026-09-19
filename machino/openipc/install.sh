@@ -103,15 +103,32 @@ webui_menu_add() {
     anchor='<ul aria-labelledby="dropdownSystem" class="dropdown-menu">'
     grep -qF "$anchor" "$header" || { warn "navigation layout not recognised - page reachable at /cgi-bin/machino.cgi only"; return 1; }
 
-    awk -v anchor="$anchor" -v b="$MARK_BEGIN" -v e="$MARK_END" '
+    # The injected block is haserl (header.cgi is rendered by haserl per request):
+    # when Machino is the active streamer it labels the entry "Camera (Machino)"
+    # and hides the stock Majestic menu items (which write /etc/majestic.yaml and
+    # are wrong under Machino) via a CSS :has() rule; otherwise it is the plain
+    # "Media service" switch link and Majestic stays untouched. Removed verbatim
+    # by uninstall (between the markers), so the stock header restores byte-exact.
+    blk="$STATE_DIR/.menu-block"
+    cat > "$blk" <<'BLK'
+							<!-- machino:begin -->
+							<% if [ "$(cat /etc/machino/streamer 2>/dev/null)" = "machino" ]; then %>
+							<li><a class="dropdown-item" href="machino.cgi">Camera (Machino)</a></li>
+							<style>.nav-item.dropdown:has(a[href*="majestic"]),li:has(> a[href*="majestic"]){display:none!important}</style>
+							<% else %>
+							<li><a class="dropdown-item" href="machino.cgi">Media service</a></li>
+							<% fi %>
+							<!-- machino:end -->
+BLK
+    awk -v anchor="$anchor" -v blk="$blk" '
         { print }
         index($0, anchor) {
-            print "							" b
-            print "							<li><a class=\"dropdown-item\" href=\"machino.cgi\">Media service</a></li>"
-            print "							" e
+            while ((getline line < blk) > 0) print line
+            close(blk)
         }' "$header" > "$header.machino.tmp" && mv "$header.machino.tmp" "$header" || {
-        warn "could not patch the navigation"; rm -f "$header.machino.tmp"; return 1; }
-    say "added the menu entry under System"
+        warn "could not patch the navigation"; rm -f "$header.machino.tmp" "$blk"; return 1; }
+    rm -f "$blk"
+    say "added the Machino menu entry under System (hides the Majestic menu when Machino is active)"
 }
 
 if [ "$WEBUI_ONLY" = "1" ]; then
