@@ -43,7 +43,7 @@ SRC := src/core/log.cpp $(CORE_SRC) \
        src/adapters/ingenic/ingenic_power_control.cpp \
        src/adapters/ingenic/ingenic_image_control.cpp \
        src/adapters/ingenic/ingenic_platform.cpp src/adapters/ingenic/ingenic_framesource.cpp \
-       src/adapters/ingenic/ingenic_encoder.cpp
+       src/adapters/ingenic/ingenic_encoder.cpp src/adapters/ingenic/ingenic_jpeg.cpp
 OBJ := $(SRC:.cpp=.o)
 
 # host unit tests: core + profiles + lifecycle + performance + API (fakes) + the SDK-free adapter conversion

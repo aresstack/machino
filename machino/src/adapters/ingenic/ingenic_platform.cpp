@@ -23,7 +23,8 @@ CapabilitySet IngenicPlatform::capabilities() const {
     CapabilitySet c;
     c.video.h264            = Cap::Supported;
     c.video.h265            = Cap::Unknown;
-    c.video.max_streams     = -1;
+    c.video.max_streams     = 2;                                                                // main + sub (own IMP channels)
+    c.jpeg.supported        = Cap::Supported;                                                   // hardware JPEG via a dedicated channel
     c.video.fps             = RangeCap{Cap::Supported, -1, -1, ApplyMode::PipelineRestart};   // FrameSource out rate: attr before enable
     c.video.bitrate         = RangeCap{Cap::Supported, -1, -1, ApplyMode::Live};              // IMP_Encoder_SetChnAttrRcMode
     c.video.gop             = RangeCap{Cap::Supported, 1, 1000, ApplyMode::Live};              // SetChnGopLength + read-back
@@ -80,7 +81,7 @@ Result IngenicPlatform::bring_up() {
 void IngenicPlatform::tear_down() {
     if (!isp_) return;
     image_.set_active(false);
-    binding_.reset();
+    bindings_.clear();
     tuning_.reset();
     system_.reset();
     sensor_session_.reset();
@@ -96,17 +97,26 @@ std::unique_ptr<IEncoder> IngenicPlatform::create_encoder(int chn, const Effecti
     return IngenicEncoder::create(chn, sc);
 }
 
+std::unique_ptr<IJpegEncoder> IngenicPlatform::create_jpeg(int chn, const JpegParams& p) {
+    int nw = hw_.sensor.native_width  > 0 ? hw_.sensor.native_width  : hw_.mode.value.width;
+    int nh = hw_.sensor.native_height > 0 ? hw_.sensor.native_height : hw_.mode.value.height;
+    return IngenicJpegEncoder::create(chn, p, nw, nh);
+}
+
 Result IngenicPlatform::bind(IFrameSource& fs, IEncoder& enc) {
-    if (binding_) return Result::busy();
+    // One binding per encoder channel: main and sub coexist. Rebinding the same
+    // channel is refused rather than leaking the previous IMP_System_Bind.
+    int key = enc.channel();
+    if (bindings_.count(key)) return Result::busy();
     IMPCell src = { DEV_ID_FS,  fs.channel(),  0 };
     IMPCell dst = { DEV_ID_ENC, enc.channel(), 0 };
     auto b = std::make_unique<imp::Binding>(src, dst);
     if (!b->ok()) return Result::error(b->rc());
-    binding_ = std::move(b);
+    bindings_[key] = std::move(b);
     return Result::ok();
 }
 
-Result IngenicPlatform::unbind(IFrameSource&, IEncoder&) { binding_.reset(); return Result::ok(); }
+Result IngenicPlatform::unbind(IFrameSource&, IEncoder& enc) { bindings_.erase(enc.channel()); return Result::ok(); }
 
 int64_t IngenicPlatform::timestamp_us() { return IMP_System_GetTimeStamp(); }
 

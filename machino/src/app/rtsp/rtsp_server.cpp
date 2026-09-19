@@ -51,7 +51,7 @@ struct RtspServer::Session {
     std::string inbuf;
 };
 
-RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub)
+RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub, StreamHub* sub_hub)
     : cfg_(cfg), pipeline_(pipeline), hub_(hub), sub_hub_(sub_hub) {}
 
 int RtspServer::unit_from_url(const std::string& url) const {
@@ -263,9 +263,11 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
         size_t a = req.find(' '), b = (a == std::string::npos) ? std::string::npos : req.find(' ', a + 1);
         std::string url = (a != std::string::npos && b != std::string::npos) ? req.substr(a + 1, b - a - 1) : "";
         if (method == "DESCRIBE" || method == "SETUP" || method == "PLAY") {
-            if (!sub_hub_ && !cfg_.sub_path.empty() && url.find(cfg_.sub_path) != std::string::npos)
-                return send_all(s.fd, ("RTSP/1.0 404 Not Found\r\nCSeq: " + cseq + "\r\n\r\n").data(),
-                                cseq.size() + 30, cfg_.send_stall_ms), false;
+            if (!sub_hub_ && !cfg_.sub_path.empty() && url.find(cfg_.sub_path) != std::string::npos) {
+                    std::string nf = "RTSP/1.0 404 Not Found\r\nCSeq: " + cseq + "\r\n\r\n";
+                    send_all(s.fd, nf.data(), nf.size(), cfg_.send_stall_ms);
+                    return false;
+                }
             s.unit = unit_from_url(url);
         }
     }
@@ -366,7 +368,7 @@ bool RtspServer::send_au(Session& s, const AccessUnit& au) {
         const uint8_t* p = nal[i].p; size_t n = nal[i].len;
         if (nal[i].type == 7 || nal[i].type == 8) {
             std::lock_guard<std::mutex> lk(params_m_);
-            (nal[i].type == 7 ? sps_ : pps_).assign(p, p + n);
+            (nal[i].type == 7 ? sps_[s.unit] : pps_[s.unit]).assign(p, p + n);
         }
         if (n <= RTP_MTU) { if (!send_rtp(s, p, n, ts, last)) return false; continue; }
         uint8_t hdr = p[0]; uint8_t fu_ind = (uint8_t)((hdr & 0xe0) | 28);

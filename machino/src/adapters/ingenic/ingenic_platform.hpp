@@ -5,10 +5,12 @@
 // power-control port (read-only clocks, cpufreq probe).
 #pragma once
 #include "adapters/ingenic/imp_sessions.hpp"
+#include "adapters/ingenic/ingenic_jpeg.hpp"
 #include "adapters/ingenic/ingenic_image_control.hpp"
 #include "adapters/ingenic/ingenic_power_control.hpp"
 #include "adapters/ingenic/sensor_params.hpp"
 #include "ports/iplatform.hpp"
+#include <map>
 #include <memory>
 
 namespace machino { namespace ingenic {
@@ -25,6 +27,7 @@ public:
 
     std::unique_ptr<IFrameSource> create_framesource(int chn, const EffectiveStream& sc) override;
     std::unique_ptr<IEncoder>     create_encoder(int chn, const EffectiveStream& sc) override;
+    std::unique_ptr<IJpegEncoder> create_jpeg(int chn, const JpegParams& p) override;
     Result bind(IFrameSource& fs, IEncoder& enc) override;
     Result unbind(IFrameSource& fs, IEncoder& enc) override;
     int64_t timestamp_us() override;
@@ -48,7 +51,7 @@ private:
     std::unique_ptr<imp::SensorSession> sensor_session_;
     std::unique_ptr<imp::SystemSession> system_;
     std::unique_ptr<imp::TuningSession> tuning_;
-    std::unique_ptr<imp::Binding>       binding_;
+    std::map<int, std::unique_ptr<imp::Binding>> bindings_;   // keyed by encoder channel: one per video unit
 };
 
 }} // namespace machino::ingenic
