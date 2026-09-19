@@ -4,6 +4,8 @@
 #pragma once
 #include "ports/iplatform.hpp"
 #include <array>
+#include <atomic>
+#include <ctime>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -115,6 +117,31 @@ private:
     CallLog& log_; int chn_; bool fail_;
 };
 
+class FakeDetector final : public IDetector {
+public:
+    FakeDetector(CallLog& l, int motion_frames, bool fail_start)
+        : log_(l), motion_frames_(motion_frames), fail_start_(fail_start) { log_.add("det.create"); }
+    ~FakeDetector() override { log_.add("det.destroy"); }
+    DetectorInput input_mode() const override { return DetectorInput::BoundSource; }
+    const char* backend() const override { return "fake_motion"; }
+    Result start() override { log_.add("det.start"); return fail_start_ ? Result::error(-7) : Result::ok(); }
+    Result stop() override { log_.add("det.stop"); return Result::ok(); }
+    Result poll(detection::DetectionResult& out, int) override {
+        struct timespec ts{0, 8 * 1000000}; nanosleep(&ts, nullptr);    // one inference period
+        if (motion_frames_ < 0) return Result::timeout();               // detector reports no activity, ever
+        int n = produced_.fetch_add(1);
+        out.motion = (n < motion_frames_);          // first N results carry motion, the rest are quiet
+        if (out.motion) {
+            out.motion_level = 42;
+            detection::Detection d; d.label = "motion"; d.confidence = 80; out.detections.push_back(d);
+        }
+        return Result::ok();
+    }
+private:
+    CallLog& log_; int motion_frames_; bool fail_start_;
+    std::atomic<int> produced_{0};
+};
+
 class FakePlatform final : public IPlatform {
 public:
     enum class FailAt { None, BringUp, FrameSource, Encoder, Bind, EncoderStart, Jpeg };
@@ -155,6 +182,11 @@ public:
         last_stream = s;
         return std::make_unique<FakeFrameSource>(log_, chn, s.fps);
     }
+    std::unique_ptr<IDetector> create_detector(int chn, const DetectorParams& p) override {
+        (void)chn; last_detector = p;
+        if (!detector_supported) return nullptr;
+        return std::make_unique<FakeDetector>(log_, detector_motion_frames, detector_fail_start);
+    }
     std::unique_ptr<IJpegEncoder> create_jpeg(int chn, const JpegParams& p) override {
         last_jpeg_params = p;
         if (take(FailAt::Jpeg)) return nullptr;
@@ -185,6 +217,10 @@ public:
     EffectiveStream last_encoder_stream{};
     JpegParams      last_jpeg_params{};
     bool            jpeg_capture_fails = false;
+    DetectorParams  last_detector{};
+    bool            detector_supported = true;
+    bool            detector_fail_start = false;
+    int             detector_motion_frames = 3;
     FakeImageControl image_control;
 private:
     bool take(FailAt f) { if (fail_at != f) return false; if (fail_times > 0) { --fail_times; return true; } return false; }

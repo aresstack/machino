@@ -87,6 +87,15 @@ struct PerformanceConfig {
     power::PerfLevel isp = power::PerfLevel::Auto, encoder = power::PerfLevel::Auto, cpu = power::PerfLevel::Auto;
 };
 
+// M9: detection / AI. Off by default. A backend that needs an external model
+// takes model_path; motion (IMP_IVS) does not.
+struct AiConfig {
+    bool        enabled = false;
+    std::string detector = "motion";   // backend selector; "motion" = IMP_IVS move
+    int         inference_fps = 5;      // analysis cadence, independent of video fps
+    std::string model_path;            // only for model-based backends
+};
+
 struct TelemetryConfig {
     int log_interval_s = 0;        // 0 = off; otherwise one compact line every N seconds
 };
@@ -115,6 +124,7 @@ struct AppConfig {
     PerformanceConfig performance;
     media::ImageSettings image;
     media::LatencySettings latency;
+    AiConfig          ai;
     TelemetryConfig   telemetry;
     ApiConfig         api;
     LogConfig         log;

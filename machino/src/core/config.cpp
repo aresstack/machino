@@ -139,6 +139,10 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("jpeg.quality",       c.jpeg.quality, 1, 99)
     INT   ("snapshot.cache_ms",  c.snapshot.cache_ms, 0, 5000)
     INT   ("snapshot.grace_ms",  c.snapshot.grace_ms, 0, 30000)
+    BOOL  ("ai.enabled",         c.ai.enabled)
+    STR   ("ai.detector",        c.ai.detector)
+    INT   ("ai.inference_fps",   c.ai.inference_fps, 1, 60)
+    STR   ("ai.model_path",      c.ai.model_path)
 
     BOOL  ("pipeline.always_on", c.pipeline.always_on)
     INT   ("lifecycle.idle_grace_ms", c.pipeline.idle_grace_ms, 0, 600000)

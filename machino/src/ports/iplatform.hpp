@@ -8,6 +8,7 @@
 #include "core/result.hpp"
 #include "ports/iencoder.hpp"
 #include "ports/iframesource.hpp"
+#include "ports/idetector.hpp"
 #include "ports/iimage_control.hpp"
 #include "ports/ijpeg.hpp"
 #include "ports/ipower_control.hpp"
@@ -30,6 +31,9 @@ public:
     // M8: hardware JPEG bound to its own framesource channel. nullptr =
     // unsupported on this platform (the default).
     virtual std::unique_ptr<IJpegEncoder> create_jpeg(int chn, const JpegParams& p) { (void)chn; (void)p; return nullptr; }
+    // M9: a detector bound to a logical source (or frame-driven). nullptr =
+    // unsupported / the requested backend is unavailable on this platform.
+    virtual std::unique_ptr<IDetector> create_detector(int chn, const DetectorParams& p) { (void)chn; (void)p; return nullptr; }
 
     virtual Result bind(IFrameSource& fs, IEncoder& enc)   = 0;
     virtual Result unbind(IFrameSource& fs, IEncoder& enc) = 0;

@@ -23,6 +23,7 @@ void run_http_parse_tests();
 void run_api_tests();
 void run_tuning_tests();
 void run_multistream_tests();
+void run_detection_tests();
 #define CHECK(cond) do { if (cond) { ++g_pass; } else { ++g_fail; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
 static hw::Registry make_registry() { hw::Registry r; profiles::register_builtin(r); return r; }
@@ -269,6 +270,15 @@ static void test_config_keys() {
     CHECK(parse_config_text("rtsp.max_clients = 17\n", rt, err) && rt.rtsp.max_clients == 2);
     CHECK(AppConfig{}.rtsp.max_clients == 4);                    // bounded by default, not unlimited
 
+    // M9 detection keys
+    AppConfig aic;
+    CHECK(parse_config_text("ai.enabled = true\nai.detector = motion\nai.inference_fps = 8\n", aic, err));
+    CHECK(aic.ai.enabled && aic.ai.detector == "motion" && aic.ai.inference_fps == 8);
+    CHECK(AppConfig{}.ai.enabled == false && AppConfig{}.ai.detector == "motion" && AppConfig{}.ai.inference_fps == 5);
+    // out-of-range cadence is warned and ignored, daemon still comes up
+    CHECK(parse_config_text("ai.inference_fps = 0\n", aic, err) && aic.ai.inference_fps == 8);
+    CHECK(parse_config_text("ai.inference_fps = 61\n", aic, err) && aic.ai.inference_fps == 8);
+
     // effective stream: video.* overrides, mode fills the rest
     hw::Registry r = make_registry(); hw::UserHardwareConfig u; u.board_id = "t40nn-imx307-board-a";
     hw::ResolvedHardware hw; CHECK(hw::resolve_hardware(u, r, {}, hw, err));
@@ -295,6 +305,7 @@ int main() {
     run_api_tests();
     run_tuning_tests();
     run_multistream_tests();
+    run_detection_tests();
     g_pass += g_pass_ext; g_fail += g_fail_ext;
     fprintf(stderr, "machino unit tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail;

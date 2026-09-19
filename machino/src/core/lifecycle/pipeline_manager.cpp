@@ -263,6 +263,7 @@ bool PipelineManager::unit_configured(int unit) const {
 bool PipelineManager::unit_active(int unit) const {
     std::lock_guard<std::mutex> lk(m_);
     if (unit == UNIT_JPEG) return jpeg_.enc != nullptr;
+    if (unit == UNIT_AI)   return ai_demand_ > 0;   // base-only holder, never its own encoder
     return unit >= 0 && unit <= UNIT_SUB && units_[unit].running;
 }
 
