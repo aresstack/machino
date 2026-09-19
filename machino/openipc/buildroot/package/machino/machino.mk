@@ -2,19 +2,17 @@
 #
 # machino
 #
+################################################################################
+
 # C++17 media runtime for Ingenic T40 IP cameras. Built from the machino/
 # subdirectory of the source tree with the Buildroot cross toolchain. The
 # Ingenic IMP headers ship in the repo (include/ submodule); the vendor
 # archives (libimp/libalog/libsysutils) must come from your SDK - point
 # MACHINO_IMP_LIB at where they are staged.
 #
-################################################################################
-
-# Pin to a released tag or a commit. Bump on upgrade; the on-camera config is
-# preserved by the installer, never by re-flashing (see docs/majestic-compat.md
-# and openipc/install.sh).
 # git (not a github tarball): the IMP headers live in a submodule, which
-# tarballs do not contain. Pin MACHINO_VERSION to a tag or commit on upgrade.
+# tarballs do not contain. Pin MACHINO_VERSION to a tag or commit on upgrade;
+# the on-camera config is preserved by the installer, never by re-flashing.
 MACHINO_VERSION = main
 MACHINO_SITE = https://github.com/aresstack/machino.git
 MACHINO_SITE_METHOD = git
