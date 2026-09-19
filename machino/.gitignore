@@ -1,0 +1,8 @@
+
+# throwaway trees/artefacts created by the host tests
+tests/tmp-streamerctl/
+tests/tmp-openipc-install/
+tests/tmp_machino.conf
+tests/tmp_machino.conf.tmp
+tests/machino-tests
+tests/machino-tests.exe

@@ -1,9 +1,0 @@
-#!/bin/sh
-all="$*"
-case "$all" in
-  *majestic*) [ -f "/c/tmp/machino-src/machino/tests/tmp-streamerctl/run/majestic" ] && { echo 4242; exit 0; }; exit 1 ;;
-  */usr/bin/machino*|*" machino"*|*"-x machino"*) [ -f "/c/tmp/machino-src/machino/tests/tmp-streamerctl/run/machino" ] && { echo 4242; exit 0; }; exit 1 ;;
-esac
-# pgrep -f "httpd ..." -> the pid our httpd stub parked
-[ -f "/c/tmp/machino-src/machino/tests/tmp-streamerctl/run/httpd.pid" ] && { cat "/c/tmp/machino-src/machino/tests/tmp-streamerctl/run/httpd.pid"; exit 0; }
-exit 1

@@ -1,8 +1,0 @@
-#!/bin/sh
-# record how we were invoked: the tests assert that the access-control config
-# is actually passed, not merely written to disk
-echo "$@" >> "/c/tmp/machino-src/machino/tests/tmp-streamerctl/run/httpd.argv"
-case "$1" in -m) echo '$1$test$hash'; exit 0 ;; esac
-sleep 120 >/dev/null 2>&1 &
-echo $! > "/c/tmp/machino-src/machino/tests/tmp-streamerctl/run/httpd.pid"
-exit 0
