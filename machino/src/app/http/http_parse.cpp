@@ -86,4 +86,16 @@ std::string sse_event(const std::string& type, const std::string& data) {
     return "event: " + type + "\ndata: " + data + "\n\n";
 }
 
+std::string mjpeg_headers(const std::string& boundary) {
+    return "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=" + boundary +
+           "\r\nCache-Control: no-store\r\nPragma: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
+}
+
+std::string mjpeg_frame(const std::string& boundary, const uint8_t* data, size_t len) {
+    std::string f = "--" + boundary + "\r\nContent-Type: image/jpeg\r\nContent-Length: " + std::to_string(len) + "\r\n\r\n";
+    f.append(reinterpret_cast<const char*>(data), len);
+    f += "\r\n";
+    return f;
+}
+
 }} // namespace machino::http

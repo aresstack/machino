@@ -26,6 +26,7 @@ struct ServerConfig {
     size_t      max_out_buffer = 64 * 1024;    // per client for API/SSE; overflow -> disconnect
     size_t      max_snapshot_bytes = 4 * 1024 * 1024;  // a full-res JPEG response may exceed the API cap
     int         telemetry_interval_ms = 1000; // SSE telemetry rate (only while SSE clients exist)
+    int         mjpeg_max_fps = 10;           // /api/v1/stream.mjpeg cap (JPEG snapshot-driven)
 };
 
 class HttpServer {
@@ -42,6 +43,7 @@ private:
     void accept_client();
     bool handle_request(Client& c);
     void drain_events(Client& c);
+    void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
     bool flush(Client& c);
     bool queue(Client& c, const std::string& data, size_t cap = 0);   // cap 0 = max_out_buffer
 

@@ -83,6 +83,15 @@ cam_ip=$(printf '%s' "${HTTP_HOST:-camera}" | sed 's/:.*//')
 
 		<% if [ "$running" = "machino" ] && [ "$mach_up" = "1" ]; then %>
 		<% card_head "Camera (Machino)" %>
+		<div class="mb-3">
+			<img id="machino-live" alt="Live"
+				src="http://<% esc "$cam_ip" %>:8080/api/v1/stream.mjpeg"
+				class="img-fluid border rounded" style="width:100%;background:#000;min-height:140px"
+				onerror="this.style.display='none';var e=document.getElementById('machino-live-err');if(e)e.style.display='block';">
+			<div id="machino-live-err" class="alert alert-warning mt-2" style="display:none">
+				Live preview is not available (the JPEG/snapshot path may be off in this build). Use the RTSP URL below.
+			</div>
+		</div>
 		<dl class="row mb-2">
 			<dt class="col-sm-4">State</dt><dd class="col-sm-8"><% esc "${s_life:-?}" %></dd>
 			<dt class="col-sm-4">Resolution</dt><dd class="col-sm-8"><% esc "${c_w:-?}" %>×<% esc "${c_h:-?}" %></dd>
@@ -112,8 +121,8 @@ cam_ip=$(printf '%s' "${HTTP_HOST:-camera}" | sed 's/:.*//')
 			</div>
 			<button class="btn btn-primary" type="submit" name="apply" value="1">Apply</button>
 		</form>
-		<p class="text-secondary mt-2 mb-0"><small>Live video plays over RTSP (open the URL above in VLC). In-browser
-		preview needs an MJPEG/snapshot endpoint, which Machino does not expose yet.</small></p>
+		<p class="text-secondary mt-2 mb-0"><small>The live preview above is Machino's MJPEG stream
+		(<code>/api/v1/stream.mjpeg</code>). For full-rate H.264 use the RTSP URL in VLC.</small></p>
 		<% elif [ "$running" = "machino" ]; then %>
 		<% card_head "Camera (Machino)" %>
 		<div class="alert alert-warning">Machino is selected but its API on 127.0.0.1:8080 did not answer. Try reloading.</div>

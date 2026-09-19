@@ -26,11 +26,16 @@ struct HttpServer::Client {
     std::string peer;
     std::string in, out;
     bool sse = false;
+    bool mjpeg = false;             // multipart/x-mixed-replace JPEG stream
+    int64_t next_frame_ms = 0;      // mjpeg: earliest time for the next frame
+    std::string last_jpeg;          // mjpeg: last frame sent, to skip duplicates (snapshot cache)
     bool close_after_flush = false;
     int64_t last_activity_ms = 0;
     std::shared_ptr<Subscription> sub;
     unsigned requests = 0;
 };
+
+static const char* MJPEG_BOUNDARY = "machinoframe";
 
 HttpServer::HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus) : cfg_(cfg), api_(api), bus_(bus) {}
 HttpServer::~HttpServer() { stop(); }
@@ -133,6 +138,14 @@ bool HttpServer::handle_request(Client& c) {
                      : api::ApiService::fail(t.status, t.code.c_str(), t.path, t.message);
         } else if (m == "PATCH" || m == "PUT") r = api_.patch_config(req.body, req.header("if-match"));
         else r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream") {
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else {
+            c.mjpeg = true; c.next_frame_ms = 0;                 // first frame as soon as possible
+            queue(c, mjpeg_headers(MJPEG_BOUNDARY));
+            LOGI(MOD, "%s: MJPEG stream started", c.peer.c_str());
+            return true;
+        }
     } else if (path == "/snapshot" || path == "/snapshot.jpg" || path == "/api/v1/snapshot") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         else {
@@ -163,14 +176,41 @@ void HttpServer::drain_events(Client& c) {
     while (c.sub->pop(e)) if (!queue(c, sse_event(e.type, e.data))) { c.close_after_flush = true; c.out.clear(); return; }
 }
 
+// One JPEG frame per rate-limited tick, and only when the previous frame has
+// fully flushed (backpressure): a slow browser drops frames instead of growing
+// the buffer, and the media path is never blocked. No jpeg -> end the stream.
+void HttpServer::push_mjpeg(Client& c) {
+    const int64_t t = now_ms();
+    const int interval = cfg_.mjpeg_max_fps > 0 ? 1000 / cfg_.mjpeg_max_fps : 100;
+    if (t < c.next_frame_ms || !c.out.empty()) return;
+    std::vector<uint8_t> jpg; std::string err;
+    Result sr = api_.snapshot(jpg, err);
+    if (!sr) {
+        LOGW(MOD, "%s: MJPEG ending - no JPEG (%s)", c.peer.c_str(), err.empty() ? "unavailable" : err.c_str());
+        c.close_after_flush = true;
+        return;
+    }
+    c.next_frame_ms = t + interval;
+    // Skip unchanged frames: the snapshot cache (cache_ms) hands out the same
+    // JPEG to calls within its window, so this avoids re-sending duplicates.
+    std::string data(reinterpret_cast<const char*>(jpg.data()), jpg.size());
+    if (data == c.last_jpeg) return;
+    c.last_jpeg.swap(data);
+    if (!queue(c, mjpeg_frame(MJPEG_BOUNDARY, jpg.data(), jpg.size()), cfg_.max_snapshot_bytes + 256)) {
+        c.close_after_flush = true; c.out.clear(); return;
+    }
+}
+
 void HttpServer::loop() {
     std::vector<pollfd> pfds;
     last_telemetry_ms_ = last_heartbeat_ms_ = now_ms();
     while (!quit_) {
         pfds.clear();
         pfds.push_back({listen_fd_, POLLIN, 0});
+        int timeout_ms = 250;
         for (auto& c : clients_) pfds.push_back({c->fd, (short)(POLLIN | (c->out.empty() ? 0 : POLLOUT)), 0});
-        int n = poll(pfds.data(), pfds.size(), 250);
+        for (auto& c : clients_) if (c->mjpeg) { timeout_ms = 40; break; }   // tick fast enough for the frame rate
+        int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();
         for (size_t i = 0; i < clients_.size(); ++i) {
@@ -182,16 +222,17 @@ void HttpServer::loop() {
                 char buf[4096]; ssize_t r = recv(c.fd, buf, sizeof buf, MSG_DONTWAIT);
                 if (r == 0) ok = false;
                 else if (r < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) ok = false; }
-                else if (c.sse) { /* ignore input on SSE connections */ }
+                else if (c.sse || c.mjpeg) { /* ignore input on streaming connections */ }
                 else { c.in.append(buf, (size_t)r); if (c.in.size() > MAX_IN) ok = false; else while (ok && !c.close_after_flush && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
             }
             if (ok && c.sse) {
                 drain_events(c);
                 if (t - last_heartbeat_ms_ >= 15000) queue(c, ": keepalive\n\n");
             }
+            if (ok && c.mjpeg && !c.close_after_flush) push_mjpeg(c);
             if (ok) ok = flush(c);
             if (ok && c.close_after_flush && c.out.empty()) ok = false;
-            if (ok && !c.sse && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
+            if (ok && !c.sse && !c.mjpeg && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
             if (!ok) {
                 if (c.sub) bus_.unsubscribe(c.sub);
                 close(c.fd);

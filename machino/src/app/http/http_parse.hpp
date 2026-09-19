@@ -2,6 +2,7 @@
 // functions, host-testable). Bounded: header block, header count, body size.
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,5 +31,7 @@ std::string response(int status, const std::string& content_type, const std::str
                      const std::string& extra_headers = "");
 std::string sse_headers();
 std::string sse_event(const std::string& type, const std::string& data);
+std::string mjpeg_headers(const std::string& boundary);
+std::string mjpeg_frame(const std::string& boundary, const uint8_t* data, size_t len);
 
 }} // namespace machino::http
