@@ -11,12 +11,11 @@ CONF="/etc/machino/machino.conf"
 LOGFILE="/var/log/machino.log"
 PIDFILE="/var/run/$DAEMON.pid"
 
-# Match the daemon by its binary PATH, not its name. Two traps ruled that out:
-# start-stop-daemon -t -K reported "running" with no process at all, and
-# "pgrep -x machino" matches THIS init script (argv0 is "machino"), so start()
-# always thought it was already running and never started anything. The full
-# path appears in the daemon's cmdline ("/usr/bin/machino -c ...") but not in
-# the init script's ("/bin/sh /etc/init.d/machino start").
+# Match the daemon by its binary path in the cmdline. On this busybox pgrep -x
+# matches argv0 as a whole ("/usr/bin/machino"), so "pgrep -x machino" never
+# matched the daemon; pgrep -f "$DAEMON_PATH" does, and does not match this init
+# script ("/bin/sh /etc/init.d/machino start") or streamerctl. Verified on the
+# T40NN: with this, /etc/init.d/machino start actually starts it.
 running() {
 	pgrep -f "$DAEMON_PATH" >/dev/null 2>&1
 }
@@ -40,7 +39,7 @@ stop() {
 	echo -n "Stopping $DAEMON: "
 	# SIGTERM: Machino tears the pipeline down in order, so the ISP is released
 	# before anything else may claim it.
-	start-stop-daemon -K -q -x "$DAEMON_PATH" 2>/dev/null || kill "$(pgrep -x "$DAEMON")" 2>/dev/null
+	start-stop-daemon -K -q -x "$DAEMON_PATH" 2>/dev/null || kill "$(pgrep -f "$DAEMON_PATH")" 2>/dev/null
 	i=0
 	while running && [ $i -lt 15 ]; do
 		i=$((i + 1))

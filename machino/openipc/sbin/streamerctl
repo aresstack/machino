@@ -48,8 +48,13 @@ api_port() {
     echo "$p"
 }
 
+# machino's argv0 is its full path, so it must be matched by path (pgrep -f);
+# pgrep -x machino never matches it on this busybox. majestic is started by its
+# init with argv0="majestic" (start-stop-daemon -a), so -x is right for it.
+MACHINO_BIN="${STREAMERCTL_MACHINO_BIN:-/usr/bin/machino}"
 majestic_running() { pgrep -x majestic >/dev/null 2>&1; }
-machino_running()  { pgrep -x machino  >/dev/null 2>&1; }
+machino_running()  { pgrep -f "$MACHINO_BIN" >/dev/null 2>&1; }
+owner_running() { case "$1" in machino) machino_running ;; majestic) majestic_running ;; *) return 1 ;; esac; }
 
 # kill -0 rather than /proc: it is the portable liveness test and does not
 # assume /proc is mounted.
@@ -69,11 +74,11 @@ port80_owner() {
     fi
 }
 
-# Wait until a process is really gone. A half-stopped media owner is exactly
-# the state that must never overlap with the next one.
+# Wait until an owner is really gone. A half-stopped media owner is exactly the
+# state that must never overlap with the next one.
 wait_gone() {
     _name=$1; _limit=${2:-15}; _i=0
-    while pgrep -x "$_name" >/dev/null 2>&1; do
+    while owner_running "$_name"; do
         _i=$((_i + 1))
         [ "$_i" -ge "$_limit" ] && return 1
         sleep 1

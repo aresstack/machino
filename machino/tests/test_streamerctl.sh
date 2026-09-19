@@ -46,10 +46,10 @@ EOF
     # pgrep -x <name>  ->  does the marker exist?
     cat > "$STUB/pgrep" <<EOF
 #!/bin/sh
-name=""
-for a in "\$@"; do case "\$a" in -*) ;; *) name="\$a" ;; esac; done
-case "\$name" in
-  majestic|machino) [ -f "$RUNDIR/\$name" ] && { echo 4242; exit 0; }; exit 1 ;;
+all="\$*"
+case "\$all" in
+  *majestic*) [ -f "$RUNDIR/majestic" ] && { echo 4242; exit 0; }; exit 1 ;;
+  */usr/bin/machino*|*" machino"*|*"-x machino"*) [ -f "$RUNDIR/machino" ] && { echo 4242; exit 0; }; exit 1 ;;
 esac
 case "\$*" in
   *wdtstub*) [ -f "$RUNDIR/wdt.pid" ] && { cat "$RUNDIR/wdt.pid"; exit 0; }; exit 1 ;;
