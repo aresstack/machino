@@ -37,13 +37,27 @@ rm -f "$WORK/.xprobe"
 # A bundle as the CI produces it, with a stand-in for the binary.
 make_bundle() {
     B="$WORK/bundle"; rm -rf "$B"; mkdir -p "$B/sbin" "$B/init" "$B/webui"
-    printf '#!/bin/sh\necho fake machino\n' > "$B/machino"; chmod +x "$B/machino"
+    # a stand-in for the binary that answers --version and --migrate-majestic,
+    # so machino-manager's live checks and the installer's migration path work
+    cat > "$B/machino" <<'FAKE'
+#!/bin/sh
+case "${1:-}" in
+  --version|-V) echo "machino 0.11.0-test" ;;
+  --migrate-majestic)
+    shift; in=""; out=""
+    while [ $# -gt 0 ]; do case "$1" in -o) shift; out="${1:-}" ;; *) [ -z "$in" ] && in="$1" ;; esac; shift; done
+    [ -n "$out" ] && printf '# machino.conf migrated from majestic.yaml\nboard = t40nn-imx307-board-a\nvideo.fps = 25\n' > "$out"
+    echo "migrated ${in:-?} -> ${out:-stdout}" >&2 ;;
+  *) echo "fake machino" ;;
+esac
+FAKE
+    chmod +x "$B/machino"
     printf 'board = t40nn-imx307-board-a\napi.port = 8080\n' > "$B/machino.conf"
-    cp "$PKG/sbin/streamerctl" "$B/sbin/"
+    cp "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$B/sbin/"
     cp "$PKG/init/S95streamer" "$PKG/init/machino" "$B/init/"
     cp "$PKG/webui/machino.cgi" "$B/webui/"
     cp "$PKG/install.sh" "$PKG/uninstall.sh" "$B/"
-    chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/init/"*
+    chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/sbin/machino-manager" "$B/init/"*
 }
 
 # A camera as found in the field. majestic_state: auto | disabled | absent
@@ -223,11 +237,64 @@ hasnt "old slot gone despite broken mv"   "$R/etc/init.d/S95majestic"
 has   "restore works despite broken mv"   "$R/etc/init.d/S95majestic"
 rm -rf "$MVSTUB"
 
+# ---- 14) majestic.yaml is migrated once on a fresh install -----------------
+make_bundle; make_camera auto
+printf 'video0:\n  fps: 30\n  bitrate: 3000\n' > "$R/etc/majestic.yaml"
+run_install || bad "install with a majestic.yaml present failed: $(cat "$WORK/out")"
+if grep -q 'migrated from majestic.yaml' "$R/etc/machino/machino.conf"; then ok; else bad "majestic.yaml was not migrated into machino.conf"; fi
+has "shipped default kept for reference" "$R/etc/machino/machino.conf.default"
+
+# ---- 15) machino-manager: live status, ownership, reversal -----------------
+mgr_status() { MACHINO_ROOT="$R" sh "${1:-$R/usr/sbin/machino-manager}" status 2>/dev/null; }
+
+# 15a) OFF on a bare camera
+make_bundle; make_camera auto
+S=$(MACHINO_ROOT="$R" sh "$WORK/bundle/sbin/machino-manager" status 2>/dev/null)
+case "$S" in *'"state":"OFF"'*) ok ;; *) bad "manager status not OFF on a bare camera: $S" ;; esac
+
+# 15b) install.sh alone (no manifest) => EXTERNAL, and uninstall refuses it
+run_install
+S=$(mgr_status)
+case "$S" in *'"state":"EXTERNAL"'*) ok ;; *) bad "unmanaged install not EXTERNAL: $S" ;; esac
+if MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-manager" uninstall --owner cam-tool >"$WORK/out" 2>&1; then
+    bad "manager removed an EXTERNAL (unowned) install"
+else ok; fi
+has "external install untouched" "$R/usr/bin/machino"
+
+# 15c) a full manager install writes the ownership manifest and reports ON
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
+    bad "manager install exited non-zero: $(cat "$WORK/out")"
+has "ownership manifest written" "$R/etc/machino/install-state.json"
+if grep -q '"managedBy": "cam-tool"' "$R/etc/machino/install-state.json"; then ok; else bad "manifest missing owner"; fi
+if grep -q '"platform": "t40nn"' "$R/etc/machino/install-state.json"; then ok; else bad "manifest missing platform"; fi
+S=$(mgr_status)
+case "$S" in *'"state":"ON"'*) ok ;; *) bad "manager status not ON after install: $S" ;; esac
+
+# 15d) BROKEN when a component goes missing under a valid manifest
+mv "$R/usr/bin/machino" "$R/usr/bin/machino.bak"
+S=$(mgr_status)
+case "$S" in *'"state":"BROKEN"'*) ok ;; *) bad "missing binary not reported BROKEN: $S" ;; esac
+mv "$R/usr/bin/machino.bak" "$R/usr/bin/machino"
+
+# 15e) the wrong owner cannot uninstall; the right owner can, and it reverses
+if MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-manager" uninstall --owner someone-else >"$WORK/out" 2>&1; then
+    bad "manager uninstalled under the wrong owner"
+else ok; fi
+has "still installed after refused uninstall" "$R/usr/bin/machino"
+MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-manager" uninstall --owner cam-tool >"$WORK/out" 2>&1 ||
+    bad "manager uninstall (correct owner) failed: $(cat "$WORK/out")"
+hasnt "binary removed by manager"    "$R/usr/bin/machino"
+hasnt "manifest removed by manager"  "$R/etc/machino/install-state.json"
+has   "majestic restored by manager" "$R/etc/init.d/S95majestic"
+S=$(MACHINO_ROOT="$R" sh "$WORK/bundle/sbin/machino-manager" status 2>/dev/null)
+case "$S" in *'"state":"OFF"'*) ok ;; *) bad "manager status not OFF after uninstall: $S" ;; esac
+
 # --------- 13) everything shipped to the camera stays BusyBox-clean ---------
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
 # check keeps the next such regression out.
-for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/init/S95streamer" "$PKG/init/machino"; do
+for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino"; do
     if grep -nE '(^|[^-a-z_])install +-[dm]' "$f"; then bad "$(basename "$f") uses install(1), which BusyBox does not have"; else ok; fi
     if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
     if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi

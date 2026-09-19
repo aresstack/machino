@@ -280,6 +280,17 @@ static void test_config_keys() {
     CHECK(parse_config_text("ai.inference_fps = 0\n", aic, err) && aic.ai.inference_fps == 8);
     CHECK(parse_config_text("ai.inference_fps = 61\n", aic, err) && aic.ai.inference_fps == 8);
 
+    // M11 upgrade-safety: config is additive and forward/backward-compatible.
+    // A newer machino.conf (unknown future keys) still loads on an older binary;
+    // an older/minimal config fills the rest from defaults; revision is kept.
+    AppConfig up;
+    CHECK(parse_config_text("config.revision = 7\nboard = t40nn-imx307-board-a\nvideo.bitrate = 2200\n"
+                            "ai.super_new_feature = 1\nvideo.9.enabled = true\nbrand.new.section = x\n", up, err));
+    CHECK(up.revision == 7);                                   // revision preserved across versions
+    CHECK(up.hardware.board_id == "t40nn-imx307-board-a" && up.video.bitrate_kbps == 2200);   // known keys applied
+    CHECK(up.ai.enabled == false && up.ai.inference_fps == 5); // unknown future keys ignored, defaults stand
+    CHECK(!up.video1.enabled && up.rtsp.max_clients == 4);     // unset keys keep their defaults
+
     // effective stream: video.* overrides, mode fills the rest
     hw::Registry r = make_registry(); hw::UserHardwareConfig u; u.board_id = "t40nn-imx307-board-a";
     hw::ResolvedHardware hw; CHECK(hw::resolve_hardware(u, r, {}, hw, err));

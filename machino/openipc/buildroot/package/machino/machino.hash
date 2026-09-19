@@ -1,0 +1,3 @@
+# Locally computed. The source is fetched by git (MACHINO_SITE_METHOD = git),
+# which Buildroot verifies by commit, so only the license file is hashed here.
+sha256  e181c5560bf176a15d6b10faee3f4cf6203175bf8a8a6bef57805393e385befd  LICENSE

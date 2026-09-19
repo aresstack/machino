@@ -1,0 +1,207 @@
+#!/bin/sh
+# machino-manager: one idempotent control surface for tools (the Cam-Tool) and
+# humans. It hides which files Machino owns behind three operations:
+#
+#   machino-manager install [--owner NAME] [--platform P] [--webui-password PW]
+#   machino-manager uninstall [--owner NAME] [--force]
+#   machino-manager status            # machine-readable JSON on stdout
+#
+# The truth about "is Machino on?" is always derived LIVE here (binary, version,
+# init script, config, ownership manifest) - never from a cached UI value. A
+# versioned ownership manifest (install-state.json) records that WE installed it,
+# so uninstall refuses to delete an installation it does not own (EXTERNAL).
+set -u
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT="${MACHINO_ROOT:-}"            # test hook, see install.sh
+STATE_DIR="$ROOT/etc/machino"
+BIN="$ROOT/usr/bin/machino"
+INITD="$ROOT/etc/init.d"
+STREAMERCTL="$ROOT/usr/sbin/streamerctl"
+MANIFEST="$STATE_DIR/install-state.json"
+SCHEMA=1
+PRODUCT=machino
+# The machino daemon's argv0 is its full path, so it is matched by path, never
+# "pgrep -x machino" (the lesson from the M11a bring-up). Keep this identical to
+# streamerctl/init/uninstall.
+DAEMON_PATH="${BIN:-/usr/bin/machino}"
+[ -n "$ROOT" ] && DAEMON_PATH="/usr/bin/machino"   # on-camera the daemon runs from the absolute path
+
+say()  { echo "$*"; }
+warn() { echo "machino-manager: $*" >&2; }
+die()  { echo "machino-manager: $*" >&2; exit 1; }
+
+# machino-manager ships in the bundle's sbin/, so its siblings install.sh /
+# uninstall.sh live one directory up; on the camera the stored uninstaller is
+# under $STATE_DIR. Look in all of them.
+find_script() {  # name -> path on stdout, or empty
+    for d in "$HERE" "$HERE/.." "$STATE_DIR"; do
+        [ -f "$d/$1" ] && { echo "$d/$1"; return 0; }
+    done
+    return 1
+}
+
+# ---- live detection --------------------------------------------------------
+bin_ok()      { [ -x "$BIN" ]; }
+init_ok()     { [ -f "$INITD/machino" ]; }
+conf_ok()     { [ -f "$STATE_DIR/machino.conf" ]; }
+manifest_ok() { [ -f "$MANIFEST" ]; }
+version()     { [ -x "$BIN" ] && "$BIN" --version 2>/dev/null | awk 'NR==1{print $2}'; }
+running()     { pgrep -f "$DAEMON_PATH" >/dev/null 2>&1; }
+
+# a flat JSON reader good enough for the fields we write ourselves
+manifest_get() {
+    [ -f "$MANIFEST" ] || return 1
+    sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p;
+            s/.*"'"$1"'"[[:space:]]*:[[:space:]]*\(true\|false\|[0-9][0-9]*\).*/\1/p' "$MANIFEST" | head -n1
+}
+
+selected() { [ -f "$STATE_DIR/streamer" ] && cat "$STATE_DIR/streamer" || echo unknown; }
+
+# OFF      - nothing installed
+# ON       - our manifest + every component healthy
+# BROKEN   - our manifest present but a component is missing/failing
+# EXTERNAL - Machino present but NOT installed by us (no manifest): do not touch
+compute_state() {
+    if manifest_ok; then
+        if bin_ok && [ -n "$(version)" ] && init_ok && conf_ok; then echo ON; else echo BROKEN; fi
+    else
+        if bin_ok || init_ok; then echo EXTERNAL; else echo OFF; fi
+    fi
+}
+
+emit_status() {
+    _state=$(compute_state)
+    _ver=$(version); [ -n "$_ver" ] || _ver=""
+    _mb=$(manifest_get managedBy 2>/dev/null); [ -n "$_mb" ] || _mb=""
+    _plat=$(manifest_get platform 2>/dev/null); [ -n "$_plat" ] || _plat=""
+    _mwe=$(manifest_get majesticWasEnabled 2>/dev/null); [ -n "$_mwe" ] || _mwe="false"
+    _run=false; running && _run=true
+    printf '{'
+    printf '"schema":%s,' "$SCHEMA"
+    printf '"product":"%s",' "$PRODUCT"
+    printf '"state":"%s",' "$_state"
+    printf '"version":"%s",' "$_ver"
+    printf '"platform":"%s",' "$_plat"
+    printf '"managedBy":"%s",' "$_mb"
+    printf '"selected":"%s",' "$(selected)"
+    printf '"running":%s,' "$_run"
+    printf '"majesticWasEnabled":%s,' "$_mwe"
+    printf '"components":{"binary":%s,"version":%s,"init":%s,"config":%s,"manifest":%s}' \
+        "$(bin_ok && echo true || echo false)" \
+        "$([ -n "$(version)" ] && echo true || echo false)" \
+        "$(init_ok && echo true || echo false)" \
+        "$(conf_ok && echo true || echo false)" \
+        "$(manifest_ok && echo true || echo false)"
+    printf '}\n'
+}
+
+write_manifest() {  # owner platform
+    _owner=$1; _platform=$2
+    _ver=$(version)
+    _mwe=false
+    [ "$(cat "$STATE_DIR/streamer.preinstall" 2>/dev/null)" = "majestic-auto" ] && _mwe=true
+    _now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+    mkdir -p "$STATE_DIR"
+    cat > "$MANIFEST" <<EOF
+{
+  "schema": $SCHEMA,
+  "managedBy": "$_owner",
+  "product": "$PRODUCT",
+  "version": "$_ver",
+  "platform": "$_platform",
+  "majesticWasEnabled": $_mwe,
+  "installedAt": "$_now"
+}
+EOF
+    chmod 0644 "$MANIFEST" 2>/dev/null || true
+}
+
+cmd_install() {
+    owner=cam-tool; platform=""; pw=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --owner)    shift; owner="${1:-cam-tool}" ;;
+            --platform) shift; platform="${1:-}" ;;
+            --webui-password) shift; pw="${1:-}" ;;
+            *) die "install: unknown option '$1'" ;;
+        esac
+        shift
+    done
+    INSTALL_SH=$(find_script install.sh) || die "install must be run from the Machino deployment bundle (install.sh not found)"
+
+    # EXTERNAL guard: never take over an installation we do not own.
+    if [ "$(compute_state)" = "EXTERNAL" ]; then
+        die "an unmanaged Machino is already present (no ownership manifest); refusing to take it over. Uninstall it first."
+    fi
+
+    if [ -n "$pw" ]; then
+        MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" --webui-password "$pw" || die "install.sh failed"
+    else
+        MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" || die "install.sh failed"
+    fi
+
+    # install.sh has placed the on-camera control surface (machino-manager) and
+    # a stored uninstaller under $STATE_DIR already.
+
+    # Activate: switch the camera to Machino now (idempotent). The test hook
+    # MACHINO_MANAGER_NO_ACTIVATE skips this (host tests have no real streamer).
+    if [ -z "${MACHINO_MANAGER_NO_ACTIVATE:-}" ] && [ -x "$STREAMERCTL" ]; then
+        MACHINO_ROOT="$ROOT" "$STREAMERCTL" set machino || warn "could not switch to machino now; it will start on next boot"
+    fi
+
+    write_manifest "$owner" "$platform"
+
+    state=$(compute_state)
+    [ "$state" = "ON" ] || die "post-install verification failed (state=$state)"
+    say "Machino installed and active (owner=$owner platform=${platform:-unknown})." >&2
+    emit_status
+}
+
+cmd_uninstall() {
+    owner=""; force=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --owner) shift; owner="${1:-}" ;;
+            --force) force=1 ;;
+            *) die "uninstall: unknown option '$1'" ;;
+        esac
+        shift
+    done
+
+    if ! manifest_ok; then
+        if bin_ok || init_ok; then
+            [ "$force" = "1" ] || die "Machino is present but has no ownership manifest (EXTERNAL); refusing. Use --force to remove anyway."
+        else
+            say "Machino is not installed; nothing to do." >&2
+            emit_status; return 0
+        fi
+    elif [ -n "$owner" ] && [ "$force" != "1" ]; then
+        mb=$(manifest_get managedBy)
+        [ "$mb" = "$owner" ] || die "installation is owned by '$mb', not '$owner'; refusing (use --force)."
+    fi
+
+    U=$(find_script uninstall.sh) || die "uninstall.sh not found (redeploy the bundle)"
+    MACHINO_ROOT="$ROOT" sh "$U" || die "uninstall.sh failed"
+    rm -f "$MANIFEST" "$ROOT/usr/sbin/machino-manager" 2>/dev/null || true
+
+    state=$(compute_state)
+    [ "$state" = "OFF" ] || warn "after uninstall the state is '$state' (expected OFF)"
+    say "Machino removed; Majestic restored to its pre-install state." >&2
+    emit_status
+}
+
+case "${1:-}" in
+    install)   shift; cmd_install "$@" ;;
+    uninstall) shift; cmd_uninstall "$@" ;;
+    status)    emit_status ;;
+    -h|--help|"")
+        cat >&2 <<EOF
+usage: machino-manager <command>
+  install [--owner NAME] [--platform P] [--webui-password PW]
+  uninstall [--owner NAME] [--force]
+  status        machine-readable JSON: state = OFF|ON|BROKEN|EXTERNAL
+EOF
+        [ "${1:-}" = "" ] && exit 2 || exit 0 ;;
+    *) die "unknown command '${1:-}' (try --help)" ;;
+esac

@@ -48,7 +48,8 @@ static const char* MOD = "MAIN";
 
 static void usage(const char* argv0) {
     fprintf(stderr, "usage: %s [-c machino.conf] [-v]\n"
-                    "       %s --migrate-majestic <majestic.yaml> [-o machino.conf]\n", argv0, argv0);
+                    "       %s --version\n"
+                    "       %s --migrate-majestic <majestic.yaml> [-o machino.conf]\n", argv0, argv0, argv0);
 }
 
 // One-way import of an existing OpenIPC majestic.yaml. Prints a full
@@ -129,6 +130,7 @@ static const char* lc_lower(lifecycle::State s) {
 }
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-V"))) { printf("machino %s\n", MACHINO_VERSION); return 0; }
     if (argc >= 2 && !strcmp(argv[1], "--migrate-majestic")) return run_migration(argc, argv);
 
     const char* conf = "/etc/machino.conf";

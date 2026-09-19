@@ -1,0 +1,18 @@
+config BR2_PACKAGE_MACHINO
+	bool "machino"
+	depends on BR2_TOOLCHAIN_USES_MUSL
+	depends on BR2_mipsel
+	help
+	  Machino - a C++17 media runtime for Ingenic T40 IP cameras
+	  (OpenIPC / thingino). A demand-driven H.264/RTSP + snapshot +
+	  detection stack that installs next to Majestic and is selected
+	  at boot with streamerctl / machino-manager.
+
+	  Requires the Ingenic IMP vendor libraries (libimp/libalog/
+	  libsysutils) for the target SoC to be available at build time;
+	  set the IMP_LIB path in the package .mk to your SDK staging.
+
+	  https://github.com/aresstack/machino
+
+comment "machino needs a musl, mipsel (xburst2/T40) toolchain"
+	depends on !(BR2_TOOLCHAIN_USES_MUSL && BR2_mipsel)

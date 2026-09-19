@@ -71,7 +71,7 @@ move_file() {
 if [ "$WEBUI_ONLY" = "1" ]; then
     [ -r "$HERE/webui/machino.cgi" ] || die "bundle incomplete: webui/machino.cgi is missing"
 else
-    for f in machino machino.conf sbin/streamerctl init/S95streamer init/machino webui/machino.cgi; do
+    for f in machino machino.conf sbin/streamerctl sbin/machino-manager init/S95streamer init/machino webui/machino.cgi; do
         [ -r "$HERE/$f" ] || die "bundle incomplete: $f is missing"
     done
 fi
@@ -140,10 +140,22 @@ fi
 mkdir -p "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/var/run"
 put 0755 "$HERE/machino" "$ROOT/usr/bin/machino" || die "cannot install $ROOT/usr/bin/machino"
 if [ -f "$STATE_DIR/machino.conf" ]; then
-    say "keeping existing $STATE_DIR/machino.conf"
+    say "keeping existing $STATE_DIR/machino.conf"          # upgrade-safe: never clobber a user config
     put 0644 "$HERE/machino.conf" "$STATE_DIR/machino.conf.default"
 else
-    put 0644 "$HERE/machino.conf" "$STATE_DIR/machino.conf"
+    # Fresh install: always keep the shipped default for reference. If the camera
+    # already runs Majestic, import its majestic.yaml one-way; fall back to the
+    # default if that produces nothing (e.g. staging install, no native binary).
+    put 0644 "$HERE/machino.conf" "$STATE_DIR/machino.conf.default"
+    if [ -f "$ROOT/etc/majestic.yaml" ] &&
+       "$ROOT/usr/bin/machino" --migrate-majestic "$ROOT/etc/majestic.yaml" -o "$STATE_DIR/machino.conf" 2>"$STATE_DIR/migrate.log" &&
+       [ -s "$STATE_DIR/machino.conf" ]; then
+        chmod 0644 "$STATE_DIR/machino.conf"
+        say "migrated $ROOT/etc/majestic.yaml -> $STATE_DIR/machino.conf (report in $STATE_DIR/migrate.log)"
+    else
+        [ -f "$ROOT/etc/majestic.yaml" ] && warn "majestic.yaml present but migration produced nothing; using defaults"
+        put 0644 "$HERE/machino.conf" "$STATE_DIR/machino.conf"
+    fi
 fi
 if [ -d "$HERE/profiles" ]; then
     mkdir -p "$STATE_DIR/profiles"
@@ -151,6 +163,10 @@ if [ -d "$HERE/profiles" ]; then
 fi
 
 put 0755 "$HERE/sbin/streamerctl" "$ROOT/usr/sbin/streamerctl" || die "cannot install streamerctl"
+# The Cam-Tool's control surface + a stored uninstaller, so status/uninstall
+# work on the camera later without redeploying the bundle.
+put 0755 "$HERE/sbin/machino-manager" "$ROOT/usr/sbin/machino-manager" || die "cannot install machino-manager"
+[ -r "$HERE/uninstall.sh" ] && put 0755 "$HERE/uninstall.sh" "$STATE_DIR/uninstall.sh"
 if [ -n "$WEBUI_PASSWORD" ]; then
     STREAMERCTL_ROOT="$ROOT" "$ROOT/usr/sbin/streamerctl" webui-password "$WEBUI_PASSWORD" ||
         warn "could not set the WebUI password - set it later with: streamerctl webui-password <password>"
