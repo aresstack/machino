@@ -150,7 +150,11 @@ cmd_webui_password() {
 
 webui_start() {
     [ -x "$HTTPD" ] || { warn "no $HTTPD - WebUI will not be served while Machino is active"; return 0; }
-    if our_httpd_pid >/dev/null 2>&1; then return 0; fi
+    # Restart an existing instance instead of leaving it: after an upgrade the
+    # running httpd still holds the OLD config/auth (this was the login-loop that
+    # survived a re-install until reboot). Stop it, then start with the current
+    # conf below.
+    if our_httpd_pid >/dev/null 2>&1; then webui_stop; fi
     if majestic_running; then warn "majestic still holds port 80 - not starting a second server"; return 1; fi
     # Prefer the stock OpenIPC WebUI auth so the SAME login as the normal WebUI
     # applies (no second Machino-only login). Only when the image ships none do
