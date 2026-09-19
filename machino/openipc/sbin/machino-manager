@@ -138,9 +138,22 @@ cmd_install() {
     done
     INSTALL_SH=$(find_script install.sh) || die "install must be run from the Machino deployment bundle (install.sh not found)"
 
-    # EXTERNAL guard: never take over an installation we do not own.
-    if [ "$(compute_state)" = "EXTERNAL" ]; then
-        die "an unmanaged Machino is already present (no ownership manifest); refusing to take it over. Uninstall it first."
+    # install takes over ANY existing state (OFF / BROKEN / EXTERNAL): the
+    # toggle's contract is "ON = our bundle installed and active". install.sh
+    # never clobbers an existing machino.conf, and afterwards the ownership
+    # manifest makes the install ours. Ownership only gates UNINSTALL.
+    # A running daemon must stop first - overwriting a running ELF fails with
+    # ETXTBSY. (Skipped under the NO_ACTIVATE test hook: no real daemon there.)
+    if [ -z "${MACHINO_MANAGER_NO_ACTIVATE:-}" ] && [ -x "$BIN" ] && running; then
+        say "stopping the running machino before replacing its binary" >&2
+        [ -x "$INITD/machino" ] && MACHINO_ROOT="$ROOT" "$INITD/machino" stop >/dev/null 2>&1
+        _i=0
+        while running && [ "$_i" -lt 15 ]; do
+            [ "$_i" -eq 5 ] && kill $(pgrep -f "$DAEMON_PATH") 2>/dev/null
+            _i=$((_i + 1))
+            sleep 1
+        done
+        running && die "machino is still running and would not stop; cannot replace its binary"
     fi
 
     if [ -n "$pw" ]; then

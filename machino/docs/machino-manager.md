@@ -28,14 +28,19 @@ config, and a versioned ownership manifest (`/etc/machino/install-state.json`):
 | `OFF` | nothing installed | Off |
 | `ON` | our manifest **and** all components healthy **and** `selected == machino` **and** `running == true` | On |
 | `BROKEN` | our manifest present but any ON condition fails (missing binary, not selected, not running, …) | On + error badge — never a false Off |
-| `EXTERNAL` | Machino present but **not** installed by us (no manifest) | disabled / "installed outside the tool" |
+| `EXTERNAL` | Machino present but **not** installed by us (no manifest) | toggle stays usable: switching ON **takes it over** (installs our bundle on top, writes the manifest); only uninstall refuses it |
 
 `ON` means **truly active**, not merely "files present": Machino must be the
 selected streamer and actually running. `install` verifies this and returns a
 non-zero exit with `state:BROKEN` if activation did not take — so the toggle can
 never show a false green. `BROKEN` also catches a crashed/half-installed Machino
-(never a misleading `OFF`). `EXTERNAL` stops the toggle deleting an installation
-it does not own.
+(never a misleading `OFF`).
+
+`install` is valid from `OFF`, `BROKEN` **and** `EXTERNAL` alike: it stops a
+running daemon (a running ELF cannot be overwritten), re-installs the bundle
+(an existing `machino.conf` is never clobbered), activates, and writes the
+ownership manifest — the install is ours from then on. Ownership gates only
+the destructive direction: `uninstall` refuses an installation it does not own.
 
 A caller (the Cam-Tool) adds one more state of its own: **`UNKNOWN`** when
 `machino-manager status` could not be run at all (no shell, timeout) — the

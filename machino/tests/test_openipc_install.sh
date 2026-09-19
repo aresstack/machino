@@ -271,6 +271,18 @@ if MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-manager" uninstall --owner cam-tool
 else ok; fi
 has "external install untouched" "$R/usr/bin/machino"
 
+# 15b-2) but switching ON *takes over* an EXTERNAL install: our bundle goes on
+# top, the ownership manifest is written, the user config is untouched —
+# ownership gates only the destructive direction (uninstall).
+printf 'board = keep-my-board\n' > "$R/etc/machino/machino.conf"
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
+    bad "manager install did not take over an EXTERNAL install: $(cat "$WORK/out")"
+has "ownership manifest written on takeover" "$R/etc/machino/install-state.json"
+if grep -q '"managedBy": "cam-tool"' "$R/etc/machino/install-state.json"; then ok; else bad "takeover manifest missing owner"; fi
+is "user config survives the takeover" "$(cat "$R/etc/machino/machino.conf")" "board = keep-my-board"
+S=$(mgr_status)
+case "$S" in *'"state":"ON"'*) ok ;; *) bad "state not ON after takeover: $S" ;; esac
+
 # 15c) a full manager install writes the ownership manifest and reports ON (active)
 make_bundle; make_camera auto
 ( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
