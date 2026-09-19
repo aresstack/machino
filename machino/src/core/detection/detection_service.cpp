@@ -46,7 +46,10 @@ Result DetectionService::start_locked() {
         return Result::error();
     }
     DetectorParams p; p.detector = cfg_.detector; p.inference_fps = cfg_.inference_fps; p.model_path = cfg_.model_path;
-    det_ = platform_.create_detector(0, p);
+    // UNIT_AI is the detector's own channel index: its analysis FrameSource must
+    // not collide with main(0)/sub(1)/jpeg(2). The adapter maps it to real IMP
+    // group/channel numbers.
+    det_ = platform_.create_detector(lifecycle::UNIT_AI, p);
     if (!det_) {
         demand_.release();
         state_ = AiState::Error; last_error_ = "detector backend '" + cfg_.detector + "' unavailable on this platform";

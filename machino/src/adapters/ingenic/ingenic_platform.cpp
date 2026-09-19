@@ -1,4 +1,5 @@
 #include "adapters/ingenic/ingenic_platform.hpp"
+#include "adapters/ingenic/detection/ivs_motion.hpp"
 #include "adapters/ingenic/ingenic_encoder.hpp"
 #include "adapters/ingenic/ingenic_framesource.hpp"
 #include "core/log.hpp"
@@ -34,7 +35,9 @@ CapabilitySet IngenicPlatform::capabilities() const {
     c.sensor.fps            = RangeCap{Cap::Supported, -1, -1, ApplyMode::Live};
     c.isp.available         = Cap::Supported;
     c.encoder.hardware      = Cap::Supported;
-    c.ai.available          = Cap::Unknown;
+    c.ai.available          = Cap::Supported;   // IMP_IVS analysis pipeline (motion)
+    c.ai.motion             = Cap::Supported;   // IMP_IVS_CreateMoveInterface backend
+    c.ai.person             = Cap::Unknown;     // NNA/model backend not built yet
     power_.fill_capabilities(c);
     return c;
 }
@@ -101,6 +104,16 @@ std::unique_ptr<IJpegEncoder> IngenicPlatform::create_jpeg(int chn, const JpegPa
     int nw = hw_.sensor.native_width  > 0 ? hw_.sensor.native_width  : hw_.mode.value.width;
     int nh = hw_.sensor.native_height > 0 ? hw_.sensor.native_height : hw_.mode.value.height;
     return IngenicJpegEncoder::create(chn, p, nw, nh);
+}
+
+std::unique_ptr<IDetector> IngenicPlatform::create_detector(int chn, const DetectorParams& p) {
+    if (p.detector != "motion") {                          // only the IMP_IVS motion backend exists so far
+        LOGW(MOD, "detector backend '%s' not implemented on this platform", p.detector.c_str());
+        return nullptr;
+    }
+    int nw = hw_.sensor.native_width  > 0 ? hw_.sensor.native_width  : hw_.mode.value.width;
+    int nh = hw_.sensor.native_height > 0 ? hw_.sensor.native_height : hw_.mode.value.height;
+    return create_motion_detector(chn, p, nw, nh);
 }
 
 Result IngenicPlatform::bind(IFrameSource& fs, IEncoder& enc) {

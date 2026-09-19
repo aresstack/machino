@@ -28,6 +28,7 @@ public:
     std::unique_ptr<IFrameSource> create_framesource(int chn, const EffectiveStream& sc) override;
     std::unique_ptr<IEncoder>     create_encoder(int chn, const EffectiveStream& sc) override;
     std::unique_ptr<IJpegEncoder> create_jpeg(int chn, const JpegParams& p) override;
+    std::unique_ptr<IDetector>    create_detector(int chn, const DetectorParams& p) override;
     Result bind(IFrameSource& fs, IEncoder& enc) override;
     Result unbind(IFrameSource& fs, IEncoder& enc) override;
     int64_t timestamp_us() override;
