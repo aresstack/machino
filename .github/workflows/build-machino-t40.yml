@@ -70,7 +70,7 @@ jobs:
       - name: "OpenIPC install bundle (machino-openipc-t40nn.tar.gz)"
         run: |
           O=bundle/machino-openipc-t40nn
-          mkdir -p "$O/sbin" "$O/init" "$O/webui"
+          mkdir -p "$O/sbin" "$O/init"
           cp -f machino/machinod                       "$O/machino"
           cp -f machino/machino.conf.example           "$O/machino.conf"
           cp -f machino/openipc/install.sh             "$O/install.sh"
@@ -79,10 +79,9 @@ jobs:
           cp -f machino/openipc/sbin/machino-manager   "$O/sbin/machino-manager"
           cp -f machino/openipc/init/S95streamer       "$O/init/S95streamer"
           cp -f machino/openipc/init/machino           "$O/init/machino"
-          cp -f machino/openipc/webui/machino.cgi      "$O/webui/machino.cgi"
           cp -f machino/openipc/README.md              "$O/README.md"
           cp -f machino/docs/install-openipc.md        "$O/INSTALL.md"
-          chmod 0755 "$O/machino" "$O/install.sh" "$O/uninstall.sh" "$O/sbin/streamerctl" "$O/sbin/machino-manager" "$O/init/"* "$O/webui/machino.cgi"
+          chmod 0755 "$O/machino" "$O/install.sh" "$O/uninstall.sh" "$O/sbin/streamerctl" "$O/sbin/machino-manager" "$O/init/"*
           cp -f bundle/machino-m2-t40/BUILDINFO        "$O/BUILDINFO"
           (cd "$O" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
           (cd bundle && tar czf machino-openipc-t40nn.tar.gz machino-openipc-t40nn)
