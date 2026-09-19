@@ -85,7 +85,6 @@ does **not** start Machino and does **not** stop Majestic.
 | `/etc/init.d/machino` | start/stop for Machino |
 | `/etc/init.d/S95streamer` | starts the selected service at boot |
 | `/etc/init.d/majestic` | Majestic's original init script, moved out of the boot slot |
-| `/var/www/cgi-bin/machino.cgi` | the WebUI page |
 
 **Why Majestic's init script is moved:** OpenIPC's `rcS` runs every
 `/etc/init.d/S??*` without checking the executable bit, so `chmod -x` does not
@@ -101,56 +100,26 @@ moves it back.
 While **Majestic** is active it serves the WebUI with its own login, exactly as
 before - nothing changes.
 
-While **Machino** is active the WebUI is served by BusyBox `httpd` instead, and
-Majestic's login is not part of that. The switch page runs `streamerctl` as
-root, so it is not left open:
-
-* **With a password set** (`--webui-password`, or `streamerctl webui-password
-  <password>` later) `/cgi-bin` requires HTTP Basic auth, user `root`, that
-  password. Set it before you switch over.
-* **Without one** the CGI is restricted to the camera itself (`A:127.0.0.1`,
-  `D:*`): the switch page is then unreachable from a browser, and the CLI over
-  SSH is the way to switch. Refusing beats a root-level switch open to whoever
-  can reach the camera.
-
-`streamerctl status` says which of the two you are in, and `streamerctl set
-machino` warns when no password is set.
+While **Machino** is active the same OpenIPC WebUI (`/var/www`) is served by
+BusyBox `httpd` instead, reachable on the LAN like the stock WebUI. It is served
+openly by default; set an optional site-wide HTTP Basic password (user `root`)
+with `--webui-password` at install time or `streamerctl webui-password
+<password>` later, and clear it with `streamerctl webui-password --clear`.
 
 Basic auth is not TLS. Do not expose such a camera directly to an untrusted
 network.
 
-## 4. The WebUI after installing
-
-Reload the camera's web interface. Under **System** there is a new entry,
-**Media service**. If your WebUI navigation looks different and the installer
-could not add the entry, it says so — the page is then still reachable
-directly:
-
-```
-http://CAMERA/cgi-bin/machino.cgi
-```
-
-The page shows:
-
-```
-Active media service
-[ Majestic       v ]
-    Majestic
-    Machino
-
-[ Save ]
-```
-
-plus which service is selected at boot, which one is running, and who is
-serving the page you are looking at.
+> The stock WebUI's Dashboard/Live/Camera pages are Majestic-specific and will
+> report "Majestic not running" while Machino is active. A Machino adaptation of
+> those pages is a separate work item; this bundle does not ship a standalone
+> `machino.cgi` page and does not edit the WebUI navigation. Switch the service
+> from the command line (below) or from the Cam-Tool.
 
 ---
 
 ## 5. Switch to Machino
 
-**In the WebUI:** choose *Machino*, press *Save*, wait a few seconds.
-
-**Over SSH:**
+Over SSH:
 
 ```sh
 streamerctl set machino
@@ -191,9 +160,7 @@ ffplay rtsp://CAMERA:554/ch0
 
 ## 6. Switch back to Majestic
 
-**In the WebUI:** choose *Majestic*, press *Save*.
-
-**Over SSH:**
+Over SSH:
 
 ```sh
 streamerctl set majestic
@@ -228,16 +195,6 @@ streamerctl set machino
 ```
 
 or simply reboot the camera.
-
-If a WebUI update removed the **Media service** menu entry, put it back with:
-
-```sh
-cd /tmp/machino-openipc-t40nn
-./install.sh --webui-only
-```
-
-That really does only the WebUI: the page and the menu entry. The binary, the
-configuration, the init scripts and the boot slot are not touched.
 
 ---
 

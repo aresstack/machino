@@ -18,12 +18,14 @@ streamerctl set majestic     # switch back
 ./uninstall.sh               # remove and restore the previous setup
 ```
 
-In the camera's WebUI the switch is under **System -> Media service**.
+While Machino is active the OpenIPC WebUI is served by BusyBox httpd over the
+same `/var/www`, reachable on the LAN like the stock WebUI. It is served openly
+by default; set an optional site-wide HTTP Basic password (user `root`) with
+`streamerctl webui-password <password>` and clear it with `--clear`.
 
-While Machino is active the WebUI is served by BusyBox httpd, so Majestic's
-login does not apply. The switch page runs streamerctl as root: with a password
-it asks for HTTP Basic auth (user `root`), without one it is restricted to the
-camera itself. Set or change it any time with `streamerctl webui-password`.
+A Machino-specific adaptation of the OpenIPC WebUI camera pages (Dashboard,
+Live, Camera settings) is a separate work item; this bundle no longer ships a
+standalone `machino.cgi` page or edits the WebUI navigation.
 
 ## Contents
 
@@ -35,7 +37,6 @@ uninstall.sh       uninstaller, restores the state recorded at install time
 sbin/streamerctl   the selector - the only thing that switches media owners
 init/S95streamer   boot script: starts the selected service
 init/machino       start/stop for the Machino daemon
-webui/machino.cgi  the WebUI page
 BUILDINFO          commit, toolchain, SDK version of this build
 SHA256SUMS         checksums of every file above
 ```

@@ -1,0 +1,2 @@
+-p 80 -h /c/tmp/machino-src/machino/tests/tmp-streamerctl/var/www -c /c/tmp/machino-src/machino/tests/tmp-streamerctl/etc/machino/httpd.conf -r OpenIPC
+-p 80 -h /c/tmp/machino-src/machino/tests/tmp-streamerctl/var/www -c /c/tmp/machino-src/machino/tests/tmp-streamerctl/etc/machino/httpd.conf -r OpenIPC

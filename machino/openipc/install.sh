@@ -16,28 +16,22 @@ WWW="$ROOT/var/www"
 CGI="$WWW/cgi-bin"
 INITD="$ROOT/etc/init.d"
 BACKUP="$STATE_DIR/backup"
-MARK_BEGIN="<!-- machino:begin -->"
-MARK_END="<!-- machino:end -->"
 
 say()  { echo "$*"; }
 warn() { echo "install: $*" >&2; }
 die()  { echo "install: $*" >&2; exit 1; }
 
-WEBUI_ONLY=0
 WEBUI_PASSWORD=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --webui-only)     WEBUI_ONLY=1 ;;
         --webui-password) shift; WEBUI_PASSWORD="${1:-}" ;;
         -h|--help)
             cat <<EOF
-usage: ./install.sh [--webui-password PASSWORD] [--webui-only]
+usage: ./install.sh [--webui-password PASSWORD]
 
-  --webui-password P  password for the switch page while Machino serves the
-                      WebUI (user 'root'). Without it that page is reachable
-                      from the camera itself only.
-  --webui-only        re-add just the WebUI page and menu entry, e.g. after an
-                      OpenIPC WebUI update removed them. Touches nothing else.
+  --webui-password P  optional password (user 'root') for the OpenIPC WebUI
+                      while Machino serves it on port 80. Without it the WebUI
+                      is served openly on the LAN, like the stock OpenIPC WebUI.
 EOF
             exit 0 ;;
         *) die "unknown option '$1' (try --help)" ;;
@@ -68,76 +62,16 @@ move_file() {
 }
 
 # ------------------------------------------------------------- preflight ---
-if [ "$WEBUI_ONLY" = "1" ]; then
-    [ -r "$HERE/webui/machino.cgi" ] || die "bundle incomplete: webui/machino.cgi is missing"
-else
-    for f in machino machino.conf sbin/streamerctl sbin/machino-manager init/S95streamer init/machino webui/machino.cgi; do
-        [ -r "$HERE/$f" ] || die "bundle incomplete: $f is missing"
-    done
-fi
+for f in machino machino.conf sbin/streamerctl sbin/machino-manager init/S95streamer init/machino; do
+    [ -r "$HERE/$f" ] || die "bundle incomplete: $f is missing"
+done
 [ -d "$CGI" ] || die "no $CGI - this does not look like an OpenIPC camera with the WebUI installed"
 
-if [ "$WEBUI_ONLY" != "1" ]; then
-    need_kb=$(( ($(wc -c < "$HERE/machino") / 1024) + 256 ))
-    free_kb=$(df -k / | awk 'NR==2 {print $4}')
-    [ "${free_kb:-0}" -ge "$need_kb" ] || die "not enough space on / (need ~${need_kb} kB, have ${free_kb} kB)"
-fi
+need_kb=$(( ($(wc -c < "$HERE/machino") / 1024) + 256 ))
+free_kb=$(df -k / | awk 'NR==2 {print $4}')
+[ "${free_kb:-0}" -ge "$need_kb" ] || die "not enough space on / (need ~${need_kb} kB, have ${free_kb} kB)"
 
 mkdir -p "$STATE_DIR" "$BACKUP" || die "cannot create $STATE_DIR"
-
-# The OpenIPC WebUI has no plugin registry - the ext-*.cgi files are tombstones
-# for renamed pages, not extension points. The navigation in p/header.cgi is a
-# hand-written list, so the menu entry means editing one stock file. The edit is
-# fenced with markers and the original is backed up. A WebUI update overwrites
-# that file and the entry is simply gone; the page itself keeps working at
-# /cgi-bin/machino.cgi and "install.sh --webui-only" puts the entry back.
-webui_menu_add() {
-    header="$CGI/p/header.cgi"
-    [ -w "$header" ] || { warn "cannot write $header - the page stays reachable at /cgi-bin/machino.cgi"; return 1; }
-
-    if grep -q "machino:begin" "$header" 2>/dev/null; then say "menu entry already present"; return 0; fi
-    [ -f "$BACKUP/header.cgi" ] || cp -p "$header" "$BACKUP/header.cgi"
-
-    # The label is written out literally instead of going through page_label(),
-    # so p/pages.cgi stays untouched: one stock file less to patch and restore.
-    anchor='<ul aria-labelledby="dropdownSystem" class="dropdown-menu">'
-    grep -qF "$anchor" "$header" || { warn "navigation layout not recognised - page reachable at /cgi-bin/machino.cgi only"; return 1; }
-
-    # The injected block is haserl (header.cgi is rendered by haserl per request):
-    # when Machino is the active streamer it labels the entry "Camera (Machino)"
-    # and hides the stock Majestic menu items (which write /etc/majestic.yaml and
-    # are wrong under Machino) via a CSS :has() rule; otherwise it is the plain
-    # "Media service" switch link and Majestic stays untouched. Removed verbatim
-    # by uninstall (between the markers), so the stock header restores byte-exact.
-    blk="$STATE_DIR/.menu-block"
-    cat > "$blk" <<'BLK'
-							<!-- machino:begin -->
-							<% if [ "$(cat /etc/machino/streamer 2>/dev/null)" = "machino" ]; then %>
-							<li><a class="dropdown-item" href="machino.cgi">Camera (Machino)</a></li>
-							<style>.nav-item.dropdown:has(a[href*="majestic"]),li:has(> a[href*="majestic"]){display:none!important}</style>
-							<% else %>
-							<li><a class="dropdown-item" href="machino.cgi">Media service</a></li>
-							<% fi %>
-							<!-- machino:end -->
-BLK
-    awk -v anchor="$anchor" -v blk="$blk" '
-        { print }
-        index($0, anchor) {
-            while ((getline line < blk) > 0) print line
-            close(blk)
-        }' "$header" > "$header.machino.tmp" && mv "$header.machino.tmp" "$header" || {
-        warn "could not patch the navigation"; rm -f "$header.machino.tmp" "$blk"; return 1; }
-    rm -f "$blk"
-    say "added the Machino menu entry under System (hides the Majestic menu when Machino is active)"
-}
-
-if [ "$WEBUI_ONLY" = "1" ]; then
-    put 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || die "could not install the WebUI page"
-    webui_menu_add || true
-    say "WebUI page and menu entry refreshed; nothing else was touched."
-    exit 0
-fi
-
 
 # --------------------------------------------- remember the previous state ---
 # Only on the very first install, so re-running the installer (or upgrading)
@@ -213,10 +147,18 @@ if [ ! -f "$STATE_DIR/streamer" ]; then
     say "initial selection: $sel (unchanged - nothing was started or stopped)"
 fi
 
-# ------------------------------------------------------------------ WebUI ---
-put 0755 "$HERE/webui/machino.cgi" "$CGI/machino.cgi" || warn "could not install the WebUI page"
-
-webui_menu_add || true
+# ----------------------------------------------- clean up legacy WebUI bits ---
+# Earlier bundles shipped a standalone /cgi-bin/machino.cgi page and injected a
+# "Media service" entry (with CSS :has() tricks) into p/header.cgi. That approach
+# is gone; remove any leftovers so upgrading from such a build restores the stock
+# WebUI. The proper Machino WebUI adaptation replaces this, not a single page.
+rm -f "$CGI/machino.cgi"
+legacy_header="$CGI/p/header.cgi"
+if [ -f "$legacy_header" ] && grep -q 'machino:begin' "$legacy_header" 2>/dev/null; then
+    sed '/machino:begin/,/machino:end/d' "$legacy_header" > "$legacy_header.machino.tmp" &&
+        mv "$legacy_header.machino.tmp" "$legacy_header" && say "removed the legacy WebUI menu entry" ||
+        { rm -f "$legacy_header.machino.tmp"; warn "could not remove the legacy menu entry from $legacy_header"; }
+fi
 
 # ------------------------------------------------------------------- done ---
 say ""
@@ -227,6 +169,5 @@ say ""
 say "Next:"
 say "  streamerctl set machino      # switch the camera to Machino"
 say "  streamerctl set majestic     # switch it back"
-say "  WebUI: System -> Media service"
 say ""
 say "Uninstall with ./uninstall.sh from this directory."

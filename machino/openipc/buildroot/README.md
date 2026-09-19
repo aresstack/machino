@@ -44,7 +44,6 @@ is unchanged and documented in [../../docs/install-openipc.md](../../docs/instal
 | `/usr/sbin/streamerctl` | boot-time streamer selection |
 | `/usr/sbin/machino-manager` | idempotent install/uninstall/status control surface |
 | `/etc/init.d/machino`, `/etc/init.d/S95streamer` | service + boot selector |
-| `/var/www/cgi-bin/machino.cgi` | WebUI switch page |
 | `/etc/machino/machino.conf` | default config (canonical path; persisted edits belong on the overlay) |
 
 ## Upgrade safety

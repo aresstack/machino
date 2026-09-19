@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$1" in
+  start) echo "start machino" >> "/c/tmp/machino-src/machino/tests/tmp-streamerctl/events"; [ -f "/c/tmp/machino-src/machino/tests/tmp-streamerctl/run/machino.fail" ] || : > "/c/tmp/machino-src/machino/tests/tmp-streamerctl/run/machino" ;;
+  stop)  echo "stop machino"  >> "/c/tmp/machino-src/machino/tests/tmp-streamerctl/events"; rm -f "/c/tmp/machino-src/machino/tests/tmp-streamerctl/run/machino" ;;
+esac
+exit 0

@@ -36,7 +36,7 @@ rm -f "$WORK/.xprobe"
 
 # A bundle as the CI produces it, with a stand-in for the binary.
 make_bundle() {
-    B="$WORK/bundle"; rm -rf "$B"; mkdir -p "$B/sbin" "$B/init" "$B/webui"
+    B="$WORK/bundle"; rm -rf "$B"; mkdir -p "$B/sbin" "$B/init"
     # a stand-in for the binary that answers --version and --migrate-majestic,
     # so machino-manager's live checks and the installer's migration path work
     cat > "$B/machino" <<'FAKE'
@@ -55,7 +55,6 @@ FAKE
     printf 'board = t40nn-imx307-board-a\napi.port = 8080\n' > "$B/machino.conf"
     cp "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$B/sbin/"
     cp "$PKG/init/S95streamer" "$PKG/init/machino" "$B/init/"
-    cp "$PKG/webui/machino.cgi" "$B/webui/"
     cp "$PKG/install.sh" "$PKG/uninstall.sh" "$B/"
     chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/sbin/machino-manager" "$B/init/"*
 }
@@ -93,18 +92,17 @@ has   "streamerctl installed"   "$R/usr/sbin/streamerctl"
 has   "boot script installed"   "$R/etc/init.d/S95streamer"
 has   "machino init installed"  "$R/etc/init.d/machino"
 has   "config installed"        "$R/etc/machino/machino.conf"
-has   "webui page installed"    "$R/var/www/cgi-bin/machino.cgi"
 has   "majestic moved aside"    "$R/etc/init.d/majestic"
 hasnt "majestic out of the boot slot" "$R/etc/init.d/S95majestic"
 has   "backup kept"             "$R/etc/machino/backup/S95majestic"
 is    "pre-install state recorded" "$(cat "$R/etc/machino/streamer.preinstall")" "majestic-auto"
 is    "selection unchanged"        "$(cat "$R/etc/machino/streamer")"            "majestic"
-if grep -q 'machino:begin' "$R/var/www/cgi-bin/p/header.cgi"; then ok; else bad "menu entry not added"; fi
-if grep -q 'href="machino.cgi"' "$R/var/www/cgi-bin/p/header.cgi"; then ok; else bad "menu link not added"; fi
+# The install must NOT touch the stock WebUI (no standalone page, no menu edit).
+hasnt "no standalone webui page" "$R/var/www/cgi-bin/machino.cgi"
+if diff -q "$WORK/header.orig" "$R/var/www/cgi-bin/p/header.cgi" >/dev/null; then ok; else bad "install modified the stock header.cgi"; fi
 
 # ------------------------------------ 2) installing twice is harmless -------
 run_install || bad "second install.sh exited non-zero: $(cat "$WORK/out")"
-is "menu entry added once" "$(grep -c 'machino:begin' "$R/var/www/cgi-bin/p/header.cgi")" "1"
 is "pre-install state kept" "$(cat "$R/etc/machino/streamer.preinstall")" "majestic-auto"
 has "majestic still aside" "$R/etc/init.d/majestic"
 
@@ -120,9 +118,7 @@ has   "majestic back in the boot slot" "$R/etc/init.d/S95majestic"
 hasnt "boot script removed"            "$R/etc/init.d/S95streamer"
 hasnt "binary removed"                 "$R/usr/bin/machino"
 hasnt "streamerctl removed"            "$R/usr/sbin/streamerctl"
-hasnt "webui page removed"             "$R/var/www/cgi-bin/machino.cgi"
 hasnt "state dir removed"              "$R/etc/machino"
-if grep -q 'machino' "$R/var/www/cgi-bin/p/header.cgi"; then bad "menu entry left behind"; else ok; fi
 if diff -q "$WORK/header.orig" "$R/var/www/cgi-bin/p/header.cgi" >/dev/null; then ok; else bad "header.cgi not byte-identical after uninstall"; fi
 if [ -x "$R/etc/init.d/S95majestic" ]; then ok; else bad "majestic auto-start not restored"; fi
 
@@ -158,23 +154,27 @@ make_bundle; make_camera auto
 rm -rf "$R/var/www"
 if run_install; then bad "camera without WebUI was accepted"; else ok; fi
 
-# ------------------ 9) an unknown navigation layout is not fatal ------------
+# --------- 9) install cleans up legacy WebUI bits from an older build --------
+# A camera that ran an earlier bundle has a standalone machino.cgi and a menu
+# block injected into header.cgi. Installing the current bundle must remove both
+# so the stock WebUI is restored (the proper Machino WebUI adaptation replaces
+# that approach, not a single injected page).
 make_bundle; make_camera auto
-printf '<nav>something else entirely</nav>\n' > "$R/var/www/cgi-bin/p/header.cgi"
-run_install || bad "install failed on an unknown navigation layout"
-has "page still installed" "$R/var/www/cgi-bin/machino.cgi"
-if grep -q 'not recognised' "$WORK/out"; then ok; else bad "unknown layout was not reported"; fi
-
-# ------------------ 10) --webui-only really only touches the WebUI ----------
-make_bundle; make_camera auto
-( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" sh ./install.sh --webui-only ) >"$WORK/out" 2>&1 ||
-    bad "--webui-only exited non-zero: $(cat "$WORK/out")"
-has   "page installed"                   "$R/var/www/cgi-bin/machino.cgi"
-hasnt "no binary from --webui-only"      "$R/usr/bin/machino"
-hasnt "no boot script from --webui-only" "$R/etc/init.d/S95streamer"
-hasnt "majestic not moved by --webui-only" "$R/etc/init.d/majestic"
-has   "majestic left in its boot slot"   "$R/etc/init.d/S95majestic"
-if grep -q 'machino:begin' "$R/var/www/cgi-bin/p/header.cgi"; then ok; else bad "--webui-only did not add the menu entry"; fi
+printf '#!/usr/bin/haserl\nlegacy machino page\n' > "$R/var/www/cgi-bin/machino.cgi"
+cat > "$R/var/www/cgi-bin/p/header.cgi" <<'EOF'
+					<li class="nav-item dropdown">
+						<a id="dropdownSystem" role="button">System</a>
+						<ul aria-labelledby="dropdownSystem" class="dropdown-menu">
+							<li><a class="dropdown-item" href="network.cgi">Network</a></li>
+							<!-- machino:begin -->
+							<li><a class="dropdown-item" href="machino.cgi">Media service</a></li>
+							<!-- machino:end -->
+						</ul>
+					</li>
+EOF
+run_install || bad "install failed while cleaning up legacy WebUI bits: $(cat "$WORK/out")"
+hasnt "legacy machino.cgi removed"       "$R/var/www/cgi-bin/machino.cgi"
+if grep -q 'machino' "$R/var/www/cgi-bin/p/header.cgi"; then bad "legacy menu block left behind"; else ok; fi
 
 # ------- 11) uninstall refuses to continue while machino is still running ---
 # Continuing would restore majestic's boot slot and could start it next to a
@@ -218,7 +218,7 @@ chmod +x "$PSTUB/httpd"
 ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" STREAMERCTL_HTTPD="$PSTUB/httpd" sh ./install.sh --webui-password s3cret ) >"$WORK/out" 2>&1 ||
     bad "install with --webui-password failed: $(cat "$WORK/out")"
 has "webui.passwd written" "$R/etc/machino/webui.passwd"
-if grep -q '^/cgi-bin/machino.cgi:root:' "$R/etc/machino/httpd.conf" 2>/dev/null; then ok; else bad "httpd.conf has no switch-page auth rule"; fi
+if grep -q '^/:root:' "$R/etc/machino/httpd.conf" 2>/dev/null; then ok; else bad "httpd.conf has no site-wide auth rule"; fi
 rm -rf "$PSTUB"
 
 # ------------- 13b) the boot-slot move survives a failing mv -----------------
