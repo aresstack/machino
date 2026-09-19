@@ -92,9 +92,15 @@ public:
     // demand goes while the base stays active.
     void configure_sub(const EffectiveStream& s, StreamHub& hub, IGraceTimer* timer);
     void configure_jpeg(const JpegParams& p, int cache_ms, int grace_ms, IGraceTimer* timer);
+    // Per-unit grace timer (main included, so ch0 also winds down on its own
+    // when another consumer keeps the base up). nullptr = stop immediately.
+    void set_unit_grace_timer(int unit, IGraceTimer* timer);
 
     DemandHandle acquire(ConsumerType type, Result* result = nullptr);              // main unit
     DemandHandle acquire_unit(int unit, ConsumerType type, Result* result = nullptr);
+    // Base-only demand (UNIT_AI): guarantees sensor/ISP are up without starting
+    // any encoder - the minimum a detector needs. Released like any handle.
+    DemandHandle acquire_base(ConsumerType type, Result* result = nullptr);
 
     // One current frame as JPEG. Takes snapshot demand internally: wakes the
     // base from COLD_IDLE if needed, reuses a running pipeline untouched, and
@@ -209,6 +215,7 @@ private:
     State            state_ = State::ColdIdle;
     unsigned         generation_ = 0, start_count_ = 0, stop_count_ = 0, failed_count_ = 0;
     unsigned         restart_count_ = 0, sub_restart_count_ = 0;
+    int              ai_demand_ = 0;              // base-only holders (detectors)
     std::string      last_error_;
     bool             shutdown_ = false;
     int              sensor_fps_target_ = -1;

@@ -34,7 +34,7 @@ using lifecycle::unit_name;
 
 struct RtspServer::Session {
     int         fd = -1;
-    int         unit = lifecycle::UNIT_MAIN;   // chosen by the request URL
+    int         unit = -1;                      // bound to a stream on the first DESCRIBE/SETUP/PLAY
     std::string peer;
     std::string session_id;
     bool        tcp = true;
@@ -55,11 +55,17 @@ RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeli
     : cfg_(cfg), pipeline_(pipeline), hub_(hub), sub_hub_(sub_hub) {}
 
 int RtspServer::unit_from_url(const std::string& url) const {
-    // The substream path is the specific one; match it first. ch0/ch1 are
-    // disjoint, so a substring test on the mount identifies the unit.
-    if (sub_hub_ && !cfg_.sub_path.empty() && url.find(cfg_.sub_path) != std::string::npos)
-        return lifecycle::UNIT_SUB;
-    return lifecycle::UNIT_MAIN;
+    // Extract the mount path from the request URL and compare it exactly, so an
+    // unknown mount is rejected rather than silently treated as ch0. Accepts a
+    // trailing "/trackID=..." control suffix.
+    std::string path = url;
+    size_t sch = path.find("://");
+    if (sch != std::string::npos) { size_t sl = path.find('/', sch + 3); path = (sl == std::string::npos) ? "" : path.substr(sl); }
+    size_t tr = path.find("/trackID"); if (tr != std::string::npos) path = path.substr(0, tr);
+    if (!path.empty() && path.back() == '/') path.pop_back();
+    if (path == cfg_.path) return lifecycle::UNIT_MAIN;
+    if (sub_hub_ && !cfg_.sub_path.empty() && path == cfg_.sub_path) return lifecycle::UNIT_SUB;
+    return -1;                                    // unknown mount
 }
 StreamHub* RtspServer::hub_for(int unit) const { return unit == lifecycle::UNIT_SUB ? sub_hub_ : &hub_; }
 const std::string& RtspServer::path_for(int unit) const { return unit == lifecycle::UNIT_SUB ? cfg_.sub_path : cfg_.path; }
@@ -259,17 +265,17 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
     // The request line is "METHOD url RTSP/1.0"; the url selects main vs sub.
     // A stream request for the substream mount when it is not configured is a
     // 404, not a silent fall-through to the main stream.
-    {
+    if (method == "DESCRIBE" || method == "SETUP" || method == "PLAY") {
         size_t a = req.find(' '), b = (a == std::string::npos) ? std::string::npos : req.find(' ', a + 1);
         std::string url = (a != std::string::npos && b != std::string::npos) ? req.substr(a + 1, b - a - 1) : "";
-        if (method == "DESCRIBE" || method == "SETUP" || method == "PLAY") {
-            if (!sub_hub_ && !cfg_.sub_path.empty() && url.find(cfg_.sub_path) != std::string::npos) {
-                    std::string nf = "RTSP/1.0 404 Not Found\r\nCSeq: " + cseq + "\r\n\r\n";
-                    send_all(s.fd, nf.data(), nf.size(), cfg_.send_stall_ms);
-                    return false;
-                }
-            s.unit = unit_from_url(url);
-        }
+        int ru = unit_from_url(url);
+        auto quick = [&](const char* st) {
+            std::string r = std::string("RTSP/1.0 ") + st + "\r\nCSeq: " + cseq + "\r\n\r\n";
+            send_all(s.fd, r.data(), r.size(), cfg_.send_stall_ms);
+        };
+        if (ru < 0) { quick("404 Not Found"); return false; }              // unknown mount
+        if (s.unit >= 0 && s.unit != ru) { quick("455 Method Not Valid in This State"); return true; }  // one session, one stream
+        s.unit = ru;
     }
 
     auto reply = [&](const char* status, const std::string& extra, const std::string& body) {

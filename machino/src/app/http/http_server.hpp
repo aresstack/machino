@@ -23,7 +23,8 @@ struct ServerConfig {
     int         port = 8080;
     int         max_clients = 16;
     int         idle_timeout_ms = 30000;      // non-SSE keep-alive idle
-    size_t      max_out_buffer = 64 * 1024;   // per client; overflow -> disconnect
+    size_t      max_out_buffer = 64 * 1024;    // per client for API/SSE; overflow -> disconnect
+    size_t      max_snapshot_bytes = 4 * 1024 * 1024;  // a full-res JPEG response may exceed the API cap
     int         telemetry_interval_ms = 1000; // SSE telemetry rate (only while SSE clients exist)
 };
 
@@ -42,7 +43,7 @@ private:
     bool handle_request(Client& c);
     void drain_events(Client& c);
     bool flush(Client& c);
-    bool queue(Client& c, const std::string& data);
+    bool queue(Client& c, const std::string& data, size_t cap = 0);   // cap 0 = max_out_buffer
 
     ServerConfig      cfg_;
     api::ApiService&  api_;

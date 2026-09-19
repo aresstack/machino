@@ -77,8 +77,9 @@ void HttpServer::accept_client() {
     clients_.push_back(std::move(c));
 }
 
-bool HttpServer::queue(Client& c, const std::string& data) {
-    if (c.out.size() + data.size() > cfg_.max_out_buffer) { LOGW(MOD, "%s: output buffer overflow (%zu B) - dropping slow client", c.peer.c_str(), c.out.size()); return false; }
+bool HttpServer::queue(Client& c, const std::string& data, size_t cap) {
+    size_t limit = cap ? cap : cfg_.max_out_buffer;
+    if (c.out.size() + data.size() > limit) { LOGW(MOD, "%s: output buffer overflow (%zu B, cap %zu) - dropping slow client", c.peer.c_str(), c.out.size(), limit); return false; }
     c.out += data;
     return true;
 }
@@ -139,7 +140,7 @@ bool HttpServer::handle_request(Client& c) {
             Result sr = api_.snapshot(jpg, serr);
             if (sr) {
                 std::string body(reinterpret_cast<const char*>(jpg.data()), jpg.size());
-                bool ok = queue(c, response(200, "image/jpeg", body, req.keep_alive));
+                bool ok = queue(c, response(200, "image/jpeg", body, req.keep_alive), cfg_.max_snapshot_bytes);
                 if (!req.keep_alive) c.close_after_flush = true;
                 return ok;
             }

@@ -30,10 +30,10 @@ inline const char* consumer_name(ConsumerType t) {
 
 // Stream units. Deliberately not the adapter's channel numbers: the mapping
 // from unit to IMP group/channel is the adapter's business alone.
-enum : int { UNIT_MAIN = 0, UNIT_SUB = 1, UNIT_JPEG = 2, UNIT_COUNT = 3 };
+enum : int { UNIT_MAIN = 0, UNIT_SUB = 1, UNIT_JPEG = 2, UNIT_AI = 3, UNIT_COUNT = 4 };
 
 inline const char* unit_name(int u) {
-    switch (u) { case UNIT_MAIN: return "main"; case UNIT_SUB: return "sub"; case UNIT_JPEG: return "jpeg"; }
+    switch (u) { case UNIT_MAIN: return "main"; case UNIT_SUB: return "sub"; case UNIT_JPEG: return "jpeg"; case UNIT_AI: return "ai"; }
     return "?";
 }
 

@@ -206,8 +206,8 @@ Json ApiService::state_json() {
     m.set("framesource_buffers", Json::integer(s.buffers));
     m.set("encoder_buffers", s.encoder_buffers > 0 ? Json::integer(s.encoder_buffers) : Json::null());
     m.set("width", Json::integer(s.width)); m.set("height", Json::integer(s.height));
-    m.set("encoder_active", Json::boolean(running));
-    m.set("sensor_active", Json::boolean(running));
+    m.set("encoder_active", Json::boolean(st.unit_active[lifecycle::UNIT_MAIN]));   // main encoder, not the base
+    m.set("sensor_active", Json::boolean(running));                                 // base (sensor/ISP)
     // M8: per-unit runtime view. The flat fields above stay for compatibility
     // and describe the main stream (unit 0).
     Json streams = Json::object();

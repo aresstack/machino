@@ -22,7 +22,7 @@ namespace {
 struct Rig {
     CallLog log;
     FakePlatform platform{log};
-    FakeTimer base_timer, sub_timer, jpeg_timer;
+    FakeTimer base_timer, sub_timer, jpeg_timer, main_timer;
     StreamHub hub, sub_hub;
     EffectiveStream main_s, sub_s;
     LifecycleConfig lc;
@@ -37,6 +37,7 @@ struct Rig {
     explicit Rig(bool with_sub = true, bool with_jpeg = true)
         : main_s(mk(1920, 1080, 20, 3000)), sub_s(mk(640, 360, 10, 512)), lc(mk_lc()),
           mgr(platform, main_s, lc, base_timer, hub) {
+        mgr.set_unit_grace_timer(UNIT_MAIN, &main_timer);
         if (with_sub) mgr.configure_sub(sub_s, sub_hub, &sub_timer);
         if (with_jpeg) { JpegParams p; p.quality = 80; mgr.configure_jpeg(p, 300, 2000, &jpeg_timer); }
     }
@@ -235,6 +236,40 @@ void test_base_restart_restores_sub() {
     MCHECK(r.mgr.stream().fps == 15 && r.mgr.stream_unit(UNIT_SUB).width == 640);
 }
 
+// ch0 + ch1, then ch0 leaves while ch1 stays: the base and ch1 keep running,
+// ch0 winds down on its own grace (the reverse of test_main_plus_sub).
+void test_main_winds_down_while_sub_runs() {
+    Rig r;
+    auto m = r.mgr.acquire(ConsumerType::Rtsp);
+    auto sub = r.mgr.acquire_unit(UNIT_SUB, ConsumerType::Rtsp);
+    MCHECK(r.mgr.unit_active(UNIT_MAIN) && r.mgr.unit_active(UNIT_SUB));
+    m.release();                                       // last ch0 consumer leaves; ch1 stays
+    MCHECK(r.mgr.state() == State::Active);            // base untouched
+    MCHECK(r.main_timer.armed && r.mgr.unit_active(UNIT_MAIN));  // ch0 warm until its grace
+    r.mgr.on_unit_grace(UNIT_MAIN);
+    MCHECK(!r.mgr.unit_active(UNIT_MAIN) && r.mgr.unit_active(UNIT_SUB));  // ch0 gone, ch1 runs
+    MCHECK(r.mgr.state() == State::Active && r.log.count("platform.tear_down") == 0);
+}
+
+// AI base demand: sensor/ISP up, no encoder started at all.
+void test_ai_base_demand() {
+    Rig r;
+    auto ai = r.mgr.acquire_base(ConsumerType::Ai);
+    MCHECK(ai.active() && ai.unit() == UNIT_AI);
+    MCHECK(r.mgr.state() == State::Active);
+    MCHECK(r.log.count("platform.bring_up") == 1 && r.log.count("enc.create") == 0);   // base only
+    MCHECK(r.mgr.stats().unit_active[UNIT_AI]);
+    // a main consumer can still join the same base without a second bring-up
+    auto m = r.mgr.acquire(ConsumerType::Rtsp);
+    MCHECK(m.active() && r.mgr.unit_active(UNIT_MAIN) && r.log.count("platform.bring_up") == 1);
+    m.release();
+    MCHECK(r.mgr.state() == State::Active);            // AI still holds the base
+    ai.release();
+    MCHECK(r.mgr.state() == State::GraceIdle);
+    r.mgr.on_grace_timeout();
+    MCHECK(r.mgr.state() == State::ColdIdle && r.log.count("platform.tear_down") == 1);
+}
+
 } // namespace
 
 void run_multistream_tests() {
@@ -250,4 +285,6 @@ void run_multistream_tests() {
     test_unconfigured_refused();
     test_sub_update();
     test_base_restart_restores_sub();
+    test_main_winds_down_while_sub_runs();
+    test_ai_base_demand();
 }

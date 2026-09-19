@@ -49,6 +49,11 @@ void PipelineManager::configure_sub(const EffectiveStream& s, StreamHub& hub, IG
     if (!units_[UNIT_SUB].pool) units_[UNIT_SUB].pool = std::make_unique<AuPool>(16, 64 * 1024);
 }
 
+void PipelineManager::set_unit_grace_timer(int unit, IGraceTimer* timer) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (unit >= 0 && unit <= UNIT_SUB) units_[unit].timer = timer;
+}
+
 void PipelineManager::configure_jpeg(const JpegParams& p, int cache_ms, int grace_ms, IGraceTimer* timer) {
     std::lock_guard<std::mutex> lk(m_);
     jpeg_.configured = true;
@@ -66,7 +71,7 @@ void PipelineManager::transition(State to, const char* why) {
 }
 
 int PipelineManager::total_all_locked() const {
-    return units_[UNIT_MAIN].total + units_[UNIT_SUB].total + jpeg_.demand;
+    return units_[UNIT_MAIN].total + units_[UNIT_SUB].total + jpeg_.demand + ai_demand_;
 }
 
 // ---- demand ---------------------------------------------------------------
@@ -126,8 +131,32 @@ DemandHandle PipelineManager::acquire_unit(int unit, ConsumerType type, Result* 
     return DemandHandle(this, type, unit);
 }
 
+DemandHandle PipelineManager::acquire_base(ConsumerType type, Result* result) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (shutdown_) { if (result) *result = Result::busy(); return DemandHandle(); }
+    if (!ensure_base_locked(type, -1)) {       // -1: bring the base up, start no encoder
+        if (result) *result = Result::error();
+        return DemandHandle();
+    }
+    ++ai_demand_;
+    LOGI(MOD, "demand +1 type=%s unit=base all=%d", consumer_name(type), total_all_locked());
+    if (result) *result = Result::ok();
+    return DemandHandle(this, type, UNIT_AI);
+}
+
 void PipelineManager::release(ConsumerType type, int unit) {
     std::lock_guard<std::mutex> lk(m_);
+    if (unit == UNIT_AI) {
+        if (ai_demand_ > 0) --ai_demand_;
+        LOGI(MOD, "demand -1 type=%s unit=base all=%d", consumer_name(type), total_all_locked());
+        if (!shutdown_ && total_all_locked() == 0 && state_ == State::Active) {
+            for (Unit& x : units_) if (x.grace_armed && x.timer) { x.timer->disarm(); x.grace_armed = false; }
+            char why[48]; snprintf(why, sizeof why, "timeout=%dms", cfg_.idle_grace_ms);
+            transition(State::GraceIdle, why);
+            timer_.arm(cfg_.idle_grace_ms);
+        }
+        return;
+    }
     Unit& u = units_[unit];
     if (u.demand[(int)type] > 0) --u.demand[(int)type];
     if (u.total > 0) --u.total;
@@ -142,8 +171,9 @@ void PipelineManager::release(ConsumerType type, int unit) {
         timer_.arm(cfg_.idle_grace_ms);
         return;
     }
-    // Others still need the base: this unit winds down on its own grace.
-    if (u.total == 0 && u.running && state_ == State::Active && unit != UNIT_MAIN) {
+    // Others still need the base: this unit winds down on its own grace,
+    // main included - "shared base, independent units" applies both ways.
+    if (u.total == 0 && u.running && state_ == State::Active) {
         if (u.timer) { u.timer->arm(cfg_.idle_grace_ms); u.grace_armed = true; }
         else stop_unit_locked(unit);
     }
@@ -193,9 +223,11 @@ Stats PipelineManager::stats() const {
     s.unit_demand[UNIT_MAIN] = units_[UNIT_MAIN].total;
     s.unit_demand[UNIT_SUB]  = units_[UNIT_SUB].total;
     s.unit_demand[UNIT_JPEG] = jpeg_.demand;
+    s.unit_demand[UNIT_AI]   = ai_demand_;
     s.unit_active[UNIT_MAIN] = units_[UNIT_MAIN].running;
     s.unit_active[UNIT_SUB]  = units_[UNIT_SUB].running;
     s.unit_active[UNIT_JPEG] = jpeg_.enc != nullptr;
+    s.unit_active[UNIT_AI]   = ai_demand_ > 0;
     s.generation = generation_; s.start_count = start_count_; s.stop_count = stop_count_;
     s.failed_count = failed_count_; s.restart_count = restart_count_; s.sub_restart_count = sub_restart_count_;
     s.last_error = last_error_;
