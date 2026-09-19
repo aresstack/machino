@@ -27,6 +27,12 @@ move_file() {
     mv "$_s" "$_d" 2>/dev/null && return 0
     cp -p "$_s" "$_d" && rm -f "$_s"
 }
+
+# Same compatibility rule as streamerctl/init: on this BusyBox pgrep, machino
+# must be matched by its executable path, not "pgrep -x machino" (its argv0 is
+# the full path). This is the safety/rollback path, so it must use the verified
+# matcher too.
+machino_running() { pgrep -f /usr/bin/machino >/dev/null 2>&1; }
 case "${1:-}" in --keep-config) KEEP_CONFIG=1 ;; esac
 
 preinstall=none
@@ -40,15 +46,15 @@ if [ -x "$INITD/machino" ]; then
     "$INITD/machino" stop >/dev/null 2>&1
 fi
 i=0
-while pgrep -x machino >/dev/null 2>&1 && [ $i -lt 15 ]; do i=$((i + 1)); sleep 1; done
-if pgrep -x machino >/dev/null 2>&1; then
+while machino_running && [ $i -lt 15 ]; do i=$((i + 1)); sleep 1; done
+if machino_running; then
     # Hard stop. Continuing would restore Majestic's boot slot and possibly
     # start it next to a Machino that still owns the media hardware - two media
     # owners, which is the one thing this whole package exists to prevent.
     # Nothing has been changed at this point, so aborting is safe.
     warn "machino is still running and would not stop"
     warn "nothing was changed. Stop it and run uninstall.sh again:"
-    warn "    /etc/init.d/machino stop     # or: kill \$(pgrep -x machino)"
+    warn "    /etc/init.d/machino stop     # or: kill \$(pgrep -f /usr/bin/machino)"
     exit 1
 fi
 

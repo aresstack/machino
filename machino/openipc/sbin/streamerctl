@@ -29,9 +29,6 @@ WWW_ROOT="$ROOT/var/www"
 HTTPD="${STREAMERCTL_HTTPD:-/usr/sbin/httpd}"
 HTTPD_PID="$ROOT/var/run/machino-httpd.pid"
 HTTPD_CONF="$STATE_DIR/httpd.conf"          # basic auth + address rules for our WebUI host
-WDT="${STREAMERCTL_WDT:-/dev/watchdog}"
-WDT_FEEDER="${STREAMERCTL_WDT_FEEDER:-watchdog}"   # busybox applet
-WDT_PID="$ROOT/var/run/machino-wdt.pid"
 
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-20}"      # seconds to wait for the new owner to come up
 
@@ -48,9 +45,17 @@ api_port() {
     echo "$p"
 }
 
-# machino's argv0 is its full path, so it must be matched by path (pgrep -f);
-# pgrep -x machino never matches it on this busybox. majestic is started by its
-# init with argv0="majestic" (start-stop-daemon -a), so -x is right for it.
+# Compatibility note - the single source of truth for "is Machino running":
+# On the BusyBox pgrep shipped by this OpenIPC/T40NN image, `pgrep -x` does not
+# reliably identify Machino by the expected short process name. Hardware
+# verification showed the daemon running and serving API/RTSP while
+# `pgrep -x machino` returned no match (its argv0 is the full path
+# /usr/bin/machino). Matching the executable path in the command line
+# (`pgrep -f /usr/bin/machino`) is the verified behaviour on this target.
+# Keep this in ONE helper; no bare pgrep for machino anywhere else. If a future
+# BusyBox makes exact-name matching reliable, change it here after hardware
+# verification. Majestic is matched separately by -x on purpose: its init starts
+# it with argv0="majestic" (start-stop-daemon -a), which -x matches correctly.
 MACHINO_BIN="${STREAMERCTL_MACHINO_BIN:-/usr/bin/machino}"
 majestic_running() { pgrep -x majestic >/dev/null 2>&1; }
 machino_running()  { pgrep -f "$MACHINO_BIN" >/dev/null 2>&1; }
@@ -193,42 +198,13 @@ majestic_healthy() {
     return 1
 }
 
-# Majestic arms the hardware watchdog (majestic.yaml watchdog.enabled, 15 s)
-# and holds /dev/watchdog open. Killing it leaves the watchdog armed with no
-# feeder, and 15 seconds later the SoC resets without a single line of console
-# output - that is how the first real switch on the T40NN died. So whenever
-# majestic is not the one running, this script keeps a busybox watchdog feeder
-# alive, and stops it right before majestic starts, because the device allows
-# only one opener.
-wdt_feeder_start() {
-    if [ -r "$WDT_PID" ]; then
-        _p=$(cat "$WDT_PID" 2>/dev/null)
-        [ -n "$_p" ] && alive "$_p" && return 0
-    fi
-    case "$WDT_FEEDER" in
-        /*) [ -x "$WDT_FEEDER" ] || { warn "no watchdog feeder at $WDT_FEEDER - a majestic-armed watchdog will reset the board"; return 1; } ;;
-        *)  command -v "$WDT_FEEDER" >/dev/null 2>&1 || { warn "no watchdog feeder available - a majestic-armed watchdog will reset the board"; return 1; } ;;
-    esac
-    "$WDT_FEEDER" -t 4 -T 60 "$WDT" || { warn "could not start the watchdog feeder"; return 1; }
-    sleep 1
-    _p=$(pgrep -f "$WDT_FEEDER -t 4" | head -1)
-    [ -n "$_p" ] || { warn "watchdog feeder did not come up"; return 1; }
-    mkdir -p "$(dirname "$WDT_PID")"
-    printf '%s
-' "$_p" > "$WDT_PID"
-    return 0
-}
-
-wdt_feeder_stop() {
-    [ -r "$WDT_PID" ] || return 0
-    _p=$(cat "$WDT_PID" 2>/dev/null)
-    rm -f "$WDT_PID"
-    [ -n "$_p" ] || return 0
-    kill "$_p" 2>/dev/null              # busybox watchdog disarms on SIGTERM (magic close)
-    _i=0
-    while alive "$_p" && [ "$_i" -lt 5 ]; do _i=$((_i + 1)); sleep 1; done
-    return 0
-}
+# Note on the hardware watchdog: an earlier version kept a busybox watchdog
+# feeder alive across the switch, on the theory that stopping majestic left the
+# watchdog armed. Hardware tests disproved that - majestic releases
+# /dev/watchdog when it stops, so switching to machino needs no feeder and
+# produced no reset without one. The feeder was removed rather than carried
+# along on a disproven cause. (The reset seen on the RETURN path is majestic's
+# own media/SDK failure on this T40NN, unrelated to the watchdog.)
 
 # --------------------------------------------------------------- switching ---
 stop_all_owners() {
@@ -245,7 +221,6 @@ stop_all_owners() {
 
 activate_machino() {
     stop_all_owners || return 1
-    wdt_feeder_start                     # majestic may have left the watchdog armed
     webui_start || warn "WebUI is not being served - use the CLI to switch back"
     [ -x "$INIT_MACHINO" ] || { warn "$INIT_MACHINO missing"; return 1; }
     "$INIT_MACHINO" start >/dev/null 2>&1
@@ -254,7 +229,6 @@ activate_machino() {
 
 activate_majestic() {
     stop_all_owners || return 1
-    wdt_feeder_stop                        # single-opener device: majestic takes it back
     webui_stop || return 1                 # hand port 80 back before majestic claims it
     [ -x "$INIT_MAJESTIC" ] || { warn "$INIT_MAJESTIC missing"; return 1; }
     "$INIT_MAJESTIC" start >/dev/null 2>&1
@@ -265,7 +239,7 @@ activate() {
     case "$1" in
         machino)  activate_machino ;;
         majestic) activate_majestic ;;
-        none)     stop_all_owners && wdt_feeder_start && webui_stop ;;
+        none)     stop_all_owners && webui_stop ;;
         *)        warn "unknown streamer '$1'"; return 1 ;;
     esac
 }
@@ -301,9 +275,6 @@ cmd_status() {
     echo "selected:     $sel"
     echo "running:      $run"
     echo "port 80:      $(port80_owner)"
-    if [ -r "$WDT_PID" ] && _wp=$(cat "$WDT_PID" 2>/dev/null) && [ -n "$_wp" ] && alive "$_wp"; then
-        echo "watchdog:     fed by streamerctl (pid $_wp)"
-    fi
     if machino_running; then
         port=$(api_port)
         st=$(wget -q -O- -T 2 "http://127.0.0.1:$port/api/v1/state" 2>/dev/null |

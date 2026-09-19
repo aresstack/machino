@@ -283,6 +283,25 @@ Common causes:
 
 ---
 
+## Switching back to Majestic on broken-Majestic hardware
+
+On a camera where Majestic's media stack does not work (e.g. the T40NN, where
+Majestic logs `Cannot start SDK`), starting Majestic live again after Machino
+can reset the board - Majestic's own start takes the SoC down. `streamerctl set
+majestic` does the switch correctly, but Majestic itself fails at start.
+
+Majestic **does** start cleanly at boot (a fresh ISP). So on such hardware the
+reliable way back is a reboot rather than a live switch:
+
+```sh
+streamerctl set majestic     # records the selection; may not come up live here
+reboot                        # Majestic starts cleanly from a fresh boot
+```
+
+The selection is persisted, so after the reboot the camera comes up on
+Majestic. This is specific to cameras whose Majestic cannot re-init the media
+hardware; where Majestic works, the live switch back is immediate.
+
 ## Recovery
 
 **The WebUI is gone and you cannot switch back.** Use SSH:
