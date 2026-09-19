@@ -58,7 +58,7 @@ void test_capabilities() {
     PCHECK(c.sensor.fps.min == 10 && c.sensor.fps.max == 20);          // from verified modes only
     PCHECK(c.isp.performance.support == Cap::Unsupported && c.isp.performance.readable);
     PCHECK(c.power.cpu_frequency.support == Cap::Unsupported);
-    PCHECK(c.ai.available == Cap::Unknown);                            // untouched stays unknown
+    PCHECK(c.ai.available == Cap::Supported);                          // fake advertises the motion backend
     Rig q; q.power.cpu_support = Cap::Supported; q.platform.power_ptr = &q.power;
     // service captured caps at construction with cpu unsupported; a fresh service sees Supported
     PerformanceService svc2(q.mgr, q.platform, q.stats, q.hw, q.video);

@@ -16,6 +16,7 @@
 #include "core/capabilities.hpp"
 #include "core/config.hpp"
 #include "core/config_store.hpp"
+#include "core/detection/detection_service.hpp"
 #include "core/events.hpp"
 #include "core/hw/board_profile_parser.hpp"
 #include "core/hw/registry.hpp"
@@ -173,7 +174,13 @@ int main(int argc, char** argv) {
         log_capabilities(perf.capabilities());
         perf.apply_config(cfg.performance, cfg.video);
         media::TuningService tuning(pipeline, *platform, hub, pipeline.stream(), cfg.image, cfg.latency);
-        api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg);
+        // M9: detection/AI. A consumer, not a media owner - it takes a base-only
+        // demand when enabled. Construction brings the base up iff cfg.ai.enabled.
+        detection::DetectionService detection(pipeline, *platform, bus, cfg.ai);
+        if (cfg.ai.enabled) LOGI(MOD, "detection: %s (%s, %d fps) state=%s", cfg.ai.detector.c_str(),
+                                 platform->capabilities().ai.motion == Cap::Supported ? "backend present" : "no backend",
+                                 cfg.ai.inference_fps, detection::ai_state_name(detection.state()));
+        api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection);
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         http::HttpServer httpd(hc, api, bus);
         RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr);
@@ -225,6 +232,7 @@ int main(int argc, char** argv) {
                                 if (!load_config(conf, fresh, e2)) { LOGW(MOD, "SIGHUP: reload failed: %s", e2.c_str()); continue; }
                                 LOGI(MOD, "SIGHUP -> applying performance/stream configuration");
                                 perf.apply_config(fresh.performance, fresh.video);
+                                detection.apply_config(fresh.ai);
                                 tuning.set_latency_profile(fresh.latency.profile);
                                 if (fresh.latency.gop) tuning.set_gop(*fresh.latency.gop);
                                 if (fresh.latency.framesource_buffers) tuning.set_framesource_buffers(*fresh.latency.framesource_buffers);
@@ -260,6 +268,7 @@ int main(int argc, char** argv) {
         }
         httpd.stop();
         server.stop();
+        detection.shutdown();   // stop the detector and release its base demand before the base goes down
         hold.release();
         pipeline.shutdown();
         lifecycle::Stats st = pipeline.stats();

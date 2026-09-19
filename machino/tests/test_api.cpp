@@ -4,6 +4,7 @@
 #include "app/api/api_service.hpp"
 #include "app/compat/majestic_webui.hpp"
 #include "core/config_store.hpp"
+#include "core/detection/detection_service.hpp"
 #include "core/events.hpp"
 #include "core/hw/registry.hpp"
 #include "core/hw/resolve.hpp"
@@ -49,10 +50,11 @@ struct Rig {
     CallLog log; FakePowerControl power; FakePlatform platform{log, &power}; FakeTimer timer; StreamHub hub; FakeStats stats;
     EventBus bus; ConfigStore store{TMP_CONF};
     hw::ResolvedHardware hw; AppConfig cfg; EffectiveStream stream; LifecycleConfig lc;
-    PipelineManager mgr; power::PerformanceService perf; media::TuningService tuning; api::ApiService api;
+    PipelineManager mgr; power::PerformanceService perf; media::TuningService tuning;
+    detection::DetectionService detection; api::ApiService api;
     Rig() : hw(make_hw()), stream(effective_stream(cfg.video, hw)), mgr(platform, stream, mk_lc(), timer, hub),
             perf(mgr, platform, stats, hw, cfg.video), tuning(mgr, platform, hub, stream, cfg.image, cfg.latency),
-            api(perf, tuning, mgr, store, bus, hw, cfg) {
+            detection(mgr, platform, bus, cfg.ai), api(perf, tuning, mgr, store, bus, hw, cfg, &detection) {
         FILE* f = fopen(TMP_CONF, "w"); if (f) { fputs("# test\nboard = board-x\nvideo.bitrate = 3000\nlog.level = 2\n", f); fclose(f); }
         std::string err; store.load(err);
         mgr.set_state_listener([this](State a, State b) { Json j = Json::object(); j.set("from", Json::string(state_name(a))); j.set("to", Json::string(state_name(b))); bus.publish("lifecycle", j.dump()); });
@@ -354,6 +356,74 @@ void test_m8_snapshot_unsupported() {
     ACHECK(!sr && sr.status == Status::Unsupported);
 }
 
+// M9: detection/AI surface. Enabling AI is a base-only demand (no encoder),
+// runtime-toggled and persisted through the same PATCH path as everything else.
+void test_m9_ai_api() {
+    Rig r;
+    api::Response caps = r.api.capabilities();
+    ACHECK(path(caps.body, "ai.available")->as_string() == "supported");
+    ACHECK(path(caps.body, "ai.motion")->as_string() == "supported");
+    ACHECK(path(caps.body, "ai.person")->as_string() == "unknown");
+    ACHECK(path(caps.body, "ai.detectors")->size() == 1 && path(caps.body, "ai.detectors")->at(0).as_string() == "motion");
+    ACHECK(path(caps.body, "ai.inference_fps.min")->as_int() == 1 && path(caps.body, "ai.inference_fps.max")->as_int() == 60);
+
+    // starts disabled: no demand, base cold
+    ACHECK(path(r.api.state().body, "ai.state")->as_string() == "disabled" && !path(r.api.state().body, "ai.enabled")->as_bool());
+    ACHECK(path(r.api.config().body, "ai.enabled")->as_bool() == false && path(r.api.config().body, "ai.inference_fps")->as_int() == 5);
+    ACHECK(r.mgr.state() == State::ColdIdle && r.log.count("platform.bring_up") == 0);
+
+    // enable at runtime: base-only demand comes up (no encoder), detector active
+    api::Response p = r.api.patch_config("{\"ai\":{\"enabled\":true}}", "");
+    ACHECK(p.status == 200 && p.body.get("changes")->at(0).get("status")->as_string() == "applied");
+    ACHECK(p.body.get("changes")->at(0).get("apply")->as_string() == "live");
+    ACHECK(r.log.count("platform.bring_up") == 1 && r.log.count("enc.create") == 0 && r.log.count("det.start") == 1);
+    ACHECK(path(r.api.state().body, "ai.state")->as_string() == "active" && path(r.api.state().body, "ai.enabled")->as_bool());
+    ACHECK(path(r.api.state().body, "ai.backend")->as_string() == "fake_motion");
+    ACHECK(r.store.get("ai.enabled") == "true");
+    api::Response tel = r.api.telemetry();
+    ACHECK(path(tel.body, "ai.state")->as_string() == "active" && path(tel.body, "ai.inference_fps_requested")->as_int() == 5);
+
+    // cadence change is applied and persisted (detector restarts, base stays up)
+    p = r.api.patch_config("{\"ai\":{\"inference_fps\":15}}", "");
+    ACHECK(p.status == 200 && r.store.get("ai.inference_fps") == "15");
+    ACHECK(path(r.api.config().body, "ai.inference_fps")->as_int() == 15 && r.platform.last_detector.inference_fps == 15);
+    ACHECK(r.log.count("platform.bring_up") == 1);   // base never blinked
+
+    // unknown detector rejected
+    p = r.api.patch_config("{\"ai\":{\"detector\":\"face\"}}", "");
+    ACHECK(p.status == 422 && path(p.body, "error.code")->as_string() == "invalid_value");
+
+    // disable releases the base demand
+    p = r.api.patch_config("{\"ai\":{\"enabled\":false}}", "");
+    ACHECK(p.status == 200 && r.store.get("ai.enabled") == "false");
+    ACHECK(path(r.api.state().body, "ai.state")->as_string() == "disabled");
+    ACHECK(r.mgr.state() == State::GraceIdle && !r.mgr.unit_active(lifecycle::UNIT_AI));
+}
+
+// AI PATCH must be refused cleanly where the platform has no detector. Built
+// without the shared Rig: PerformanceService captures caps at construction, so
+// the "no detector" flag must be set before the service exists.
+void test_m9_ai_unsupported() {
+    CallLog log; FakePowerControl power; FakePlatform platform{log, &power};
+    platform.detector_supported = false;                 // no AI capability, create_detector returns null
+    FakeTimer timer; StreamHub hub; FakeStats stats; EventBus bus;
+    ConfigStore store{TMP_CONF};
+    hw::ResolvedHardware hw = make_hw(); AppConfig cfg;
+    EffectiveStream stream = effective_stream(cfg.video, hw);
+    LifecycleConfig lc; lc.idle_grace_ms = 1000; lc.poll_timeout_ms = 10;
+    PipelineManager mgr(platform, stream, lc, timer, hub);
+    power::PerformanceService perf(mgr, platform, stats, hw, cfg.video);
+    media::TuningService tuning(mgr, platform, hub, stream, cfg.image, cfg.latency);
+    detection::DetectionService detection(mgr, platform, bus, cfg.ai);
+    api::ApiService api(perf, tuning, mgr, store, bus, hw, cfg, &detection);
+
+    api::Response caps = api.capabilities();
+    ACHECK(path(caps.body, "ai.available")->as_string() == "unknown" && path(caps.body, "ai.detectors")->size() == 0);
+    api::Response p = api.patch_config("{\"ai\":{\"enabled\":true}}", "");
+    ACHECK(p.status == 422 && path(p.body, "error.code")->as_string() == "unsupported_control");
+    ACHECK(mgr.state() == State::ColdIdle && log.count("platform.bring_up") == 0);
+}
+
 } // namespace
 
 void run_api_tests() {
@@ -369,5 +439,7 @@ void run_api_tests() {
     test_rtsp_client_limit_api();
     test_m8_streams_and_snapshot();
     test_m8_snapshot_unsupported();
+    test_m9_ai_api();
+    test_m9_ai_unsupported();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }

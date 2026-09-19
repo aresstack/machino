@@ -9,6 +9,7 @@
 #pragma once
 #include "core/config.hpp"
 #include "core/config_store.hpp"
+#include "core/detection/detection_service.hpp"
 #include "core/events.hpp"
 #include "core/hw/resolve.hpp"
 #include "core/json.hpp"
@@ -30,7 +31,8 @@ struct Response {
 class ApiService {
 public:
     ApiService(power::PerformanceService& perf, media::TuningService& tuning, lifecycle::PipelineManager& pipeline, ConfigStore& store,
-               EventBus& bus, const hw::ResolvedHardware& hw, const AppConfig& cfg);
+               EventBus& bus, const hw::ResolvedHardware& hw, const AppConfig& cfg,
+               detection::DetectionService* detection = nullptr);
 
     Response discovery() const;
     Response capabilities() const;
@@ -60,6 +62,7 @@ private:
     EventBus&                   bus_;
     hw::ResolvedHardware        hw_;
     AppConfig                   cfg_;              // startup snapshot (for non-runtime keys)
+    detection::DetectionService* detection_ = nullptr;   // M9: optional, null when no AI subsystem
     std::mutex                  patch_m_;          // PATCHes are serialised
 };
 

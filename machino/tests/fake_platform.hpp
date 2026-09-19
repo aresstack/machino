@@ -169,6 +169,7 @@ public:
         c.sensor.fps = RangeCap{sensor_fps_supported ? Cap::Supported : Cap::Unsupported, -1, -1, sensor_fps_supported ? ApplyMode::Live : ApplyMode::Unsupported};
         c.isp.available = Cap::Supported; c.encoder.hardware = Cap::Supported;
         if (jpeg_supported) { c.jpeg.supported = Cap::Supported; c.jpeg.max_width = 1920; c.jpeg.max_height = 1080; }
+        if (detector_supported) { c.ai.available = Cap::Supported; c.ai.motion = Cap::Supported; }   // matches create_detector
         return c;
     }
     Result bring_up() override {

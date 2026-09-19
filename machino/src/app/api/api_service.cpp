@@ -36,8 +36,8 @@ static int64_t now_ms_realtime() { struct timespec ts; clock_gettime(CLOCK_REALT
 template <typename T> static Json opt(const Optional<T>& o) { return o.available ? Json::number((double)o.value) : Json::null(); }
 
 ApiService::ApiService(power::PerformanceService& perf, media::TuningService& tuning, lifecycle::PipelineManager& pipeline, ConfigStore& store,
-                       EventBus& bus, const hw::ResolvedHardware& hw, const AppConfig& cfg)
-    : perf_(perf), tuning_(tuning), pipeline_(pipeline), store_(store), bus_(bus), hw_(hw), cfg_(cfg) {}
+                       EventBus& bus, const hw::ResolvedHardware& hw, const AppConfig& cfg, detection::DetectionService* detection)
+    : perf_(perf), tuning_(tuning), pipeline_(pipeline), store_(store), bus_(bus), hw_(hw), cfg_(cfg), detection_(detection) {}
 
 Json ApiService::error(const char* code, const std::string& path, const std::string& message) {
     Json e = Json::object(); e.set("code", Json::string(code));
@@ -126,6 +126,20 @@ Json ApiService::capabilities_json() const {
     jp.set("max_width", c.jpeg.max_width >= 0 ? Json::integer(c.jpeg.max_width) : Json::null());
     jp.set("max_height", c.jpeg.max_height >= 0 ? Json::integer(c.jpeg.max_height) : Json::null());
     j.set("jpeg", jp);
+    // M9: detection/AI. Detectors are listed only when the capability is proven;
+    // person stays unknown until an NNA backend is actually built and verified.
+    Json ai = Json::object();
+    ai.set("available", Json::string(cap_name(c.ai.available)));
+    ai.set("motion", Json::string(cap_name(c.ai.motion)));
+    ai.set("person", Json::string(cap_name(c.ai.person)));
+    Json detectors = Json::array();
+    if (c.ai.motion == Cap::Supported) detectors.push(Json::string("motion"));
+    ai.set("detectors", detectors);
+    Json aifps = Json::object(); aifps.set("status", Json::string(cap_name(c.ai.available)));
+    aifps.set("apply", Json::string(c.ai.available == Cap::Supported ? "live" : "unsupported"));
+    aifps.set("min", Json::integer(1)); aifps.set("max", Json::integer(60));
+    ai.set("inference_fps", aifps);
+    j.set("ai", ai);
     Json ctl = Json::object();
     ctl.set("sensor_fps", range_control(c.sensor.fps));
     ctl.set("stream_fps", range_control(c.video.fps));
@@ -242,6 +256,17 @@ Json ApiService::state_json() {
     ae.set("analog_gain", ex.available ? Json::integer(ex.again) : Json::null()); ae.set("digital_gain", ex.available ? Json::integer(ex.dgain) : Json::null());
     ae.set("isp_digital_gain", ex.available ? Json::integer(ex.isp_dgain) : Json::null()); ae.set("total_gain_db", ex.available ? Json::integer(ex.total_gain_db) : Json::null());
     image.set("exposure", ae); j.set("image", image);
+    if (detection_) {
+        detection::AiTelemetry ai = detection_->telemetry();
+        Json a = Json::object();
+        a.set("state", Json::string(detection::ai_state_name(ai.state)));
+        a.set("enabled", Json::boolean(ai.enabled));
+        a.set("detector", Json::string(ai.detector));
+        a.set("backend", ai.backend.empty() ? Json::null() : Json::string(ai.backend));
+        a.set("motion", Json::boolean(ai.motion_now));
+        a.set("last_error", ai.last_error.empty() ? Json::null() : Json::string(ai.last_error));
+        j.set("ai", a);
+    }
     j.set("revision", Json::integer(store_.revision()));
     return j;
 }
@@ -279,6 +304,18 @@ Json ApiService::config_json() {
     Json pw = Json::object(); pw.set("isp_performance", Json::string(power::perf_level_name(e.isp)));
     pw.set("encoder_performance", Json::string(power::perf_level_name(e.encoder))); pw.set("cpu_performance", Json::string(power::perf_level_name(e.cpu)));
     j.set("power", pw);
+    Json ai = Json::object();
+    if (detection_) {
+        detection::AiTelemetry a = detection_->telemetry();
+        ai.set("enabled", Json::boolean(a.enabled));
+        ai.set("detector", Json::string(a.detector));
+        ai.set("inference_fps", Json::integer(a.requested_fps));
+    } else {
+        ai.set("enabled", Json::boolean(cfg_.ai.enabled));
+        ai.set("detector", Json::string(cfg_.ai.detector));
+        ai.set("inference_fps", Json::integer(cfg_.ai.inference_fps));
+    }
+    j.set("ai", ai);
     return j;
 }
 Response ApiService::config() { return Response{200, config_json()}; }
@@ -333,6 +370,24 @@ Json ApiService::telemetry_json() {
     pw.set("cpu_frequency_hz", t.cpu_freq_khz.available ? Json::number((double)t.cpu_freq_khz.value * 1000.0) : Json::null());
     pw.set("profile", Json::string(power::profile_name(t.profile)));
     j.set("power", pw);
+    if (detection_) {
+        detection::AiTelemetry ai = detection_->telemetry();
+        Json a = Json::object();
+        a.set("state", Json::string(detection::ai_state_name(ai.state)));
+        a.set("enabled", Json::boolean(ai.enabled));
+        a.set("detector", Json::string(ai.detector));
+        a.set("backend", ai.backend.empty() ? Json::null() : Json::string(ai.backend));
+        a.set("inference_fps_requested", Json::integer(ai.requested_fps));
+        a.set("effective_fps", ai.effective_fps > 0.0 ? Json::number(ai.effective_fps) : Json::null());
+        a.set("completed", Json::integer((long long)ai.completed));
+        a.set("failed", Json::integer((long long)ai.failed));
+        a.set("detections_total", Json::integer((long long)ai.detections_total));
+        a.set("skipped", Json::integer((long long)ai.skipped));
+        a.set("motion", Json::boolean(ai.motion_now));
+        a.set("last_inference_ms", ai.last_inference_ms >= 0 ? Json::integer(ai.last_inference_ms) : Json::null());
+        a.set("last_detection_ms", ai.last_detection_ms >= 0 ? Json::integer(ai.last_detection_ms) : Json::null());
+        j.set("ai", a);
+    }
     return j;
 }
 Response ApiService::telemetry() { return Response{200, telemetry_json()}; }
@@ -464,6 +519,19 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                 if (!val.is_string()) return bad(422, "invalid_value", path, "level must be a string (auto|low|high)");
                 PerfLevel l; if (!power::parse_perf_level(val.as_string(), l)) return bad(422, "invalid_value", path, "unknown level (auto|low|high)");
                 c.key = "power." + kv.first; c.value = val.as_string();
+            } else if (s == "ai") {
+                if (!detection_ || caps.ai.available != Cap::Supported) return bad(422, "unsupported_control", path, "detection/AI is not available on this platform");
+                if (kv.first == "enabled") {
+                    if (!val.is_bool()) return bad(422, "invalid_value", path, "enabled must be a boolean");
+                    c.key = "ai.enabled"; c.value = val.as_bool() ? "true" : "false";
+                } else if (kv.first == "detector") {
+                    if (!val.is_string()) return bad(422, "invalid_value", path, "detector must be a string");
+                    if (val.as_string() != "motion") return bad(422, "invalid_value", path, "unknown detector (motion)");
+                    c.key = "ai.detector"; c.value = val.as_string();
+                } else if (kv.first == "inference_fps") {
+                    long long n; if (!get_int(val, n) || n < 1 || n > 60) return bad(422, "invalid_value", path, "inference_fps must be an integer in 1..60");
+                    c.key = "ai.inference_fps"; c.value = std::to_string(n);
+                } else return bad(400, "unknown_field", path, "unknown field");
             } else return bad(400, "unknown_field", path, "unknown field");
             changes.push_back(c);
         }
@@ -474,6 +542,14 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
 
     // ---- phase 2: apply through the services (the PipelineManager owns any restart)
     bool any_rejected = false; const Change* first_rejected = nullptr;
+    // AI setters return a Result (ok / unsupported / error); fold that into the
+    // ApplyResult the rest of the pipeline speaks. Live-applied.
+    auto ai_apply = [&](Result r, int eff) -> ApplyResult {
+        if (r) return ApplyResult::applied(ApplyMode::Live, eff, eff);
+        std::string msg = detection_ ? detection_->telemetry().last_error : std::string("detector error");
+        ApplyMode m = (r.status == Status::Unsupported) ? ApplyMode::Unsupported : ApplyMode::Live;
+        return ApplyResult::rejected(m, eff, msg.empty() ? "detector could not be applied" : msg);
+    };
     for (auto& c : changes) {
         long long n = 0; if (c.requested.is_number()) n = c.requested.as_int();
         if (c.key == "performance.profile")      { Profile p; power::parse_profile(c.value, p); c.r = perf_.apply_profile(p); }
@@ -498,6 +574,9 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         else if (c.key == "power.isp_performance")     { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_isp_performance(l); }
         else if (c.key == "power.encoder_performance") { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_encoder_performance(l); }
         else if (c.key == "power.cpu_performance")     { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_cpu_performance(l); }
+        else if (c.key == "ai.enabled")       { c.r = ai_apply(detection_->set_enabled(c.value == "true"), c.value == "true" ? 1 : 0); }
+        else if (c.key == "ai.detector")      { c.r = ai_apply(detection_->set_detector(c.value), -1); }
+        else if (c.key == "ai.inference_fps") { int n2 = atoi(c.value.c_str()); c.r = ai_apply(detection_->set_inference_fps(n2), n2); }
         c.has_result = true;
         if (c.r.ok) {
             if (c.key == "rtsp.send_buffer_bytes") cfg_.rtsp.send_buffer_bytes = atoi(c.value.c_str());
