@@ -218,7 +218,7 @@ chmod +x "$PSTUB/httpd"
 ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" STREAMERCTL_HTTPD="$PSTUB/httpd" sh ./install.sh --webui-password s3cret ) >"$WORK/out" 2>&1 ||
     bad "install with --webui-password failed: $(cat "$WORK/out")"
 has "webui.passwd written" "$R/etc/machino/webui.passwd"
-if grep -q '^/cgi-bin:root:' "$R/etc/machino/httpd.conf" 2>/dev/null; then ok; else bad "httpd.conf has no /cgi-bin auth rule"; fi
+if grep -q '^/cgi-bin/machino.cgi:root:' "$R/etc/machino/httpd.conf" 2>/dev/null; then ok; else bad "httpd.conf has no switch-page auth rule"; fi
 rm -rf "$PSTUB"
 
 # ------------- 13b) the boot-slot move survives a failing mv -----------------
