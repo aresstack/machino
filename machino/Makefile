@@ -88,7 +88,9 @@ TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp te
 .PHONY: all clean strip flags test
 all: $(BIN)
 
-$(BIN): check-mbedtls $(OBJ)
+# order-only: the PHONY guard must not mark the binary stale (a strip-only
+# invocation would otherwise re-link with default vendor-lib paths)
+$(BIN): $(OBJ) | check-mbedtls
 	$(CXX) $(OBJ) $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) $(LIBS) -o $@
 
 %.o: %.cpp
