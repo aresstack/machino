@@ -169,19 +169,15 @@ webui_start() {
     # survived a re-install until reboot). Stop it, then start with the current
     # conf below.
     if our_httpd_pid >/dev/null 2>&1; then webui_stop; fi
-    # Prefer the stock OpenIPC WebUI auth so the SAME login as the normal WebUI
-    # applies (Machino relays through to it, no second login). Only when the
-    # image ships none do we generate our own conf (open by default, optional
-    # password lock). This httpd is the INTERNAL backend on 127.0.0.1:$WEBUI_PORT;
-    # Machino is the public server on :80.
-    if [ -f "$ROOT/etc/httpd.conf" ]; then
-        CONF="$ROOT/etc/httpd.conf"
-        log "serving the internal WebUI backend with the stock OpenIPC auth ($CONF)"
-    else
-        write_httpd_conf
-        CONF="$HTTPD_CONF"
-        [ -s "$STATE_DIR/webui.passwd" ] || warn "no WebUI password set - the WebUI is open on the LAN (lock it: streamerctl webui-password <password>)"
-    fi
+    # Serve the WebUI OPEN, exactly like Majestic's own server does. The OpenIPC
+    # majestic-webui has its OWN login (a CGI/cookie form page), so the internal
+    # busybox must NOT impose HTTP Basic auth - the stock /etc/httpd.conf carries
+    # a "Basic realm=OpenIPC" rule that turned the normal login PAGE into a
+    # browser Basic-auth POPUP. This backend is bound to 127.0.0.1:$WEBUI_PORT
+    # only (never public); Machino on :80 is the sole front door, and the WebUI's
+    # own form login still applies through the relay.
+    printf 'A:*\n' > "$HTTPD_CONF"; chmod 0600 "$HTTPD_CONF"
+    CONF="$HTTPD_CONF"
     "$HTTPD" -p "$WEBUI_ADDR:$WEBUI_PORT" -h "$WWW_ROOT" -c "$CONF" -r "OpenIPC" || { warn "httpd failed to start on $WEBUI_ADDR:$WEBUI_PORT"; return 1; }
     sleep 1
     pid=$(pgrep -f "httpd -p $WEBUI_ADDR:$WEBUI_PORT -h $WWW_ROOT" | head -1)

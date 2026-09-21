@@ -223,27 +223,27 @@ ctl boot >/dev/null 2>&1
 check "boot falls back to majestic" "$(running)" "majestic"
 check "the selection is not rewritten" "$(selected)" "machino"
 
-# ------- 13) the WebUI host: open by default, optional site-wide password ----
-# The WebUI must behave like the stock OpenIPC WebUI (reachable on the LAN); a
-# separate login over the whole WebUI with a password nobody set was the
-# login-loop bug. Default open; an optional password locks the whole site.
+# ------- 13) the internal WebUI backend is served OPEN, never HTTP Basic auth --
+# Machino is the public front door on :80; the internal busybox backend must
+# serve /var/www OPEN like Majestic's own server does, because the OpenIPC WebUI
+# has its OWN login form. Applying HTTP Basic auth here turned the normal login
+# PAGE into a browser Basic-auth POPUP - even a stale webui.passwd must NOT do
+# that anymore.
 setup
 : > "$RUNDIR/majestic"
 ctl set machino >/dev/null
 conf="$ROOT/etc/machino/httpd.conf"
 [ -r "$conf" ] && ok || bad "no httpd.conf written"
 if grep -q -- "-c $conf" "$RUNDIR/httpd.argv" 2>/dev/null; then ok; else bad "httpd was started without -c $conf: $(cat "$RUNDIR/httpd.argv" 2>/dev/null)"; fi
-if grep -q '^A:\*' "$conf"; then ok; else bad "without a password the WebUI is not served openly: $(cat "$conf" 2>/dev/null)"; fi
-# with a password it locks the whole site
+if grep -q '^A:\*' "$conf"; then ok; else bad "the WebUI backend is not served openly: $(cat "$conf" 2>/dev/null)"; fi
+# a leftover webui.passwd must be IGNORED - still served open (no Basic popup)
 setup
 printf 'root:$1$xx$hash
 ' > "$ROOT/etc/machino/webui.passwd"
 : > "$RUNDIR/majestic"
 ctl set machino >/dev/null
-if grep -q '^/:root:' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "password not applied site-wide: $(cat "$ROOT/etc/machino/httpd.conf" 2>/dev/null)"; fi
-# clearing the password reopens the WebUI
-ctl webui-password --clear >/dev/null 2>&1
-if grep -q '^A:\*' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "--clear did not reopen the WebUI"; fi
+if grep -q '^A:\*' "$ROOT/etc/machino/httpd.conf"; then ok; else bad "stale webui.passwd re-imposed Basic auth: $(cat "$ROOT/etc/machino/httpd.conf" 2>/dev/null)"; fi
+if grep -q '^/:root:' "$ROOT/etc/machino/httpd.conf"; then bad "Basic-auth rule written despite open-serving policy"; else ok; fi
 
 # ---- 14) select sets the boot selection only, never a process ---------------
 # The safe way back where a live switch cannot succeed. Unlike set, it must
