@@ -581,6 +581,10 @@ void HttpServer::pump_ws_video(Client& c) {
         if (au->key) {
             std::vector<uint8_t> sps, pps;
             if (h264::extract_params(au->data.data(), au->data.size(), sps, pps) && !sps.empty() && !pps.empty()) {
+                // MSE only: state the stream's true reorder/DPB bounds in the
+                // avcC SPS so the browser stops holding ~1 s of frames (the
+                // in-band SPS is stripped from mdat anyway). RTSP is untouched.
+                sps = h264::sps_with_bitstream_restriction(sps);
                 if (!c.ws_init_sent || sps != c.ws_sps || pps != c.ws_pps) {
                     c.ws_sps = sps; c.ws_pps = pps;
                     int w = 0, h = 0;
