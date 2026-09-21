@@ -23,6 +23,7 @@ void run_http_parse_tests();
 void run_session_tests();
 void run_fmp4_tests();
 void run_sps_tests();
+void run_webrtc_tests();
 void run_websocket_tests();
 void run_api_tests();
 void run_tuning_tests();
@@ -321,6 +322,7 @@ int main() {
     run_session_tests();
     run_fmp4_tests();
     run_sps_tests();
+    run_webrtc_tests();
     run_websocket_tests();
     run_api_tests();
     run_tuning_tests();

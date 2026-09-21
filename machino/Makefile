@@ -40,6 +40,7 @@ SRC := src/core/log.cpp $(CORE_SRC) \
        src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/http/http_server.cpp \
        src/app/linux_grace_timer.cpp src/app/linux_system_stats.cpp \
        src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_server.cpp src/app/main.cpp \
+       src/app/webrtc/sdp.cpp src/app/webrtc/stun.cpp \
        src/adapters/ingenic/sensor_params.cpp src/adapters/ingenic/imp_sessions.cpp \
        src/adapters/ingenic/ingenic_power_control.cpp \
        src/adapters/ingenic/ingenic_image_control.cpp \
@@ -52,12 +53,13 @@ OBJ := $(SRC:.cpp=.o)
 HOST_CXX      ?= g++
 HOST_CXXFLAGS ?= -std=c++17 -O1 -fno-exceptions -fno-rtti -Wall -Wextra -Wno-unused-parameter -Werror -pthread -Isrc -Itests -DMACHINO_VERSION='"test"'
 TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp tests/test_json.cpp tests/test_events.cpp \
-            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/log_stub.cpp \
+            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_webrtc.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/log_stub.cpp \
             src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp src/core/lifecycle/pipeline_manager.cpp \
             src/core/power/performance_service.cpp src/core/media/tuning_service.cpp src/core/detection/detection_service.cpp \
             src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp \
             src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/rtsp/h264_nal.cpp \
+            src/app/webrtc/sdp.cpp src/app/webrtc/stun.cpp \
             src/profiles/builtin_profiles.cpp src/adapters/ingenic/sensor_params.cpp
 
 .PHONY: all clean strip flags test
