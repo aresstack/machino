@@ -57,9 +57,27 @@ Json bool_field(const std::string& title) {
     return f;
 }
 
+// x-reload: the stock settings page reads the daemon's OWN classification
+// (upstream mj-settings.js changeCost(): "none"/"live" = the save carried it,
+// "pipeline" = the operator is owed Apply-now, anything unknown falls to
+// pipeline). Machino's apply classes map onto that vocabulary. Fields whose
+// class is daemon_restart/boot_only are NOT exposed at all: the stock Apply
+// button runs `killall -HUP majestic` (a config reload), which can never
+// restart the daemon, so the UI could not truthfully apply them.
+const char* xreload_for(const Json* cap) {
+    const Json* a = cap ? cap->get("apply") : nullptr;
+    const std::string cls = a && a->is_string() ? a->as_string() : "";
+    if (cls == "daemon_restart" || cls == "boot_only") return nullptr;   // do not expose
+    return cls == "live" ? "live" : "pipeline";
+}
+
 bool add_range(Json& fields, const char* key, const char* title, const Json* cap) {
     if (!supported(cap)) return false;
-    fields.set(key, integer_field(title, cap));
+    const char* xr = xreload_for(cap);
+    if (!xr) return false;
+    Json f = integer_field(title, cap);
+    f.set("x-reload", Json::string(xr));
+    fields.set(key, f);
     return true;
 }
 
@@ -88,6 +106,20 @@ void copy_if(const Json& src, Json& dst, const char* key) {
 
 } // namespace
 
+bool compiled_default(const std::string& key, Json& out);   // defined with majestic_reset below
+
+// Attach the shared compiled-in default to an already-built schema field, so
+// the stock UI enables its reset button exactly where /api/v1/reset works.
+static void set_default(Json& section, const char* section_name, const char* leaf) {
+    Json dv;
+    if (!compiled_default(std::string(section_name) + "." + leaf, dv)) return;
+    const Json* f = section.get(leaf);
+    if (!f || !f->is_object()) return;
+    Json copy = *f;
+    copy.set("default", dv);
+    section.set(leaf, copy);
+}
+
 Json majestic_schema(const Json& capabilities) {
     Json schema = Json::object();
     schema.set("$schema", Json::string("http://json-schema.org/draft-04/schema#"));
@@ -100,6 +132,8 @@ Json majestic_schema(const Json& capabilities) {
     add_range(video0, "fps", "Frame rate", controls ? controls->get("stream_fps") : nullptr);
     add_range(video0, "bitrate_kbps", "Bitrate (kbit/s)", controls ? controls->get("bitrate") : nullptr);
     add_range(video0, "gop", "Keyframe interval (frames)", controls ? controls->get("gop") : nullptr);
+    set_default(video0, "video0", "bitrate_kbps");
+    set_default(video0, "video0", "gop");
     add_section(properties, "video0", video0);
 
     Json sensor = Json::object();
@@ -112,9 +146,13 @@ Json majestic_schema(const Json& capabilities) {
             for (const auto& kv : image->members()) {
                 const Json& cap = kv.second;
                 if (!supported(&cap)) continue;
+                const char* xr = xreload_for(&cap);
+                if (!xr) continue;
                 const Json* values = cap.get("values");
-                if (values && values->is_array()) image_fields.set(kv.first, enum_field(title_for(kv.first), *values));
-                else image_fields.set(kv.first, integer_field(title_for(kv.first), &cap));
+                Json f = (values && values->is_array()) ? enum_field(title_for(kv.first), *values)
+                                                        : integer_field(title_for(kv.first), &cap);
+                f.set("x-reload", Json::string(xr));
+                image_fields.set(kv.first, f);
             }
         }
     }
@@ -122,8 +160,11 @@ Json majestic_schema(const Json& capabilities) {
 
     Json latency_fields = Json::object();
     if (const Json* latency = capabilities.get("latency")) {
-        if (const Json* profiles = latency->get("profiles"); profiles && profiles->is_array())
-            latency_fields.set("profile", enum_field("Latency profile", *profiles));
+        if (const Json* profiles = latency->get("profiles"); profiles && profiles->is_array()) {
+            Json lp = enum_field("Latency profile", *profiles);
+            lp.set("x-reload", Json::string("pipeline"));
+            latency_fields.set("profile", lp);
+        }
         add_range(latency_fields, "gop", "Keyframe interval (frames)", latency->get("gop"));
         add_range(latency_fields, "framesource_buffers", "FrameSource buffers", latency->get("framesource_buffers"));
         add_range(latency_fields, "encoder_buffers", "Encoder buffers", latency->get("encoder_buffers"));
@@ -134,17 +175,27 @@ Json majestic_schema(const Json& capabilities) {
     add_section(properties, "latency", latency_fields);
 
     Json performance = Json::object();
-    if (const Json* profiles = capabilities.get("profiles"); profiles && profiles->is_array())
-        performance.set("profile", enum_field("Performance profile", *profiles));
+    if (const Json* profiles = capabilities.get("profiles"); profiles && profiles->is_array()) {
+        Json pp = enum_field("Performance profile", *profiles);
+        pp.set("x-reload", Json::string("pipeline"));   // operating-point switch restarts the pipeline
+        performance.set("profile", pp);
+    }
     add_section(properties, "performance", performance);
 
+    // lifecycle.idle_grace_ms is daemon_restart-class: the stock Apply (a
+    // SIGHUP) cannot deliver it, so it goes through add_range's class filter
+    // and is only exposed if the platform ever reclassifies it.
     Json lifecycle = Json::object();
-    if (!controls || supported(controls->get("idle_grace_ms")))
-        lifecycle.set("idle_grace_ms", integer_field("Idle grace period (ms)", 0, 600000));
+    add_range(lifecycle, "idle_grace_ms", "Idle grace period (ms)", controls ? controls->get("idle_grace_ms") : nullptr);
     add_section(properties, "lifecycle", lifecycle);
 
     Json rtsp = Json::object();
-    rtsp.set("max_clients", integer_field("Maximum RTSP clients", 1, 16));
+    {
+        Json f = integer_field("Maximum RTSP clients", 1, 16);
+        f.set("x-reload", Json::string("pipeline"));   // conservative: applied on reload
+        rtsp.set("max_clients", f);
+        set_default(rtsp, "rtsp", "max_clients");
+    }
     add_section(properties, "rtsp", rtsp);
 
     // M9/M10: detection is advertised only when the platform proved it.
@@ -152,11 +203,21 @@ Json majestic_schema(const Json& capabilities) {
     if (const Json* ai = capabilities.get("ai"); ai && ai->is_object()) {
         const Json* avail = ai->get("available");
         if (avail && avail->is_string() && avail->as_string() == "supported") {
-            ai_fields.set("enabled", bool_field("Enable detection"));
-            if (const Json* dets = ai->get("detectors"); dets && dets->is_array() && dets->size() > 0)
-                ai_fields.set("detector", enum_field("Detector", *dets));
-            if (const Json* fps = ai->get("inference_fps"))
-                ai_fields.set("inference_fps", integer_field("Inference rate (fps)", fps));
+            // The detection subsystem declares itself live (caps ai.inference_fps
+            // apply=live; the detector is started/stopped as a consumer).
+            Json en = bool_field("Enable detection"); en.set("x-reload", Json::string("live"));
+            ai_fields.set("enabled", en);
+            if (const Json* dets = ai->get("detectors"); dets && dets->is_array() && dets->size() > 0) {
+                Json de = enum_field("Detector", *dets); de.set("x-reload", Json::string("live"));
+                ai_fields.set("detector", de);
+            }
+            if (const Json* fps = ai->get("inference_fps")) {
+                Json ff = integer_field("Inference rate (fps)", fps);
+                if (const char* xr = xreload_for(fps)) ff.set("x-reload", Json::string(xr));
+                ai_fields.set("inference_fps", ff);
+            }
+            set_default(ai_fields, "ai", "enabled");
+            set_default(ai_fields, "ai", "inference_fps");
         }
     }
     add_section(properties, "ai", ai_fields);
@@ -243,6 +304,19 @@ Json majestic_config(const Json& native_config, const Json& state) {
         Json lifecycle = Json::object();
         copy_if(*native_lifecycle, lifecycle, "idle_grace_ms");
         if (!lifecycle.members().empty()) out.set("lifecycle", lifecycle);
+    }
+
+    // Machino does not drive the IR-cut filter yet. To the stock WebUI an
+    // ABSENT nightMode.irCutPin1 means "Majestic cannot move the IR-cut
+    // filter" - a red hardware fault. Upstream ircut-check.js treats
+    // irCut=="off" as "a decision, not a defect" (parked: with no pins
+    // configured it raises NO finding at all), which is the truthful state
+    // here. No GPIO pins are invented; real nightMode support comes from the
+    // board profile later.
+    {
+        Json nm = Json::object();
+        nm.set("irCut", Json::string("off"));
+        out.set("nightMode", nm);
     }
 
     return out;
@@ -481,25 +555,37 @@ bool majestic_get(const Json& majestic_config, const std::string& key, std::stri
     return true;
 }
 
-// GET /api/v1/reset?key= - restore the built-in default by routing it through
-// the SAME translation/validation as a WebUI POST. Keys without a mappable
-// default answer 404 ("This camera has no such setting" in the stock UI).
+// ONE source of truth for the schema's "default" fields AND /api/v1/reset.
+// Upstream contract (docs/settings-page.md): "Reset is disabled where the
+// schema declares no `default`" and a reset 404 disables the button as "no
+// such setting". So: every key that declares a default here MUST reset, and
+// keys without a fixed compiled-in default (the fps values are "follow the
+// sensor mode") declare none - the stock UI then never calls reset for them.
+bool compiled_default(const std::string& key, Json& out) {
+    static const AppConfig def;
+    if (key == "video0.bitrate_kbps")     { out = Json::integer(def.video.bitrate_kbps); return true; }
+    if (key == "video0.gop")              { out = Json::integer(def.video.gop); return true; }
+    if (key == "ai.enabled")              { out = Json::boolean(def.ai.enabled); return true; }
+    if (key == "ai.inference_fps")        { out = Json::integer(def.ai.inference_fps); return true; }
+    if (key == "rtsp.max_clients")        { out = Json::integer(def.rtsp.max_clients); return true; }
+    return false;
+}
+
+// GET /api/v1/reset?key= - restore the schema-declared default by routing it
+// through the SAME translation/validation as a WebUI POST. Keys the schema
+// declares no default for answer 404; the stock UI never enables their button.
 MajesticTranslation majestic_reset(const std::string& key) {
-    static const AppConfig def;   // compiled-in defaults
-    std::string body;
-    // fps defaults are "follow the sensor mode" (unset) - there is no fixed
-    // value to restore, so those keys honestly answer 404 below.
-    if      (key == "video0.bitrate_kbps") body = "{\"video0\":{\"bitrate_kbps\":" + std::to_string(def.video.bitrate_kbps) + "}}";
-    else if (key == "video0.gop")          body = "{\"video0\":{\"gop\":" + std::to_string(def.video.gop) + "}}";
-    else if (key == "ai.enabled")     body = std::string("{\"ai\":{\"enabled\":") + (def.ai.enabled ? "true" : "false") + "}}";
-    else if (key == "ai.inference_fps") body = "{\"ai\":{\"inference_fps\":" + std::to_string(def.ai.inference_fps) + "}}";
-    else {
+    Json dv;
+    size_t dot = key.find('.');
+    if (dot == std::string::npos || !compiled_default(key, dv)) {
         MajesticTranslation r;
         r.status = 404; r.code = "unknown_field"; r.path = key;
         r.message = "no such resettable setting";
         return r;
     }
-    return majestic_post_to_native(body);
+    Json leaf = Json::object(); leaf.set(key.substr(dot + 1), dv);
+    Json top = Json::object();  top.set(key.substr(0, dot), leaf);
+    return majestic_post_to_native(top.dump());
 }
 
 }} // namespace machino::compat

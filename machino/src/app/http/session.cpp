@@ -43,6 +43,9 @@ bool SessionGate::authed_basic(const std::string& authorization_header) {
     if (!b64_decode(authorization_header.substr(6), plain)) return false;
     size_t colon = plain.find(':');
     if (colon == std::string::npos) return false;
+    // Same rule as the form login: the WebUI/API administers as ROOT. Any
+    // other valid /etc/shadow account must NOT authenticate here either.
+    if (plain.compare(0, colon, "root") != 0) return false;
     return check_ && check_(plain.substr(0, colon), plain.substr(colon + 1));
 }
 

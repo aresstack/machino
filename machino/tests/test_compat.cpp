@@ -258,8 +258,35 @@ void test_webui_post_strings_and_reset() {
     CCHECK(r2.ok && r2.patch.get("video")->get("0")->get("bitrate_kbps")->as_int() == 3000);
     MajesticTranslation r3 = majestic_reset("nightMode.irCutPin1");
     CCHECK(!r3.ok && r3.status == 404);
-    MajesticTranslation r4 = majestic_reset("video0.fps");     // default = "follow mode": not resettable
+    // Upstream contract (docs/settings-page.md): "Reset is disabled where the
+    // schema declares no `default`" - the UI never calls reset for such keys.
+    // video0.fps has no fixed default (it follows the sensor mode), so the
+    // schema declares none and 404 here is the honest answer.
+    MajesticTranslation r4 = majestic_reset("video0.fps");
     CCHECK(!r4.ok && r4.status == 404);
+    MajesticTranslation r5 = majestic_reset("rtsp.max_clients");
+    CCHECK(r5.ok && r5.patch.get("rtsp")->get("max_clients")->is_number());
+
+    // schema <-> reset coherence + x-reload vocabulary (upstream changeCost():
+    // "live" carried by save, "pipeline" needs Apply-now, daemon_restart-class
+    // fields are not exposed at all).
+    Json schema = majestic_schema(Json::object());
+    const Json* props = schema.get("properties");
+    CCHECK(props);
+    if (props) {
+        const Json* rtsp = props->get("rtsp");
+        const Json* mc = rtsp && rtsp->get("properties") ? rtsp->get("properties")->get("max_clients") : nullptr;
+        CCHECK(mc && mc->get("default") && mc->get("default")->is_number());
+        CCHECK(mc && mc->get("x-reload") && mc->get("x-reload")->as_string() == "pipeline");
+        CCHECK(!props->get("lifecycle"));   // idle_grace_ms is daemon_restart-class: not exposed
+    }
+
+    // nightMode: irCut "off" is upstream's "a decision, not a defect" state -
+    // no findings, no invented GPIO pins, no false red IR-cut banner.
+    Json mc2 = majestic_config(Json::object(), Json::object());
+    const Json* nm = mc2.get("nightMode");
+    CCHECK(nm && nm->get("irCut") && nm->get("irCut")->as_string() == "off");
+    CCHECK(nm && !nm->get("irCutPin1"));
 }
 
 } // namespace

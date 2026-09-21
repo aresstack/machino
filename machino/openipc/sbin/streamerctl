@@ -69,7 +69,18 @@ api_port() {
 # verification. Majestic is matched separately by -x on purpose: its init starts
 # it with argv0="majestic" (start-stop-daemon -a), which -x matches correctly.
 MACHINO_BIN="${STREAMERCTL_MACHINO_BIN:-/usr/bin/machino}"
-majestic_running() { pgrep -x majestic >/dev/null 2>&1; }
+# Machino sets its COMM to "majestic" in front-door mode (pidof/killall
+# compatibility for the stock WebUI). streamerctl must therefore never trust
+# the cosmetic name alone: a pid that matches "majestic" but whose executable
+# is Machino's binary does not count as Majestic. (BusyBox pgrep -x matches
+# argv0, which stays /usr/bin/machino - this filter is the belt to that brace.)
+majestic_running() {
+    for _mp in $(pgrep -x majestic 2>/dev/null); do
+        _exe=$(readlink "/proc/$_mp/exe" 2>/dev/null)
+        [ "$_exe" = "$MACHINO_BIN" ] || return 0
+    done
+    return 1
+}
 machino_running()  { pgrep -f "$MACHINO_BIN" >/dev/null 2>&1; }
 owner_running() { case "$1" in machino) machino_running ;; majestic) majestic_running ;; *) return 1 ;; esac; }
 
