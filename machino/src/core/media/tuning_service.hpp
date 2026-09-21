@@ -47,6 +47,15 @@ public:
     power::ApplyResult set_encoder_buffers(int n);
     power::ApplyResult set_queue_depth(int n);
 
+    // Reset-to-unset (the majestic-webui reset contract): drop the stored
+    // override and make the DEFAULT effective NOW - a 200 from /api/v1/reset
+    // is immediately followed by a config.json read in the stock UI, so
+    // "persisted, applies later" is not good enough here.
+    power::ApplyResult clear_image(ImageControl c);
+    power::ApplyResult clear_framesource_buffers();
+    power::ApplyResult clear_encoder_buffers();
+    power::ApplyResult clear_queue_depth();
+
     // Re-resolve a relative preset (low: GOP == current stream fps) after a
     // performance/stream-FPS change. Explicit values still win.
     power::ApplyResult refresh_after_stream_change();

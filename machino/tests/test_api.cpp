@@ -449,6 +449,38 @@ void test_m9_ai_unsupported() {
 
 } // namespace
 
+// The majestic-webui reset contract end to end: after a 200 the stock UI
+// immediately re-reads config.json, so set -> unset -> GET must show the
+// override GONE from the RUNNING daemon, not merely from the file.
+void test_reset_unset_runtime() {
+    Rig r;
+    // image: set an override, then unset - requested must read null again
+    api::Response p = r.api.patch_config("{\"image\":{\"brightness\":100}}", "");
+    ACHECK(p.status == 200 && path(r.api.config().body, "image.brightness")->as_int() == 100);
+    api::Response u = r.api.unset_config({"image.brightness"});
+    ACHECK(u.status == 200);
+    ACHECK(path(r.api.config().body, "image.brightness")->is_null());     // runtime override cleared NOW
+    ACHECK(r.store.get("image.brightness").empty());                      // file line gone
+    // latency: buffers override set, then unset - resolved returns to base
+    p = r.api.patch_config("{\"latency\":{\"framesource_buffers\":1}}", "");
+    ACHECK(p.status == 200);
+    ACHECK(path(r.api.config().body, "latency.framesource_buffers")->as_int() == 1);
+    u = r.api.unset_config({"latency.framesource_buffers"});
+    ACHECK(u.status == 200);
+    ACHECK(path(r.api.config().body, "latency.framesource_buffers")->is_null());
+    ACHECK(path(r.api.config().body, "latency.effective.framesource_buffers")->as_int() == r.cfg.video.buffers);
+    ACHECK(r.store.get("latency.framesource_buffers").empty());
+    // consumer queue depth the same way
+    p = r.api.patch_config("{\"latency\":{\"consumer_queue_depth\":2}}", "");
+    ACHECK(p.status == 200);
+    u = r.api.unset_config({"latency.queue_depth"});
+    ACHECK(u.status == 200 && path(r.api.config().body, "latency.consumer_queue_depth")->is_null());
+    // unknown image control stays a 404, nothing is written
+    unsigned rev = r.store.revision();
+    u = r.api.unset_config({"image.nope"});
+    ACHECK(u.status == 404 && r.store.revision() == rev);
+}
+
 void run_api_tests() {
     test_get_documents();
     test_patch_cold_and_partial();
@@ -464,5 +496,6 @@ void run_api_tests() {
     test_m8_snapshot_unsupported();
     test_m9_ai_api();
     test_m9_ai_unsupported();
+    test_reset_unset_runtime();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }

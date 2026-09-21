@@ -108,6 +108,47 @@ void TuningService::apply_images_after_start() {
     }
 }
 
+ApplyResult TuningService::clear_image(ImageControl c) {
+    if (image_caps_.control[(int)c].support != Cap::Supported)
+        return ApplyResult::rejected(ApplyMode::Unsupported, -1, std::string(image_control_name(c)) + " is not supported");
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        requested_[(int)c] = -1;
+        effective_[(int)c] = -1;
+    }
+    // SDK 1.3.1 has no "restore IQ default" call, so a RUNNING pipeline is
+    // restarted once: apply_images_after_start skips cleared controls and the
+    // tuning-bin default becomes effective again. A cold pipeline simply
+    // starts clean the next time.
+    lifecycle::State st = pipeline_.state();
+    if (st == lifecycle::State::Active || st == lifecycle::State::GraceIdle) {
+        std::string err;
+        Result r = pipeline_.update_stream(pipeline_.stream(), true, err);
+        if (!r) return ApplyResult::rejected(ApplyMode::PipelineRestart, -1,
+                                             std::string(image_control_name(c)) + ": restart to defaults failed: " + err);
+        return ApplyResult::applied(ApplyMode::PipelineRestart, -1, -1, "cleared; pipeline restarted to tuning defaults");
+    }
+    return ApplyResult::applied(ApplyMode::Live, -1, -1, "cleared");
+}
+
+ApplyResult TuningService::clear_framesource_buffers() {
+    EffectiveStream current = pipeline_.stream(); ResolvedLatency target;
+    { std::lock_guard<std::mutex> lk(m_); latency_.framesource_buffers.reset(); target = resolve_locked(current); }
+    return apply_latency(target, 0, "FrameSource buffers (reset)");
+}
+
+ApplyResult TuningService::clear_encoder_buffers() {
+    EffectiveStream current = pipeline_.stream(); ResolvedLatency target;
+    { std::lock_guard<std::mutex> lk(m_); latency_.encoder_buffers.reset(); target = resolve_locked(current); }
+    return apply_latency(target, 0, "encoder buffers (reset)");
+}
+
+ApplyResult TuningService::clear_queue_depth() {
+    EffectiveStream current = pipeline_.stream(); ResolvedLatency target;
+    { std::lock_guard<std::mutex> lk(m_); latency_.consumer_queue_depth.reset(); target = resolve_locked(current); }
+    return apply_latency(target, 0, "consumer queue depth (reset)");
+}
+
 ApplyResult TuningService::apply_latency(const ResolvedLatency& target, int requested, const char* what) {
     EffectiveStream s = pipeline_.stream();
     const bool restart_change = s.buffers != target.framesource_buffers || s.encoder_buffers != target.encoder_buffers;

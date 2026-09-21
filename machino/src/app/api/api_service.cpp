@@ -321,16 +321,6 @@ Json ApiService::config_json() {
 }
 Response ApiService::config() { return Response{200, config_json()}; }
 
-Response ApiService::unset_config(const std::vector<std::string>& conf_keys) {
-    std::string err;
-    if (!store_.commit_remove(conf_keys, err))
-        return fail(500, "internal", "", err);
-    if (reload_hook_) reload_hook_();   // SIGHUP-equivalent: the daemon re-applies the file
-    Json j = Json::object();
-    j.set("ok", Json::boolean(true));
-    j.set("revision", Json::integer(store_.revision()));
-    return Response{200, j};
-}
 
 Json ApiService::telemetry_json() {
     Telemetry t = perf_.telemetry();
@@ -439,6 +429,36 @@ Json change_json(const Change& c) {
     return j;
 }
 } // namespace
+
+Response ApiService::unset_config(const std::vector<std::string>& conf_keys) {
+    // Runtime FIRST: the stock UI re-reads config.json IMMEDIATELY after a
+    // 200 from /api/v1/reset, so "persisted, applies at next start" is not
+    // enough - the in-memory override has to be gone before we answer.
+    bool need_reload = false;
+    for (const std::string& k : conf_keys) {
+        power::ApplyResult ar; ar.ok = true;
+        if (k.rfind("image.", 0) == 0) {
+            ImageControl c;
+            if (!image_control_from_name(k.substr(6), c))
+                return fail(404, "unknown_field", k, "unknown image control");
+            ar = tuning_.clear_image(c);
+        } else if (k == "latency.framesource_buffers") ar = tuning_.clear_framesource_buffers();
+        else if (k == "latency.encoder_buffers")       ar = tuning_.clear_encoder_buffers();
+        else if (k == "latency.queue_depth")           ar = tuning_.clear_queue_depth();
+        else need_reload = true;   // fps/profiles/detector: the reload re-applies
+                                   // the fresh file unconditionally (HW-verified)
+        if (!ar.ok)
+            return fail(500, "internal", k, ar.message);
+    }
+    std::string err;
+    if (!store_.commit_remove(conf_keys, err))
+        return fail(500, "internal", "", err);
+    if (need_reload && reload_hook_) reload_hook_();   // SIGHUP-equivalent
+    Json j = Json::object();
+    j.set("ok", Json::boolean(true));
+    j.set("revision", Json::integer(store_.revision()));
+    return Response{200, j};
+}
 
 Response ApiService::patch_config(const std::string& body, const std::string& if_match) {
     std::lock_guard<std::mutex> lk(patch_m_);
