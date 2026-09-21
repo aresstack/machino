@@ -2,8 +2,10 @@
 // HMAC-SHA1 against RFC 2202 vectors, CRC32 against the classic reference,
 // and a full STUN Binding Request/Response roundtrip with verified
 // MESSAGE-INTEGRITY and FINGERPRINT.
+#include "app/webrtc/aes.hpp"
 #include "app/webrtc/rtp.hpp"
 #include "app/webrtc/sdp.hpp"
+#include "app/webrtc/srtp.hpp"
 #include "app/webrtc/stun.hpp"
 #include <cstdio>
 #include <cstring>
@@ -241,5 +243,73 @@ void run_webrtc_tests() {
         WCHECK(ri2.receiver_report && !ri2.pli);
         const uint8_t rtp[12] = {0x80, 102, 0x00, 0x01, 0,0,0,0, 0,0,0,1};
         WCHECK(!webrtc::is_rtcp(rtp, 12));
+    }
+
+    // --- AES-128: FIPS-197 appendix vector ---
+    {
+        const uint8_t key[16] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f};
+        const uint8_t pt[16]  = {0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff};
+        const uint8_t ct[16]  = {0x69,0xc4,0xe0,0xd8,0x6a,0x7b,0x04,0x30,0xd8,0xcd,0xb7,0x80,0x70,0xb4,0xc5,0x5a};
+        webrtc::Aes128 a(key);
+        uint8_t out[16];
+        a.encrypt(pt, out);
+        WCHECK(memcmp(out, ct, 16) == 0);
+    }
+    // --- SRTP KDF + AES-CM: RFC 3711 B.3 / B.2 (cross-checked with node crypto) ---
+    {
+        webrtc::SrtpKey mk;
+        const uint8_t mkey[16] = {0xE1,0xF9,0x7A,0x0D,0x3E,0x01,0x8B,0xE0,0xD6,0x4F,0xA3,0x2C,0x06,0xDE,0x41,0x39};
+        const uint8_t msalt[14] = {0x0E,0xC6,0x75,0xAD,0x49,0x8A,0xFE,0xEB,0xB6,0x96,0x0B,0x3A,0xAB,0xE6};
+        memcpy(mk.master_key, mkey, 16); memcpy(mk.master_salt, msalt, 14);
+        uint8_t ck[16], ak[20], sk[14];
+        webrtc::srtp_kdf(mk, 0, ck, 16);
+        webrtc::srtp_kdf(mk, 1, ak, 20);
+        webrtc::srtp_kdf(mk, 2, sk, 14);
+        const uint8_t eck[16] = {0xC6,0x1E,0x7A,0x93,0x74,0x4F,0x39,0xEE,0x10,0x73,0x4A,0xFE,0x3F,0xF7,0xA0,0x87};
+        const uint8_t eak[20] = {0xCE,0xBE,0x32,0x1F,0x6F,0xF7,0x71,0x6B,0x6F,0xD4,0xAB,0x49,0xAF,0x25,0x6A,0x15,0x6D,0x38,0xBA,0xA4};
+        const uint8_t esk[14] = {0x30,0xCB,0xBC,0x08,0x86,0x3D,0x8C,0x85,0xD4,0x9D,0xB3,0x4A,0x9A,0xE1};
+        WCHECK(memcmp(ck, eck, 16) == 0);
+        WCHECK(memcmp(ak, eak, 20) == 0);
+        WCHECK(memcmp(sk, esk, 14) == 0);
+        const uint8_t cmkey[16] = {0x2B,0x7E,0x15,0x16,0x28,0xAE,0xD2,0xA6,0xAB,0xF7,0x15,0x88,0x09,0xCF,0x4F,0x3C};
+        const uint8_t cmiv[16]  = {0xF0,0xF1,0xF2,0xF3,0xF4,0xF5,0xF6,0xF7,0xF8,0xF9,0xFA,0xFB,0xFC,0xFD,0x00,0x00};
+        uint8_t ks[32];
+        webrtc::Aes128 cm(cmkey);
+        webrtc::aes_cm_keystream(cm, cmiv, ks, 32);
+        const uint8_t eks[32] = {0xE0,0x3E,0xAD,0x09,0x35,0xC9,0x5E,0x80,0xE1,0x66,0xB1,0x6D,0xD9,0x2B,0x4E,0xB4,
+                                 0xD2,0x35,0x13,0x16,0x2B,0x02,0xD0,0xF7,0x2A,0x43,0xA2,0xFE,0x4A,0x5F,0x97,0xAB};
+        WCHECK(memcmp(ks, eks, 32) == 0);
+    }
+    // --- SRTP/SRTCP session behaviour ---
+    {
+        webrtc::SrtpKey a{}, b{};
+        for (int i = 0; i < 16; ++i) { a.master_key[i] = (uint8_t)i; b.master_key[i] = (uint8_t)(0x40 + i); }
+        for (int i = 0; i < 14; ++i) { a.master_salt[i] = (uint8_t)(0x80 + i); b.master_salt[i] = (uint8_t)(0xC0 + i); }
+        webrtc::SrtpSession cam(a, b);      // camera: sends with a, reads with b
+        webrtc::SrtpSession browser(b, a);  // the peer, mirrored
+
+        // RTP protect: header stays, payload changes, 10-byte tag appended
+        std::vector<uint8_t> rtp = {0x80, 102, 0x12, 0x34, 0,0,0x30,0x39, 0xCA,0xFE,0xBA,0xBE, 1,2,3,4,5,6,7,8};
+        std::vector<uint8_t> plain = rtp;
+        WCHECK(cam.protect_rtp(rtp));
+        WCHECK(rtp.size() == plain.size() + 10);
+        WCHECK(memcmp(rtp.data(), plain.data(), 12) == 0);
+        WCHECK(memcmp(rtp.data() + 12, plain.data() + 12, 8) != 0);
+
+        // RTCP roundtrip: camera protects, browser-side session unprotects
+        std::vector<uint8_t> sr = {0x80, 200, 0x00, 0x06, 0x11,0x22,0x33,0x44,
+                                   0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0};
+        std::vector<uint8_t> sr_plain = sr;
+        WCHECK(cam.protect_rtcp(sr));
+        WCHECK(sr.size() == sr_plain.size() + 14);              // E+index + tag
+        std::vector<uint8_t> rx = sr;
+        WCHECK(browser.unprotect_rtcp(rx));
+        WCHECK(rx == sr_plain);
+        // replay of the same packet must be refused
+        std::vector<uint8_t> replay = sr;
+        WCHECK(!browser.unprotect_rtcp(replay));
+        // a tampered byte must fail the auth check
+        std::vector<uint8_t> bad = sr; bad[9] ^= 1;
+        WCHECK(!browser.unprotect_rtcp(bad));
     }
 }
