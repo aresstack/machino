@@ -36,6 +36,11 @@ HTTPD_CONF="$STATE_DIR/httpd.conf"          # basic auth + address rules for our
 # privately on 127.0.0.1:85, not reachable from the LAN directly.
 WEBUI_ADDR="127.0.0.1"
 WEBUI_PORT="${STREAMERCTL_WEBUI_PORT:-85}"
+# The PUBLIC front-door port Machino binds when it is the active owner. This
+# MUST match what init/machino starts it with (--api-port), and it is what the
+# health check and status probe - NOT api.port from machino.conf, which is only
+# the stand-alone default and stays 8080 on upgraded cameras.
+FRONT_PORT="${MACHINO_API_PORT:-80}"
 
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-20}"      # seconds to wait for the new owner to come up
 
@@ -200,7 +205,7 @@ webui_stop() {
 # Machino is healthy as soon as its API answers. COLD_IDLE is a healthy state:
 # "no consumer, no pipeline" means an idle camera has no pipeline by design.
 machino_healthy() {
-    port=$(api_port); _i=0
+    port="$FRONT_PORT"; _i=0
     while [ "$_i" -lt "$HEALTH_TIMEOUT" ]; do
         machino_running || { _i=$((_i + 1)); sleep 1; continue; }
         if wget -q -O /dev/null -T 2 "http://127.0.0.1:$port/api/v1/state" 2>/dev/null; then return 0; fi
@@ -255,7 +260,9 @@ activate_machino() {
     stop_all_owners || return 1
     webui_start || warn "WebUI is not being served - use the CLI to switch back"
     [ -x "$INIT_MACHINO" ] || { warn "$INIT_MACHINO missing"; return 1; }
-    "$INIT_MACHINO" start >/dev/null 2>&1
+    # Front-door contract: init/machino must bind FRONT_PORT and relay to the
+    # internal busybox on WEBUI_PORT. Pass both so the two never disagree.
+    MACHINO_API_PORT="$FRONT_PORT" MACHINO_UPSTREAM_PORT="$WEBUI_PORT" "$INIT_MACHINO" start >/dev/null 2>&1
     machino_healthy
 }
 
@@ -322,7 +329,7 @@ cmd_status() {
     echo "running:      $run"
     echo "port 80:      $(port80_owner)"
     if machino_running; then
-        port=$(api_port)
+        port="$FRONT_PORT"
         st=$(wget -q -O- -T 2 "http://127.0.0.1:$port/api/v1/state" 2>/dev/null |
              sed -n 's/.*"lifecycle"[[:space:]]*:[[:space:]]*"\([a-z_]*\)".*/\1/p')
         echo "machino api:  ${st:-no answer} (port $port)"
