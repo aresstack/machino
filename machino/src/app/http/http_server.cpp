@@ -1,5 +1,6 @@
 #include "app/http/http_server.hpp"
 #include "app/compat/majestic_webui.hpp"
+#include "app/webrtc/peer.hpp"
 #include "app/http/fmp4.hpp"
 #include "app/http/http_parse.hpp"
 #include "app/http/websocket.hpp"
@@ -129,6 +130,13 @@ struct HttpServer::Client {
     uint64_t ws_dts = 0;            // 90 kHz decode timeline
     int64_t  ws_last_pts_us = 0;
     int64_t  ws_last_idr_req_ms = 0;
+    // /ws/webrtc: the signalling WebSocket owns one PeerSession (UDP socket
+    // in the same poll loop) and, like /ws/video, is a StreamHub consumer
+    // with its OWN demand; PLI maps onto the existing on-demand IDR.
+    bool rtc_ws = false;
+    std::unique_ptr<webrtc::PeerSession> rtc;
+    std::shared_ptr<Sink>    rtc_sink;
+    lifecycle::DemandHandle  rtc_demand;
     // Front-door relay: per-client non-blocking upstream state. The poll loop
     // owns both sockets; no thread ever blocks on the busybox side, so a slow
     // CGI can not starve /ws/video or any other connection. Upstream bytes are
@@ -178,6 +186,7 @@ void HttpServer::stop() {
     for (auto& c : clients_) {
         if (c->sub) bus_.unsubscribe(c->sub);
         if (c->ws_sink && hub_) { c->ws_sink->close(); hub_->unsubscribe(c->ws_sink); }
+        if (c->rtc_sink && hub_) { c->rtc_sink->close(); hub_->unsubscribe(c->rtc_sink); }
         if (c->relay_fd >= 0) close(c->relay_fd);
         close(c->fd);
     }
@@ -359,6 +368,21 @@ bool HttpServer::handle_request(Client& c) {
                 LOGI(MOD, "%s: /ws/video session started", c.peer.c_str());
                 return true;
             }
+        }
+    } else if (path == "/ws/webrtc") {
+        // The stock webui's preferred Live transport (preview-webrtc.js):
+        // this socket only signals; media runs over the session's UDP port.
+        const std::string wskey = req.header("sec-websocket-key");
+        if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
+        else if (!hub_ || !pipeline_)    { r = api::ApiService::fail(501, "unavailable", path, "no media wiring"); }
+        else if (const std::string sv = SessionGate::form_value(req.query, "stream");
+                 !sv.empty() && sv != "0") {
+            r = api::ApiService::fail(404, "unknown_field", path, "stream " + sv + " is not available");
+        } else {
+            queue(c, ws::handshake_response(wskey));
+            c.rtc_ws = true;
+            LOGI(MOD, "%s: /ws/webrtc signalling open", c.peer.c_str());
+            return true;
         }
     } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
@@ -651,12 +675,76 @@ bool HttpServer::ws_video_input(Client& c) {
     }
 }
 
+// /ws/webrtc signalling: {"req":"offer","data":<sdp>} -> answer/error/busy.
+// Trickled candidates are ignored - ICE-lite learns the peer address from its
+// authenticated STUN checks. One session per socket, two per camera.
+bool HttpServer::rtc_ws_input(Client& c) {
+    for (;;) {
+        size_t used = 0; int op = 0; std::string payload;
+        ws::Parse p = ws::parse_frame(c.in, used, op, payload, 32768);   // an SDP offer is a few KB
+        if (p == ws::Parse::Incomplete) return c.in.size() <= MAX_IN;
+        if (p == ws::Parse::Bad) return false;
+        c.in.erase(0, used);
+        if (op == 8) return false;
+        if (op == 9) { queue(c, ws::pong_frame(payload)); continue; }
+        if (op != 1) continue;
+        Json msg; std::string jerr;
+        if (!Json::parse(payload, msg, jerr)) continue;
+        const Json* req = msg.get("req");
+        if (!req || !req->is_string()) continue;
+        auto reply = [&](const char* kind, const std::string& data) {
+            Json r = Json::object();
+            r.set("reply", Json::string(kind));
+            r.set("data", Json::string(data));
+            const std::string s = r.dump();
+            return queue(c, ws::frame(true, s.data(), s.size()));
+        };
+        if (req->as_string() != "offer") continue;
+        int active = 0;
+        for (auto& o : clients_) if (o->rtc) ++active;
+        if (c.rtc || active >= 2) { if (!reply("busy", "every session slot is taken")) return false; continue; }
+        const Json* data = msg.get("data");
+        if (!data || !data->is_string()) { if (!reply("error", "offer carries no sdp")) return false; continue; }
+        sockaddr_in la{}; socklen_t ll = sizeof la;
+        char ip[INET_ADDRSTRLEN] = "0.0.0.0";
+        if (getsockname(c.fd, (sockaddr*)&la, &ll) == 0)
+            inet_ntop(AF_INET, &la.sin_addr, ip, sizeof ip);
+        std::unique_ptr<webrtc::PeerSession> sess(new webrtc::PeerSession(ip));
+        std::string err;
+        const std::string answer = sess->on_offer(data->as_string(), err);
+        if (answer.empty()) { if (!reply("error", err)) return false; continue; }
+        Result dr;
+        lifecycle::DemandHandle d = pipeline_->acquire(lifecycle::ConsumerType::HttpStream, &dr);
+        if (!d.active()) { if (!reply("error", "pipeline start failed")) return false; continue; }
+        c.rtc = std::move(sess);
+        c.rtc_demand = std::move(d);
+        c.rtc_sink = hub_->subscribe();
+        pipeline_->request_idr();
+        if (!reply("answer", answer)) return false;
+        LOGI(MOD, "%s: webrtc session negotiated", c.peer.c_str());
+    }
+}
+
+// Per tick: DTLS timers, PLI -> on-demand IDR, and the AU pump into RTP.
+void HttpServer::pump_rtc(Client& c) {
+    if (!c.rtc) return;
+    c.rtc->tick();
+    if (c.rtc->take_pli() && pipeline_) pipeline_->request_idr();
+    if (!c.rtc->media_ready() || !c.rtc_sink) return;
+    for (int i = 0; i < 8; ++i) {
+        AuPtr au; bool disc = false;
+        if (!c.rtc_sink->pop(au, 0, &disc)) return;
+        if (!au || au->data.empty()) continue;
+        c.rtc->send_au(au->data.data(), au->data.size(), au->pts_us, au->key);
+    }
+}
+
 void HttpServer::loop() {
     std::vector<pollfd> pfds;
     // pfds[k+1] belongs to refs[k]: an explicit fd->client map, because
     // clients_ mutates (accept) between building the set and consuming the
     // events - positional indexing would misroute revents.
-    struct PollRef { Client* c; bool upstream; };
+    struct PollRef { Client* c; int kind; };   // 0 downstream, 1 relay upstream, 2 webrtc udp
     std::vector<PollRef> refs;
     last_telemetry_ms_ = last_heartbeat_ms_ = now_ms();
     while (!quit_) {
@@ -666,7 +754,7 @@ void HttpServer::loop() {
         for (auto& cp : clients_) {
             Client* c = cp.get();
             pfds.push_back({c->fd, (short)(POLLIN | (c->out.empty() ? 0 : POLLOUT)), 0});
-            refs.push_back({c, false});
+            refs.push_back({c, 0});
             if (c->relay_fd >= 0) {                    // upstream rides the same poll; nothing blocks
                 short ev = (c->relay_state == Client::Relay::Reading)
                     // full downstream buffer: stop watching for data (TCP
@@ -674,18 +762,26 @@ void HttpServer::loop() {
                     ? (short)(c->out.size() < cfg_.max_out_buffer ? POLLIN : 0)
                     : (short)POLLOUT;
                 pfds.push_back({c->relay_fd, ev, 0});
-                refs.push_back({c, true});
+                refs.push_back({c, 1});
+            }
+            if (c->rtc && c->rtc->fd() >= 0) {         // webrtc media socket: STUN/DTLS/RTCP in
+                pfds.push_back({c->rtc->fd(), POLLIN, 0});
+                refs.push_back({c, 2});
             }
         }
-        for (auto& c : clients_) if (c->mjpeg || c->ws_video) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
+        for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)
         for (size_t i = 0; i < clients_.size(); ++i) {
             Client& c = *clients_[i];
-            short re = 0, rre = 0;
+            short re = 0, rre = 0, ure = 0;
             for (size_t k = 0; k < refs.size(); ++k)
-                if (refs[k].c == &c) { if (refs[k].upstream) rre = pfds[k + 1].revents; else re = pfds[k + 1].revents; }
+                if (refs[k].c == &c) {
+                    if (refs[k].kind == 1) rre = pfds[k + 1].revents;
+                    else if (refs[k].kind == 2) ure = pfds[k + 1].revents;
+                    else re = pfds[k + 1].revents;
+                }
             bool ok = true;
             if (re & (POLLHUP | POLLERR | POLLNVAL)) ok = false;
             else if (re & POLLIN) {
@@ -693,6 +789,7 @@ void HttpServer::loop() {
                 if (r == 0) ok = false;
                 else if (r < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) ok = false; }
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
+                else if (c.rtc_ws)   { c.in.append(buf, (size_t)r); ok = rtc_ws_input(c); }
                 else if (c.sse || c.mjpeg) { /* ignore input on streaming connections */ }
                 else { c.in.append(buf, (size_t)r); if (c.in.size() > MAX_IN) ok = false; else while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
             }
@@ -703,14 +800,20 @@ void HttpServer::loop() {
             }
             if (ok && c.mjpeg && !c.close_after_flush) push_mjpeg(c);
             if (ok && c.ws_video && !c.close_after_flush) pump_ws_video(c);
+            if (ok && c.rtc) {
+                if (ure & POLLIN) c.rtc->on_readable();
+                pump_rtc(c);
+            }
             if (ok) ok = flush(c);
             if (ok && c.close_after_flush && c.out.empty()) ok = false;
-            if (ok && !c.sse && !c.mjpeg && !c.ws_video && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
+            if (ok && !c.sse && !c.mjpeg && !c.ws_video && !c.rtc_ws && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
             if (!ok) {
                 // Close now, erase after the iteration: refs holds pointers
                 // into clients_, so the vector must not shift under it.
                 if (c.sub) bus_.unsubscribe(c.sub);
                 if (c.ws_sink && hub_) { c.ws_sink->close(); hub_->unsubscribe(c.ws_sink); }
+                if (c.rtc_sink && hub_) { c.rtc_sink->close(); hub_->unsubscribe(c.rtc_sink); }
+                c.rtc.reset();                          // closes the UDP socket, demand releases
                 if (c.relay_fd >= 0) { close(c.relay_fd); c.relay_fd = -1; }
                 close(c.fd); c.fd = -1;
             }

@@ -75,6 +75,8 @@ private:
     void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
     void pump_ws_video(Client& c);  // fMP4-per-frame over WebSocket (majestic /ws/video)
     bool ws_video_input(Client& c); // client frames: {"request":"idr"}, ping, close
+    bool rtc_ws_input(Client& c);   // /ws/webrtc signalling: offer -> answer/busy/error
+    void pump_rtc(Client& c);       // webrtc per tick: DTLS timers, PLI->IDR, AU->RTP
     bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
     bool relay_open(Client& c);                          // open the upstream socket for a prepared relay
     bool pump_relay(Client& c, short re, int64_t now);   // advance it; false drops the client
