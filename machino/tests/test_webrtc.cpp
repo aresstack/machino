@@ -2,6 +2,7 @@
 // HMAC-SHA1 against RFC 2202 vectors, CRC32 against the classic reference,
 // and a full STUN Binding Request/Response roundtrip with verified
 // MESSAGE-INTEGRITY and FINGERPRINT.
+#include "app/webrtc/rtp.hpp"
 #include "app/webrtc/sdp.hpp"
 #include "app/webrtc/stun.hpp"
 #include <cstdio>
@@ -176,5 +177,69 @@ void run_webrtc_tests() {
         uint8_t mac[20];
         webrtc::hmac_sha1((const uint8_t*)pwd.data(), pwd.size(), copy.data(), copy.size(), mac);
         WCHECK(memcmp(mac, resp.data() + mi_at + 4, 20) == 0);
+    }
+
+    // --- RTP packetization (RFC 6184) ---
+    {
+        // AU: AUD (dropped) + SPS + PPS + one 3001-byte IDR (forces FU-A)
+        std::vector<uint8_t> au;
+        auto put = [&](std::initializer_list<uint8_t> nal) {
+            const uint8_t sc[4] = {0, 0, 0, 1};
+            au.insert(au.end(), sc, sc + 4);
+            au.insert(au.end(), nal.begin(), nal.end());
+        };
+        put({0x09, 0xf0});                                    // AUD
+        put({0x67, 0x64, 0x00, 0x33, 0xaa});                  // SPS
+        put({0x68, 0xeb, 0xe3, 0xcb});                        // PPS
+        const uint8_t sc[4] = {0, 0, 0, 1};
+        au.insert(au.end(), sc, sc + 4);
+        std::vector<uint8_t> idr; idr.push_back(0x65);        // nri=3, type 5
+        for (int i = 0; i < 3000; ++i) idr.push_back((uint8_t)i);
+        au.insert(au.end(), idr.begin(), idr.end());
+
+        webrtc::RtpParams rp; rp.payload_type = 102; rp.ssrc = 0xCAFEBABE; rp.max_payload = 1200;
+        uint16_t seq = 100;
+        auto pkts = webrtc::packetize_h264(au.data(), au.size(), 123456, seq, rp);
+        // SPS + PPS single-NAL, IDR 3000 payload bytes -> chunks 1198+1198+604
+        WCHECK(pkts.size() == 5);
+        WCHECK(seq == 105);
+        for (size_t i = 0; i < pkts.size(); ++i) {
+            const auto& p = pkts[i];
+            WCHECK(p.size() > 12);
+            WCHECK(p[0] == 0x80);
+            WCHECK((p[1] & 0x7f) == 102);
+            WCHECK(((p[2] << 8) | p[3]) == (int)(100 + i));   // continuous seq
+            uint32_t ts = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) | ((uint32_t)p[6] << 8) | p[7];
+            WCHECK(ts == 123456u);
+            uint32_t ssrc = ((uint32_t)p[8] << 24) | ((uint32_t)p[9] << 16) | ((uint32_t)p[10] << 8) | p[11];
+            WCHECK(ssrc == 0xCAFEBABEu);
+            WCHECK(((p[1] & 0x80) != 0) == (i == pkts.size() - 1));   // marker on the last only
+        }
+        WCHECK(pkts[0][12] == 0x67 && pkts[1][12] == 0x68);   // SPS/PPS verbatim, AUD gone
+        // FU-A structure + reassembly
+        std::vector<uint8_t> re; re.push_back((uint8_t)((pkts[2][12] & 0xe0) | (pkts[2][13] & 0x1f)));
+        for (size_t i = 2; i < 5; ++i) {
+            const auto& p = pkts[i];
+            WCHECK((p[12] & 0x1f) == 28);                     // FU-A indicator
+            WCHECK((p[12] & 0xe0) == 0x60);                   // NRI carried over
+            WCHECK(((p[13] & 0x80) != 0) == (i == 2));        // S
+            WCHECK(((p[13] & 0x40) != 0) == (i == 4));        // E
+            WCHECK((p[13] & 0x1f) == 5);                      // original type
+            re.insert(re.end(), p.begin() + 14, p.end());
+        }
+        WCHECK(re == idr);
+        WCHECK(pkts[2].size() == 14 + 1198 && pkts[3].size() == 14 + 1198 && pkts[4].size() == 14 + 604);
+    }
+    // --- RTCP: PLI detected, RR alone is not a PLI, RTP is not RTCP ---
+    {
+        const uint8_t pli[12] = {0x81, 206, 0x00, 0x02, 0,0,0,1, 0xCA,0xFE,0xBA,0xBE};
+        WCHECK(webrtc::is_rtcp(pli, 12));
+        webrtc::RtcpInfo ri = webrtc::parse_rtcp(pli, 12);
+        WCHECK(ri.pli);
+        const uint8_t rr[8] = {0x80, 201, 0x00, 0x01, 0,0,0,1};
+        webrtc::RtcpInfo ri2 = webrtc::parse_rtcp(rr, 8);
+        WCHECK(ri2.receiver_report && !ri2.pli);
+        const uint8_t rtp[12] = {0x80, 102, 0x00, 0x01, 0,0,0,0, 0,0,0,1};
+        WCHECK(!webrtc::is_rtcp(rtp, 12));
     }
 }
