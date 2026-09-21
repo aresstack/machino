@@ -324,9 +324,11 @@ bool HttpServer::handle_request(Client& c) {
         const std::string wskey = req.header("sec-websocket-key");
         if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
         else if (!hub_ || !pipeline_)    { r = api::ApiService::fail(501, "unavailable", path, "no media wiring"); }
-        else if (SessionGate::form_value(req.query, "stream") == "1") {
-            // main stream only until the substream is wired end to end
-            r = api::ApiService::fail(404, "unknown_field", path, "stream 1 is not available");
+        else if (const std::string sv = SessionGate::form_value(req.query, "stream");
+                 !sv.empty() && sv != "0") {
+            // main stream only until the substream is wired end to end; any
+            // stream id we do not serve is a 404, never a silent main feed
+            r = api::ApiService::fail(404, "unknown_field", path, "stream " + sv + " is not available");
         } else {
             Result dr;
             lifecycle::DemandHandle d = pipeline_->acquire(lifecycle::ConsumerType::HttpStream, &dr);
@@ -462,7 +464,7 @@ void HttpServer::push_mjpeg(Client& c) {
 // never see a P-frame whose reference was dropped).
 void HttpServer::pump_ws_video(Client& c) {
     if (!c.ws_sink) return;
-    const size_t soft_cap = cfg_.max_snapshot_bytes;          // an IDR burst fits, runaway buffers do not
+    const size_t soft_cap = cfg_.ws_out_cap;                  // an IDR burst fits, runaway buffers do not
     for (int i = 0; i < 8; ++i) {
         if (c.out.size() > soft_cap / 2) { c.ws_await_key = true; return; }
         AuPtr au; bool disc = false;

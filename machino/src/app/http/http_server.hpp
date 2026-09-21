@@ -31,6 +31,10 @@ struct ServerConfig {
     int         idle_timeout_ms = 30000;      // non-SSE keep-alive idle
     size_t      max_out_buffer = 64 * 1024;    // per client for API/SSE; overflow -> disconnect
     size_t      max_snapshot_bytes = 4 * 1024 * 1024;  // a full-res JPEG response may exceed the API cap
+    // /ws/video output cap: at 3 Mbit/s the pause threshold (cap/2) holds well
+    // under a second of video, so a stalled viewer never accumulates stale
+    // frames; an init segment plus one IDR fragment still fits comfortably.
+    size_t      ws_out_cap = 512 * 1024;
     int         telemetry_interval_ms = 1000; // SSE telemetry rate (only while SSE clients exist)
     int         mjpeg_max_fps = 10;           // /api/v1/stream.mjpeg cap (JPEG snapshot-driven)
     // Front-door relay: any request that is not a native Machino/Majestic route
