@@ -60,6 +60,14 @@ public:
     // Apply a (re)loaded configuration: only changed values are applied.
     std::vector<ApplyResult> apply_config(const PerformanceConfig& pc, const StreamConfig& video);
 
+    // Reset-to-unset: return the rate to what an UNCONFIGURED key means at
+    // cold startup - the resolved sensor mode's fps - INDEPENDENT of the
+    // current profile. (apply_config deliberately skips absent keys under
+    // Custom, which is exactly wrong for a reset: the old runtime value
+    // would silently survive a 200.)
+    ApplyResult clear_stream_fps();
+    ApplyResult clear_sensor_fps();
+
     // fps values a profile may choose from (verified sensor modes for the
     // current geometry, ascending) - empty when unknown
     std::vector<int> verified_fps() const;

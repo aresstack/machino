@@ -492,6 +492,44 @@ void test_reset_unset_runtime() {
     ACHECK(u.status == 404 && r.store.revision() == rev);
 }
 
+// The Custom-profile trap: apply_config deliberately skips ABSENT keys, so a
+// generic fresh-reload would leave the old runtime fps active while reset
+// answers 200. The explicit clears must restore the MODE default (20 in this
+// rig) regardless of the profile.
+void test_reset_fps_under_custom_profile() {
+    Rig r;
+    api::Response p = r.api.patch_config("{\"video\":{\"0\":{\"fps\":15}}}", "");   // switches profile to custom
+    ACHECK(p.status == 200);
+    ACHECK(path(r.api.config().body, "video.0.fps")->as_int() == 15);
+    api::Response u = r.api.unset_config({"video.fps"});
+    ACHECK(u.status == 200);
+    ACHECK(path(r.api.config().body, "video.0.fps")->as_int() == 20);   // mode default, despite custom
+    ACHECK(r.mgr.stream().fps == 20);
+    ACHECK(r.store.get("video.fps").empty());
+
+    p = r.api.patch_config("{\"sensor\":{\"fps\":10}}", "");
+    ACHECK(p.status == 200);
+    u = r.api.unset_config({"sensor.fps"});
+    ACHECK(u.status == 200);
+    ACHECK(path(r.api.config().body, "sensor.fps")->as_int() == 20);
+    ACHECK(r.store.get("sensor.fps").empty());
+}
+
+// False-200 guard: a runtime re-apply that the platform rejects must surface
+// as 500 - never as ok. The disk already holds the reset ("persisted"), so the
+// next start converges; but THIS response may not claim effective-now.
+void test_reset_apply_failure_is_500() {
+    Rig r;
+    auto d = r.mgr.acquire(ConsumerType::Rtsp);          // live pipeline: sensor fps goes to hardware
+    ACHECK(r.mgr.state() == State::Active);
+    api::Response p = r.api.patch_config("{\"sensor\":{\"fps\":15}}", "");
+    ACHECK(p.status == 200);
+    r.platform.sensor_fps_runtime_error = true;           // hardware now refuses
+    api::Response u = r.api.unset_config({"sensor.fps"});
+    ACHECK(u.status == 500);
+    ACHECK(r.store.get("sensor.fps").empty());            // persisted: next start converges
+}
+
 void run_api_tests() {
     test_get_documents();
     test_patch_cold_and_partial();
@@ -508,5 +546,7 @@ void run_api_tests() {
     test_m9_ai_api();
     test_m9_ai_unsupported();
     test_reset_unset_runtime();
+    test_reset_fps_under_custom_profile();
+    test_reset_apply_failure_is_500();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }

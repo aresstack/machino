@@ -217,6 +217,28 @@ ApplyResult PerformanceService::set_sensor_fps(int fps) {
     return ApplyResult::applied(mode, fps, eff > 0 ? eff : fps, eff > 0 ? "read back from hardware" : "no readback available");
 }
 
+ApplyResult PerformanceService::clear_stream_fps() {
+    const int def = hw_.mode.value.fps;             // cold-start default: the mode's own rate
+    EffectiveStream s = pipeline_.stream();
+    if (s.fps == def) return ApplyResult::applied(ApplyMode::Live, def, def, "already at the mode default");
+    s.fps = def;
+    return apply_stream_restart(s, "stream fps (reset)", def);
+}
+
+ApplyResult PerformanceService::clear_sensor_fps() {
+    const int def = hw_.mode.value.fps;
+    { std::lock_guard<std::mutex> lk(m_); sensor_fps_req_ = def; }
+    ApplyMode mode = sensor_fps_mode();
+    if (mode == ApplyMode::Unsupported)
+        return ApplyResult::applied(ApplyMode::Live, def, def, "sensor fps follows the mode on this platform");
+    pipeline_.set_sensor_fps_target(def);
+    int eff = -1;
+    Result r = pipeline_.live_sensor_fps(def, eff);
+    if (r.status == Status::Busy) return ApplyResult::stored(mode, def, "stored; applied at next pipeline start");
+    if (!r) return ApplyResult::rejected(mode, def, "platform rejected sensor fps (" + std::string(status_name(r.status)) + ")");
+    return ApplyResult::applied(mode, def, eff > 0 ? eff : def, eff > 0 ? "read back from hardware" : "no readback available");
+}
+
 ApplyResult PerformanceService::set_bitrate(int kbps) {
     ApplyMode mode = caps_.video.bitrate.support == Cap::Supported ? caps_.video.bitrate.apply : ApplyMode::PipelineRestart;
     std::string why = check_bitrate(kbps);

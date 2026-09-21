@@ -438,7 +438,7 @@ Response ApiService::unset_config(const std::vector<std::string>& conf_keys) {
     // Phase 1 - VALIDATE: every key must resolve to an action before anything
     // is written or applied; an unknown key answers 404 with nothing changed.
     std::vector<ImageControl> images;
-    bool fs = false, enc = false, qd = false, perf_video = false, latprof = false, det = false;
+    bool fs = false, enc = false, qd = false, vfps = false, sfps = false, prof = false, latprof = false, det = false;
     for (const std::string& k : conf_keys) {
         if (k.rfind("image.", 0) == 0) {
             ImageControl c;
@@ -449,9 +449,14 @@ Response ApiService::unset_config(const std::vector<std::string>& conf_keys) {
         else if (k == "latency.framesource_buffers") fs = true;
         else if (k == "latency.encoder_buffers")     enc = true;
         else if (k == "latency.queue_depth")         qd = true;
-        else if (k == "video.fps" || k == "sensor.fps" || k == "performance.profile") perf_video = true;
+        else if (k == "video.fps")                   vfps = true;
+        else if (k == "sensor.fps")                  sfps = true;
+        else if (k == "performance.profile")         prof = true;
         else if (k == "latency.profile")             latprof = true;
-        else if (k == "ai.detector")                 det = true;
+        else if (k == "ai.detector") {
+            if (!detection_) return fail(404, "unknown_field", k, "no detection subsystem on this build");
+            det = true;
+        }
         else return fail(404, "unknown_field", k, "no such resettable key");
     }
 
@@ -475,17 +480,24 @@ Response ApiService::unset_config(const std::vector<std::string>& conf_keys) {
     if (fs)  { power::ApplyResult ar = tuning_.clear_framesource_buffers(); if (!ar.ok) return fail(500, "internal", "latency.framesource_buffers", ar.message + " (persisted)"); }
     if (enc) { power::ApplyResult ar = tuning_.clear_encoder_buffers();     if (!ar.ok) return fail(500, "internal", "latency.encoder_buffers", ar.message + " (persisted)"); }
     if (qd)  { power::ApplyResult ar = tuning_.clear_queue_depth();         if (!ar.ok) return fail(500, "internal", "latency.queue_depth", ar.message + " (persisted)"); }
-    if (perf_video || latprof || det) {
-        AppConfig fresh; std::string e2;
-        if (!load_config(store_.path().c_str(), fresh, e2))
-            return fail(500, "internal", "", "reload failed: " + e2 + " (persisted; fully effective at next start)");
-        // Same semantics as the SIGHUP handler, executed inline: the fresh
-        // file no longer carries the key, so the defaults win. Individual
-        // rejections (there are none for compiled defaults) are logged by the
-        // services themselves, matching the SIGHUP behaviour.
-        if (perf_video) perf_.apply_config(fresh.performance, fresh.video);
-        if (latprof)    tuning_.set_latency_profile(fresh.latency.profile);
-        if (det && detection_) detection_->set_detector(fresh.ai.detector);
+    // Explicit, profile-independent clears with CHECKED results: a 200 must
+    // never paper over a rejected re-apply (false-200), and the generic
+    // apply_config path deliberately skips absent keys under Custom - the
+    // opposite of what a reset means.
+    if (vfps) { power::ApplyResult ar = perf_.clear_stream_fps(); if (!ar.ok) return fail(500, "internal", "video.fps", ar.message + " (persisted; fully effective at next start)"); }
+    if (sfps) { power::ApplyResult ar = perf_.clear_sensor_fps(); if (!ar.ok) return fail(500, "internal", "sensor.fps", ar.message + " (persisted; fully effective at next start)"); }
+    if (prof) {
+        power::ApplyResult ar = perf_.apply_profile(PerformanceConfig{}.profile);   // compiled default
+        if (!ar.ok) return fail(500, "internal", "performance.profile", ar.message + " (persisted; fully effective at next start)");
+    }
+    if (latprof) {
+        power::ApplyResult ar = tuning_.set_latency_profile(media::LatencySettings{}.profile);   // compiled default
+        if (!ar.ok) return fail(500, "internal", "latency.profile", ar.message + " (persisted; fully effective at next start)");
+    }
+    if (det) {
+        Result r = detection_->set_detector(AiConfig{}.detector);                    // compiled default
+        if (!r) return fail(500, "internal", "ai.detector",
+                            std::string("detector reset failed (") + status_name(r.status) + ") (persisted; fully effective at next start)");
     }
 
     Json j = Json::object();
