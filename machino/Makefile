@@ -46,6 +46,7 @@ check-mbedtls:
 	$(error MBEDTLS is not set - run machino/tools/fetch-mbedtls.sh <dir> <cc> <ar> and pass MBEDTLS=<dir>/mbedtls-3.6.2)
 endif
 .PHONY: check-mbedtls
+.DEFAULT_GOAL := all   # check-mbedtls above must not become the default goal
 
 CORE_SRC := src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp \
