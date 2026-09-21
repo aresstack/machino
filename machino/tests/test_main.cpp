@@ -21,6 +21,7 @@ void run_json_tests();
 void run_event_tests();
 void run_http_parse_tests();
 void run_session_tests();
+void run_fmp4_tests();
 void run_api_tests();
 void run_tuning_tests();
 void run_multistream_tests();
@@ -316,6 +317,7 @@ int main() {
     run_event_tests();
     run_http_parse_tests();
     run_session_tests();
+    run_fmp4_tests();
     run_api_tests();
     run_tuning_tests();
     run_multistream_tests();
