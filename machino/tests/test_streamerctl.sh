@@ -186,12 +186,22 @@ setup
 out=$(ctl set banana 2>&1); rc=$?
 [ "$rc" -ne 0 ] && ok || bad "unknown streamer was accepted"
 
-# ---------------------------------------------- 10) api.port is read from conf ---
+# ------------------------------ 10) status probes the front-door port, not conf ---
+# Front-door: Machino binds FRONT_PORT (80 by default, overridable via env for
+# this test), NOT api.port from machino.conf (that stays 8080 on upgrades). The
+# health check and status must follow the front-door port, or an upgraded camera
+# rolls back to majestic even though Machino serves :80.
 setup
-printf 'api.port = 9099\n' > "$ROOT/etc/machino/machino.conf"
+printf 'api.port = 9099\n' > "$ROOT/etc/machino/machino.conf"   # conf value must be IGNORED
 : > "$RUNDIR/machino"
+export MACHINO_API_PORT=8123
 out=$(ctl status)
-case "$out" in *9099*) ok ;; *) bad "api.port from machino.conf not used: $out" ;; esac
+unset MACHINO_API_PORT
+case "$out" in
+    *"port 8123"*) ok ;;
+    *9099*) bad "status used conf api.port 9099 instead of the front-door port: $out" ;;
+    *) bad "status did not probe the front-door port: $out" ;;
+esac
 
 # ------------------- 11) a live majestic that does not serve port 80 --------
 # This camera has shown majestic alive with its media SDK dead. A process check
