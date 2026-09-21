@@ -11,17 +11,18 @@ repository as `machino/docs/install-openipc.md`).
 ```sh
 # BusyBox tar has no -z, so unpack with gzip:
 #   gzip -dc machino-openipc-<target>.tar.gz | tar xf -
-./install.sh --webui-password 'PW'   # install; does not switch anything over
+./install.sh                 # install; does not switch anything over
 streamerctl status           # what is selected, what is running, who serves port 80
 streamerctl set machino      # switch to Machino (rolls back if it fails)
 streamerctl set majestic     # switch back
 ./uninstall.sh               # remove and restore the previous setup
 ```
 
-While Machino is active the OpenIPC WebUI is served by BusyBox httpd over the
-same `/var/www`, reachable on the LAN like the stock WebUI. It is served openly
-by default; set an optional site-wide HTTP Basic password (user `root`) with
-`streamerctl webui-password <password>` and clear it with `--clear`.
+While Machino is active it serves port 80 itself as a drop-in Majestic: the
+same OpenIPC WebUI with the SAME login (the camera's root account, Machino's
+session /login//logout), static files relayed from an internal loopback-only
+BusyBox httpd. Camera-local requests (127.0.0.1) are trusted without
+credentials, exactly like Majestic.
 
 A Machino-specific adaptation of the OpenIPC WebUI camera pages (Dashboard,
 Live, Camera settings) is a separate work item; this bundle no longer ships a

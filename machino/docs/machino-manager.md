@@ -5,7 +5,7 @@ which files Machino owns behind three operations and reports a **live** state
 that is derived from the camera, never from a cached value.
 
 ```
-machino-manager install   [--owner NAME] [--platform P] [--webui-password PW]
+machino-manager install   [--owner NAME] [--platform P]
 machino-manager uninstall [--owner NAME] [--force]
 machino-manager status
 ```

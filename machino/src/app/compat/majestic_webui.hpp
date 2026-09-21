@@ -59,8 +59,20 @@ MajesticTranslation majestic_post_to_native(const std::string& body);
 // "Camera is not responding" banner (a failing /metrics poll) clears.
 std::string majestic_metrics(const Json& telemetry, const Json& state, const LinuxSample& lin);
 
-// The {"sources":[...]} document majestic-webui optionally fetches to enrich
-// the stream list. Built from the flattened majestic config (video0/video1).
-Json majestic_sources(const Json& majestic_config);
+// The {"sources":[...]} document majestic-webui fetches. WIRE FORMAT taken
+// from the upstream tests (tests/sources.test.js, fixture FROM_A_REAL_CAMERA):
+// sources[] = {camera, kind:"sensor"|"external", streams:[{id = 3*camera+sub,
+// subtype:"main"|"sub"|"mjpeg" (a NAME, not an index), codec, fps, width,
+// height, flowing (h264 only), configured, present, rtsp}]}.
+Json majestic_sources(const Json& majestic_config, const Json& state);
+
+// GET /api/v1/get?key=<dotted> - the camera-local config probe the stock CGIs
+// use (www/cgi-bin/p/majestic.sh mj_cfg): plain-text value on 200, miss = 404.
+bool majestic_get(const Json& majestic_config, const std::string& key, std::string& out_text);
+
+// GET /api/v1/reset?key=<dotted> - the settings page's per-row reset. Returns
+// a native PATCH restoring the built-in default; !ok with status 404 means
+// "this camera has no such (resettable) setting" (the UI handles that).
+MajesticTranslation majestic_reset(const std::string& key);
 
 }} // namespace machino::compat

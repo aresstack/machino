@@ -1,6 +1,8 @@
 #include "app/compat/majestic_webui.hpp"
+#include "core/config.hpp"
 
 #include <cstdio>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 
@@ -246,6 +248,40 @@ Json majestic_config(const Json& native_config, const Json& state) {
     return out;
 }
 
+// The stock WebUI sends every form value as a STRING ("Values are always sent
+// as strings; the camera coerces" - upstream docs/settings-page.md). Coerce
+// whole-string integers/decimals and true/false back to native JSON types so
+// the native validator sees 20, not "20". Real string fields (codec, detector,
+// profile names) are never purely numeric, so they pass through untouched.
+// Json exposes const traversal only, so this is a pure copy-transform.
+static Json coerce_strings(const Json& v) {
+    if (v.is_object()) {
+        Json o = Json::object();
+        for (const auto& m : v.members()) o.set(m.first, coerce_strings(m.second));
+        return o;
+    }
+    if (v.is_array()) {
+        Json a = Json::array();
+        for (size_t i = 0; i < v.size(); ++i) a.push(coerce_strings(v.at(i)));
+        return a;
+    }
+    if (!v.is_string()) return v;
+    const std::string& s = v.as_string();
+    if (s == "true")  return Json::boolean(true);
+    if (s == "false") return Json::boolean(false);
+    if (s.empty()) return v;
+    size_t i = (s[0] == '-') ? 1 : 0;
+    if (i >= s.size()) return v;
+    bool digits = true, dot = false;
+    for (size_t k = i; k < s.size(); ++k) {
+        if (s[k] == '.' && !dot && k > i && k + 1 < s.size()) { dot = true; continue; }
+        if (s[k] < '0' || s[k] > '9') { digits = false; break; }
+    }
+    if (!digits) return v;
+    if (dot) return Json::number(strtod(s.c_str(), nullptr));
+    return Json::integer(strtoll(s.c_str(), nullptr, 10));
+}
+
 MajesticTranslation majestic_post_to_native(const std::string& body) {
     MajesticTranslation r;
     if (body.empty()) {
@@ -259,6 +295,7 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
     if (!doc.is_object()) {
         r.code = "invalid_json"; r.message = "top-level value must be an object"; return r;
     }
+    doc = coerce_strings(doc);
 
     Json patch = Json::object();
     for (const auto& sec : doc.members()) {
@@ -379,25 +416,90 @@ std::string majestic_metrics(const Json& telemetry, const Json& state, const Lin
     return o.str();
 }
 
-Json majestic_sources(const Json& majestic_config) {
-    Json arr = Json::array();
-    const char* keys[] = {"video0", "video1"};
-    for (int u = 0; u < 2; ++u) {
-        const Json* vu = majestic_config.get(keys[u]);
+// Wire format pinned by upstream tests/sources.test.js ("copied from a camera,
+// not from what this UI wishes were there"): subtype is a NAME, id is
+// 3*camera+subtypeIndex, `flowing` appears on h264 streams only, mjpeg
+// streams carry rtsp:false. Machino has no JPEG stream (deliberately off on
+// the T40NN), so only main/sub are listed.
+Json majestic_sources(const Json& majestic_config, const Json& state) {
+    bool encoder_active = false;
+    if (const Json* med = state.get("media"))
+        if (const Json* ea = med->get("encoder_active"))
+            if (ea->is_bool()) encoder_active = ea->as_bool();
+
+    Json streams = Json::array();
+    const struct { const char* section; int subtype; const char* name; } units[] = {
+        {"video0", 0, "main"}, {"video1", 1, "sub"},
+    };
+    for (const auto& u : units) {
+        const Json* vu = majestic_config.get(u.section);
         if (!vu || !vu->is_object()) continue;
         if (const Json* en = vu->get("enabled"); en && en->is_bool() && !en->as_bool()) continue;
         Json s = Json::object();
-        s.set("id", Json::string(u == 0 ? "video0" : "video1"));
-        s.set("camera", Json::integer(u + 1));   // 1-based; the WebUI keeps camera>0
-        s.set("channel", Json::integer(u));
-        s.set("name", Json::string(u == 0 ? "Main stream" : "Sub stream"));
-        for (const char* k : {"codec", "size", "fps", "bitrate", "width", "height"})
-            if (const Json* x = vu->get(k)) s.set(k, *x);
-        arr.push(s);
+        s.set("id", Json::integer(u.subtype));           // camera 0: id == subtype index
+        s.set("subtype", Json::string(u.name));
+        const Json* codec = vu->get("codec");
+        s.set("codec", codec && codec->is_string() ? *codec : Json::string("h264"));
+        for (const char* k : {"fps", "width", "height"})
+            if (const Json* x = vu->get(k); x && x->is_number()) s.set(k, *x);
+        // h264 only; "absent" would mean MJPEG semantics. Only the main unit's
+        // liveness is known (media.encoder_active); the sub unit reports false
+        // until it runs, which is exactly what the fixture shows for an idle
+        // second stream.
+        s.set("flowing", Json::boolean(u.subtype == 0 ? encoder_active : false));
+        s.set("configured", Json::boolean(true));
+        s.set("present", Json::boolean(true));
+        s.set("rtsp", Json::boolean(true));
+        streams.push(s);
     }
-    Json out = Json::object();
-    out.set("sources", arr);
+    Json sensor = Json::object();
+    sensor.set("camera", Json::integer(0));
+    sensor.set("kind", Json::string("sensor"));
+    sensor.set("streams", streams);
+    Json arr = Json::array(); arr.push(sensor);
+    Json out = Json::object(); out.set("sources", arr);
     return out;
+}
+
+// GET /api/v1/get?key= - plain-text value of a dotted key in the flattened
+// majestic document; miss (absent or null) = 404, exactly what the stock
+// mj_cfg() in www/cgi-bin/p/majestic.sh distinguishes.
+bool majestic_get(const Json& majestic_config, const std::string& key, std::string& out_text) {
+    const Json* v = &majestic_config;
+    size_t p = 0;
+    while (p <= key.size()) {
+        size_t dot = key.find('.', p);
+        if (dot == std::string::npos) dot = key.size();
+        if (dot == p || !v->is_object()) return false;
+        v = v->get(key.substr(p, dot - p));
+        if (!v) return false;
+        p = dot + 1;
+    }
+    if (v->is_null()) return false;
+    if (v->is_string()) { out_text = v->as_string(); return true; }
+    out_text = v->dump();     // numbers/bools print bare; objects/arrays as JSON
+    return true;
+}
+
+// GET /api/v1/reset?key= - restore the built-in default by routing it through
+// the SAME translation/validation as a WebUI POST. Keys without a mappable
+// default answer 404 ("This camera has no such setting" in the stock UI).
+MajesticTranslation majestic_reset(const std::string& key) {
+    static const AppConfig def;   // compiled-in defaults
+    std::string body;
+    // fps defaults are "follow the sensor mode" (unset) - there is no fixed
+    // value to restore, so those keys honestly answer 404 below.
+    if      (key == "video0.bitrate_kbps") body = "{\"video0\":{\"bitrate_kbps\":" + std::to_string(def.video.bitrate_kbps) + "}}";
+    else if (key == "video0.gop")          body = "{\"video0\":{\"gop\":" + std::to_string(def.video.gop) + "}}";
+    else if (key == "ai.enabled")     body = std::string("{\"ai\":{\"enabled\":") + (def.ai.enabled ? "true" : "false") + "}}";
+    else if (key == "ai.inference_fps") body = "{\"ai\":{\"inference_fps\":" + std::to_string(def.ai.inference_fps) + "}}";
+    else {
+        MajesticTranslation r;
+        r.status = 404; r.code = "unknown_field"; r.path = key;
+        r.message = "no such resettable setting";
+        return r;
+    }
+    return majestic_post_to_native(body);
 }
 
 }} // namespace machino::compat

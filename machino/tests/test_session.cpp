@@ -16,9 +16,9 @@ void run_session_tests() {
     SCHECK(SessionGate::form_value("password=x&remember=1", "remember") == "1");
 
     // cookie extraction from a multi-cookie header
-    SCHECK(SessionGate::cookie_value("a=1; machino_session=tok123; b=2", "machino_session") == "tok123");
-    SCHECK(SessionGate::cookie_value("machino_session=solo", "machino_session") == "solo");
-    SCHECK(SessionGate::cookie_value("other=1", "machino_session").empty());
+    SCHECK(SessionGate::cookie_value("a=1; session=tok123; b=2", "session") == "tok123");
+    SCHECK(SessionGate::cookie_value("session=solo", "session") == "solo");
+    SCHECK(SessionGate::cookie_value("other=1", "session").empty());
 
     // public paths: exactly what the self-contained login page needs
     SCHECK(SessionGate::is_public("GET", "/login.html"));
@@ -35,33 +35,47 @@ void run_session_tests() {
     // wrong credentials -> 403 (the webui shows "Invalid username or password.")
     SCHECK(g.login("username=root&password=falsch", 1000).status == 403);
     SCHECK(g.login("password=nix", 1000).status == 400);          // no user at all
+    // the WebUI administers as ROOT; other system users are not admins
+    SCHECK(g.login("username=daemon&password=geheim", 1000).status == 403);
     SCHECK(g.sessions() == 0);
+
+    // camera-local callers are trusted without credentials (majestic.sh mj_cfg)
+    SCHECK(SessionGate::is_local_peer("127.0.0.1:39584"));
+    SCHECK(SessionGate::is_local_peer("::1:1234"));
+    SCHECK(!SessionGate::is_local_peer("192.168.1.222:50000"));
+
+    // CLI/API Basic fallback against the same credential check
+    SCHECK(g.authed_basic("Basic cm9vdDpnZWhlaW0="));      // root:geheim
+    SCHECK(!g.authed_basic("Basic cm9vdDpmYWxzY2g="));     // root:falsch
+    SCHECK(!g.authed_basic("Bearer xyz"));
+    SCHECK(!g.authed_basic("Basic !!notbase64!!"));
 
     // good login -> 200 + session cookie; the token then authenticates
     SessionGate::LoginResult ok = g.login("username=root&password=geheim", 1000);
-    SCHECK(ok.status == 200 && ok.set_cookie.rfind("Set-Cookie: machino_session=", 0) == 0);
+    SCHECK(ok.status == 200 && ok.set_cookie.rfind("Set-Cookie: session=", 0) == 0);
     SCHECK(ok.set_cookie.find("HttpOnly") != std::string::npos);
+    SCHECK(ok.set_cookie.find("SameSite=Strict") != std::string::npos);   // Majestic's cookie contract
     SCHECK(ok.set_cookie.find("Max-Age") == std::string::npos);   // session cookie without remember
     std::string tok = ok.set_cookie.substr(ok.set_cookie.find('=') + 1);
     tok = tok.substr(0, tok.find(';'));
     SCHECK(tok.size() == 32);
-    SCHECK(g.authed("machino_session=" + tok, 2000));
-    SCHECK(!g.authed("machino_session=falsch", 2000));
+    SCHECK(g.authed("session=" + tok, 2000));
+    SCHECK(!g.authed("session=falsch", 2000));
     SCHECK(!g.authed("", 2000));
 
     // expiry: 12h without remember
-    SCHECK(!g.authed("machino_session=" + tok, 1000 + 13ll * 3600 * 1000));
+    SCHECK(!g.authed("session=" + tok, 1000 + 13ll * 3600 * 1000));
 
     // remember=1 -> persistent cookie + 30d server-side expiry
     SessionGate::LoginResult rem = g.login("username=root&password=geheim&remember=1", 1000);
     SCHECK(rem.status == 200 && rem.set_cookie.find("Max-Age=2592000") != std::string::npos);
     std::string tok2 = rem.set_cookie.substr(rem.set_cookie.find('=') + 1);
     tok2 = tok2.substr(0, tok2.find(';'));
-    SCHECK(g.authed("machino_session=" + tok2, 1000 + 13ll * 3600 * 1000));
+    SCHECK(g.authed("session=" + tok2, 1000 + 13ll * 3600 * 1000));
 
     // logout kills exactly that session; the clear header resets the browser
-    g.logout("machino_session=" + tok2);
-    SCHECK(!g.authed("machino_session=" + tok2, 2000));
+    g.logout("session=" + tok2);
+    SCHECK(!g.authed("session=" + tok2, 2000));
     SCHECK(SessionGate::clear_cookie().find("Max-Age=0") != std::string::npos);
 
     // session cap: the oldest session is evicted, the newest still works
@@ -72,5 +86,5 @@ void run_session_tests() {
         if (i == 0) { first = r.set_cookie.substr(r.set_cookie.find('=') + 1); first = first.substr(0, first.find(';')); }
     }
     SCHECK(cap.sessions() <= 32);
-    SCHECK(!cap.authed("machino_session=" + first, 2000));
+    SCHECK(!cap.authed("session=" + first, 2000));
 }

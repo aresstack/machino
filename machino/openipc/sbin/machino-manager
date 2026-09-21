@@ -2,7 +2,7 @@
 # machino-manager: one idempotent control surface for tools (the Cam-Tool) and
 # humans. It hides which files Machino owns behind three operations:
 #
-#   machino-manager install [--owner NAME] [--platform P] [--webui-password PW]
+#   machino-manager install [--owner NAME] [--platform P]
 #   machino-manager uninstall [--owner NAME] [--force]
 #   machino-manager status            # machine-readable JSON on stdout
 #
@@ -126,12 +126,11 @@ EOF
 }
 
 cmd_install() {
-    owner=cam-tool; platform=""; pw=""
+    owner=cam-tool; platform=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --owner)    shift; owner="${1:-cam-tool}" ;;
             --platform) shift; platform="${1:-}" ;;
-            --webui-password) shift; pw="${1:-}" ;;
             *) die "install: unknown option '$1'" ;;
         esac
         shift
@@ -156,11 +155,7 @@ cmd_install() {
         running && die "machino is still running and would not stop; cannot replace its binary"
     fi
 
-    if [ -n "$pw" ]; then
-        MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" --webui-password "$pw" || die "install.sh failed"
-    else
-        MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" || die "install.sh failed"
-    fi
+    MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" || die "install.sh failed"
 
     # install.sh has placed the on-camera control surface (machino-manager) and
     # a stored uninstaller under $STATE_DIR already.
@@ -228,7 +223,7 @@ case "${1:-}" in
     -h|--help|"")
         cat >&2 <<EOF
 usage: machino-manager <command>
-  install [--owner NAME] [--platform P] [--webui-password PW]
+  install [--owner NAME] [--platform P]
   uninstall [--owner NAME] [--force]
   status        machine-readable JSON: state = OFF|ON|BROKEN|EXTERNAL
 EOF

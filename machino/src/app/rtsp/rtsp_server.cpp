@@ -65,6 +65,10 @@ int RtspServer::unit_from_url(const std::string& url) const {
     if (!path.empty() && path.back() == '/') path.pop_back();
     if (path == cfg_.path) return lifecycle::UNIT_MAIN;
     if (sub_hub_ && !cfg_.sub_path.empty() && path == cfg_.sub_path) return lifecycle::UNIT_SUB;
+    // Majestic drop-in aliases: the stock WebUI's "Stream URLs" page hands out
+    // rtsp://CAM/stream=0 and /stream=1 - those must play against Machino too.
+    if (path == "/stream=0") return lifecycle::UNIT_MAIN;
+    if (sub_hub_ && path == "/stream=1") return lifecycle::UNIT_SUB;
     return -1;                                    // unknown mount
 }
 StreamHub* RtspServer::hub_for(int unit) const { return unit == lifecycle::UNIT_SUB ? sub_hub_ : &hub_; }

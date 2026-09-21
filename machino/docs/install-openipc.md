@@ -58,16 +58,12 @@ ssh root@CAMERA
 cd /tmp
 gzip -dc machino-openipc-t40nn.tar.gz | tar xf -
 cd machino-openipc-t40nn
-./install.sh --webui-password 'YOUR-PASSWORD'
+./install.sh
 ```
 
 > `tar xzf` does **not** work here: the camera has BusyBox tar, which has no
 > `-z`. Pipe it through `gzip -dc` as above (`tar xaf ...` works on newer
 > BusyBox builds too).
-
-`--webui-password` sets the password for the switch page for the time Machino
-serves the WebUI - see [WebUI access](#webui-access) below. You can leave it
-out and set it later with `streamerctl webui-password`.
 
 The installer prints what it did and finishes with the current status. It
 does **not** start Machino and does **not** stop Majestic.
@@ -100,14 +96,13 @@ moves it back.
 While **Majestic** is active it serves the WebUI with its own login, exactly as
 before - nothing changes.
 
-While **Machino** is active the same OpenIPC WebUI (`/var/www`) is served by
-BusyBox `httpd` instead, reachable on the LAN like the stock WebUI. It is served
-openly by default; set an optional site-wide HTTP Basic password (user `root`)
-with `--webui-password` at install time or `streamerctl webui-password
-<password>` later, and clear it with `streamerctl webui-password --clear`.
+While **Machino** is active it is the front door on port 80 and behaves like
+Majestic: the WebUI shows the normal OpenIPC login page and authenticates the
+camera's root account (Machino's session /login and /logout). Camera-local
+requests (127.0.0.1) pass without credentials, exactly like Majestic; CLI/API
+callers can also use HTTP Basic auth.
 
-Basic auth is not TLS. Do not expose such a camera directly to an untrusted
-network.
+This is not TLS. Do not expose such a camera directly to an untrusted network.
 
 > The stock WebUI's Dashboard/Live/Camera pages are Majestic-specific and will
 > report "Majestic not running" while Machino is active. A Machino adaptation of
@@ -128,10 +123,9 @@ streamerctl set machino
 What happens, in this order:
 
 1. Majestic is stopped and the script waits until the process is really gone.
-2. busybox `httpd` takes over port 80 with the same `/var/www`, so the WebUI
-   stays up.
-3. Machino is started.
-4. Machino's API is polled until it answers.
+2. busybox `httpd` starts on 127.0.0.1:85 as the internal WebUI backend.
+3. Machino is started and becomes the front door on port 80.
+4. Machino's API on :80 is polled until it answers.
 5. If it does not come up, everything is rolled back to Majestic.
 
 `COLD_IDLE` is a healthy state. Machino follows "no consumer, no pipeline":
@@ -146,8 +140,8 @@ streamerctl status
 ```
 selected:     machino
 running:      machino
-port 80:      httpd
-machino api:  cold_idle (port 8080)
+port 80:      machino
+machino api:  cold_idle (port 80)
 ```
 
 And the stream:

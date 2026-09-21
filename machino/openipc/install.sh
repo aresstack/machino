@@ -21,17 +21,14 @@ say()  { echo "$*"; }
 warn() { echo "install: $*" >&2; }
 die()  { echo "install: $*" >&2; exit 1; }
 
-WEBUI_PASSWORD=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --webui-password) shift; WEBUI_PASSWORD="${1:-}" ;;
         -h|--help)
             cat <<EOF
-usage: ./install.sh [--webui-password PASSWORD]
+usage: ./install.sh
 
-  --webui-password P  optional password (user 'root') for the OpenIPC WebUI
-                      while Machino serves it on port 80. Without it the WebUI
-                      is served openly on the LAN, like the stock OpenIPC WebUI.
+The WebUI login is Machino's Majestic drop-in session login against the
+camera's root account - there is nothing to configure here.
 EOF
             exit 0 ;;
         *) die "unknown option '$1' (try --help)" ;;
@@ -118,10 +115,9 @@ put 0755 "$HERE/sbin/streamerctl" "$ROOT/usr/sbin/streamerctl" || die "cannot in
 # work on the camera later without redeploying the bundle.
 put 0755 "$HERE/sbin/machino-manager" "$ROOT/usr/sbin/machino-manager" || die "cannot install machino-manager"
 [ -r "$HERE/uninstall.sh" ] && put 0755 "$HERE/uninstall.sh" "$STATE_DIR/uninstall.sh"
-if [ -n "$WEBUI_PASSWORD" ]; then
-    STREAMERCTL_ROOT="$ROOT" "$ROOT/usr/sbin/streamerctl" webui-password "$WEBUI_PASSWORD" ||
-        warn "could not set the WebUI password - set it later with: streamerctl webui-password <password>"
-fi
+# A webui.passwd from an older bundle would only confuse a reader - the Basic
+# auth layer it fed is gone (Machino's session login owns authentication now).
+rm -f "$STATE_DIR/webui.passwd"
 put 0755 "$HERE/init/machino" "$INITD/machino"          || die "cannot install $INITD/machino"
 
 # ------------------------------------------------- take over the boot slot ---

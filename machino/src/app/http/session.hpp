@@ -28,8 +28,17 @@ public:
     // Paths that must work WITHOUT a session, or nobody could ever log in.
     static bool is_public(const std::string& method, const std::string& path);
 
+    // Camera-local callers are trusted without credentials, exactly like
+    // Majestic ("majestic waves through requests that originate on the camera
+    // itself" - upstream www/cgi-bin/p/majestic.sh). peer is "ip:port".
+    static bool is_local_peer(const std::string& peer);
+
     // Valid session cookie present?
     bool authed(const std::string& cookie_header, int64_t now_ms);
+
+    // CLI/API fallback: "Authorization: Basic base64(user:pass)" validated
+    // against the same credential check (per request, no session created).
+    bool authed_basic(const std::string& authorization_header);
 
     struct LoginResult {
         int         status;      // 200 or 403 (400 on malformed body)
@@ -48,7 +57,9 @@ public:
     size_t sessions() const { return tokens_.size(); }
 
 private:
-    static constexpr const char* COOKIE = "machino_session";
+    // Majestic's cookie: named "session", SameSite=Strict (upstream ptz.cgi
+    // relies on Strict). Do not invent a different contract.
+    static constexpr const char* COOKIE = "session";
     static constexpr int64_t SESSION_MS  = 12ll * 3600 * 1000;       // no "remember"
     static constexpr int64_t REMEMBER_MS = 30ll * 24 * 3600 * 1000;  // "stay signed in"
     static constexpr size_t  MAX_SESSIONS = 32;                      // oldest evicted

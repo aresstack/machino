@@ -195,15 +195,71 @@ void test_webui_config_and_sources() {
         CCHECK(en && en->is_bool() && en->as_bool());
     }
 
-    Json src = majestic_sources(cfg);
+    // /api/v1/sources wire format is pinned by the UPSTREAM majestic-webui
+    // test fixture (tests/sources.test.js, FROM_A_REAL_CAMERA): sensor source
+    // camera 0 with streams[], subtype as a NAME, flowing on h264 streams.
+    Json st = Json::object();
+    { Json med = Json::object(); med.set("encoder_active", Json::boolean(true)); st.set("media", med); }
+    Json src = majestic_sources(cfg, st);
     const Json* arr = src.get("sources");
     CCHECK(arr && arr->is_array() && arr->size() == 1);
     if (arr && arr->size() == 1) {
-        const Json& e = arr->at(0);
-        CCHECK(e.get("id") && e.get("id")->as_string() == "video0");
-        CCHECK(e.get("camera") && e.get("camera")->as_int() == 1);
-        CCHECK(e.get("size") && e.get("size")->as_string() == "1920x1080");
+        const Json& sensor = arr->at(0);
+        CCHECK(sensor.get("camera") && sensor.get("camera")->as_int() == 0);
+        CCHECK(sensor.get("kind") && sensor.get("kind")->as_string() == "sensor");
+        const Json* streams = sensor.get("streams");
+        CCHECK(streams && streams->is_array() && streams->size() == 1);
+        if (streams && streams->size() == 1) {
+            const Json& s0 = streams->at(0);
+            CCHECK(s0.get("id") && s0.get("id")->as_int() == 0);
+            CCHECK(s0.get("subtype") && s0.get("subtype")->as_string() == "main");
+            CCHECK(s0.get("codec") && s0.get("codec")->as_string() == "h264");
+            CCHECK(s0.get("fps") && s0.get("fps")->as_int() == 25);
+            CCHECK(s0.get("width") && s0.get("width")->as_int() == 1920);
+            CCHECK(s0.get("height") && s0.get("height")->as_int() == 1080);
+            CCHECK(s0.get("flowing") && s0.get("flowing")->as_bool());
+            CCHECK(s0.get("configured") && s0.get("configured")->as_bool());
+            CCHECK(s0.get("present") && s0.get("present")->as_bool());
+            CCHECK(s0.get("rtsp") && s0.get("rtsp")->as_bool());
+        }
     }
+
+    // /api/v1/get: plain-text value of a dotted key, miss = false (-> 404).
+    std::string val;
+    CCHECK(majestic_get(cfg, "video0.fps", val) && val == "25");
+    CCHECK(majestic_get(cfg, "video0.size", val) && val == "1920x1080");
+    CCHECK(majestic_get(cfg, "video0.enabled", val) && val == "true");
+    CCHECK(!majestic_get(cfg, "nightMode.irCutPin1", val));   // honestly absent
+    CCHECK(!majestic_get(cfg, "video0.nope", val));
+    CCHECK(!majestic_get(cfg, "", val));
+}
+
+// The stock WebUI sends form values as STRINGS ("Values are always sent as
+// strings; the camera coerces" - upstream docs/settings-page.md). The
+// translation must hand the native validator real numbers/bools.
+void test_webui_post_strings_and_reset() {
+    MajesticTranslation t = majestic_post_to_native(
+        "{\"video0\":{\"fps\":\"20\",\"bitrate_kbps\":\"3000\",\"gop\":\"40\"},"
+        "\"sensor\":{\"fps\":\"20\"},\"ai\":{\"enabled\":\"true\"}}");
+    CCHECK(t.ok);
+    const Json* v0 = t.patch.get("video") ? t.patch.get("video")->get("0") : nullptr;
+    CCHECK(v0 && v0->get("fps") && v0->get("fps")->is_number() && v0->get("fps")->as_int() == 20);
+    CCHECK(v0 && v0->get("bitrate_kbps") && v0->get("bitrate_kbps")->is_number() && v0->get("bitrate_kbps")->as_int() == 3000);
+    const Json* ai = t.patch.get("ai");
+    CCHECK(ai && ai->get("enabled") && ai->get("enabled")->is_bool() && ai->get("enabled")->as_bool());
+    // real string fields survive untouched
+    MajesticTranslation t2 = majestic_post_to_native("{\"ai\":{\"detector\":\"motion\"}}");
+    CCHECK(t2.ok && t2.patch.get("ai")->get("detector")->is_string());
+
+    // /api/v1/reset: mappable keys produce a native default patch, others 404.
+    MajesticTranslation r1 = majestic_reset("video0.gop");
+    CCHECK(r1.ok && r1.patch.get("video") && r1.patch.get("video")->get("0")->get("gop")->as_int() == 40);
+    MajesticTranslation r2 = majestic_reset("video0.bitrate_kbps");
+    CCHECK(r2.ok && r2.patch.get("video")->get("0")->get("bitrate_kbps")->as_int() == 3000);
+    MajesticTranslation r3 = majestic_reset("nightMode.irCutPin1");
+    CCHECK(!r3.ok && r3.status == 404);
+    MajesticTranslation r4 = majestic_reset("video0.fps");     // default = "follow mode": not resettable
+    CCHECK(!r4.ok && r4.status == 404);
 }
 
 } // namespace
@@ -213,4 +269,5 @@ void run_compat_tests() {
     test_migrate_edges();
     test_webui_metrics();
     test_webui_config_and_sources();
+    test_webui_post_strings_and_reset();
 }

@@ -206,20 +206,13 @@ printf '<nav>a newer webui</nav>
 run_uninstall
 is "updated header kept" "$(cat "$R/var/www/cgi-bin/p/header.cgi")" "<nav>a newer webui</nav>"
 
-# ------------- 13a) --webui-password ends up applied, not just parsed -------
-# It WAS parsed and never used once; only this test keeps that from returning.
+# ------------- 13a) install removes a legacy webui.passwd -------------------
+# The Basic-auth layer it fed is gone (Machino's session login owns auth);
+# a leftover file from an older bundle must not survive an upgrade.
 make_bundle; make_camera auto
-PSTUB="$WORK/pstub"; mkdir -p "$PSTUB"
-printf '#!/bin/sh
-case "$1" in -m) echo "md5hash"; exit 0 ;; esac
-exit 0
-' > "$PSTUB/httpd"
-chmod +x "$PSTUB/httpd"
-( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" STREAMERCTL_HTTPD="$PSTUB/httpd" sh ./install.sh --webui-password s3cret ) >"$WORK/out" 2>&1 ||
-    bad "install with --webui-password failed: $(cat "$WORK/out")"
-has "webui.passwd written" "$R/etc/machino/webui.passwd"
-if grep -q '^/:root:' "$R/etc/machino/httpd.conf" 2>/dev/null; then ok; else bad "httpd.conf has no site-wide auth rule"; fi
-rm -rf "$PSTUB"
+mkdir -p "$R/etc/machino"; printf 'root:x\n' > "$R/etc/machino/webui.passwd"
+run_install || bad "install failed with a legacy webui.passwd present: $(cat "$WORK/out")"
+hasnt "legacy webui.passwd removed" "$R/etc/machino/webui.passwd"
 
 # ------------- 13b) the boot-slot move survives a failing mv -----------------
 # The camera's 4.4 overlayfs refused rename(2) with EINVAL for the lower-layer

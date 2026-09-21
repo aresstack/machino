@@ -213,7 +213,9 @@ bool HttpServer::handle_request(Client& c) {
             if (!req.keep_alive) c.close_after_flush = true;
             return ok;
         }
-        if (!SessionGate::is_public(m, path) && !gate_->authed(req.header("cookie"), t)) {
+        const bool local = SessionGate::is_local_peer(c.peer);   // camera-local = trusted, like Majestic
+        if (!local && !SessionGate::is_public(m, path) && !gate_->authed(req.header("cookie"), t)
+            && !gate_->authed_basic(req.header("authorization"))) {
             // Top-level navigation -> the login page; fetch()/assets -> 401
             // WITHOUT WWW-Authenticate (never the browser's Basic popup;
             // main.js redirects to /login.html on 401 itself).
@@ -250,8 +252,32 @@ bool HttpServer::handle_request(Client& c) {
         r = (m == "GET") ? api::Response{200, compat::majestic_config(api_.config().body, api_.state().body)}
                          : api::ApiService::fail(405, "unknown_field", path, "method not allowed");
     } else if (path == "/api/v1/sources") {
-        r = (m == "GET") ? api::Response{200, compat::majestic_sources(compat::majestic_config(api_.config().body, api_.state().body))}
+        Json st = api_.state().body;
+        r = (m == "GET") ? api::Response{200, compat::majestic_sources(compat::majestic_config(api_.config().body, st), st)}
                          : api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    } else if (path == "/api/v1/get") {
+        // Stock CGI probe (majestic.sh mj_cfg): plain-text value or 404.
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else {
+            const std::string key = SessionGate::form_value(req.query, "key");
+            std::string val;
+            bool found = !key.empty() &&
+                         compat::majestic_get(compat::majestic_config(api_.config().body, api_.state().body), key, val);
+            bool ok = queue(c, found ? response(200, "text/plain", val, req.keep_alive)
+                                     : response(404, "text/plain", "no such key\n", req.keep_alive));
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
+        }
+    } else if (path == "/api/v1/reset") {
+        // Settings-page per-row reset: restore the built-in default; 404 =
+        // "this camera has no such setting" (handled by the stock UI).
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else {
+            const std::string key = SessionGate::form_value(req.query, "key");
+            compat::MajesticTranslation tr = compat::majestic_reset(key);
+            r = tr.ok ? api_.patch_config(tr.patch.dump(), "")
+                      : api::ApiService::fail(tr.status, tr.code.c_str(), tr.path, tr.message);
+        }
     } else if (path == "/metrics") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         else {

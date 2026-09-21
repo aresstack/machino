@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/prctl.h>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -62,7 +63,11 @@ static bool shadow_check(const std::string& user, const std::string& pass) {
         if (user != line) continue;
         char* hash = c1 + 1;
         if (char* c2 = strchr(hash, ':')) *c2 = 0;
-        if (hash[0] == 0) { ok = pass.empty(); }                  // account without password
+        // An EMPTY hash means an UNCLAIMED camera (OpenIPC then forces the
+        // /setup flow) - it must NEVER count as "empty password accepted".
+        // The setup flow itself is not implemented yet; until it is, an
+        // unclaimed camera simply cannot log in over the WebUI.
+        if (hash[0] == 0) { ok = false; }
         else if (hash[0] != '!' && hash[0] != '*') {              // '!' / '*' = locked
             const char* enc = crypt(pass.c_str(), hash);
             ok = enc && strcmp(enc, hash) == 0;
@@ -178,6 +183,16 @@ int main(int argc, char** argv) {
     // without ever editing machino.conf.
     if (api_port_override > 0) cfg.api.port = api_port_override;
     if (api_upstream_override >= 0) cfg.api.upstream_port = api_upstream_override;
+    if (cfg.api.upstream_port > 0) {
+        // Drop-in identity: the stock WebUI's CGIs use `pidof majestic`,
+        // /proc/$pid/comm and `killall -HUP majestic`. Set the comm so those
+        // hit Machino (SIGHUP already reloads the config). BusyBox pgrep -x
+        // matches argv0 (verified on the T40NN for machino), so streamerctl's
+        // pgrep -f /usr/bin/machino and pgrep -x majestic stay unambiguous.
+        // PENDING hardware check: BusyBox pidof/killall find comm "majestic".
+        prctl(PR_SET_NAME, "majestic", 0, 0, 0);
+        LOGI(MOD, "majestic-compat: process comm set to 'majestic' (pidof/killall compatibility)");
+    }
     log_set_level(verbose ? LogLevel::Debug : (LogLevel)cfg.log.level);
     log_set_syslog(cfg.log.syslog);
     LOGI(MOD, "machino %s starting (pid %d)", MACHINO_VERSION, (int)getpid());
