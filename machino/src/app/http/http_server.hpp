@@ -70,7 +70,8 @@ private:
     void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
     void pump_ws_video(Client& c);  // fMP4-per-frame over WebSocket (majestic /ws/video)
     bool ws_video_input(Client& c); // client frames: {"request":"idr"}, ping, close
-    bool relay_upstream(Client& c, const Request& req); // forward non-native paths to busybox
+    bool relay_upstream(Client& c, const Request& req); // start a non-blocking upstream relay
+    bool pump_relay(Client& c, short re, int64_t now);   // advance it; false drops the client
     bool flush(Client& c);
     bool queue(Client& c, const std::string& data, size_t cap = 0);   // cap 0 = max_out_buffer
 

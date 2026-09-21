@@ -128,6 +128,17 @@ struct HttpServer::Client {
     uint64_t ws_dts = 0;            // 90 kHz decode timeline
     int64_t  ws_last_pts_us = 0;
     int64_t  ws_last_idr_req_ms = 0;
+    // Front-door relay: per-client non-blocking upstream state. The poll loop
+    // owns both sockets; no thread ever blocks on the busybox side, so a slow
+    // CGI can not starve /ws/video or any other connection.
+    enum class Relay { None, Connecting, Writing, Reading };
+    int         relay_fd = -1;
+    Relay       relay_state = Relay::None;
+    std::string relay_req;          // wire bytes for the upstream
+    size_t      relay_off = 0;
+    std::string relay_resp;         // verbatim upstream reply (EOF-delimited)
+    int64_t     relay_deadline_ms = 0;
+    std::string relay_what;         // "METHOD /path" for logging
 };
 
 static const char* MJPEG_BOUNDARY = "machinoframe";
@@ -163,6 +174,7 @@ void HttpServer::stop() {
     for (auto& c : clients_) {
         if (c->sub) bus_.unsubscribe(c->sub);
         if (c->ws_sink && hub_) { c->ws_sink->close(); hub_->unsubscribe(c->ws_sink); }
+        if (c->relay_fd >= 0) close(c->relay_fd);
         close(c->fd);
     }
     clients_.clear();
@@ -381,46 +393,92 @@ bool HttpServer::handle_request(Client& c) {
     return true;
 }
 
-// Forward one request to the internal OpenIPC WebUI (busybox httpd) and queue
-// its verbatim response. Blocking, but bounded by relay_timeout_ms and
-// max_relay_bytes so a hung/oversized upstream can not wedge the poll loop
-// (same discipline as the JPEG path). The connection is closed afterwards:
-// the upstream reply is HTTP/1.0/EOF-delimited, so one request per socket.
+// Start forwarding one request to the internal OpenIPC WebUI (busybox httpd).
+// Non-blocking: this only opens the upstream socket and records relay state;
+// pump_relay advances it from the poll loop as the fds become ready. The
+// downstream connection is closed after the relayed reply: the upstream is
+// HTTP/1.0/EOF-delimited, so one request per socket.
 bool HttpServer::relay_upstream(Client& c, const Request& req) {
-    c.close_after_flush = true;
-    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) { queue(c, response(502, "text/plain", "upstream socket failed\n", false)); return true; }
-    struct timeval tv; tv.tv_sec = cfg_.relay_timeout_ms / 1000; tv.tv_usec = (cfg_.relay_timeout_ms % 1000) * 1000;
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (fd < 0) {
+        queue(c, response(502, "text/plain", "upstream socket failed\n", false));
+        c.close_after_flush = true; return true;
+    }
     sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons((uint16_t)cfg_.upstream_port);
-    if (inet_pton(AF_INET, cfg_.upstream_host.c_str(), &a.sin_addr) != 1 ||
-        connect(fd, (sockaddr*)&a, sizeof a) < 0) {
+    int rc = -1;
+    if (inet_pton(AF_INET, cfg_.upstream_host.c_str(), &a.sin_addr) == 1)
+        rc = connect(fd, (sockaddr*)&a, sizeof a);
+    if (rc < 0 && errno != EINPROGRESS) {
         LOGW(MOD, "relay: connect %s:%d failed: %s", cfg_.upstream_host.c_str(), cfg_.upstream_port, strerror(errno));
         close(fd);
         queue(c, response(502, "text/plain", "OpenIPC WebUI backend unreachable\n", false));
-        return true;
+        c.close_after_flush = true; return true;
     }
-    const std::string wire = forward_request(req, cfg_.upstream_host);
-    for (size_t off = 0; off < wire.size(); ) {
-        ssize_t w = send(fd, wire.data() + off, wire.size() - off, MSG_NOSIGNAL);
-        if (w <= 0) { close(fd); queue(c, response(502, "text/plain", "upstream write failed\n", false)); return true; }
-        off += (size_t)w;
+    c.relay_fd = fd;
+    c.relay_state = (rc == 0) ? Client::Relay::Writing : Client::Relay::Connecting;
+    c.relay_req = forward_request(req, cfg_.upstream_host);
+    c.relay_off = 0;
+    c.relay_resp.clear();
+    c.relay_deadline_ms = now_ms() + cfg_.relay_timeout_ms;
+    c.relay_what = req.method + " " + req.path;
+    return true;
+}
+
+// Advance one client's upstream relay; called every poll iteration with the
+// upstream fd's revents. Bounded by the absolute deadline and max_relay_bytes.
+// Returns false only when the downstream client itself must be dropped.
+bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
+    auto finish = [&](int status, const char* msg) -> bool {
+        close(c.relay_fd); c.relay_fd = -1; c.relay_state = Client::Relay::None;
+        c.close_after_flush = true;
+        bool ok;
+        if (msg) {
+            LOGW(MOD, "relay: %s: %s", c.relay_what.c_str(), msg);
+            ok = queue(c, response(status, "text/plain", std::string(msg) + "\n", false));
+        } else {
+            LOGD(MOD, "relay %s -> %zu B", c.relay_what.c_str(), c.relay_resp.size());
+            // The upstream reply is a complete HTTP response already; forward verbatim.
+            ok = queue(c, c.relay_resp, cfg_.max_relay_bytes + 4096);
+        }
+        c.relay_resp.clear(); c.relay_req.clear();
+        return ok;
+    };
+    if (re & POLLNVAL) return finish(502, "OpenIPC WebUI backend failed");
+    if (now >= c.relay_deadline_ms) {
+        if (!c.relay_resp.empty()) return finish(0, nullptr);      // partial EOF-delimited reply: forward what arrived
+        return finish(504, "OpenIPC WebUI backend timed out");
     }
-    std::string resp; char buf[8192];
+    if (c.relay_state == Client::Relay::Connecting) {
+        if (re & (POLLERR | POLLHUP)) return finish(502, "OpenIPC WebUI backend unreachable");
+        if (!(re & POLLOUT)) return true;                          // still connecting
+        int err = 0; socklen_t el = sizeof err;
+        if (getsockopt(c.relay_fd, SOL_SOCKET, SO_ERROR, &err, &el) < 0 || err != 0)
+            return finish(502, "OpenIPC WebUI backend unreachable");
+        c.relay_state = Client::Relay::Writing;
+    }
+    if (c.relay_state == Client::Relay::Writing) {
+        while (c.relay_off < c.relay_req.size()) {
+            ssize_t w = send(c.relay_fd, c.relay_req.data() + c.relay_off,
+                             c.relay_req.size() - c.relay_off, MSG_NOSIGNAL | MSG_DONTWAIT);
+            if (w > 0) { c.relay_off += (size_t)w; continue; }
+            if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return true;
+            return finish(502, "upstream write failed");
+        }
+        c.relay_state = Client::Relay::Reading;
+    }
+    // Reading: drain whatever is ready; EOF completes the relay.
+    char buf[8192];
     for (;;) {
-        ssize_t rd = recv(fd, buf, sizeof buf, 0);
-        if (rd == 0) break;                  // EOF: upstream done (Connection: close)
-        if (rd < 0) { LOGW(MOD, "relay: read %s: %s", req.path.c_str(), strerror(errno));
-            if (resp.empty()) { close(fd); queue(c, response(504, "text/plain", "OpenIPC WebUI backend timed out\n", false)); return true; }
-            break; }
-        resp.append(buf, (size_t)rd);
-        if (resp.size() > cfg_.max_relay_bytes) { LOGW(MOD, "relay: %s response too large", req.path.c_str()); break; }
+        ssize_t rd = recv(c.relay_fd, buf, sizeof buf, MSG_DONTWAIT);
+        if (rd == 0) return finish(0, nullptr);                    // EOF: upstream done (Connection: close)
+        if (rd < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return true;
+            if (!c.relay_resp.empty()) return finish(0, nullptr);
+            return finish(502, "OpenIPC WebUI backend failed");
+        }
+        c.relay_resp.append(buf, (size_t)rd);
+        if (c.relay_resp.size() > cfg_.max_relay_bytes) return finish(0, nullptr);   // oversized: cut here
     }
-    close(fd);
-    LOGD(MOD, "relay %s %s -> %zu B", req.method.c_str(), req.path.c_str(), resp.size());
-    // The upstream reply is a complete HTTP response already; forward verbatim.
-    return queue(c, resp, cfg_.max_relay_bytes + 4096);
 }
 
 void HttpServer::drain_events(Client& c) {
@@ -549,6 +607,8 @@ void HttpServer::loop() {
         pfds.push_back({listen_fd_, POLLIN, 0});
         int timeout_ms = 250;
         for (auto& c : clients_) pfds.push_back({c->fd, (short)(POLLIN | (c->out.empty() ? 0 : POLLOUT)), 0});
+        for (auto& c : clients_) if (c->relay_fd >= 0)   // upstream sockets ride the same poll; nothing blocks
+            pfds.push_back({c->relay_fd, (short)(c->relay_state == Client::Relay::Reading ? POLLIN : POLLOUT), 0});
         for (auto& c : clients_) if (c->mjpeg || c->ws_video) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
@@ -564,7 +624,12 @@ void HttpServer::loop() {
                 else if (r < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) ok = false; }
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.sse || c.mjpeg) { /* ignore input on streaming connections */ }
-                else { c.in.append(buf, (size_t)r); if (c.in.size() > MAX_IN) ok = false; else while (ok && !c.close_after_flush && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
+                else { c.in.append(buf, (size_t)r); if (c.in.size() > MAX_IN) ok = false; else while (ok && !c.close_after_flush && c.relay_fd < 0 && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
+            }
+            if (ok && c.relay_fd >= 0) {
+                short rre = 0;   // find by fd: pfds indices shift when clients drop mid-iteration
+                for (auto& p : pfds) if (p.fd == c.relay_fd) { rre = p.revents; break; }
+                ok = pump_relay(c, rre, t);
             }
             if (ok && c.sse) {
                 drain_events(c);
@@ -578,6 +643,7 @@ void HttpServer::loop() {
             if (!ok) {
                 if (c.sub) bus_.unsubscribe(c.sub);
                 if (c.ws_sink && hub_) { c.ws_sink->close(); hub_->unsubscribe(c.ws_sink); }
+                if (c.relay_fd >= 0) close(c.relay_fd);
                 close(c.fd);
                 clients_.erase(clients_.begin() + (long)i); --i;
             }
