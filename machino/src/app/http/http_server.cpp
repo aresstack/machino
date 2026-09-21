@@ -134,7 +134,7 @@ struct HttpServer::Client {
     // CGI can not starve /ws/video or any other connection. Upstream bytes are
     // STREAMED into the client's bounded out buffer (never stored whole); a
     // full out buffer pauses upstream reads (backpressure) instead of growing.
-    enum class Relay { None, Connecting, Writing, Reading };
+    enum class Relay { None, Queued, Connecting, Writing, Reading };
     int         relay_fd = -1;
     Relay       relay_state = Relay::None;
     std::string relay_req;          // wire bytes for the upstream
@@ -403,8 +403,28 @@ bool HttpServer::handle_request(Client& c) {
 // downstream connection is closed after the relayed reply: the upstream is
 // HTTP/1.0/EOF-delimited, so one request per socket.
 bool HttpServer::relay_upstream(Client& c, const Request& req) {
+    c.relay_req = forward_request(req, cfg_.upstream_host);
+    c.relay_off = 0;
+    c.relay_total = 0;
+    const int64_t now = now_ms();
+    c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
+    c.relay_abs_deadline_ms  = now + cfg_.relay_max_ms;
+    c.relay_what = req.method + " " + req.path;
+    // Every in-flight relay is a forked CGI on the busybox side; a browser
+    // dashboard fires a dozen fetches at once and the camera has ~43 MiB of
+    // userspace. Excess relays wait here until a slot frees (the old blocking
+    // relay serialized them to exactly one, which is what kept busybox safe).
+    int inflight = 0;
+    for (auto& other : clients_) if (other->relay_fd >= 0) ++inflight;
+    if (inflight >= cfg_.max_relay_inflight) { c.relay_state = Client::Relay::Queued; return true; }
+    return relay_open(c);
+}
+
+// Open the upstream socket for a prepared relay (fresh or dequeued).
+bool HttpServer::relay_open(Client& c) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd < 0) {
+        c.relay_state = Client::Relay::None;
         queue(c, response(502, "text/plain", "upstream socket failed\n", false));
         c.close_after_flush = true; return true;
     }
@@ -415,18 +435,13 @@ bool HttpServer::relay_upstream(Client& c, const Request& req) {
     if (rc < 0 && errno != EINPROGRESS) {
         LOGW(MOD, "relay: connect %s:%d failed: %s", cfg_.upstream_host.c_str(), cfg_.upstream_port, strerror(errno));
         close(fd);
+        c.relay_state = Client::Relay::None;
         queue(c, response(502, "text/plain", "OpenIPC WebUI backend unreachable\n", false));
         c.close_after_flush = true; return true;
     }
     c.relay_fd = fd;
     c.relay_state = (rc == 0) ? Client::Relay::Writing : Client::Relay::Connecting;
-    c.relay_req = forward_request(req, cfg_.upstream_host);
-    c.relay_off = 0;
-    c.relay_total = 0;
-    const int64_t now = now_ms();
-    c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
-    c.relay_abs_deadline_ms  = now + cfg_.relay_max_ms;
-    c.relay_what = req.method + " " + req.path;
+    c.relay_idle_deadline_ms = now_ms() + cfg_.relay_timeout_ms;   // waiting in the queue was not upstream inactivity
     return true;
 }
 
@@ -458,6 +473,17 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
         c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
         c.last_activity_ms = now;                                  // a streaming download is not an idle client
     };
+    if (c.relay_state == Client::Relay::Queued) {
+        if (now >= c.relay_idle_deadline_ms) {                     // parked too long behind slow CGIs
+            c.relay_state = Client::Relay::None; c.relay_req.clear();
+            c.close_after_flush = true;
+            return queue(c, response(503, "text/plain", "OpenIPC WebUI backend is busy\n", false));
+        }
+        int inflight = 0;
+        for (auto& other : clients_) if (other->relay_fd >= 0) ++inflight;
+        if (inflight >= cfg_.max_relay_inflight) return true;      // keep waiting
+        return relay_open(c);
+    }
     if (re & POLLNVAL) return fail(502, "OpenIPC WebUI backend failed");
     if (now >= c.relay_abs_deadline_ms)  return fail(504, "OpenIPC WebUI backend exceeded the relay ceiling");
     if (now >= c.relay_idle_deadline_ms) return fail(504, "OpenIPC WebUI backend timed out");
@@ -664,9 +690,9 @@ void HttpServer::loop() {
                 else if (r < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) ok = false; }
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.sse || c.mjpeg) { /* ignore input on streaming connections */ }
-                else { c.in.append(buf, (size_t)r); if (c.in.size() > MAX_IN) ok = false; else while (ok && !c.close_after_flush && c.relay_fd < 0 && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
+                else { c.in.append(buf, (size_t)r); if (c.in.size() > MAX_IN) ok = false; else while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
             }
-            if (ok && c.relay_fd >= 0) ok = pump_relay(c, rre, t);
+            if (ok && c.relay_state != Client::Relay::None) ok = pump_relay(c, rre, t);
             if (ok && c.sse) {
                 drain_events(c);
                 if (t - last_heartbeat_ms_ >= 15000) queue(c, ": keepalive\n\n");

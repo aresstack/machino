@@ -43,6 +43,10 @@ struct ServerConfig {
     int         upstream_port = 0;
     int         relay_timeout_ms = 6000;      // upstream INACTIVITY bound: refreshed on connect/send/recv progress
     int         relay_max_ms = 120000;        // absolute safety ceiling per relayed request
+    // Each relayed request makes busybox fork a CGI (shell + helpers). On a
+    // 128 MiB camera whose userspace is ~43 MiB a browser dashboard firing a
+    // dozen fetches at once is a real OOM risk, so excess relays queue.
+    int         max_relay_inflight = 3;
     size_t      max_relay_bytes = 8 * 1024 * 1024;   // total bytes forwarded per relayed request
     // Majestic drop-in session auth (POST /login, POST /logout, 401 gating).
     // Active only when both are set; auth_check validates the credentials.
@@ -71,7 +75,8 @@ private:
     void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
     void pump_ws_video(Client& c);  // fMP4-per-frame over WebSocket (majestic /ws/video)
     bool ws_video_input(Client& c); // client frames: {"request":"idr"}, ping, close
-    bool relay_upstream(Client& c, const Request& req); // start a non-blocking upstream relay
+    bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
+    bool relay_open(Client& c);                          // open the upstream socket for a prepared relay
     bool pump_relay(Client& c, short re, int64_t now);   // advance it; false drops the client
     bool flush(Client& c);
     bool queue(Client& c, const std::string& data, size_t cap = 0);   // cap 0 = max_out_buffer
