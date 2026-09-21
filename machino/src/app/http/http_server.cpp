@@ -1,6 +1,9 @@
 #include "app/http/http_server.hpp"
 #include "app/compat/majestic_webui.hpp"
+#include "app/http/fmp4.hpp"
 #include "app/http/http_parse.hpp"
+#include "app/http/websocket.hpp"
+#include "app/rtsp/h264_nal.hpp"
 #include "core/log.hpp"
 
 #include <arpa/inet.h>
@@ -113,11 +116,25 @@ struct HttpServer::Client {
     int64_t last_activity_ms = 0;
     std::shared_ptr<Subscription> sub;
     unsigned requests = 0;
+    // /ws/video: one live MSE feed = one StreamHub consumer with its own
+    // demand, exactly like an RTSP session (no second encoder, no JPEG).
+    bool ws_video = false;
+    std::shared_ptr<Sink>    ws_sink;
+    lifecycle::DemandHandle  ws_demand;
+    bool ws_init_sent = false;
+    bool ws_await_key = true;       // never hand the decoder a P-frame without its reference
+    std::vector<uint8_t> ws_sps, ws_pps;
+    uint32_t ws_seq = 1;
+    uint64_t ws_dts = 0;            // 90 kHz decode timeline
+    int64_t  ws_last_pts_us = 0;
+    int64_t  ws_last_idr_req_ms = 0;
 };
 
 static const char* MJPEG_BOUNDARY = "machinoframe";
 
-HttpServer::HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus) : cfg_(cfg), api_(api), bus_(bus) {
+HttpServer::HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus,
+                       StreamHub* hub, lifecycle::PipelineManager* pipeline)
+    : cfg_(cfg), api_(api), bus_(bus), hub_(hub), pipeline_(pipeline) {
     if (cfg_.session_auth && cfg_.auth_check)
         gate_.reset(new SessionGate(cfg_.auth_check));
 }
@@ -143,7 +160,11 @@ void HttpServer::stop() {
     if (listen_fd_ < 0) return;
     quit_ = true;
     if (thread_.joinable()) thread_.join();
-    for (auto& c : clients_) { if (c->sub) bus_.unsubscribe(c->sub); close(c->fd); }
+    for (auto& c : clients_) {
+        if (c->sub) bus_.unsubscribe(c->sub);
+        if (c->ws_sink && hub_) { c->ws_sink->close(); hub_->unsubscribe(c->ws_sink); }
+        close(c->fd);
+    }
     clients_.clear();
     close(listen_fd_); listen_fd_ = -1;
     LOGI(MOD, "stopped");
@@ -297,6 +318,30 @@ bool HttpServer::handle_request(Client& c) {
                      : api::ApiService::fail(t.status, t.code.c_str(), t.path, t.message);
         } else if (m == "PATCH" || m == "PUT") r = api_.patch_config(req.body, req.header("if-match"));
         else r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    } else if (path == "/ws/video") {
+        // The stock webui's Live player (upstream preview.js): WebSocket, one
+        // JSON init + fMP4 init segment, then one moof+mdat per frame.
+        const std::string wskey = req.header("sec-websocket-key");
+        if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
+        else if (!hub_ || !pipeline_)    { r = api::ApiService::fail(501, "unavailable", path, "no media wiring"); }
+        else if (SessionGate::form_value(req.query, "stream") == "1") {
+            // main stream only until the substream is wired end to end
+            r = api::ApiService::fail(404, "unknown_field", path, "stream 1 is not available");
+        } else {
+            Result dr;
+            lifecycle::DemandHandle d = pipeline_->acquire(lifecycle::ConsumerType::HttpStream, &dr);
+            if (!d.active()) { r = api::ApiService::fail(503, "unavailable", path, "pipeline start failed"); }
+            else {
+                queue(c, ws::handshake_response(wskey));
+                c.ws_video = true;
+                c.ws_demand = std::move(d);
+                c.ws_sink = hub_->subscribe();
+                c.ws_await_key = true;
+                pipeline_->request_idr();
+                LOGI(MOD, "%s: /ws/video session started", c.peer.c_str());
+                return true;
+            }
+        }
     } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         else {
@@ -412,6 +457,88 @@ void HttpServer::push_mjpeg(Client& c) {
     }
 }
 
+// Drain the hub sink into ws frames - bounded per tick, drop-until-key on
+// backpressure (old frames are worse than dropped frames; the decoder must
+// never see a P-frame whose reference was dropped).
+void HttpServer::pump_ws_video(Client& c) {
+    if (!c.ws_sink) return;
+    const size_t soft_cap = cfg_.max_snapshot_bytes;          // an IDR burst fits, runaway buffers do not
+    for (int i = 0; i < 8; ++i) {
+        if (c.out.size() > soft_cap / 2) { c.ws_await_key = true; return; }
+        AuPtr au; bool disc = false;
+        if (!c.ws_sink->pop(au, 0, &disc)) return;
+        if (disc) c.ws_await_key = true;
+        if (!au || au->data.empty()) continue;
+
+        if (au->key) {
+            std::vector<uint8_t> sps, pps;
+            if (h264::extract_params(au->data.data(), au->data.size(), sps, pps) && !sps.empty() && !pps.empty()) {
+                if (!c.ws_init_sent || sps != c.ws_sps || pps != c.ws_pps) {
+                    c.ws_sps = sps; c.ws_pps = pps;
+                    int w = 0, h = 0;
+                    Json st = api_.state().body;   // keep the document alive while reading
+                    if (const Json* med = st.get("media")) {
+                        if (const Json* jw = med->get("width");  jw && jw->is_number()) w = (int)jw->as_int();
+                        if (const Json* jh = med->get("height"); jh && jh->is_number()) h = (int)jh->as_int();
+                    }
+                    const std::string cs = fmp4::codec_string(sps);
+                    Json info = Json::object();
+                    info.set("type", Json::string("init"));
+                    info.set("codec", Json::string("h264"));
+                    info.set("codecString", Json::string(cs));
+                    info.set("width", Json::integer(w));
+                    info.set("height", Json::integer(h));
+                    const std::string init_json = info.dump();
+                    std::vector<uint8_t> init = fmp4::init_segment(sps, pps, w, h, 90000);
+                    queue(c, ws::frame(true, init_json.data(), init_json.size()), soft_cap);
+                    if (!queue(c, ws::frame(false, init.data(), init.size()), soft_cap)) { c.close_after_flush = true; return; }
+                    c.ws_init_sent = true;
+                    LOGI(MOD, "%s: /ws/video init %s %dx%d", c.peer.c_str(), cs.c_str(), w, h);
+                }
+            }
+            c.ws_await_key = false;
+        }
+        if (!c.ws_init_sent) continue;
+        if (c.ws_await_key) continue;                          // resumes at the next key frame
+
+        uint32_t dur = 4500;                                   // 20 fps fallback at 90 kHz
+        if (c.ws_last_pts_us > 0) {
+            int64_t d_us = au->pts_us - c.ws_last_pts_us;
+            if (d_us > 1000 && d_us < 1000000) dur = (uint32_t)(d_us * 90000 / 1000000);
+        }
+        c.ws_last_pts_us = au->pts_us;
+        std::vector<uint8_t> sample = fmp4::annexb_to_avcc(au->data.data(), au->data.size());
+        if (sample.empty()) continue;
+        std::vector<uint8_t> frag = fmp4::fragment(c.ws_seq++, c.ws_dts, dur, sample, au->key);
+        c.ws_dts += dur;
+        if (!queue(c, ws::frame(false, frag.data(), frag.size()), soft_cap)) {
+            c.ws_await_key = true;                             // dropped: wait for the next key
+            return;
+        }
+    }
+}
+
+// Client -> server on a /ws/video socket: tiny JSON ({"request":"idr"}),
+// ping (answered), close. Returns false to drop the connection.
+bool HttpServer::ws_video_input(Client& c) {
+    for (;;) {
+        size_t used = 0; int op = 0; std::string payload;
+        ws::Parse p = ws::parse_frame(c.in, used, op, payload);
+        if (p == ws::Parse::Incomplete) return c.in.size() <= MAX_IN;
+        if (p == ws::Parse::Bad) return false;
+        c.in.erase(0, used);
+        if (op == 8) return false;                             // close
+        if (op == 9) { queue(c, ws::pong_frame(payload)); continue; }
+        if (op == 1 && payload.find("\"idr\"") != std::string::npos && pipeline_) {
+            const int64_t t = now_ms();
+            if (t - c.ws_last_idr_req_ms >= 1000) {            // the client rate-limits too; belt and braces
+                c.ws_last_idr_req_ms = t;
+                pipeline_->request_idr();
+            }
+        }
+    }
+}
+
 void HttpServer::loop() {
     std::vector<pollfd> pfds;
     last_telemetry_ms_ = last_heartbeat_ms_ = now_ms();
@@ -420,7 +547,7 @@ void HttpServer::loop() {
         pfds.push_back({listen_fd_, POLLIN, 0});
         int timeout_ms = 250;
         for (auto& c : clients_) pfds.push_back({c->fd, (short)(POLLIN | (c->out.empty() ? 0 : POLLOUT)), 0});
-        for (auto& c : clients_) if (c->mjpeg) { timeout_ms = 40; break; }   // tick fast enough for the frame rate
+        for (auto& c : clients_) if (c->mjpeg || c->ws_video) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();
@@ -433,6 +560,7 @@ void HttpServer::loop() {
                 char buf[4096]; ssize_t r = recv(c.fd, buf, sizeof buf, MSG_DONTWAIT);
                 if (r == 0) ok = false;
                 else if (r < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) ok = false; }
+                else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.sse || c.mjpeg) { /* ignore input on streaming connections */ }
                 else { c.in.append(buf, (size_t)r); if (c.in.size() > MAX_IN) ok = false; else while (ok && !c.close_after_flush && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
             }
@@ -441,11 +569,13 @@ void HttpServer::loop() {
                 if (t - last_heartbeat_ms_ >= 15000) queue(c, ": keepalive\n\n");
             }
             if (ok && c.mjpeg && !c.close_after_flush) push_mjpeg(c);
+            if (ok && c.ws_video && !c.close_after_flush) pump_ws_video(c);
             if (ok) ok = flush(c);
             if (ok && c.close_after_flush && c.out.empty()) ok = false;
-            if (ok && !c.sse && !c.mjpeg && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
+            if (ok && !c.sse && !c.mjpeg && !c.ws_video && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
             if (!ok) {
                 if (c.sub) bus_.unsubscribe(c.sub);
+                if (c.ws_sink && hub_) { c.ws_sink->close(); hub_->unsubscribe(c.ws_sink); }
                 close(c.fd);
                 clients_.erase(clients_.begin() + (long)i); --i;
             }

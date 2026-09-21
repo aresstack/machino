@@ -9,7 +9,9 @@
 #include "app/api/api_service.hpp"
 #include "app/http/session.hpp"
 #include "core/events.hpp"
+#include "core/lifecycle/pipeline_manager.hpp"
 #include "core/result.hpp"
+#include "core/stream_hub.hpp"
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -45,7 +47,11 @@ struct ServerConfig {
 
 class HttpServer {
 public:
-    HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus);
+    // hub/pipeline are the /ws/video media wiring (majestic-webui Live): a WS
+    // client is a StreamHub consumer with its OWN DemandHandle, exactly like
+    // an RTSP session - no second encoder, no JPEG path. Null = route off.
+    HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus,
+               StreamHub* hub = nullptr, lifecycle::PipelineManager* pipeline = nullptr);
     ~HttpServer();
     Result start();
     void   stop();
@@ -58,6 +64,8 @@ private:
     bool handle_request(Client& c);
     void drain_events(Client& c);
     void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
+    void pump_ws_video(Client& c);  // fMP4-per-frame over WebSocket (majestic /ws/video)
+    bool ws_video_input(Client& c); // client frames: {"request":"idr"}, ping, close
     bool relay_upstream(Client& c, const Request& req); // forward non-native paths to busybox
     bool flush(Client& c);
     bool queue(Client& c, const std::string& data, size_t cap = 0);   // cap 0 = max_out_buffer
@@ -65,6 +73,8 @@ private:
     ServerConfig      cfg_;
     api::ApiService&  api_;
     EventBus&         bus_;
+    StreamHub*        hub_ = nullptr;
+    lifecycle::PipelineManager* pipeline_ = nullptr;
     std::unique_ptr<SessionGate> gate_;   // set when cfg_.session_auth
     int               listen_fd_ = -1;
     std::atomic<bool> quit_{false};

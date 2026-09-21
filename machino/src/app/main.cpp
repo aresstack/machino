@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
         hc.session_auth = cfg.api.upstream_port > 0 && cfg.api.auth;
         if (hc.session_auth) hc.auth_check = shadow_check;
         LOGI(MOD, "webui session auth: %s", hc.session_auth ? "on (system account)" : "off");
-        http::HttpServer httpd(hc, api, bus);
+        http::HttpServer httpd(hc, api, bus, &hub, &pipeline);   // /ws/video: hub consumer + own demand
         RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr);
         IStreamServer& server = rtsp;
 
