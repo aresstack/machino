@@ -169,6 +169,7 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("api.port",           c.api.port,      1, 65535)
     STR   ("api.upstream_host",  c.api.upstream_host)
     INT   ("api.upstream_port",  c.api.upstream_port, 0, 65535)
+    BOOL  ("api.auth",           c.api.auth)
     if (k == "config.revision") { if (to_int(v, n) && n > 0) c.revision = (unsigned)n; return true; }
 
     INT   ("log.level",          c.log.level,     0, 3)

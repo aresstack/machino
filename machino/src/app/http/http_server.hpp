@@ -7,10 +7,12 @@
 // API access is never media demand.
 #pragma once
 #include "app/api/api_service.hpp"
+#include "app/http/session.hpp"
 #include "core/events.hpp"
 #include "core/result.hpp"
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -35,6 +37,10 @@ struct ServerConfig {
     int         upstream_port = 0;
     int         relay_timeout_ms = 6000;      // bound the blocking upstream round-trip
     size_t      max_relay_bytes = 8 * 1024 * 1024;
+    // Majestic drop-in session auth (POST /login, POST /logout, 401 gating).
+    // Active only when both are set; auth_check validates the credentials.
+    bool                  session_auth = false;
+    SessionGate::CheckFn  auth_check;
 };
 
 class HttpServer {
@@ -59,6 +65,7 @@ private:
     ServerConfig      cfg_;
     api::ApiService&  api_;
     EventBus&         bus_;
+    std::unique_ptr<SessionGate> gate_;   // set when cfg_.session_auth
     int               listen_fd_ = -1;
     std::atomic<bool> quit_{false};
     std::thread       thread_;

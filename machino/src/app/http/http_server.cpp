@@ -117,7 +117,10 @@ struct HttpServer::Client {
 
 static const char* MJPEG_BOUNDARY = "machinoframe";
 
-HttpServer::HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus) : cfg_(cfg), api_(api), bus_(bus) {}
+HttpServer::HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus) : cfg_(cfg), api_(api), bus_(bus) {
+    if (cfg_.session_auth && cfg_.auth_check)
+        gate_.reset(new SessionGate(cfg_.auth_check));
+}
 HttpServer::~HttpServer() { stop(); }
 
 Result HttpServer::start() {
@@ -191,6 +194,42 @@ bool HttpServer::handle_request(Client& c) {
     const std::string& path = req.path; const std::string& m = req.method;
     api::Response r;
     if (m == "OPTIONS") { queue(c, response(204, "text/plain", "", req.keep_alive, "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, If-Match\r\n")); if (!req.keep_alive) c.close_after_flush = true; return true; }
+
+    // Majestic drop-in session auth (see session.hpp for the exact webui
+    // contract). Runs BEFORE every route, native or relayed.
+    if (gate_) {
+        const int64_t t = now_ms();
+        if (path == "/login" && m == "POST") {
+            SessionGate::LoginResult lr = gate_->login(req.body, t);
+            LOGI(MOD, "%s: login %s", c.peer.c_str(), lr.status == 200 ? "ok" : "REJECTED");
+            bool ok = queue(c, response(lr.status, "text/plain",
+                                        lr.status == 200 ? "OK" : "Forbidden", req.keep_alive, lr.set_cookie));
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
+        }
+        if (path == "/logout" && m == "POST") {
+            gate_->logout(req.header("cookie"));
+            bool ok = queue(c, response(200, "text/plain", "OK", req.keep_alive, SessionGate::clear_cookie()));
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
+        }
+        if (!SessionGate::is_public(m, path) && !gate_->authed(req.header("cookie"), t)) {
+            // Top-level navigation -> the login page; fetch()/assets -> 401
+            // WITHOUT WWW-Authenticate (never the browser's Basic popup;
+            // main.js redirects to /login.html on 401 itself).
+            if (m == "GET" && req.header("accept").find("text/html") != std::string::npos) {
+                bool ok = queue(c, response(302, "text/plain", "",
+                                            false, "Location: /login.html?next=" + path + "\r\n"));
+                c.close_after_flush = true;
+                return ok;
+            }
+            bool ok = queue(c, response(401, "application/json",
+                                        api::ApiService::error("unauthorized", path, "sign in required").dump(),
+                                        req.keep_alive));
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
+        }
+    }
     if (path == "/api/v1/events") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         else {

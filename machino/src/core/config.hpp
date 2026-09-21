@@ -115,6 +115,9 @@ struct ApiConfig {
     // API only), which is the dev/test default.
     std::string upstream_host = "127.0.0.1";
     int         upstream_port = 0;
+    // Majestic drop-in session login (POST /login against the system account)
+    // on the front door. Only effective when upstream_port > 0.
+    bool        auth = true;
 };
 
 struct LogConfig {

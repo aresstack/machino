@@ -47,6 +47,32 @@ using lifecycle::ConsumerType;
 
 static const char* MOD = "MAIN";
 
+// Validate credentials against the system account, exactly like Majestic: the
+// WebUI login IS the camera's root login (/etc/shadow, crypt(3) - musl carries
+// crypt in libc, no extra library).
+#include <crypt.h>
+static bool shadow_check(const std::string& user, const std::string& pass) {
+    FILE* f = fopen("/etc/shadow", "r");
+    if (!f) return false;
+    char line[512]; bool ok = false;
+    while (fgets(line, sizeof line, f)) {
+        char* c1 = strchr(line, ':');
+        if (!c1) continue;
+        *c1 = 0;
+        if (user != line) continue;
+        char* hash = c1 + 1;
+        if (char* c2 = strchr(hash, ':')) *c2 = 0;
+        if (hash[0] == 0) { ok = pass.empty(); }                  // account without password
+        else if (hash[0] != '!' && hash[0] != '*') {              // '!' / '*' = locked
+            const char* enc = crypt(pass.c_str(), hash);
+            ok = enc && strcmp(enc, hash) == 0;
+        }
+        break;
+    }
+    fclose(f);
+    return ok;
+}
+
 static void usage(const char* argv0) {
     fprintf(stderr, "usage: %s [-c machino.conf] [-v]\n"
                     "       %s --version\n"
@@ -236,6 +262,11 @@ int main(int argc, char** argv) {
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection);
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
+        // Front-door: the Majestic drop-in login gates :80 exactly like
+        // Majestic did - the WebUI login IS the camera's system login.
+        hc.session_auth = cfg.api.upstream_port > 0 && cfg.api.auth;
+        if (hc.session_auth) hc.auth_check = shadow_check;
+        LOGI(MOD, "webui session auth: %s", hc.session_auth ? "on (system account)" : "off");
         http::HttpServer httpd(hc, api, bus);
         RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr);
         IStreamServer& server = rtsp;
