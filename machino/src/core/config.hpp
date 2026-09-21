@@ -109,6 +109,12 @@ struct ApiConfig {
     bool        enabled = true;
     std::string bind = "0.0.0.0";
     int         port = 8080;
+    // Front-door mode: when Machino owns the public port (80) it serves the
+    // Majestic-facing routes natively and relays every OTHER request to the
+    // internal OpenIPC WebUI (busybox httpd) here. 0 = no relay (stand-alone
+    // API only), which is the dev/test default.
+    std::string upstream_host = "127.0.0.1";
+    int         upstream_port = 0;
 };
 
 struct LogConfig {

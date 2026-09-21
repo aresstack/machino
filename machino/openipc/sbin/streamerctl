@@ -9,10 +9,12 @@
 #
 # Majestic also serves the OpenIPC WebUI on port 80 (system.webPort, staticDir
 # /var/www). Stopping it therefore takes the WebUI down with it - including the
-# page you would use to switch back. So while Machino is the selected owner we
-# run busybox httpd on port 80 over the same /var/www, and hand port 80 back to
-# Majestic when it is selected again. Exactly one process serves port 80, and
-# exactly one process owns the media hardware, at any time.
+# page you would use to switch back. So while Machino is the selected owner it
+# becomes the front door on port 80 itself: it answers the Majestic-facing
+# routes (/metrics, /api/v1/*, later /ws/video) natively and relays every other
+# request to busybox httpd, which serves the stock OpenIPC WebUI privately on
+# 127.0.0.1:85. To the stock WebUI, Machino behaves exactly like Majestic.
+# Exactly one process owns port 80, and exactly one owns the media hardware.
 set -u
 
 # STREAMERCTL_ROOT lets the host tests run the real logic against a throwaway
@@ -29,6 +31,11 @@ WWW_ROOT="$ROOT/var/www"
 HTTPD="${STREAMERCTL_HTTPD:-/usr/sbin/httpd}"
 HTTPD_PID="$ROOT/var/run/machino-httpd.pid"
 HTTPD_CONF="$STATE_DIR/httpd.conf"          # basic auth + address rules for our WebUI host
+# Front-door: Machino owns the PUBLIC port 80 (it serves the Majestic routes and
+# relays everything else here); busybox httpd serves the stock OpenIPC WebUI
+# privately on 127.0.0.1:85, not reachable from the LAN directly.
+WEBUI_ADDR="127.0.0.1"
+WEBUI_PORT="${STREAMERCTL_WEBUI_PORT:-85}"
 
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-20}"      # seconds to wait for the new owner to come up
 
@@ -72,9 +79,11 @@ our_httpd_pid() {
     echo "$pid"
 }
 
+# Who owns the PUBLIC port 80. Majestic serves it directly; Machino is the
+# front door when it runs; busybox httpd is internal (:85) and never public.
 port80_owner() {
     if majestic_running; then echo majestic
-    elif our_httpd_pid >/dev/null 2>&1; then echo httpd
+    elif machino_running; then echo machino
     else echo none
     fi
 }
@@ -155,22 +164,23 @@ webui_start() {
     # survived a re-install until reboot). Stop it, then start with the current
     # conf below.
     if our_httpd_pid >/dev/null 2>&1; then webui_stop; fi
-    if majestic_running; then warn "majestic still holds port 80 - not starting a second server"; return 1; fi
     # Prefer the stock OpenIPC WebUI auth so the SAME login as the normal WebUI
-    # applies (no second Machino-only login). Only when the image ships none do
-    # we generate our own conf (open by default, optional password lock).
+    # applies (Machino relays through to it, no second login). Only when the
+    # image ships none do we generate our own conf (open by default, optional
+    # password lock). This httpd is the INTERNAL backend on 127.0.0.1:$WEBUI_PORT;
+    # Machino is the public server on :80.
     if [ -f "$ROOT/etc/httpd.conf" ]; then
         CONF="$ROOT/etc/httpd.conf"
-        log "serving the WebUI with the stock OpenIPC auth ($CONF)"
+        log "serving the internal WebUI backend with the stock OpenIPC auth ($CONF)"
     else
         write_httpd_conf
         CONF="$HTTPD_CONF"
         [ -s "$STATE_DIR/webui.passwd" ] || warn "no WebUI password set - the WebUI is open on the LAN (lock it: streamerctl webui-password <password>)"
     fi
-    "$HTTPD" -p 80 -h "$WWW_ROOT" -c "$CONF" -r "OpenIPC" || { warn "httpd failed to start on port 80"; return 1; }
+    "$HTTPD" -p "$WEBUI_ADDR:$WEBUI_PORT" -h "$WWW_ROOT" -c "$CONF" -r "OpenIPC" || { warn "httpd failed to start on $WEBUI_ADDR:$WEBUI_PORT"; return 1; }
     sleep 1
-    pid=$(pgrep -f "httpd -p 80 -h $WWW_ROOT" | head -1)
-    [ -n "$pid" ] || { warn "httpd did not come up"; return 1; }
+    pid=$(pgrep -f "httpd -p $WEBUI_ADDR:$WEBUI_PORT -h $WWW_ROOT" | head -1)
+    [ -n "$pid" ] || { warn "internal WebUI backend did not come up on $WEBUI_ADDR:$WEBUI_PORT"; return 1; }
     mkdir -p "$(dirname "$HTTPD_PID")"
     printf '%s\n' "$pid" > "$HTTPD_PID"
     return 0

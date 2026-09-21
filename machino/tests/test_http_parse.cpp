@@ -44,4 +44,36 @@ void run_http_parse_tests() {
     HCHECK(sse_event("lifecycle", "{\"a\":1}") == "event: lifecycle\ndata: {\"a\":1}\n\n");
     HCHECK(sse_headers().find("text/event-stream") != std::string::npos);
     HCHECK(std::string(status_text(409)) == "Conflict" && std::string(status_text(503)) == "Service Unavailable");
+
+    // forward_request (front-door relay to the internal OpenIPC WebUI):
+    // rebuilds HTTP/1.0 + Connection: close, keeps path+query, forwards
+    // Authorization/Cookie, rewrites Host, drops hop-by-hop + our own length.
+    {
+        Request fr;
+        HCHECK(parse_request("GET /cgi-bin/j/pulse.cgi?x=1 HTTP/1.1\r\nHost: cam\r\n"
+                             "Authorization: Basic Zm9v\r\nCookie: s=1\r\nConnection: keep-alive\r\n\r\n",
+                             used, fr) == Parse::Ok);
+        std::string w = forward_request(fr, "127.0.0.1");
+        // header NAMES are lower-cased by the parser and forwarded verbatim
+        // (valid HTTP; CGI reads them case-insensitively).
+        HCHECK(w.rfind("GET /cgi-bin/j/pulse.cgi?x=1 HTTP/1.0\r\n", 0) == 0);
+        HCHECK(w.find("authorization: Basic Zm9v\r\n") != std::string::npos);
+        HCHECK(w.find("cookie: s=1\r\n") != std::string::npos);
+        HCHECK(w.find("Host: 127.0.0.1\r\n") != std::string::npos);
+        HCHECK(w.find("Host: cam\r\n") == std::string::npos);          // original Host dropped
+        HCHECK(w.find("Connection: close\r\n") != std::string::npos);
+        HCHECK(w.find("keep-alive") == std::string::npos);              // hop-by-hop dropped
+        HCHECK(w.rfind("\r\n\r\n") == w.size() - 4);                    // GET: empty body
+    }
+    {
+        Request fr;
+        HCHECK(parse_request("POST /save HTTP/1.1\r\nHost: cam\r\nContent-Type: application/json\r\n"
+                             "Content-Length: 7\r\n\r\n{\"a\":1}",
+                             used, fr) == Parse::Ok);
+        std::string w = forward_request(fr, "127.0.0.1");
+        HCHECK(w.rfind("POST /save HTTP/1.0\r\n", 0) == 0);
+        HCHECK(w.find("content-type: application/json\r\n") != std::string::npos);
+        HCHECK(w.find("Content-Length: 7\r\n") != std::string::npos);  // re-added from the body
+        HCHECK(w.size() >= 7 && w.substr(w.size() - 7) == "{\"a\":1}");
+    }
 }

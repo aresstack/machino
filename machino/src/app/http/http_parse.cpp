@@ -57,6 +57,29 @@ Parse parse_request(const std::string& buf, size_t& consumed, Request& out, cons
     return Parse::Ok;
 }
 
+std::string forward_request(const Request& req, const std::string& upstream_host) {
+    std::string target = req.path;
+    if (!req.query.empty()) { target += '?'; target += req.query; }
+    std::string out = req.method + " " + target + " HTTP/1.0\r\n";
+    for (const auto& h : req.headers) {
+        // Drop hop-by-hop and length/host headers we set ourselves; keep the
+        // rest verbatim (Authorization, Cookie, Content-Type, If-Match, Accept,
+        // User-Agent, X-Requested-With, ...) so haserl/CGI see the real request.
+        const std::string& n = h.first; // already lower-cased
+        if (n == "host" || n == "connection" || n == "keep-alive" || n == "proxy-connection" ||
+            n == "transfer-encoding" || n == "upgrade" || n == "content-length" || n == "te")
+            continue;
+        out += h.first; out += ": "; out += h.second; out += "\r\n";
+    }
+    out += "Host: " + upstream_host + "\r\n";
+    out += "Connection: close\r\n";
+    if (!req.body.empty())
+        out += "Content-Length: " + std::to_string(req.body.size()) + "\r\n";
+    out += "\r\n";
+    out += req.body;
+    return out;
+}
+
 const char* status_text(int s) {
     switch (s) {
         case 200: return "OK"; case 204: return "No Content"; case 400: return "Bad Request"; case 404: return "Not Found";

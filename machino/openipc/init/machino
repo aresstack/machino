@@ -11,6 +11,13 @@ CONF="/etc/machino/machino.conf"
 LOGFILE="/var/log/machino.log"
 PIDFILE="/var/run/$DAEMON.pid"
 
+# Front-door mode: when Machino is the active owner it binds the public WebUI
+# port and relays every request that is not a native Majestic route to the
+# internal OpenIPC WebUI (busybox httpd, started by streamerctl on :85). These
+# override the config file so an older machino.conf still lands on :80.
+API_PORT="${MACHINO_API_PORT:-80}"
+UPSTREAM_PORT="${MACHINO_UPSTREAM_PORT:-85}"
+
 # Match the daemon by its binary path in the cmdline. On this busybox pgrep -x
 # matches argv0 as a whole ("/usr/bin/machino"), so "pgrep -x machino" never
 # matched the daemon; pgrep -f "$DAEMON_PATH" does, and does not match this init
@@ -27,7 +34,8 @@ start() {
 	if [ ! -r "$CONF" ]; then echo "FAIL (no $CONF)"; return 1; fi
 	(
 		trap '' HUP
-		start-stop-daemon -b -S -q -x "$DAEMON_PATH" -- -c "$CONF" >>"$LOGFILE" 2>&1
+		start-stop-daemon -b -S -q -x "$DAEMON_PATH" -- -c "$CONF" \
+			--api-port "$API_PORT" --api-upstream-port "$UPSTREAM_PORT" >>"$LOGFILE" 2>&1
 	)
 	case $? in
 		0|1) echo "OK" ;;

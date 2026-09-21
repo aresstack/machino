@@ -18,6 +18,8 @@
 
 namespace machino { namespace http {
 
+struct Request; // http_parse.hpp
+
 struct ServerConfig {
     std::string bind = "0.0.0.0";
     int         port = 8080;
@@ -27,6 +29,12 @@ struct ServerConfig {
     size_t      max_snapshot_bytes = 4 * 1024 * 1024;  // a full-res JPEG response may exceed the API cap
     int         telemetry_interval_ms = 1000; // SSE telemetry rate (only while SSE clients exist)
     int         mjpeg_max_fps = 10;           // /api/v1/stream.mjpeg cap (JPEG snapshot-driven)
+    // Front-door relay: any request that is not a native Machino/Majestic route
+    // is forwarded to this internal OpenIPC WebUI (busybox httpd). port 0 = off.
+    std::string upstream_host = "127.0.0.1";
+    int         upstream_port = 0;
+    int         relay_timeout_ms = 6000;      // bound the blocking upstream round-trip
+    size_t      max_relay_bytes = 8 * 1024 * 1024;
 };
 
 class HttpServer {
@@ -44,6 +52,7 @@ private:
     bool handle_request(Client& c);
     void drain_events(Client& c);
     void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
+    bool relay_upstream(Client& c, const Request& req); // forward non-native paths to busybox
     bool flush(Client& c);
     bool queue(Client& c, const std::string& data, size_t cap = 0);   // cap 0 = max_out_buffer
 

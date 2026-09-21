@@ -105,6 +105,14 @@ api.enabled               = 1
 api.bind                  = 0.0.0.0
 api.port                  = 8080
 
+# Front-door mode (drop-in Majestic). On OpenIPC the boot script starts Machino
+# with --api-port 80 --api-upstream-port 85, so Machino owns the public WebUI
+# port, answers the Majestic routes (/metrics, /api/v1/*) natively, and relays
+# every OTHER request to the internal OpenIPC WebUI (busybox httpd) here. These
+# CLI flags win over the file, so they are usually left unset in this config.
+# api.upstream_host       = 127.0.0.1
+# api.upstream_port       = 0        ; 0 = stand-alone API only (no relay)
+
 # --- telemetry -------------------------------------------------------------
 # 0 = off; N = one compact line every N seconds (state, requested/effective fps,
 # measured fps/bitrate, drops, cpu, rss, threads, known clocks)

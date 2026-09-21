@@ -32,6 +32,7 @@
 
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <memory>
@@ -135,14 +136,22 @@ int main(int argc, char** argv) {
 
     const char* conf = "/etc/machino/machino.conf";   // canonical path (init, streamerctl, installer, manager all use it)
     bool verbose = false;
+    int api_port_override = 0, api_upstream_override = -1;   // set by the boot script for front-door mode
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-c") && i + 1 < argc) conf = argv[++i];
         else if (!strcmp(argv[i], "-v")) verbose = true;
+        else if (!strcmp(argv[i], "--api-port") && i + 1 < argc) api_port_override = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--api-upstream-port") && i + 1 < argc) api_upstream_override = atoi(argv[++i]);
         else { usage(argv[0]); return 2; }
     }
 
     AppConfig cfg; std::string err;
     if (!load_config(conf, cfg, err)) { LOGE(MOD, "%s", err.c_str()); return 1; }
+    // Front-door overrides win over the (possibly older, user-owned) config file,
+    // so streamerctl/init can put Machino on port 80 relaying to busybox on :85
+    // without ever editing machino.conf.
+    if (api_port_override > 0) cfg.api.port = api_port_override;
+    if (api_upstream_override >= 0) cfg.api.upstream_port = api_upstream_override;
     log_set_level(verbose ? LogLevel::Debug : (LogLevel)cfg.log.level);
     log_set_syslog(cfg.log.syslog);
     LOGI(MOD, "machino %s starting (pid %d)", MACHINO_VERSION, (int)getpid());
@@ -226,6 +235,7 @@ int main(int argc, char** argv) {
                                  cfg.ai.inference_fps, detection::ai_state_name(detection.state()));
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection);
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
+        hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
         http::HttpServer httpd(hc, api, bus);
         RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr);
         IStreamServer& server = rtsp;

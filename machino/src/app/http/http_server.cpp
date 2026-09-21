@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 namespace machino { namespace http {
@@ -254,6 +255,10 @@ bool HttpServer::handle_request(Client& c) {
             int code = sr.status == Status::Unsupported ? 501 : 503;
             r = api::ApiService::fail(code, "unavailable", path, serr.empty() ? "snapshot failed" : serr);
         }
+    } else if (cfg_.upstream_port > 0) {
+        // Front-door: not a native route -> hand it to the internal OpenIPC
+        // WebUI (busybox httpd). The stock UI never learns Machino exists.
+        return relay_upstream(c, req);
     } else r = api::ApiService::fail(404, "unknown_field", path, "unknown endpoint");
 
     std::string body = r.body.dump();
@@ -261,6 +266,48 @@ bool HttpServer::handle_request(Client& c) {
     if (!queue(c, response(r.status, "application/json", body, req.keep_alive))) return false;
     if (!req.keep_alive) c.close_after_flush = true;
     return true;
+}
+
+// Forward one request to the internal OpenIPC WebUI (busybox httpd) and queue
+// its verbatim response. Blocking, but bounded by relay_timeout_ms and
+// max_relay_bytes so a hung/oversized upstream can not wedge the poll loop
+// (same discipline as the JPEG path). The connection is closed afterwards:
+// the upstream reply is HTTP/1.0/EOF-delimited, so one request per socket.
+bool HttpServer::relay_upstream(Client& c, const Request& req) {
+    c.close_after_flush = true;
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) { queue(c, response(502, "text/plain", "upstream socket failed\n", false)); return true; }
+    struct timeval tv; tv.tv_sec = cfg_.relay_timeout_ms / 1000; tv.tv_usec = (cfg_.relay_timeout_ms % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    sockaddr_in a{}; a.sin_family = AF_INET; a.sin_port = htons((uint16_t)cfg_.upstream_port);
+    if (inet_pton(AF_INET, cfg_.upstream_host.c_str(), &a.sin_addr) != 1 ||
+        connect(fd, (sockaddr*)&a, sizeof a) < 0) {
+        LOGW(MOD, "relay: connect %s:%d failed: %s", cfg_.upstream_host.c_str(), cfg_.upstream_port, strerror(errno));
+        close(fd);
+        queue(c, response(502, "text/plain", "OpenIPC WebUI backend unreachable\n", false));
+        return true;
+    }
+    const std::string wire = forward_request(req, cfg_.upstream_host);
+    for (size_t off = 0; off < wire.size(); ) {
+        ssize_t w = send(fd, wire.data() + off, wire.size() - off, MSG_NOSIGNAL);
+        if (w <= 0) { close(fd); queue(c, response(502, "text/plain", "upstream write failed\n", false)); return true; }
+        off += (size_t)w;
+    }
+    std::string resp; char buf[8192];
+    for (;;) {
+        ssize_t rd = recv(fd, buf, sizeof buf, 0);
+        if (rd == 0) break;                  // EOF: upstream done (Connection: close)
+        if (rd < 0) { LOGW(MOD, "relay: read %s: %s", req.path.c_str(), strerror(errno));
+            if (resp.empty()) { close(fd); queue(c, response(504, "text/plain", "OpenIPC WebUI backend timed out\n", false)); return true; }
+            break; }
+        resp.append(buf, (size_t)rd);
+        if (resp.size() > cfg_.max_relay_bytes) { LOGW(MOD, "relay: %s response too large", req.path.c_str()); break; }
+    }
+    close(fd);
+    LOGD(MOD, "relay %s %s -> %zu B", req.method.c_str(), req.path.c_str(), resp.size());
+    // The upstream reply is a complete HTTP response already; forward verbatim.
+    return queue(c, resp, cfg_.max_relay_bytes + 4096);
 }
 
 void HttpServer::drain_events(Client& c) {
