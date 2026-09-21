@@ -66,6 +66,23 @@ std::string rewrite_config_text(const std::string& text, const KeyValues& kv, un
     return out;
 }
 
+std::string remove_config_keys_text(const std::string& text, const std::vector<std::string>& keys, unsigned revision) {
+    // Drop the listed keys' lines, then let the rewrite set the new revision
+    // (and nothing else): an unset key must vanish, not become an empty value.
+    std::string pruned; size_t p = 0;
+    while (p < text.size()) {
+        size_t nl = text.find('\n', p);
+        std::string line = text.substr(p, nl == std::string::npos ? std::string::npos : nl - p);
+        p = (nl == std::string::npos) ? text.size() : nl + 1;
+        const std::string k = line_key(line);
+        bool drop = false;
+        if (!k.empty()) for (const std::string& r : keys) if (r == k) { drop = true; break; }
+        if (drop) continue;
+        pruned += line; pruned += '\n';
+    }
+    return rewrite_config_text(pruned, KeyValues{}, revision);
+}
+
 bool ConfigStore::load(std::string& err) {
     FILE* f = fopen(path_.c_str(), "r");
     if (!f) { err = "cannot open " + path_; return false; }
@@ -113,6 +130,16 @@ bool ConfigStore::commit(const KeyValues& kv, std::string& err) {
     if (!write_atomic(data, err)) { LOGE(MOD, "persist failed: %s", err.c_str()); return false; }
     text_ = data; revision_ = next;
     LOGI(MOD, "persisted %lu setting(s) to %s (revision %u)", (unsigned long)kv.size(), path_.c_str(), revision_);
+    return true;
+}
+
+bool ConfigStore::commit_remove(const std::vector<std::string>& keys, std::string& err) {
+    std::lock_guard<std::mutex> lk(m_);
+    unsigned next = revision_ + 1;
+    std::string data = remove_config_keys_text(text_, keys, next);
+    if (!write_atomic(data, err)) { LOGE(MOD, "unset persist failed: %s", err.c_str()); return false; }
+    text_ = data; revision_ = next;
+    LOGI(MOD, "removed %lu setting(s) from %s (revision %u)", (unsigned long)keys.size(), path_.c_str(), revision_);
     return true;
 }
 

@@ -275,8 +275,9 @@ bool HttpServer::handle_request(Client& c) {
         else {
             const std::string key = SessionGate::form_value(req.query, "key");
             compat::MajesticTranslation tr = compat::majestic_reset(key);
-            r = tr.ok ? api_.patch_config(tr.patch.dump(), "")
-                      : api::ApiService::fail(tr.status, tr.code.c_str(), tr.path, tr.message);
+            if (!tr.ok)               r = api::ApiService::fail(tr.status, tr.code.c_str(), tr.path, tr.message);
+            else if (!tr.unset.empty()) r = api_.unset_config(tr.unset);   // no-default: REMOVE the key (#416)
+            else                      r = api_.patch_config(tr.patch.dump(), "");
         }
     } else if (path == "/metrics") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }

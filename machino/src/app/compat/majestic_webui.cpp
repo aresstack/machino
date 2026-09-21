@@ -35,13 +35,6 @@ Json integer_field(const std::string& title, const Json* cap = nullptr) {
     return f;
 }
 
-Json integer_field(const std::string& title, long long min, long long max) {
-    Json f = integer_field(title);
-    f.set("minimum", Json::integer(min));
-    f.set("maximum", Json::integer(max));
-    return f;
-}
-
 Json enum_field(const std::string& title, const Json& values) {
     Json f = Json::object();
     f.set("type", Json::string("string"));
@@ -57,18 +50,21 @@ Json bool_field(const std::string& title) {
     return f;
 }
 
-// x-reload: the stock settings page reads the daemon's OWN classification
-// (upstream mj-settings.js changeCost(): "none"/"live" = the save carried it,
-// "pipeline" = the operator is owed Apply-now, anything unknown falls to
-// pipeline). Machino's apply classes map onto that vocabulary. Fields whose
-// class is daemon_restart/boot_only are NOT exposed at all: the stock Apply
-// button runs `killall -HUP majestic` (a config reload), which can never
-// restart the daemon, so the UI could not truthfully apply them.
+// x-reload answers the stock settings page's question "is anything left to do
+// AFTER a successful POST?" (mj-settings.js changeCost(): "none"/"live" = the
+// save carried it, "pipeline" = the operator is owed Apply-now). Machino's
+// PATCH applies EVERY exposed change inside the POST - including the ones
+// whose internal class is pipeline_restart (the restart happens during the
+// request). So every exposed field is "live" in Majestic semantics; offering
+// Apply-now afterwards would prompt for work that is already done. Fields
+// whose class is daemon_restart/boot_only are NOT exposed at all: their POST
+// only persists, and the stock Apply (`killall -HUP majestic`) cannot restart
+// the daemon to deliver them.
 const char* xreload_for(const Json* cap) {
     const Json* a = cap ? cap->get("apply") : nullptr;
     const std::string cls = a && a->is_string() ? a->as_string() : "";
     if (cls == "daemon_restart" || cls == "boot_only") return nullptr;   // do not expose
-    return cls == "live" ? "live" : "pipeline";
+    return "live";
 }
 
 bool add_range(Json& fields, const char* key, const char* title, const Json* cap) {
@@ -162,7 +158,7 @@ Json majestic_schema(const Json& capabilities) {
     if (const Json* latency = capabilities.get("latency")) {
         if (const Json* profiles = latency->get("profiles"); profiles && profiles->is_array()) {
             Json lp = enum_field("Latency profile", *profiles);
-            lp.set("x-reload", Json::string("pipeline"));
+            lp.set("x-reload", Json::string("live"));   // applied during the POST
             latency_fields.set("profile", lp);
         }
         add_range(latency_fields, "gop", "Keyframe interval (frames)", latency->get("gop"));
@@ -177,7 +173,7 @@ Json majestic_schema(const Json& capabilities) {
     Json performance = Json::object();
     if (const Json* profiles = capabilities.get("profiles"); profiles && profiles->is_array()) {
         Json pp = enum_field("Performance profile", *profiles);
-        pp.set("x-reload", Json::string("pipeline"));   // operating-point switch restarts the pipeline
+        pp.set("x-reload", Json::string("live"));   // the operating-point switch runs during the POST
         performance.set("profile", pp);
     }
     add_section(properties, "performance", performance);
@@ -189,14 +185,9 @@ Json majestic_schema(const Json& capabilities) {
     add_range(lifecycle, "idle_grace_ms", "Idle grace period (ms)", controls ? controls->get("idle_grace_ms") : nullptr);
     add_section(properties, "lifecycle", lifecycle);
 
-    Json rtsp = Json::object();
-    {
-        Json f = integer_field("Maximum RTSP clients", 1, 16);
-        f.set("x-reload", Json::string("pipeline"));   // conservative: applied on reload
-        rtsp.set("max_clients", f);
-        set_default(rtsp, "rtsp", "max_clients");
-    }
-    add_section(properties, "rtsp", rtsp);
+    // rtsp.max_clients is NOT exposed: its native class is DaemonRestart (the
+    // running RtspServer holds a config copy that neither the POST nor a
+    // SIGHUP updates), so the stock UI could never truthfully apply it.
 
     // M9/M10: detection is advertised only when the platform proved it.
     Json ai_fields = Json::object();
@@ -567,25 +558,55 @@ bool compiled_default(const std::string& key, Json& out) {
     if (key == "video0.gop")              { out = Json::integer(def.video.gop); return true; }
     if (key == "ai.enabled")              { out = Json::boolean(def.ai.enabled); return true; }
     if (key == "ai.inference_fps")        { out = Json::integer(def.ai.inference_fps); return true; }
-    if (key == "rtsp.max_clients")        { out = Json::integer(def.rtsp.max_clients); return true; }
     return false;
 }
 
-// GET /api/v1/reset?key= - restore the schema-declared default by routing it
-// through the SAME translation/validation as a WebUI POST. Keys the schema
-// declares no default for answer 404; the stock UI never enables their button.
+// GET /api/v1/reset?key= - the CURRENT mj-settings.js contract (#416): a key
+// whose schema declares a default goes back to that value; a key it declares
+// NONE for is REMOVED, returning the camera to the unconfigured state; 404
+// means the camera has no such setting at all.
 MajesticTranslation majestic_reset(const std::string& key) {
     Json dv;
     size_t dot = key.find('.');
-    if (dot == std::string::npos || !compiled_default(key, dv)) {
-        MajesticTranslation r;
-        r.status = 404; r.code = "unknown_field"; r.path = key;
-        r.message = "no such resettable setting";
-        return r;
+    if (dot != std::string::npos && compiled_default(key, dv)) {
+        Json leaf = Json::object(); leaf.set(key.substr(dot + 1), dv);
+        Json top = Json::object();  top.set(key.substr(0, dot), leaf);
+        return majestic_post_to_native(top.dump());
     }
-    Json leaf = Json::object(); leaf.set(key.substr(dot + 1), dv);
-    Json top = Json::object();  top.set(key.substr(0, dot), leaf);
-    return majestic_post_to_native(top.dump());
+
+    // No default: map the schema-exposed majestic key to the machino.conf
+    // line(s) whose REMOVAL is the unset state. Only keys the schema can
+    // actually expose appear here; everything else is honestly 404.
+    static const struct { const char* mkey; const char* conf; } UNSET[] = {
+        {"video0.fps",                  "video.fps"},
+        {"sensor.fps",                  "sensor.fps"},
+        {"performance.profile",         "performance.profile"},
+        {"latency.profile",             "latency.profile"},
+        {"latency.framesource_buffers", "latency.framesource_buffers"},
+        {"latency.encoder_buffers",     "latency.encoder_buffers"},
+        {"latency.consumer_queue_depth","latency.queue_depth"},
+        {"ai.detector",                 "ai.detector"},
+    };
+    // image.* controls: the conf key mirrors the majestic key; the name list
+    // mirrors media::ImageControl (an unknown name must stay 404).
+    static const char* IMAGE_KEYS[] = {
+        "brightness", "contrast", "saturation", "sharpness", "hue",
+        "hflip", "vflip", "anti_flicker", "ae_compensation", "highlight_depress",
+        "backlight_comp", "white_balance_mode", "running_mode",
+        "temporal_nr", "spatial_nr", "dpc", "defog",
+    };
+
+    MajesticTranslation r;
+    for (const auto& u : UNSET)
+        if (key == u.mkey) { r.ok = true; r.status = 200; r.unset.push_back(u.conf); return r; }
+    if (key.rfind("image.", 0) == 0) {
+        const std::string leaf = key.substr(6);
+        for (const char* k : IMAGE_KEYS)
+            if (leaf == k) { r.ok = true; r.status = 200; r.unset.push_back("image." + leaf); return r; }
+    }
+    r.status = 404; r.code = "unknown_field"; r.path = key;
+    r.message = "no such setting";
+    return r;
 }
 
 }} // namespace machino::compat

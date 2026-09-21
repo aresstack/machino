@@ -225,6 +225,17 @@ void test_config_store_text() {
     ACHECK(out.find("sensor.fps = 15\n") != std::string::npos && out.find("config.revision = 5\n") != std::string::npos);
     ACHECK(config_text_get(out, "video.bitrate") == "1500" && config_text_get(out, "missing").empty());
     ACHECK(config_text_get("x = \"quoted\"\n", "x") == "quoted");
+
+    // unset (mj-settings.js #416): the key's LINE disappears - comments and
+    // every other line stay, the revision moves, nothing becomes "key =".
+    std::string rem = remove_config_keys_text(out, {"video.bitrate"}, 6);
+    ACHECK(rem.find("video.bitrate") == std::string::npos);
+    ACHECK(rem.find("# hdr\n") == 0 && rem.find("board = b\n") != std::string::npos);
+    ACHECK(rem.find("sensor.fps = 15\n") != std::string::npos);
+    ACHECK(config_text_get(rem, "config.revision") == "6");
+    // removing a key that is not there is a no-op apart from the revision
+    std::string rem2 = remove_config_keys_text(rem, {"video.fps"}, 7);
+    ACHECK(rem2.find("board = b\n") != std::string::npos && config_text_get(rem2, "config.revision") == "7");
 }
 
 void test_m7_image_latency_api() {

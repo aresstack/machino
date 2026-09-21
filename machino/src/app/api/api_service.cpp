@@ -321,6 +321,17 @@ Json ApiService::config_json() {
 }
 Response ApiService::config() { return Response{200, config_json()}; }
 
+Response ApiService::unset_config(const std::vector<std::string>& conf_keys) {
+    std::string err;
+    if (!store_.commit_remove(conf_keys, err))
+        return fail(500, "internal", "", err);
+    if (reload_hook_) reload_hook_();   // SIGHUP-equivalent: the daemon re-applies the file
+    Json j = Json::object();
+    j.set("ok", Json::boolean(true));
+    j.set("revision", Json::integer(store_.revision()));
+    return Response{200, j};
+}
+
 Json ApiService::telemetry_json() {
     Telemetry t = perf_.telemetry();
     Json j = Json::object();

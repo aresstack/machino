@@ -38,6 +38,9 @@ struct MajesticTranslation {
     std::string path;
     std::string message;
     Json patch = Json::object();
+    // reset of a no-default field: these machino.conf keys are REMOVED
+    // (unset state) instead of patched - mj-settings.js #416 contract.
+    std::vector<std::string> unset;
 };
 
 // Build the schema shape consumed by majestic-webui's mj-settings.js.

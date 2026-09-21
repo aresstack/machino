@@ -258,27 +258,35 @@ void test_webui_post_strings_and_reset() {
     CCHECK(r2.ok && r2.patch.get("video")->get("0")->get("bitrate_kbps")->as_int() == 3000);
     MajesticTranslation r3 = majestic_reset("nightMode.irCutPin1");
     CCHECK(!r3.ok && r3.status == 404);
-    // Upstream contract (docs/settings-page.md): "Reset is disabled where the
-    // schema declares no `default`" - the UI never calls reset for such keys.
-    // video0.fps has no fixed default (it follows the sensor mode), so the
-    // schema declares none and 404 here is the honest answer.
+    // CURRENT mj-settings.js contract (#416, the CODE beats the stale docs):
+    // a key with no schema default is reset by REMOVING it (unset state, 200);
+    // 404 means the camera has no such setting at all.
     MajesticTranslation r4 = majestic_reset("video0.fps");
-    CCHECK(!r4.ok && r4.status == 404);
+    CCHECK(r4.ok && r4.unset.size() == 1 && r4.unset[0] == "video.fps");
+    MajesticTranslation r6 = majestic_reset("image.brightness");
+    CCHECK(r6.ok && r6.unset.size() == 1 && r6.unset[0] == "image.brightness");
+    MajesticTranslation r7 = majestic_reset("image.nope");
+    CCHECK(!r7.ok && r7.status == 404);
+    MajesticTranslation r8 = majestic_reset("latency.consumer_queue_depth");
+    CCHECK(r8.ok && r8.unset.size() == 1 && r8.unset[0] == "latency.queue_depth");
+    // rtsp.max_clients is DaemonRestart-class and no longer exposed -> 404
     MajesticTranslation r5 = majestic_reset("rtsp.max_clients");
-    CCHECK(r5.ok && r5.patch.get("rtsp")->get("max_clients")->is_number());
+    CCHECK(!r5.ok && r5.status == 404);
 
-    // schema <-> reset coherence + x-reload vocabulary (upstream changeCost():
-    // "live" carried by save, "pipeline" needs Apply-now, daemon_restart-class
-    // fields are not exposed at all).
-    Json schema = majestic_schema(Json::object());
+    // schema: x-reload is "live" for everything exposed (Machino applies each
+    // change DURING the POST - nothing is left for Apply-now); daemon_restart-
+    // class fields (lifecycle, rtsp.max_clients) are not exposed at all.
+    Json caps = Json::object();
+    { Json pr = Json::array(); pr.push(Json::string("performance")); pr.push(Json::string("battery")); caps.set("profiles", pr); }
+    Json schema = majestic_schema(caps);
     const Json* props = schema.get("properties");
     CCHECK(props);
     if (props) {
-        const Json* rtsp = props->get("rtsp");
-        const Json* mc = rtsp && rtsp->get("properties") ? rtsp->get("properties")->get("max_clients") : nullptr;
-        CCHECK(mc && mc->get("default") && mc->get("default")->is_number());
-        CCHECK(mc && mc->get("x-reload") && mc->get("x-reload")->as_string() == "pipeline");
-        CCHECK(!props->get("lifecycle"));   // idle_grace_ms is daemon_restart-class: not exposed
+        CCHECK(!props->get("lifecycle"));
+        CCHECK(!props->get("rtsp"));
+        const Json* perf = props->get("performance");
+        const Json* pp = perf && perf->get("properties") ? perf->get("properties")->get("profile") : nullptr;
+        CCHECK(pp && pp->get("x-reload") && pp->get("x-reload")->as_string() == "live");
     }
 
     // nightMode: irCut "off" is upstream's "a decision, not a defect" state -

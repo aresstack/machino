@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <functional>
 #include <vector>
 
 namespace machino { namespace api {
@@ -41,6 +42,15 @@ public:
     Response telemetry();
     // Partial update. `if_match` = expected revision ("" = none). Serialised.
     Response patch_config(const std::string& body, const std::string& if_match);
+
+    // Unset: remove managed keys from the config file - the majestic-webui
+    // reset contract for schema fields WITHOUT a default ("a key it declares
+    // none for is REMOVED, which is the unset state", mj-settings.js #416) -
+    // then trigger the SIGHUP-equivalent reload so the daemon re-applies the
+    // file. Keys whose runtime has no un-apply path revert fully at the next
+    // daemon start; the persisted state is correct immediately.
+    Response unset_config(const std::vector<std::string>& conf_keys);
+    void set_reload_hook(std::function<void()> h) { reload_hook_ = std::move(h); }
 
     // M8: one current frame as JPEG (binary, not JSON). Delegates to the
     // pipeline's snapshot path; the transport builds the image/jpeg response.
@@ -66,6 +76,7 @@ private:
     hw::ResolvedHardware        hw_;
     AppConfig                   cfg_;              // startup snapshot (for non-runtime keys)
     detection::DetectionService* detection_ = nullptr;   // M9: optional, null when no AI subsystem
+    std::function<void()>        reload_hook_;           // main wires kill(getpid(), SIGHUP)
     std::mutex                  patch_m_;          // PATCHes are serialised
 };
 
