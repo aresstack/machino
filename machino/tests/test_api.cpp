@@ -475,9 +475,20 @@ void test_reset_unset_runtime() {
     ACHECK(p.status == 200);
     u = r.api.unset_config({"latency.queue_depth"});
     ACHECK(u.status == 200 && path(r.api.config().body, "latency.consumer_queue_depth")->is_null());
-    // unknown image control stays a 404, nothing is written
+    // reapply-class keys are synchronous now too (no SIGHUP involved):
+    // latency.profile low -> unset -> the default profile is live again
+    p = r.api.patch_config("{\"latency\":{\"profile\":\"low\"}}", "");
+    ACHECK(p.status == 200);
+    ACHECK(path(r.api.config().body, "latency.profile")->as_string() == "low");
+    u = r.api.unset_config({"latency.profile"});
+    ACHECK(u.status == 200);
+    ACHECK(path(r.api.config().body, "latency.profile")->as_string() == "normal");
+    ACHECK(r.store.get("latency.profile").empty());
+    // unknown keys stay a 404 and persist NOTHING (validated before writing)
     unsigned rev = r.store.revision();
     u = r.api.unset_config({"image.nope"});
+    ACHECK(u.status == 404 && r.store.revision() == rev);
+    u = r.api.unset_config({"nope.key"});
     ACHECK(u.status == 404 && r.store.revision() == rev);
 }
 

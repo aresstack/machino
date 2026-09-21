@@ -431,29 +431,63 @@ Json change_json(const Change& c) {
 } // namespace
 
 Response ApiService::unset_config(const std::vector<std::string>& conf_keys) {
-    // Runtime FIRST: the stock UI re-reads config.json IMMEDIATELY after a
-    // 200 from /api/v1/reset, so "persisted, applies at next start" is not
-    // enough - the in-memory override has to be gone before we answer.
-    bool need_reload = false;
+    // Serialised with PATCH: a reset racing a save must not interleave
+    // runtime state and ConfigStore.
+    std::lock_guard<std::mutex> lk(patch_m_);
+
+    // Phase 1 - VALIDATE: every key must resolve to an action before anything
+    // is written or applied; an unknown key answers 404 with nothing changed.
+    std::vector<ImageControl> images;
+    bool fs = false, enc = false, qd = false, perf_video = false, latprof = false, det = false;
     for (const std::string& k : conf_keys) {
-        power::ApplyResult ar; ar.ok = true;
         if (k.rfind("image.", 0) == 0) {
             ImageControl c;
             if (!image_control_from_name(k.substr(6), c))
                 return fail(404, "unknown_field", k, "unknown image control");
-            ar = tuning_.clear_image(c);
-        } else if (k == "latency.framesource_buffers") ar = tuning_.clear_framesource_buffers();
-        else if (k == "latency.encoder_buffers")       ar = tuning_.clear_encoder_buffers();
-        else if (k == "latency.queue_depth")           ar = tuning_.clear_queue_depth();
-        else need_reload = true;   // fps/profiles/detector: the reload re-applies
-                                   // the fresh file unconditionally (HW-verified)
-        if (!ar.ok)
-            return fail(500, "internal", k, ar.message);
+            images.push_back(c);
+        }
+        else if (k == "latency.framesource_buffers") fs = true;
+        else if (k == "latency.encoder_buffers")     enc = true;
+        else if (k == "latency.queue_depth")         qd = true;
+        else if (k == "video.fps" || k == "sensor.fps" || k == "performance.profile") perf_video = true;
+        else if (k == "latency.profile")             latprof = true;
+        else if (k == "ai.detector")                 det = true;
+        else return fail(404, "unknown_field", k, "no such resettable key");
     }
+
+    // Phase 2 - PERSIST first: if the flash write fails, nothing has moved.
+    // If a runtime step fails afterwards, the DISK already holds the reset,
+    // so the next start converges to the requested state instead of
+    // resurrecting the old override.
     std::string err;
     if (!store_.commit_remove(conf_keys, err))
         return fail(500, "internal", "", err);
-    if (need_reload && reload_hook_) reload_hook_();   // SIGHUP-equivalent
+
+    // Phase 3 - APPLY synchronously: a 200 means "effective now"; the stock
+    // UI re-reads config.json immediately. No SIGHUP here - the signal stays
+    // the EXTERNAL compatibility interface (`killall -HUP majestic`), not an
+    // internal completion mechanism racing this HTTP response.
+    for (ImageControl c : images) {
+        power::ApplyResult ar = tuning_.clear_image(c);
+        if (!ar.ok) return fail(500, "internal", image_control_name(c),
+                                ar.message + " (persisted; fully effective at next start)");
+    }
+    if (fs)  { power::ApplyResult ar = tuning_.clear_framesource_buffers(); if (!ar.ok) return fail(500, "internal", "latency.framesource_buffers", ar.message + " (persisted)"); }
+    if (enc) { power::ApplyResult ar = tuning_.clear_encoder_buffers();     if (!ar.ok) return fail(500, "internal", "latency.encoder_buffers", ar.message + " (persisted)"); }
+    if (qd)  { power::ApplyResult ar = tuning_.clear_queue_depth();         if (!ar.ok) return fail(500, "internal", "latency.queue_depth", ar.message + " (persisted)"); }
+    if (perf_video || latprof || det) {
+        AppConfig fresh; std::string e2;
+        if (!load_config(store_.path().c_str(), fresh, e2))
+            return fail(500, "internal", "", "reload failed: " + e2 + " (persisted; fully effective at next start)");
+        // Same semantics as the SIGHUP handler, executed inline: the fresh
+        // file no longer carries the key, so the defaults win. Individual
+        // rejections (there are none for compiled defaults) are logged by the
+        // services themselves, matching the SIGHUP behaviour.
+        if (perf_video) perf_.apply_config(fresh.performance, fresh.video);
+        if (latprof)    tuning_.set_latency_profile(fresh.latency.profile);
+        if (det && detection_) detection_->set_detector(fresh.ai.detector);
+    }
+
     Json j = Json::object();
     j.set("ok", Json::boolean(true));
     j.set("revision", Json::integer(store_.revision()));

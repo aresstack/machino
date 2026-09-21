@@ -275,10 +275,6 @@ int main(int argc, char** argv) {
                                  platform->capabilities().ai.motion == Cap::Supported ? "backend present" : "no backend",
                                  cfg.ai.inference_fps, detection::ai_state_name(detection.state()));
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection);
-        // The unset/reset path re-applies the file through the SAME reload the
-        // stock WebUI's `killall -HUP majestic` uses. Process-directed, so the
-        // signalfd in this loop receives it regardless of the calling thread.
-        api.set_reload_hook([] { kill(getpid(), SIGHUP); });
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
         // Front-door: the Majestic drop-in login gates :80 exactly like
