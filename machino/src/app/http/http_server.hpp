@@ -41,8 +41,9 @@ struct ServerConfig {
     // is forwarded to this internal OpenIPC WebUI (busybox httpd). port 0 = off.
     std::string upstream_host = "127.0.0.1";
     int         upstream_port = 0;
-    int         relay_timeout_ms = 6000;      // bound the blocking upstream round-trip
-    size_t      max_relay_bytes = 8 * 1024 * 1024;
+    int         relay_timeout_ms = 6000;      // upstream INACTIVITY bound: refreshed on connect/send/recv progress
+    int         relay_max_ms = 120000;        // absolute safety ceiling per relayed request
+    size_t      max_relay_bytes = 8 * 1024 * 1024;   // total bytes forwarded per relayed request
     // Majestic drop-in session auth (POST /login, POST /logout, 401 gating).
     // Active only when both are set; auth_check validates the credentials.
     bool                  session_auth = false;
