@@ -330,25 +330,23 @@ void run_substream_schema_tests() {
     const Json* props = schema.get("properties");
     CCHECK(props);
     if (props) {
-        const Json* v1 = props->get("video1");
-        CCHECK(v1);                                     // the section exists at all
-        const Json* f = v1 ? v1->get("properties") : nullptr;
-        CCHECK(f && f->get("fps"));
-        CCHECK(f && f->get("bitrate_kbps"));
-        CCHECK(f && f->get("gop"));
-        // and it is offered in the same group as the main stream, so the page
-        // renders it rather than hiding it behind a group nobody opens
+        CCHECK(props->get("video0"));                   // the main stream IS exposed
+        // ... and the substream is NOT, on purpose. video.1.* is
+        // daemon_restart class - the substream is built at daemon start - and
+        // this file refuses to expose that class at all, because the stock
+        // Apply is `killall -HUP majestic` and cannot deliver it. A field the
+        // page can set but not make true is worse than one it does not offer.
+        CCHECK(!props->get("video1"));
         const Json* groups = schema.get("x-groups");
-        bool found = false;
+        bool offered = false;
         if (groups && groups->is_array())
             for (size_t i = 0; i < groups->size(); ++i) {
-                const Json& g = groups->at(i);
-                const Json* ss = g.get("sections");
+                const Json* ss = groups->at(i).get("sections");
                 if (!ss || !ss->is_array()) continue;
                 for (size_t k = 0; k < ss->size(); ++k)
-                    if (ss->at(k).is_string() && ss->at(k).as_string() == "video1") found = true;
+                    if (ss->at(k).is_string() && ss->at(k).as_string() == "video1") offered = true;
             }
-        CCHECK(found);
+        CCHECK(!offered);
     }
 
     // The translation: video0 and video1 in ONE post must both survive. They

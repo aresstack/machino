@@ -132,15 +132,21 @@ Json majestic_schema(const Json& capabilities) {
     set_default(video0, "video0", "gop");
     add_section(properties, "video0", video0);
 
-    // AP6: the substream. Same controls as the main stream - the page renders
-    // a second section and the user can turn it on from there. It was already
-    // reported in the Dashboard's stream list but could not be CHANGED, which
-    // made it addressable only by editing machino.conf over SSH.
-    Json video1 = Json::object();
-    add_range(video1, "fps", "Sub-stream frame rate", controls ? controls->get("stream_fps") : nullptr);
-    add_range(video1, "bitrate_kbps", "Sub-stream bitrate (kbit/s)", controls ? controls->get("bitrate") : nullptr);
-    add_range(video1, "gop", "Sub-stream keyframe interval (frames)", controls ? controls->get("gop") : nullptr);
-    add_section(properties, "video1", video1);
+    // AP6: the substream is deliberately NOT in this schema, and that follows
+    // this file's own rule rather than being an omission.
+    //
+    // xreload_for() refuses to expose anything of daemon_restart class,
+    // because the stock Apply is `killall -HUP majestic` and cannot restart the
+    // daemon to deliver it - a field the page can set but not make true is
+    // worse than one it does not offer. video.1.* is exactly that class: the
+    // substream is built at daemon start, and PipelineManager::update_sub_stream
+    // has no caller yet.
+    //
+    // An earlier version of this change DID add the section, with the same
+    // "live" semantics as video0. That would have had the stock settings page
+    // report a sub-stream change as applied when nothing had happened.
+    // It is reachable through /api/v1/config, which reports it honestly as
+    // persisted-until-restart, and through machino.conf.
 
     Json sensor = Json::object();
     add_range(sensor, "fps", "Sensor frame rate", controls ? controls->get("sensor_fps") : nullptr);
@@ -226,10 +232,10 @@ Json majestic_schema(const Json& capabilities) {
     schema.set("properties", properties);
 
     Json groups = Json::array();
-    const char* media_sections[] = {"video0", "video1", "sensor", "latency"};
+    const char* media_sections[] = {"video0", "sensor", "latency"};
     const char* image_sections[] = {"image"};
     const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai"};
-    Json media = group("media", "Media", properties, media_sections, 4);
+    Json media = group("media", "Media", properties, media_sections, 3);
     Json image = group("image", "Image", properties, image_sections, 1);
     Json runtime = group("runtime", "Runtime", properties, runtime_sections, 4);
     if (media.get("sections")->size()) groups.push(media);

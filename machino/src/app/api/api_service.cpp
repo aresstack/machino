@@ -748,6 +748,17 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
             int iv = control == ImageControl::AntiFlicker ? (c.value == "off" ? 0 : c.value == "50hz" ? 50 : 60) : atoi(c.value.c_str());
             c.r = tuning_.set_image(control, iv);
         }
+        // AP6: the substream is DaemonRestart-class, and saying so is the whole
+        // point. PipelineManager::update_sub_stream() exists but has no caller;
+        // wiring it live needs the resolver to settle geometry and a second
+        // encoder to come and go under load, which is its own piece of work.
+        // Until then this must persist AND admit it is not live - without an
+        // explicit branch the key falls through the dispatch with a default
+        // ApplyResult, which is ok=false with an empty message: the change is
+        // silently dropped, not even stored, and the caller is told nothing.
+        else if (c.key.rfind("video.1.", 0) == 0)
+            c.r = ApplyResult::stored(ApplyMode::DaemonRestart, (int)n,
+                                      "persisted; the substream is built at daemon start");
         else if (c.key == "lifecycle.idle_grace_ms") { c.r = ApplyResult::stored(ApplyMode::DaemonRestart, (int)n, "persisted; takes effect after daemon restart"); }
         else if (c.key == "power.isp_performance")     { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_isp_performance(l); }
         else if (c.key == "power.encoder_performance") { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_encoder_performance(l); }

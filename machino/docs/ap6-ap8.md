@@ -172,3 +172,79 @@ Der AP7-Default ändert das Verhalten für bestehende RTSP-Clients: ohne
 Credentials bekommen sie ab dem nächsten Start `401`. Das ist beabsichtigt und
 entspricht dem Stock-Vertrag — aber es ist eine spürbare Änderung und gehört
 beim nächsten Hardwarefenster als Erstes geprüft.
+
+---
+
+## Korrektur nach Review — AP6 war in zwei Punkten falsch
+
+### 1. Der PATCH hätte gar nichts getan
+
+Mein Commit behauptete, `video.1.*` werde "persistiert". Das war falsch. Die
+Anwendungsschleife in `api_service.cpp` verzweigt auf `c.key`; für `video.1.*`
+gab es **keinen Zweig**, also fiel der Schlüssel durch mit einem
+default-konstruierten `ApplyResult`:
+
+```cpp
+struct ApplyResult { bool ok = false; ApplyMode mode = ApplyMode::Unsupported; ... };
+```
+
+und weiter unten:
+
+```cpp
+for (const auto& c : changes) if (c.r.ok) kv.emplace_back(c.key, c.value);
+```
+
+Die Änderung wäre also **validiert, dann stillschweigend verworfen** worden —
+nicht angewendet, **nicht gespeichert**, und der Aufrufer hätte `ok:false` mit
+**leerer Meldung** bekommen. Schlimmer als gar kein Feature.
+
+Ursache dahinter: `PipelineManager::update_sub_stream()` existiert, hat aber
+**keinen Aufrufer**. Der Substream wird beim Daemonstart gebaut.
+
+**Behoben:** ein ausdrücklicher Zweig, der als `DaemonRestart` speichert und
+das auch sagt — `"persisted; the substream is built at daemon start"`. Damit
+ist die Änderung dauerhaft **und** der Aufrufer weiß, dass sie erst beim
+nächsten Start greift.
+
+### 2. Die Schema-Sektion verstieß gegen die Regel dieser Datei
+
+Ich hatte `video1` mit denselben `live`-Semantiken wie `video0` ins
+Settings-Schema gelegt. `majestic_webui.cpp` hat dafür aber eine eigene, klar
+begründete Regel:
+
+```cpp
+// Fields whose class is daemon_restart/boot_only are NOT exposed at all:
+// their POST only persists, and the stock Apply (`killall -HUP majestic`)
+// cannot restart the daemon to deliver them.
+```
+
+`video.1.*` ist genau diese Klasse. Die Stock-Seite hätte eine
+Substream-Änderung als angewendet gemeldet, während nichts passiert war — ein
+Feld, das die Seite setzen, aber nicht wahr machen kann, ist schlechter als
+keines.
+
+**Zurückgenommen.** Der Substream bleibt erreichbar über `/api/v1/config`, das
+ihn ehrlich als "persistiert bis zum Neustart" meldet, und über
+`machino.conf`. Der Test prüft jetzt die **Abwesenheit** aus der Sektion und
+begründet sie.
+
+### Was von AP6 übrig bleibt
+
+| Anspruch | Stand |
+|---|---|
+| RTSP `/ch1`, `/stream=1`, MSE/WebRTC `?stream=1` | war schon da, verifiziert |
+| `/api/v1/config` **liest** `video.1` | **neu, korrekt** |
+| PATCH **persistiert** `video.1` | **neu, korrekt — als DaemonRestart deklariert** |
+| PATCH **wendet live an** | **nein**, und sagt es jetzt |
+| WebUI-Settings rendert `video1` | **nein**, und das ist richtig so |
+
+Der Anspruch „ohne Sonderpatch im Stream-Selektor nutzbar" bleibt damit
+erfüllt — der Selektor liest die Streamliste, nicht das Settings-Schema, und
+die kannte `video1` schon vorher.
+
+### Folge für die Acceptance-Matrix
+
+Zeile **4.3** („RTSP ohne Credentials, Defaults → Stream spielt") ist durch
+AP7 **ungültig geworden**: mit dem neuen Default antwortet die Kamera `401`.
+Das ist die beabsichtigte Korrektur des Drop-in-Vertrags, aber die Zeile muss
+beim nächsten Hardwarefenster umgeschrieben statt nachgetestet werden.
