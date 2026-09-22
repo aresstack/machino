@@ -118,11 +118,17 @@ void PeerSession::on_readable() {
             std::vector<uint8_t> resp = binding_response(req.tid, peer_ip_, peer_port_, pwd_);
             send_udp(resp.data(), resp.size());
         } else if (b0 >= 20 && b0 <= 63) {                      // DTLS
-            if (!dtls_hexdumped_) {
+            if (!dtls_hexdumped_ && n >= 13) {
                 dtls_hexdumped_ = true;
                 char hx[64]; int m = (int)(n < 16 ? n : 16);
                 for (int i = 0; i < m; ++i) snprintf(hx + i * 3, 4, "%02x ", buf[i]);
-                LOGI(MOD, "dtls first datagram n=%zd: %s", n, hx);
+                const unsigned ver = ((unsigned)buf[1] << 8) | buf[2];
+                const unsigned epoch = ((unsigned)buf[3] << 8) | buf[4];
+                const unsigned rlen = ((unsigned)buf[11] << 8) | buf[12];
+                LOGI(MOD, "dtls first n=%zd ct=%u ver=0x%04x epoch=%u rlen=%u : %s",
+                     n, buf[0], ver, epoch, rlen, hx);
+                FILE* f = fopen("/tmp/dtls_first.bin", "wb");
+                if (f) { fwrite(buf, 1, (size_t)n, f); fclose(f); }
             }
             dtls_.feed(buf, (size_t)n);
             if (!dtls_.step()) { LOGW(MOD, "dtls fatal (stun=%llu)", (unsigned long long)stun_reqs_); return; }
