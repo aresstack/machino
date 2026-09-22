@@ -1,6 +1,7 @@
 #include "app/rtsp/rtsp_server.hpp"
 #include "app/rtsp/h264_nal.hpp"
 #include "core/log.hpp"
+#include "core/runtime_stats.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -289,6 +290,7 @@ void RtspServer::client_loop(Client* c, std::string peer) {
         }
     }
     if (s.sink) { StreamHub* h = hub_for(s.unit); if (h) h->unsubscribe(s.sink); }
+    if (s.playing) RuntimeStats::dec(RuntimeStats::get().rtsp_sessions);
     s.demand.release();                                     // explicit for readability; the dtor would do it too
     if (s.udp_fd >= 0) close(s.udp_fd);
     // clear the fd before closing it: stop() must not shut down a number the
@@ -427,6 +429,7 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
             if (!s.demand.active()) { LOGW(MOD, "%s PLAY %s: pipeline unavailable (%s)", s.peer.c_str(), unit_name(s.unit), status_name(r.status)); return reply("503 Service Unavailable", "", ""); }
             s.sink = h->subscribe();   // bounded profile depth; a stalled client drops its own frames only
             s.playing = true; s.wait_key = true; s.pts0_us = -1;
+            RuntimeStats::inc(RuntimeStats::get().rtsp_sessions);
             pipeline_.request_idr(s.unit);
             LOGI(MOD, "%s PLAY %s (%s)", s.peer.c_str(), unit_name(s.unit), s.tcp ? "tcp-interleaved" : "udp");
         }

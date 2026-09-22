@@ -6,6 +6,7 @@
 #include "app/http/websocket.hpp"
 #include "app/rtsp/h264_nal.hpp"
 #include "core/log.hpp"
+#include "core/runtime_stats.hpp"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -21,7 +22,9 @@
 #include <poll.h>
 #include <sstream>
 #include <string>
+#include <csignal>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -118,6 +121,7 @@ struct HttpServer::Client {
     int64_t last_activity_ms = 0;
     std::shared_ptr<Subscription> sub;
     unsigned requests = 0;
+    bool ws_logs = false;           // /ws/logs subscriber (shared logread feed)
     // /ws/video: one live MSE feed = one StreamHub consumer with its own
     // demand, exactly like an RTSP session (no second encoder, no JPEG).
     bool ws_video = false;
@@ -189,12 +193,16 @@ void HttpServer::stop() {
     if (thread_.joinable()) thread_.join();
     for (auto& c : clients_) {
         if (c->sub) bus_.unsubscribe(c->sub);
+        if (c->ws_video) RuntimeStats::dec(RuntimeStats::get().ws_video_clients);
+        if (c->ws_logs)  RuntimeStats::dec(RuntimeStats::get().ws_logs_clients);
+        if (c->rtc)      RuntimeStats::dec(RuntimeStats::get().webrtc_sessions);
         if (c->ws_sink) { StreamHub* h = c->ws_hub ? c->ws_hub : hub_; if (h) { c->ws_sink->close(); h->unsubscribe(c->ws_sink); } }
         if (c->rtc_sink) { StreamHub* h = c->rtc_hub ? c->rtc_hub : hub_; if (h) { c->rtc_sink->close(); h->unsubscribe(c->rtc_sink); } }
         if (c->relay_fd >= 0) close(c->relay_fd);
         close(c->fd);
     }
     clients_.clear();
+    logs_stop();
     close(listen_fd_); listen_fd_ = -1;
     LOGI(MOD, "stopped");
 }
@@ -377,6 +385,7 @@ bool HttpServer::handle_request(Client& c) {
             else {
                 queue(c, ws::handshake_response(wskey));
                 c.ws_video = true;
+                RuntimeStats::inc(RuntimeStats::get().ws_video_clients);
                 c.ws_unit = unit;
                 c.ws_hub = h;
                 c.ws_demand = std::move(d);
@@ -402,6 +411,20 @@ bool HttpServer::handle_request(Client& c) {
             c.rtc_ws = true;
             c.rtc_unit = unit;
             LOGI(MOD, "%s: /ws/webrtc signalling open (unit %d)", c.peer.c_str(), unit);
+            return true;
+        }
+    } else if (path == "/ws/logs") {
+        // The stock log viewer: one WebSocket, binary frames of raw syslog
+        // lines (it splits on newline itself). Source is the system log, which
+        // is why the daemon also logs to syslog as "majestic" in drop-in mode.
+        const std::string wskey = req.header("sec-websocket-key");
+        if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
+        else {
+            queue(c, ws::handshake_response(wskey));
+            c.ws_logs = true;
+            logs_start();
+            if (logs_fd_ < 0) { c.close_after_flush = true; return true; }   // no logread on this box
+            LOGI(MOD, "%s: /ws/logs subscribed", c.peer.c_str());
             return true;
         }
     } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream") {
@@ -738,6 +761,7 @@ bool HttpServer::rtc_ws_input(Client& c) {
         lifecycle::DemandHandle d = pipeline_->acquire_unit(c.rtc_unit, lifecycle::ConsumerType::HttpStream, &dr);
         if (!d.active()) { if (!reply("error", "pipeline start failed")) return false; continue; }
         c.rtc = std::move(sess);
+        RuntimeStats::inc(RuntimeStats::get().webrtc_sessions);
         c.rtc_demand = std::move(d);
         c.rtc_hub = h;
         c.rtc_sink = h->subscribe();
@@ -759,6 +783,81 @@ void HttpServer::pump_rtc(Client& c) {
         if (!c.rtc_sink->pop(au, 0, &disc)) return;
         if (!au || au->data.empty()) continue;
         c.rtc->send_au(au->data.data(), au->data.size(), au->pts_us, au->key);
+    }
+}
+
+bool HttpServer::logs_wanted() const {
+    for (const auto& c : clients_) if (c->ws_logs) return true;
+    return false;
+}
+
+// One "logread -f" for the whole server. fork+exec (no shell) so nothing is
+// parsed on our behalf, the read end is non-blocking and joins poll(); the
+// child is reaped when the last subscriber goes.
+void HttpServer::logs_start() {
+    if (logs_fd_ >= 0) return;
+    int fds[2];
+    if (pipe(fds) != 0) { LOGW(MOD, "/ws/logs: pipe failed: %s", strerror(errno)); return; }
+    const pid_t pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); LOGW(MOD, "/ws/logs: fork failed: %s", strerror(errno)); return; }
+    if (pid == 0) {                                   // child: only async-signal-safe calls
+        close(fds[0]);
+        dup2(fds[1], STDOUT_FILENO);
+        dup2(fds[1], STDERR_FILENO);
+        close(fds[1]);
+        execl("/sbin/logread", "logread", "-f", (char*)nullptr);
+        execlp("logread", "logread", "-f", (char*)nullptr);
+        _exit(127);
+    }
+    close(fds[1]);
+    fcntl(fds[0], F_SETFL, O_NONBLOCK);
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    logs_fd_ = fds[0];
+    logs_pid_ = pid;
+    logs_buf_.clear();
+    LOGI(MOD, "/ws/logs: streaming logread (pid %d)", (int)pid);
+}
+
+void HttpServer::logs_stop() {
+    if (logs_fd_ >= 0) { close(logs_fd_); logs_fd_ = -1; }
+    if (logs_pid_ > 0) {
+        kill(logs_pid_, SIGTERM);
+        waitpid(logs_pid_, nullptr, WNOHANG);         // reaped again below if it lingers
+        logs_pid_ = -1;
+    }
+    logs_buf_.clear();
+}
+
+// Forward whole lines only: the viewer splits on newline and keeps a partial
+// tail, but sending half a line to every subscriber would interleave badly
+// once there is more than one.
+void HttpServer::logs_pump(short revents) {
+    if (logs_fd_ < 0) return;
+    if (revents & (POLLERR | POLLNVAL)) { logs_stop(); return; }
+    if (!(revents & (POLLIN | POLLHUP))) return;
+    char buf[4096];
+    for (;;) {
+        const ssize_t n = read(logs_fd_, buf, sizeof buf);
+        if (n == 0) { LOGW(MOD, "/ws/logs: logread ended"); logs_stop(); return; }
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return;
+            logs_stop(); return;
+        }
+        logs_buf_.append(buf, (size_t)n);
+        const size_t nl = logs_buf_.rfind(0x0a);
+        if (nl == std::string::npos) {
+            if (logs_buf_.size() > 64 * 1024) logs_buf_.clear();   // pathological single line
+            continue;
+        }
+        const std::string chunk = logs_buf_.substr(0, nl + 1);
+        logs_buf_.erase(0, nl + 1);
+        const std::string frame = ws::frame(false, chunk.data(), chunk.size());  // binary, per the viewer
+        for (auto& c : clients_) {
+            if (!c->ws_logs) continue;
+            // a viewer that cannot keep up is dropped, never buffered without
+            // bound - the log stream must not become a memory leak
+            if (!queue(*c, frame, cfg_.max_out_buffer)) c->close_after_flush = true;
+        }
     }
 }
 
@@ -793,6 +892,8 @@ void HttpServer::loop() {
             }
         }
         for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
+        const size_t logs_idx = (logs_fd_ >= 0) ? pfds.size() : (size_t)-1;
+        if (logs_fd_ >= 0) pfds.push_back({logs_fd_, POLLIN, 0});
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)
@@ -813,7 +914,7 @@ void HttpServer::loop() {
                 else if (r < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) ok = false; }
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.rtc_ws)   { c.in.append(buf, (size_t)r); ok = rtc_ws_input(c); }
-                else if (c.sse || c.mjpeg) { /* ignore input on streaming connections */ }
+                else if (c.sse || c.mjpeg || c.ws_logs) { /* ignore input on streaming connections */ }
                 else { c.in.append(buf, (size_t)r); if (c.in.size() > MAX_IN) ok = false; else while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
             }
             if (ok && c.relay_state != Client::Relay::None) ok = pump_relay(c, rre, t);
@@ -829,10 +930,13 @@ void HttpServer::loop() {
             }
             if (ok) ok = flush(c);
             if (ok && c.close_after_flush && c.out.empty()) ok = false;
-            if (ok && !c.sse && !c.mjpeg && !c.ws_video && !c.rtc_ws && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
+            if (ok && !c.sse && !c.mjpeg && !c.ws_video && !c.rtc_ws && !c.ws_logs && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
             if (!ok) {
                 // Close now, erase after the iteration: refs holds pointers
                 // into clients_, so the vector must not shift under it.
+                if (c.ws_video) RuntimeStats::dec(RuntimeStats::get().ws_video_clients);
+                if (c.ws_logs)  RuntimeStats::dec(RuntimeStats::get().ws_logs_clients);
+                if (c.rtc)      RuntimeStats::dec(RuntimeStats::get().webrtc_sessions);
                 if (c.sub) bus_.unsubscribe(c.sub);
                 if (c.ws_sink) { StreamHub* h = c.ws_hub ? c.ws_hub : hub_; if (h) { c.ws_sink->close(); h->unsubscribe(c.ws_sink); } }
                 if (c.rtc_sink) { StreamHub* h = c.rtc_hub ? c.rtc_hub : hub_; if (h) { c.rtc_sink->close(); h->unsubscribe(c.rtc_sink); } }
@@ -844,6 +948,8 @@ void HttpServer::loop() {
         clients_.erase(std::remove_if(clients_.begin(), clients_.end(),
                                       [](const std::unique_ptr<Client>& p) { return p->fd < 0; }),
                        clients_.end());
+        if (logs_idx != (size_t)-1 && logs_idx < pfds.size()) logs_pump(pfds[logs_idx].revents);
+        if (logs_fd_ >= 0 && !logs_wanted()) { LOGI(MOD, "/ws/logs: last subscriber left"); logs_stop(); }
         if (t - last_heartbeat_ms_ >= 15000) last_heartbeat_ms_ = t;
         // 1 Hz telemetry only while somebody listens (cheap otherwise)
         bool any_sse = false; for (auto& c : clients_) if (c->sse) { any_sse = true; break; }

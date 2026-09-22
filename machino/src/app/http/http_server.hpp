@@ -80,6 +80,13 @@ private:
     void pump_ws_video(Client& c);  // fMP4-per-frame over WebSocket (majestic /ws/video)
     bool ws_video_input(Client& c); // client frames: {"request":"idr"}, ping, close
     bool rtc_ws_input(Client& c);   // /ws/webrtc signalling: offer -> answer/busy/error
+    // /ws/logs: ONE shared "logread -f" child feeds every subscriber, its pipe
+    // rides the same poll() so nothing blocks the media path. Started with the
+    // first subscriber, reaped with the last.
+    void logs_start();
+    void logs_stop();
+    void logs_pump(short revents);
+    bool logs_wanted() const;
     void pump_rtc(Client& c);       // webrtc per tick: DTLS timers, PLI->IDR, AU->RTP
     bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
     bool relay_open(Client& c);                          // open the upstream socket for a prepared relay
@@ -98,6 +105,9 @@ private:
     int  unit_for_stream(const std::string& sv) const;
     std::unique_ptr<SessionGate> gate_;   // set when cfg_.session_auth
     int               listen_fd_ = -1;
+    int               logs_fd_ = -1;      // read end of the logread pipe
+    int               logs_pid_ = -1;     // the logread child
+    std::string       logs_buf_;          // partial line carried between reads
     std::atomic<bool> quit_{false};
     std::thread       thread_;
     std::vector<std::unique_ptr<Client>> clients_;

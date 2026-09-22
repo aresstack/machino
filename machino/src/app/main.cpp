@@ -194,7 +194,12 @@ int main(int argc, char** argv) {
         LOGI(MOD, "majestic-compat: process comm set to 'majestic' (pidof/killall compatibility)");
     }
     log_set_level(verbose ? LogLevel::Debug : (LogLevel)cfg.log.level);
-    log_set_syslog(cfg.log.syslog);
+    // In drop-in mode the system log is the WebUI log viewer: it streams
+    // logread and filters its "majestic" source on that exact program name,
+    // which is also the name this process already answers to for
+    // pidof/killall. Outside drop-in mode the honest ident is our own.
+    const bool dropin = cfg.api.upstream_port > 0;
+    log_set_syslog(cfg.log.syslog || dropin, dropin ? "majestic" : "machino");
     LOGI(MOD, "machino %s starting (pid %d)", MACHINO_VERSION, (int)getpid());
 
     hw::Registry reg;

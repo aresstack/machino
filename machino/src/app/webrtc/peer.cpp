@@ -1,6 +1,7 @@
 #include "app/webrtc/peer.hpp"
 #include "app/webrtc/stun.hpp"
 #include "core/log.hpp"
+#include "core/runtime_stats.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -122,7 +123,11 @@ void PeerSession::on_readable() {
             send_udp(resp.data(), resp.size());
         } else if (b0 >= 20 && b0 <= 63) {                      // DTLS
             dtls_.feed(buf, (size_t)n);
-            if (!dtls_.step()) { LOGW(MOD, "dtls fatal (stun=%llu)", (unsigned long long)stun_reqs_); return; }
+            if (!dtls_.step()) {
+                LOGW(MOD, "dtls fatal (stun=%llu)", (unsigned long long)stun_reqs_);
+                RuntimeStats::inc(RuntimeStats::get().webrtc_dtls_failures);
+                return;
+            }
             flush_dtls();
             if (dtls_.handshake_done() && !dtls_logged_) {
                 dtls_logged_ = true;
@@ -133,6 +138,7 @@ void PeerSession::on_readable() {
                     pli_ = true;                                // start with a fresh IDR
                     LOGI(MOD, "dtls done, srtp live (stun=%llu)", (unsigned long long)stun_reqs_);
                 } else {
+                    RuntimeStats::inc(RuntimeStats::get().webrtc_srtp_failures);
                     LOGW(MOD, "dtls done but SRTP export FAILED (use_srtp not negotiated?)");
                 }
             }
@@ -142,7 +148,7 @@ void PeerSession::on_readable() {
             std::vector<uint8_t> pkt(buf, buf + n);
             if (is_rtcp(buf, (size_t)n) && srtp_->unprotect_rtcp(pkt)) {
                 RtcpInfo info = parse_rtcp(pkt.data(), pkt.size());
-                if (info.pli) { pli_ = true; ++pli_in_; }
+                if (info.pli) { pli_ = true; ++pli_in_; RuntimeStats::inc(RuntimeStats::get().webrtc_pli); }
             }
         }
     }
@@ -171,8 +177,11 @@ void PeerSession::send_au(const uint8_t* p, size_t n, int64_t pts_us, bool key) 
         if (!srtp_->protect_rtp(pkt)) return;
         if (send_udp(pkt.data(), pkt.size())) {
             ++rtp_count_; rtp_bytes_ += pkt.size(); ++send_ok_;
+            RuntimeStats::inc(RuntimeStats::get().webrtc_rtp_packets);
+            RuntimeStats::inc(RuntimeStats::get().webrtc_rtp_bytes, pkt.size());
         } else {
             ++send_err_; last_send_errno_ = errno;
+            RuntimeStats::inc(RuntimeStats::get().webrtc_send_errors);
             // socket backpressure: drop the rest of this AU, resume at a key
             await_key_ = true;
             return;
