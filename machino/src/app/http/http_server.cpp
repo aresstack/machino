@@ -296,6 +296,17 @@ bool HttpServer::flush(Client& c) {
 }
 
 // Dispatches one complete request; returns false to close the connection.
+bool HttpServer::pump_requests(Client& c) {
+    bool ok = true;
+    while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None &&
+           c.in.find("\r\n\r\n") != std::string::npos) {
+        const size_t before = c.in.size();
+        ok = handle_request(c);
+        if (c.in.size() == before) break;          // incomplete body: wait for more
+    }
+    return ok;
+}
+
 bool HttpServer::handle_request(Client& c) {
     size_t consumed = 0; Request req;
     Limits lim;
@@ -1153,9 +1164,21 @@ void HttpServer::loop() {
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.rtc_ws)   { c.in.append(buf, (size_t)r); ok = rtc_ws_input(c); }
                 else if (c.sse || c.mjpeg || c.ws_logs) { /* ignore input on streaming connections */ }
-                else { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; else while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
+                else { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; else ok = pump_requests(c); }
             }
-            if (ok && c.relay_state != Client::Relay::None) ok = pump_relay(c, rre, t);
+            if (ok && c.relay_state != Client::Relay::None) {
+                ok = pump_relay(c, rre, t);
+                // A request that arrived WHILE the relay was in flight is still
+                // sitting in c.in, and its POLLIN is long gone - the parse loop
+                // above only runs on fresh input. Before downstream keep-alive
+                // this could not happen, because every relayed reply closed the
+                // connection; now it can, and an unparsed request would hang
+                // there until the idle timeout.
+                if (ok && c.relay_state == Client::Relay::None &&
+                    !c.close_after_flush && !c.ws_video && !c.rtc_ws && !c.sse &&
+                    !c.mjpeg && !c.ws_logs)
+                    ok = pump_requests(c);
+            }
             if (ok && c.sse) {
                 drain_events(c);
                 if (t - last_heartbeat_ms_ >= 15000) queue(c, ": keepalive\n\n");

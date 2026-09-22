@@ -103,6 +103,10 @@ private:
     onvif::OnvifService* onvif_ = nullptr;
     void loop();
     void accept_client();
+    // Parse and serve every complete request already buffered in c.in. Stops at
+    // a relay going in flight (no pipelining behind a relayed reply) and at a
+    // connection marked for close.
+    bool pump_requests(Client& c);
     bool handle_request(Client& c);
     void drain_events(Client& c);
     void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
