@@ -173,7 +173,67 @@ One cycle also left ~1.2 MB behind (1 412 → 2 656 kB idle-to-idle). On its own
 that is unremarkable — musl does not return every arena to the OS — but it is
 the number to watch across repeated cycles in test A.
 
-## Discriminating test (do not run yet)
+## A/B test — run, and conclusive
+
+Cold boot, no browser at any point, RTSP and the API only, memory sampled once
+a second on the camera, aborting on the first `IMP_System_Init failed`.
+
+### Test A — three start/stop cycles, no `/ws/logs`: **PASS**
+
+| | RTP delivered | `VmRSS` ACTIVE | `VmRSS` back at COLD_IDLE |
+|---|---|---|---|
+| fresh boot | — | — | 1 500 kB |
+| cycle 1 | 2 654 732 B | 4 168 kB | 2 696 kB |
+| cycle 2 | 2 348 267 B | 4 384 kB | 2 908 kB |
+| cycle 3 | 2 338 712 B | 4 440 kB | — |
+
+`IMP_System_Init` succeeded every time. The idle-to-idle residue was +1 196 kB
+after the first cycle and **+212 kB** after the second — decelerating, which
+reads as allocator arenas settling rather than a per-cycle leak.
+
+**The plain teardown/re-init path is not the defect.**
+
+### Test B — one cycle with `/ws/logs` opened while the pipeline was ACTIVE: **FAIL**
+
+```
+RTSP PLAY                          -> ACTIVE, 1 619 024 B of RTP
+/ws/logs opened while ACTIVE       -> HTTP/1.1 101 Switching Protocols
+both closed, grace elapsed         -> ING_PLAT down, COLD_IDLE, VmRSS 3 344 kB
+RTSP PLAY again                    -> RTSP/1.0 503 Service Unavailable, 0 bytes
+                                      IMP_System_Init failed (-1) x5
+```
+
+Same camera, same boot, the only difference being one `/ws/logs` subscription
+inside the cycle.
+
+**`/ws/logs` is the trigger.** Test A repeated the identical sequence three
+times without it and passed every time.
+
+### And the failed retries are what eats the memory
+
+`VmRSS` across the failing attempt: **3 352 → 4 588 kB during it, 9 428 kB
+after the five retries** — roughly **1.2 MB per failed attempt**, none of it
+returned. That is the mechanism behind the original OOM: four rounds of five
+retries, unattended, on a 42 MB machine.
+
+The daemon is not spinning now — the RTSP client went away, demand is 0, and it
+is sitting in `FAILED` at 9 428 kB. It only runs away while something keeps
+asking for media.
+
+### What this does and does not establish
+
+Established: a `/ws/logs` subscription taken while IMP is initialised leaves
+the process unable to re-initialise IMP after the next teardown, and every
+failed retry costs about 1.2 MB.
+
+Not established: *why*. The fork remains the suspect — `/ws/logs` is the only
+thing in the daemon that calls `fork()` — but nothing here distinguishes "the
+fork damaged something" from "the child's lifetime overlapped the teardown" or
+from a defect in the `/ws/logs` teardown path itself that has nothing to do
+with forking. A test that forks something harmless at the same point, with no
+`logread` involved, would separate those.
+
+## Discriminating test (superseded by the A/B result above)
 
 One power-cycle, then two sequences, in this order:
 
