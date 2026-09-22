@@ -78,4 +78,19 @@ bool majestic_get(const Json& majestic_config, const std::string& key, std::stri
 // "this camera has no such (resettable) setting" (the UI handles that).
 MajesticTranslation majestic_reset(const std::string& key);
 
+// AP21: what /ws/upgrade says instead of flashing.
+//
+// The FIRST line has to match upstream update.js's refusal vocabulary exactly.
+// That vocabulary is enumerated and anchored on purpose - its own comment
+// explains why a loose "any line beginning ERROR:" would be dangerous: the
+// transcript carries other tools' output (curl, tar, flashcp) and a pattern
+// that caught one of their lines "would end a run while a flash was under
+// way". So the wording is not ours to improvise, and it lives here where a
+// host test can hold it to the regex.
+//
+// Everything after the first line is free text and lands in the page's log
+// pane, under the sentence the marker triggers: "Nothing was written to flash,
+// so the camera is unchanged."
+std::string upgrade_refusal();
+
 }} // namespace machino::compat

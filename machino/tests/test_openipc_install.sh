@@ -80,7 +80,10 @@ EOF
     cp "$R/var/www/cgi-bin/p/header.cgi" "$WORK/header.orig"
 }
 
-run_install()   { ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" sh ./install.sh   "$@" ) >"$WORK/out" 2>&1; }
+# The stand-in for the daemon is a shell script, so AP21's ELF format check has
+# to stand down here. It is exercised with the hook OFF by the two dedicated
+# tests further down - one with a real MIPS header, one with an x86-64 one.
+run_install()   { ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 sh ./install.sh "$@" ) >"$WORK/out" 2>&1; }
 run_uninstall() { ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" sh ./uninstall.sh "$@" ) >"$WORK/out" 2>&1; }
 
 # ------------------------------------ 1) install on a normal camera ---------
@@ -222,7 +225,7 @@ MVSTUB="$WORK/mvstub"; mkdir -p "$MVSTUB"
 printf '#!/bin/sh
 exit 1
 ' > "$MVSTUB/mv"; chmod +x "$MVSTUB/mv"
-( cd "$WORK/bundle" && PATH="$MVSTUB:$PATH" MACHINO_ROOT="$WORK/root" sh ./install.sh ) >"$WORK/out" 2>&1 ||
+( cd "$WORK/bundle" && PATH="$MVSTUB:$PATH" MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 sh ./install.sh ) >"$WORK/out" 2>&1 ||
     bad "install failed although mv failure has a fallback: $(cat "$WORK/out")"
 has   "boot slot moved despite broken mv" "$R/etc/init.d/majestic"
 hasnt "old slot gone despite broken mv"   "$R/etc/init.d/S95majestic"
@@ -268,7 +271,7 @@ has "external install untouched" "$R/usr/bin/machino"
 # top, the ownership manifest is written, the user config is untouched —
 # ownership gates only the destructive direction (uninstall).
 printf 'board = keep-my-board\n' > "$R/etc/machino/machino.conf"
-( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
     bad "manager install did not take over an EXTERNAL install: $(cat "$WORK/out")"
 has "ownership manifest written on takeover" "$R/etc/machino/install-state.json"
 if grep -q '"managedBy": "cam-tool"' "$R/etc/machino/install-state.json"; then ok; else bad "takeover manifest missing owner"; fi
@@ -278,7 +281,7 @@ case "$S" in *'"state":"ON"'*) ok ;; *) bad "state not ON after takeover: $S" ;;
 
 # 15c) a full manager install writes the ownership manifest and reports ON (active)
 make_bundle; make_camera auto
-( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
     bad "manager install exited non-zero: $(cat "$WORK/out")"
 has "ownership manifest written" "$R/etc/machino/install-state.json"
 if grep -q '"managedBy": "cam-tool"' "$R/etc/machino/install-state.json"; then ok; else bad "manifest missing owner"; fi
@@ -313,6 +316,75 @@ has   "majestic restored by manager" "$R/etc/init.d/S95majestic"
 S=$(mgr_status "$WORK/bundle/sbin/machino-manager")
 case "$S" in *'"state":"OFF"'*) ok ;; *) bad "manager status not OFF after uninstall: $S" ;; esac
 rm -rf "$MSTUB"
+
+# ---- 16) AP21: the checks that run BEFORE anything is written ---------------
+#
+# These are the only cases that leave MACHINO_INSTALL_SKIP_FORMAT off, so they
+# are what actually exercises the format check. Each one asserts the refusal
+# AND that /usr/bin/machino was never created - "Nothing was written" has to be
+# true, not just printed.
+
+# An ELF built for the build host. e_machine 3e = x86-64, which is exactly what
+# a cross-build that silently fell back to the host compiler produces.
+elf_header() {   # $1 = output file, $2 = e_machine byte pair (little-endian)
+    printf '\177ELF\1\1\1\0\0\0\0\0\0\0\0\0\2\0' > "$1"
+    printf "$2" >> "$1"
+    # pad out past the 20 bytes od reads
+    dd if=/dev/zero bs=1 count=64 >> "$1" 2>/dev/null
+}
+
+make_bundle; make_camera auto
+elf_header "$WORK/bundle/machino" '\076\0'          # 0x003e = x86-64
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" sh ./install.sh ) >"$WORK/out" 2>&1
+if grep -q "not a MIPS binary" "$WORK/out"; then ok; else bad "x86-64 bundle was not refused: $(cat "$WORK/out")"; fi
+hasnt "nothing written for a wrong-arch bundle" "$WORK/root/usr/bin/machino"
+
+# The same shape with the right machine number passes the format gate. It fails
+# later (the stub is not a real daemon), so the assertion is only that the
+# format check did NOT reject it.
+make_bundle; make_camera auto
+elf_header "$WORK/bundle/machino" '\010\0'          # 0x0008 = MIPS
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" sh ./install.sh ) >"$WORK/out" 2>&1
+if grep -q "not a MIPS binary\|not a 32-bit little-endian ELF" "$WORK/out"; then
+    bad "a MIPS ELF header was rejected by the format check: $(cat "$WORK/out")"
+else ok; fi
+
+# A SHA256SUMS that disagrees with the binary stops the install dead.
+if command -v sha256sum >/dev/null 2>&1; then
+    make_bundle; make_camera auto
+    printf '%s  ./machino\n' "0000000000000000000000000000000000000000000000000000000000000000" > "$WORK/bundle/SHA256SUMS"
+    run_install
+    if grep -q "bundle is corrupt" "$WORK/out"; then ok; else bad "a bad hash was not refused: $(cat "$WORK/out")"; fi
+    hasnt "nothing written for a corrupt bundle" "$WORK/root/usr/bin/machino"
+
+    # And the matching hash installs. The entry must be the TOP-LEVEL ./machino:
+    # the real bundle also ships ./init/machino, and a first cut of this check
+    # matched any path ending in /machino and picked the wrong one.
+    make_bundle; make_camera auto
+    {
+        printf '%s  ./init/machino\n' "1111111111111111111111111111111111111111111111111111111111111111"
+        printf '%s  ./machino\n' "$(sha256sum "$WORK/bundle/machino" | awk '{print $1}')"
+    } > "$WORK/bundle/SHA256SUMS"
+    run_install || bad "a correct hash was refused: $(cat "$WORK/out")"
+    if grep -q "sha256 verified" "$WORK/out"; then ok; else bad "hash verification did not run: $(cat "$WORK/out")"; fi
+    has "installed with a verified hash" "$WORK/root/usr/bin/machino"
+else
+    skip "hash cases (no sha256sum on this host)"
+fi
+
+# ---- 17) AP21: the replace is atomic and leaves no litter ------------------
+make_bundle; make_camera auto
+run_install
+found=$(find "$WORK/root" -name '*.machino-new.*' 2>/dev/null | wc -l)
+is "no temporary files left behind" "$found" "0"
+
+# ---- 18) AP21: the previous daemon is kept for a rollback ------------------
+make_bundle; make_camera auto
+run_install
+printf 'the-old-one\n' > "$WORK/root/usr/bin/machino"
+run_install
+has "previous daemon kept" "$WORK/root/etc/machino/backup/machino.prev"
+is  "and it is the one that was replaced" "$(cat "$WORK/root/etc/machino/backup/machino.prev")" "the-old-one"
 
 # --------- 13) everything shipped to the camera stays BusyBox-clean ---------
 # Both of these were found on the hardware, not in review: BusyBox tar has no

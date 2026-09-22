@@ -175,7 +175,37 @@ cmd_install() {
     # Verify it is truly active (selected + running), not merely present.
     state=$(compute_state)
     if [ "$state" != "ON" ]; then
-        warn "post-install verification failed: state=$state (Machino is installed but not active)"
+        # AP21: a new daemon that installs cleanly and then will not run is the
+        # failure this rollback exists for - the camera is reachable, the
+        # binary is whole, and it still does not stream. install.sh kept the
+        # previous daemon next door; putting it back costs one rename and is
+        # strictly better than leaving a camera on a build that just proved it
+        # does not work here.
+        #
+        # Only attempted when the spare is actually there (install.sh says so
+        # when it could not keep one), and the result is REPORTED either way:
+        # a silent rollback would make the next person debug the wrong binary.
+        prev="$STATE_DIR/backup/machino.prev"
+        if [ -f "$prev" ]; then
+            warn "post-install verification failed: state=$state - rolling back to the previous daemon"
+            if cp -p "$prev" "$BIN.rollback.$$" && chmod 0755 "$BIN.rollback.$$" && mv -f "$BIN.rollback.$$" "$BIN"; then
+                if [ -x "$INITD/machino" ]; then
+                    MACHINO_ROOT="$ROOT" "$INITD/machino" start >/dev/null 2>&1
+                fi
+                state=$(compute_state)
+                if [ "$state" = "ON" ]; then
+                    warn "rolled back: the previous daemon is running again. The new bundle was NOT kept."
+                else
+                    warn "rolled back the binary, but the camera is still $state - this needs a look on the device."
+                fi
+            else
+                rm -f "$BIN.rollback.$$"
+                warn "rollback failed: $prev could not be restored. The new binary is in place and not running."
+            fi
+        else
+            warn "post-install verification failed: state=$state (Machino is installed but not active)"
+            warn "no rollback target at $prev - the previous daemon was not kept."
+        fi
         emit_status
         exit 1
     fi

@@ -724,4 +724,25 @@ MajesticTranslation majestic_reset(const std::string& key) {
     return r;
 }
 
+std::string upgrade_refusal() {
+    // Line 1 is the contract word, character for character. Everything after
+    // it is for the person reading the log pane.
+    std::string s;
+    s += "ERROR: cannot start sysupgrade\n";
+    s += "\n";
+    s += "This build does not flash firmware. Machino replaces the streaming\n";
+    s += "daemon only - it never writes to MTD, so nothing here can brick the\n";
+    s += "camera, and nothing here can update it either.\n";
+    s += "\n";
+    s += "To update the firmware, run sysupgrade over SSH. It is already on\n";
+    s += "this camera at /usr/sbin/sysupgrade, and it does the checking that\n";
+    s += "matters: it refuses an image built for another SoC, refuses one that\n";
+    s += "does not fit its partition, and runs every size check BEFORE the\n";
+    s += "first erase.\n";
+    s += "\n";
+    s += "To update Machino itself, use machino-manager install - that touches\n";
+    s += "one binary and its config, and never the flash layout.\n";
+    return s;
+}
+
 }} // namespace machino::compat

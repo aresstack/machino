@@ -618,6 +618,30 @@ bool HttpServer::handle_request(Client& c) {
             LOGI(MOD, "%s: /ws/webrtc signalling open (unit %d)", c.peer.c_str(), unit);
             return true;
         }
+    } else if (path == "/ws/upgrade") {
+        // AP21: this build does not flash firmware. Answering 404 looked
+        // harmless and was not - the stock Update page reports a failed
+        // handshake as "Could not start the upgrade. Another session may be in
+        // progress, or the camera is unreachable", and BOTH halves of that are
+        // false here. It sends an owner hunting for a phantom session on a
+        // camera that is answering perfectly.
+        //
+        // The contract has a channel for exactly this: upstream's update.js
+        // matches an enumerated, anchored refusal vocabulary on a TEXT frame
+        // and then says "Nothing was written to flash, so the camera is
+        // unchanged" - which is the true sentence. So the socket is accepted,
+        // the refusal is spoken in the words the page knows, and the reason
+        // follows in the log pane underneath it.
+        const std::string wskey = req.header("sec-websocket-key");
+        if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
+        else {
+            queue(c, ws::handshake_response(wskey));
+            const std::string why = compat::upgrade_refusal();
+            queue(c, ws::frame(true, why.data(), why.size()));
+            c.close_after_flush = true;
+            LOGI(MOD, "%s: /ws/upgrade refused - this build does not flash firmware", c.peer.c_str());
+            return true;
+        }
     } else if (path == "/ws/logs") {
         // The stock log viewer: one WebSocket, binary frames of raw syslog
         // lines (it splits on newline itself). Source is the system log, which

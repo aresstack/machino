@@ -372,6 +372,41 @@ void test_unoffered_subsystems() {
     }
 }
 
+// AP21: the /ws/upgrade refusal has to be spoken in words the stock Update
+// page already knows, or it is just another line in a log nobody can act on.
+void test_upgrade_refusal() {
+    const std::string s = compat::upgrade_refusal();
+
+    // upstream update.js:
+    //   /^ERROR: (?:invalid upgrade parameters|cannot start sysupgrade|
+    //              cannot stream upgrade log|cannot watch the upgrade)/mi
+    // anchored at a line start. Ours is the first line, so the whole string
+    // starting with it is the strictest form of the match.
+    CCHECK(s.rfind("ERROR: cannot start sysupgrade\n", 0) == 0);
+
+    // The page only treats it as a refusal when the marker is on its OWN line.
+    // A trailing space or a prefix would both slip past the anchor.
+    const size_t eol = s.find('\n');
+    CCHECK(eol != std::string::npos);
+    CCHECK(s.substr(0, eol) == "ERROR: cannot start sysupgrade");
+
+    // And the reason has to be in there, because the sentence the marker
+    // triggers ("Nothing was written to flash") says what did NOT happen, not
+    // why. Naming sysupgrade matters: it is on this camera and it is the
+    // answer.
+    CCHECK(s.find("sysupgrade over SSH") != std::string::npos);
+    CCHECK(s.find("/usr/sbin/sysupgrade") != std::string::npos);
+    CCHECK(s.find("machino-manager install") != std::string::npos);
+    CCHECK(s.find("never writes to MTD") != std::string::npos);
+
+    // Not one of the OTHER three refusals: each means something different to
+    // the page's own reasoning, and borrowing the wrong one would be a lie
+    // about which stage failed.
+    CCHECK(s.find("invalid upgrade parameters") == std::string::npos);
+    CCHECK(s.find("cannot stream upgrade log") == std::string::npos);
+    CCHECK(s.find("cannot watch the upgrade") == std::string::npos);
+}
+
 } // namespace
 
 void run_compat_tests() {
@@ -381,6 +416,7 @@ void run_compat_tests() {
     test_webui_config_and_sources();
     test_webui_post_strings_and_reset();
     test_unoffered_subsystems();
+    test_upgrade_refusal();
 }
 
 // AP6: the substream must be addressable through the same surfaces the main
