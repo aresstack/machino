@@ -118,6 +118,12 @@ void PeerSession::on_readable() {
             std::vector<uint8_t> resp = binding_response(req.tid, peer_ip_, peer_port_, pwd_);
             send_udp(resp.data(), resp.size());
         } else if (b0 >= 20 && b0 <= 63) {                      // DTLS
+            if (!dtls_hexdumped_) {
+                dtls_hexdumped_ = true;
+                char hx[64]; int m = (int)(n < 16 ? n : 16);
+                for (int i = 0; i < m; ++i) snprintf(hx + i * 3, 4, "%02x ", buf[i]);
+                LOGI(MOD, "dtls first datagram n=%zd: %s", n, hx);
+            }
             dtls_.feed(buf, (size_t)n);
             if (!dtls_.step()) { LOGW(MOD, "dtls fatal (stun=%llu)", (unsigned long long)stun_reqs_); return; }
             flush_dtls();
