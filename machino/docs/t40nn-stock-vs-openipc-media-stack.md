@@ -53,17 +53,28 @@ open, the YUV still-encode path, audio howling suppression).
 | NNA | `soc-nna.ko` `version=20190724a`, loaded | `soc-nna.ko` **H20230310** present but **not loaded**, and no `nmem` | `lsmod`, `find` | NNA is newer on OpenIPC but inert; consistent with the known libimp/NN ABI mismatch | high | blocked on `nmem` bootarg; explicit No-Go |
 | Userland stack | full vendor app stack: `libvenus.so`, `libants_ivs.so`, `libonvif.so`, `libhikvision.so`, `libants_28181_sdk.so`, … | `libimp`, `libsysutils`, `libalog` only | `ls lib/` both sides | stock shipped IVS/ONVIF/GB28181 as vendor blobs; Machino implements its own | high | informational |
 
-## What this rules out
+## What this makes unlikely
+
+Stated as evidence, not as proof. This audit compares **shape** — images,
+exported symbols, insmod parameters, file hashes. A behavioural difference
+hiding behind identical parameters, for example a different initialisation
+order or a driver that reacts differently to the same call, would not show up
+here at all. What follows is strong evidence against each hypothesis, and
+enough to stop digging in this direction; it is not a refutation.
 
 - **"The ISP is mis-clocked or mis-configured under OpenIPC."** The insmod
   parameters are character-for-character the same as stock, including
-  `isp_memopt=2`. Neither side sets `isp_dual_buf`.
+  `isp_memopt=2`. Neither side sets `isp_dual_buf`. *(What this cannot see:
+  anything the driver does differently at the same settings.)*
 - **"The image tuning is worse."** The IQ file is the same bytes.
 - **"The latency is a driver-parameter problem."** Nothing in the driver
-  configuration differs. The latency work already found its causes elsewhere
-  (SPS/VUI DPB hint, the 10 vs 100 Mbit link, then WebRTC as the transport).
+  *configuration* differs, and the latency work already found its causes
+  elsewhere (SPS/VUI DPB hint, the 10 vs 100 Mbit link, then WebRTC as the
+  transport). Those measured causes are the stronger argument here; this audit
+  only adds that the parameters are not a candidate.
 - **"The encoder-tuning APIs need SDK 1.3.1."** They are already exported by
-  the 1.2.0 library the camera runs today.
+  the 1.2.0 library the camera runs today. This one *is* settled — it is a
+  statement about symbol tables, which is exactly what this method can prove.
 
 ## What is genuinely missing or smaller
 
