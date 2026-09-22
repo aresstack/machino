@@ -279,7 +279,17 @@ private:
                                  is_truthy(val) ? "true,motion" : "false", "mapped to machino detection (IMP_IVS motion)");
             return unsupported(key, val, "machino motion uses a fixed grid; per-region config not migrated");
         }
-        if (sec_l == "watchdog") return ignored(key, val, "handled by the OpenIPC init + streamerctl");
+        // AP4: this used to be ignored with "handled by the OpenIPC init +
+        // streamerctl" - which was never true on this camera. Nothing under
+        // /etc or /etc/init.d touches the watchdog, and no process held
+        // /dev/watchdog open, so majestic's setting was silently dropped and
+        // every hang needed a human. Machino owns it now, under majestic's own
+        // key names.
+        if (sec_l == "watchdog") {
+            if (leaf_l == "enabled") return mapped(key, val, "watchdog.enabled", val);
+            if (leaf_l == "timeout") return mapped(key, val, "watchdog.timeout", val);
+            return unsupported(key, val, "machino's watchdog takes only enabled and timeout");
+        }
         if (sec_l == "audio")    return unsupported(key, val, "machino has no audio path");
         if (sec_l == "records" || sec_l == "record") return unsupported(key, val, "no on-device recording");
         if (sec_l == "mqtt")     return unsupported(key, val, "no MQTT integration");

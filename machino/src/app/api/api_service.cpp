@@ -359,6 +359,23 @@ Json ApiService::telemetry_json() {
         s.set("last_init_stage", Json::string(rs.last_init_stage));
         j.set("sessions", s);
     }
+    {
+        // AP4: the hardware watchdog. watchdog_skipped is the field to read
+        // after an unexplained reboot - it counts ticks that deliberately did
+        // NOT feed because the main loop had not advanced, which is the only
+        // legitimate reason for the hardware to have fired.
+        const RuntimeCounters rs = RuntimeStats::get().snapshot();
+        Json w = Json::object();
+        w.set("available", Json::boolean(rs.watchdog_available));
+        w.set("enabled", Json::boolean(rs.watchdog_enabled));
+        w.set("timeout_seconds", Json::integer(rs.watchdog_timeout_s));
+        w.set("feeds", Json::integer((long long)rs.watchdog_feeds));
+        w.set("skipped", Json::integer((long long)rs.watchdog_skipped));
+        w.set("feed_errors", Json::integer((long long)rs.watchdog_feed_errors));
+        w.set("health_epoch", Json::integer((long long)rs.watchdog_health_epoch));
+        w.set("last_feed_age_ms", Json::integer((long long)rs.watchdog_last_feed_age_ms));
+        j.set("watchdog", w);
+    }
     Json pr = Json::object(); pr.set("cpu_percent", opt(t.cpu_percent)); pr.set("rss_kb", opt(t.rss_kb)); pr.set("threads", opt(t.threads)); j.set("process", pr);
     Json m = Json::object(); m.set("encoded_fps", opt(t.measured_encoded_fps)); m.set("bitrate_kbps", opt(t.measured_bitrate_kbps));
     m.set("dropped_frames", Json::integer(t.dropped_frames)); m.set("stream_fps_requested", Json::integer(t.requested_stream_fps));

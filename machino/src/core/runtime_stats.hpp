@@ -44,6 +44,19 @@ struct RuntimeCounters {
     // Which stage failed. Free-form rather than an enum because the adapter
     // owns the stage names and the core must not need to know them.
     char     last_init_stage[24] = {0};
+
+    // AP4: the hardware watchdog. `watchdog_skipped` is the one to read after
+    // an unexplained reboot - it counts the ticks that did NOT feed because the
+    // main loop had not advanced, which is the only legitimate reason for the
+    // hardware to fire.
+    bool     watchdog_available = false;
+    bool     watchdog_enabled = false;
+    int      watchdog_timeout_s = 0;
+    uint64_t watchdog_feeds = 0;
+    uint64_t watchdog_skipped = 0;
+    uint64_t watchdog_feed_errors = 0;
+    uint64_t watchdog_health_epoch = 0;
+    int64_t  watchdog_last_feed_age_ms = -1;
 };
 
 class RuntimeStats {
@@ -68,6 +81,22 @@ public:
     void dec(int RuntimeCounters::* g) {
         std::lock_guard<std::mutex> lk(m_);
         if (c_.*g > 0) --(c_.*g);      // a gauge must never go negative
+    }
+
+    // AP4: one shot of the watchdog's own view. Taken as a block because the
+    // fields only make sense together - "feeds 900" says nothing without the
+    // age of the last one.
+    void watchdog(bool available, bool enabled, int timeout_s, uint64_t feeds,
+                  uint64_t skipped, uint64_t feed_errors, uint64_t epoch, int64_t last_age_ms) {
+        std::lock_guard<std::mutex> lk(m_);
+        c_.watchdog_available = available;
+        c_.watchdog_enabled = enabled;
+        c_.watchdog_timeout_s = timeout_s;
+        c_.watchdog_feeds = feeds;
+        c_.watchdog_skipped = skipped;
+        c_.watchdog_feed_errors = feed_errors;
+        c_.watchdog_health_epoch = epoch;
+        c_.watchdog_last_feed_age_ms = last_age_ms;
     }
 
     // One bring-up attempt failed at `stage` with vendor code `rc`.

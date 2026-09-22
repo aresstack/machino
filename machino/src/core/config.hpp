@@ -189,6 +189,21 @@ struct SystemConfig {
     bool unsafe = false;
 };
 
+// AP4. The names and the default are majestic's, read off this camera's own
+// /etc/majestic.yaml rather than invented:
+//
+//   watchdog:
+//     enabled: true
+//     timeout: 15
+//
+// Deliberately NOT added to the WebUI schema: upstream does not offer it
+// either, and a switch that turns off a camera's only automatic recovery does
+// not belong one click away.
+struct WatchdogConfig {
+    bool enabled = true;
+    int  timeout_s = 15;
+};
+
 struct LogConfig {
     int  level  = 2;
     bool syslog = false;
@@ -209,6 +224,7 @@ struct AppConfig {
     AiConfig          ai;
     OsdConfig         osd;
     SystemConfig      system;
+    WatchdogConfig    watchdog;
     OnvifConfig       onvif;
     TelemetryConfig   telemetry;
     ApiConfig         api;

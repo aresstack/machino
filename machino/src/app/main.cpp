@@ -17,6 +17,8 @@
 #include "app/osd/osd_service.hpp"
 #include "app/linux_grace_timer.hpp"
 #include "app/linux_system_stats.hpp"
+#include "app/linux_watchdog.hpp"
+#include "app/watchdog.hpp"
 #include "app/rtsp/rtsp_server.hpp"
 #include "core/capabilities.hpp"
 #include "core/config.hpp"
@@ -49,6 +51,9 @@
 #include <sys/wait.h>
 #include <cerrno>
 #include <ctime>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #include <unistd.h>
 
 using namespace machino;
@@ -522,10 +527,45 @@ int main(int argc, char** argv) {
             LOGI(MOD, "running: rtsp://<ip>:%d%s api=http://<ip>:%d/api/v1 lifecycle=%s idle_grace=%dms profile=%s revision=%u",
                  cfg.rtsp.port, cfg.rtsp.path.c_str(), cfg.api.port, lifecycle::state_name(pipeline.state()),
                  cfg.pipeline.idle_grace_ms, power::profile_name(cfg.performance.profile), store.revision());
+            // AP4: the hardware watchdog. majestic armed this and Machino had
+            // silently dropped it, so every hang so far needed a human with a
+            // power plug. The FEEDER is a separate thread on purpose and it
+            // does NOT feed on its own schedule - it feeds only when this loop
+            // has advanced since the last feed. A feeder that ignores that
+            // guarantees the camera will never recover from a wedged loop.
+            LinuxWatchdog wdt_dev;
+            WatchdogService wdt(wdt_dev, cfg.watchdog.timeout_s);
+            bool wdt_on = false;
+            if (cfg.watchdog.enabled) wdt_on = (bool)wdt.start(now_ms());
+            else LOGI(MOD, "watchdog: disabled by configuration");
+            std::atomic<bool> wdt_quit{false};
+            std::thread wdt_feeder;
+            if (wdt_on) {
+                wdt_feeder = std::thread([&] {
+                    // Wake far more often than the feed interval: the tick
+                    // itself decides whether anything is due, and a short sleep
+                    // keeps shutdown prompt.
+                    while (!wdt_quit.load(std::memory_order_acquire)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                        const int64_t t = now_ms();
+                        wdt.tick(t);
+                        const WatchdogStats s = wdt.stats(t);
+                        RuntimeStats::get().watchdog(s.available, s.enabled, s.timeout_s, s.feeds,
+                                                     s.skipped, s.feed_errors, s.health_epoch,
+                                                     s.last_feed_age_ms);
+                    }
+                });
+            }
+            // Bound the wait so an idle camera still proves it is alive. An
+            // idle camera is a healthy camera: nothing here is coupled to
+            // frames, sessions or encoders.
+            const int loop_wait_ms = wdt_on ? 1000 : -1;
+
             bool run = true;
             while (run) {
+                wdt.heartbeat();                 // THIS is what makes a feed legitimate
                 epoll_event out[8];
-                int n = epoll_wait(ep, out, 8, -1);
+                int n = epoll_wait(ep, out, 8, loop_wait_ms);
                 for (int i = 0; i < n; ++i) {
                     if (out[i].data.fd == sfd) {
                         signalfd_siginfo si;
@@ -575,6 +615,14 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Disarm BEFORE the long teardown below. Stopping the encoder and
+            // the pipeline can take seconds, and this loop stops heartbeating
+            // the moment it exits - without this the watchdog would reset the
+            // camera in the middle of an orderly shutdown, which is exactly
+            // the reset a restart must not produce.
+            wdt_quit.store(true, std::memory_order_release);
+            if (wdt_feeder.joinable()) wdt_feeder.join();
+            wdt.stop();
         }
         httpd.stop();
         server.stop();

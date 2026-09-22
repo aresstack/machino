@@ -146,6 +146,12 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     // everywhere, unclaimed cameras included - see SystemConfig.
     BOOL  ("system.unsafe",      c.system.unsafe)
 
+    // AP4: majestic's own key names and default (watchdog.enabled / .timeout).
+    BOOL  ("watchdog.enabled",   c.watchdog.enabled)
+    // Bounds, not taste: below a second no feeder can keep up, and beyond a few
+    // minutes the watchdog stops being recovery.
+    INT   ("watchdog.timeout",   c.watchdog.timeout_s, 1, 300)
+
     // AP9 OSD. Keys mirror the section the stock settings page renders. The
     // lengths stay strings on purpose (they carry a unit: "2%", "1.5em") and
     // are validated where they are resolved, not here.

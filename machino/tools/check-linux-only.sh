@@ -3,7 +3,7 @@
 # sockets, so only CI ever sees them). It does not try to be a compiler - it
 # catches exactly the two mistakes that have already cost CI round trips.
 set -e
-FILES="src/app/http/http_server.cpp src/app/log_reader.cpp src/app/http/setup.cpp src/app/onvif/soap.cpp src/app/onvif/onvif_service.cpp src/app/onvif/discovery.cpp src/app/onvif/discovery_server.cpp src/app/rtsp/rtsp_server.cpp src/app/rtsp/rtsp_auth.cpp src/app/webrtc/peer.cpp src/app/main.cpp"
+FILES="src/app/linux_watchdog.cpp src/app/http/http_server.cpp src/app/log_reader.cpp src/app/http/setup.cpp src/app/onvif/soap.cpp src/app/onvif/onvif_service.cpp src/app/onvif/discovery.cpp src/app/onvif/discovery_server.cpp src/app/rtsp/rtsp_server.cpp src/app/rtsp/rtsp_auth.cpp src/app/webrtc/peer.cpp src/app/main.cpp"
 bad=0
 
 # 0. 64-bit atomics anywhere in the tree: MIPS32 has no lock-free 64-bit
