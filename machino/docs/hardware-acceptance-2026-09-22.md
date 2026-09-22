@@ -168,3 +168,63 @@ For each: does the page degrade quietly, or does it shout?
 - If the camera wedges: stop, do not reboot from the shell (shutdown hangs at
   `Seeding 2048 bits`), cold power-cycle, and write down what the last action
   was.
+
+---
+
+# Run 1 — 2026-09-22, HEAD `e611220`, after a cold power-cycle
+
+Deployed, verified by hash against the bundle, cold power-cycled. No wedge, no
+crash, one `machino` process throughout.
+
+## Filled in
+
+| # | Verdict | Observed |
+|---|---|---|
+| 1.1 | **PASS** | one process, `{majestic} /usr/bin/machino`, uptime 0 min after the cycle |
+| 1.2 | **PASS** | `:80` + `:554` machino, `127.0.0.1:85` busybox — matches the baseline |
+| 1.3 | **PASS** | log populated. `machino e611220 starting`, `onvif: off`, `claim state: claimed`, `lifecycle=COLD_IDLE`. **This is AP5's hardware acceptance** — the symptom it fixed was a 0-byte log |
+| 1.4 | **PASS** | PID stable, no crash loop |
+| 2.1 | **PASS** | `POST /login` 200 + session cookie. Also exercises the review's CSPRNG change on real hardware |
+| 2.2 | **PASS** | wrong password 403; unauthenticated `/api/v1/state` 401; log shows `login ok` / `login REJECTED` with **no credential in it** |
+| 4.1 | **PASS** | OPTIONS/DESCRIBE/SETUP/PLAY over TCP-interleaved; **194 135 bytes of RTP in 3 s**; first frame 96 ms after PLAY (on-demand IDR) |
+| 4.3 | **PASS (known deviation)** | DESCRIBE **without credentials → 200 + SDP**. Exactly as recorded: `rtsp.auth` defaults false, so Machino does not match Majestic here |
+| 5.1 | **PASS** | `rtsp.enabled=false` → `:554` gone, live, no restart |
+| 5.2 | **PASS** | back to `true` → `:554` listening again |
+| 5.3 | **PASS** | port → 8554: rebinds, and answers OPTIONS on the new port |
+| 5.4 | **PASS** | back to 554 cleanly. **AP2 hardware-accepted** |
+| 7.2 | **PASS** | bitrate 3000→2500 stored and read back |
+| 7.3 | **PASS** | reset of `video0.bitrate_kbps` → 200. *(First attempt used `video0.bitrate` and 404'd — my key was wrong, not the camera's: the schema advertises `bitrate_kbps`, which is what the page sends.)* |
+| 7.5 | **ABSENT-AS-EXPECTED** | `/api/v1/image` → 404 (protocol level). Visual confirmation still owed |
+| 8.1/8.2 | **PASS** | `/api/v1/osd` → 404, the contract's "this build cannot say" |
+| 8.3–8.9 | *protocol level only* | all 404: `/api/v1/gpio`, `/pinmux`, `/peers`, `/records/resume`, `/analytics/day`, `/metrics/records`, `/metrics/night`, `/night/toggle`. **Visual degradation not yet checked** |
+| 8.10 | **PASS** | `/image.jpg` → 404 |
+| 8.11 | **PASS** | `/snapshot` → **501**, and the daemon survived. The JPEG wedge is not reached at all — the encoder reports unsupported instead of being created |
+| 9.1 | **PASS** | `/onvif/device_service` → 404 with `onvif.enabled=false` |
+| 10.1 | **PASS** | ACTIVE → GRACE_IDLE (5 s) → STOPPING → COLD_IDLE, 166 frames, `pool exhausted 0` |
+| 10.3 | **PASS** | `MemFree 20 692 kB` idle (baseline before deploy: 11 264 kB) |
+| 10.5 | **PASS** | one machino process, **no zombies**, no CLOSE_WAIT. *(An earlier count of "2 zombies" and a stray `logread` were artefacts of my own command line matching itself.)* |
+
+## Two findings from this run
+
+**The substream cannot be enabled through the API.** `PATCH {"video":{"1":…}}`
+answers `unknown_field: video.1`. AP1's substream is therefore **config-file
+only**, and since the schema does not advertise a `video1` section the stock
+WebUI cannot enable it either. Rows 3.3, 3.4 and 4.2 need a `machino.conf`
+edit plus a daemon restart.
+
+**The schema advertises six sections** — `video0`, `sensor`, `image`,
+`latency`, `performance`, `ai`. Not `rtsp` and not `lifecycle`, so the RTSP
+enable/port controls that 5.1–5.4 just proved work are reachable only through
+the native API, never from the stock settings page. Neither is a regression;
+both belong in `dropin-gaps.md`.
+
+## Still open
+
+- **Browser rows**, which need a person at the UI: 2.3–2.5, 3.1–3.6 (Live
+  picture and transport switching), 6.1–6.5 (`/ws/logs`), 7.1, and the *visual*
+  half of 8.3–8.9 — the `ABSENT-AS-EXPECTED` vs `ABSENT-BUT-NOISY` call, which
+  is the whole point of this run.
+- **Rows needing a daemon restart**, best done as one batch to keep the number
+  of warm restarts down: 3.3/3.4/4.2 (substream), 4.4–4.6 (`rtsp.auth=true`),
+  9.2–9.8 (ONVIF).
+- 6.6 (log rotation) needs a long run; 10.4/10.6 need sustained load.
