@@ -14,6 +14,7 @@
 #include "core/config.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/stream_hub.hpp"
+#include "ports/rtsp_control.hpp"
 #include "ports/stream_server.hpp"
 #include <atomic>
 #include <cstdint>
@@ -25,13 +26,19 @@
 
 namespace machino {
 
-class RtspServer final : public IStreamServer {
+class RtspServer final : public IStreamServer, public IRtspControl {
 public:
     RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub,
                StreamHub* sub_hub = nullptr);
     ~RtspServer() override;
     Result start() override;
     void   stop() override;
+
+    // IRtspControl: live reconfiguration, no daemon restart. Both serialise on
+    // lifecycle_m_ so an API thread can never race the accept loop teardown.
+    power::ApplyResult set_enabled(bool on) override;
+    power::ApplyResult set_port(int port) override;
+    bool listening() const;            // for tests/diagnostics
 
 private:
     struct Session;
@@ -44,6 +51,8 @@ private:
         std::atomic<bool> done{false};
     };
     void accept_loop();
+    Result open_listener(int port);    // bind+listen+acceptor (lifecycle_m_ held)
+    void   close_listener();           // stop acceptor, drop sessions (lifecycle_m_ held)
     void reap_finished();
     void refuse(int fd, const std::string& peer);
     void client_loop(Client* c, std::string peer);
@@ -64,6 +73,7 @@ private:
     std::thread acceptor_;
     std::mutex  clients_m_;
     std::vector<std::unique_ptr<Client>> clients_;
+    std::mutex  lifecycle_m_;            // serialises start/stop/set_enabled/set_port
     std::mutex  params_m_;
     std::vector<uint8_t> sps_[2], pps_[2];   // cached per unit (main, sub)
 };

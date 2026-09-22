@@ -36,8 +36,9 @@ static int64_t now_ms_realtime() { struct timespec ts; clock_gettime(CLOCK_REALT
 template <typename T> static Json opt(const Optional<T>& o) { return o.available ? Json::number((double)o.value) : Json::null(); }
 
 ApiService::ApiService(power::PerformanceService& perf, media::TuningService& tuning, lifecycle::PipelineManager& pipeline, ConfigStore& store,
-                       EventBus& bus, const hw::ResolvedHardware& hw, const AppConfig& cfg, detection::DetectionService* detection)
-    : perf_(perf), tuning_(tuning), pipeline_(pipeline), store_(store), bus_(bus), hw_(hw), cfg_(cfg), detection_(detection) {}
+                       EventBus& bus, const hw::ResolvedHardware& hw, const AppConfig& cfg, detection::DetectionService* detection,
+                       IRtspControl* rtsp)
+    : perf_(perf), tuning_(tuning), pipeline_(pipeline), store_(store), bus_(bus), hw_(hw), cfg_(cfg), detection_(detection), rtsp_(rtsp) {}
 
 Json ApiService::error(const char* code, const std::string& path, const std::string& message) {
     Json e = Json::object(); e.set("code", Json::string(code));
@@ -300,7 +301,11 @@ Json ApiService::config_json() {
     for (int i = 0; i < (int)ImageControl::COUNT; ++i)
         image.set(image_control_name((ImageControl)i), tune.image_requested[i] >= 0 ? Json::integer(tune.image_requested[i]) : Json::null());
     j.set("image", image);
-    Json rt = Json::object(); rt.set("max_clients", Json::integer(cfg_.rtsp.max_clients)); j.set("rtsp", rt);
+    Json rt = Json::object();
+    rt.set("enabled", Json::boolean(cfg_.rtsp.enabled));
+    rt.set("port", Json::integer(cfg_.rtsp.port));
+    rt.set("max_clients", Json::integer(cfg_.rtsp.max_clients));
+    j.set("rtsp", rt);
     Json lc = Json::object(); lc.set("idle_grace_ms", Json::integer(cfg_.pipeline.idle_grace_ms)); lc.set("always_on", Json::boolean(cfg_.pipeline.always_on)); j.set("lifecycle", lc);
     Json pw = Json::object(); pw.set("isp_performance", Json::string(power::perf_level_name(e.isp)));
     pw.set("encoder_performance", Json::string(power::perf_level_name(e.encoder))); pw.set("cpu_performance", Json::string(power::perf_level_name(e.cpu)));
@@ -587,6 +592,12 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     c.value = std::to_string(iv);
                 }
                 c.key = "image." + kv.first;
+            } else if (s == "rtsp" && kv.first == "enabled") {
+                if (!val.is_bool()) return bad(422, "invalid_value", path, "enabled must be a boolean");
+                c.key = "rtsp.enabled"; c.value = val.as_bool() ? "true" : "false";
+            } else if (s == "rtsp" && kv.first == "port") {
+                long long n; if (!get_int(val, n) || n < 1 || n > 65535) return bad(422, "invalid_value", path, "port must be an integer in 1..65535");
+                c.key = "rtsp.port"; c.value = std::to_string(n);
             } else if (s == "rtsp" && kv.first == "max_clients") {
                 long long n; if (!get_int(val, n) || n < 1 || n > 16) return bad(422, "invalid_value", path, "max_clients must be an integer in 1..16");
                 c.key = "rtsp.max_clients"; c.value = std::to_string(n);
@@ -639,6 +650,16 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         else if (c.key == "latency.framesource_buffers") c.r = tuning_.set_framesource_buffers(atoi(c.value.c_str()));
         else if (c.key == "latency.encoder_buffers")     c.r = tuning_.set_encoder_buffers(atoi(c.value.c_str()));
         else if (c.key == "latency.queue_depth")         c.r = tuning_.set_queue_depth(atoi(c.value.c_str()));
+        else if (c.key == "rtsp.enabled") {
+            const bool on = c.value == "true";
+            c.r = rtsp_ ? rtsp_->set_enabled(on)
+                        : ApplyResult::stored(ApplyMode::DaemonRestart, on ? 1 : 0, "persisted; no rtsp control wired");
+        }
+        else if (c.key == "rtsp.port") {
+            const int p = atoi(c.value.c_str());
+            c.r = rtsp_ ? rtsp_->set_port(p)
+                        : ApplyResult::stored(ApplyMode::DaemonRestart, p, "persisted; no rtsp control wired");
+        }
         else if (c.key == "rtsp.send_buffer_bytes" || c.key == "rtsp.send_stall_ms")
             c.r = ApplyResult::stored(ApplyMode::DaemonRestart, atoi(c.value.c_str()), "persisted; applies to sockets after daemon restart");
         else if (c.key == "rtsp.max_clients")
@@ -657,7 +678,9 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         else if (c.key == "ai.inference_fps") { int n2 = atoi(c.value.c_str()); c.r = ai_apply(detection_->set_inference_fps(n2), n2); }
         c.has_result = true;
         if (c.r.ok) {
-            if (c.key == "rtsp.send_buffer_bytes") cfg_.rtsp.send_buffer_bytes = atoi(c.value.c_str());
+            if (c.key == "rtsp.enabled") cfg_.rtsp.enabled = c.value == "true";
+            else if (c.key == "rtsp.port") cfg_.rtsp.port = atoi(c.value.c_str());
+            else if (c.key == "rtsp.send_buffer_bytes") cfg_.rtsp.send_buffer_bytes = atoi(c.value.c_str());
             else if (c.key == "rtsp.send_stall_ms") cfg_.rtsp.send_stall_ms = atoi(c.value.c_str());
             else if (c.key == "rtsp.max_clients") cfg_.rtsp.max_clients = atoi(c.value.c_str());
             else if (c.key == "lifecycle.idle_grace_ms") cfg_.pipeline.idle_grace_ms = atoi(c.value.c_str());

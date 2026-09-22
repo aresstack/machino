@@ -76,23 +76,29 @@ const std::string& RtspServer::path_for(int unit) const { return unit == lifecyc
 
 RtspServer::~RtspServer() { stop(); }
 
-Result RtspServer::start() {
-    listen_fd_ = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (listen_fd_ < 0) return Result::error(errno);
-    int one = 1; setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    sockaddr_in a{}; a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY); a.sin_port = htons((uint16_t)cfg_.port);
-    if (bind(listen_fd_, (sockaddr*)&a, sizeof a) < 0 || listen(listen_fd_, 8) < 0) {
-        int e = errno; LOGE(MOD, "bind/listen :%d failed: %s", cfg_.port, strerror(e));
-        close(listen_fd_); listen_fd_ = -1; return Result::error(e);
+// Bind a listener on `port` and start the acceptor. Caller holds lifecycle_m_.
+Result RtspServer::open_listener(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return Result::error(errno);
+    int one = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    sockaddr_in a{}; a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY); a.sin_port = htons((uint16_t)port);
+    if (bind(fd, (sockaddr*)&a, sizeof a) < 0 || listen(fd, 8) < 0) {
+        int e = errno; LOGE(MOD, "bind/listen :%d failed: %s", port, strerror(e));
+        close(fd); return Result::error(e);
     }
+    listen_fd_ = fd;
     quit_ = false;
     acceptor_ = std::thread([this] { accept_loop(); });
-    if (sub_hub_) LOGI(MOD, "listening on :%d paths %s (main) %s (sub) (pipeline stays cold until PLAY)", cfg_.port, cfg_.path.c_str(), cfg_.sub_path.c_str());
-    else          LOGI(MOD, "listening on :%d path %s (pipeline stays cold until PLAY)", cfg_.port, cfg_.path.c_str());
+    if (sub_hub_) LOGI(MOD, "listening on :%d paths %s (main) %s (sub) (pipeline stays cold until PLAY)", port, cfg_.path.c_str(), cfg_.sub_path.c_str());
+    else          LOGI(MOD, "listening on :%d path %s (pipeline stays cold until PLAY)", port, cfg_.path.c_str());
     return Result::ok();
 }
 
-void RtspServer::stop() {
+// Close the listener and end every session. Each session's DemandHandle
+// releases as its thread unwinds, so the pipeline winds down through the
+// normal grace path - disabling RTSP must not leave the encoder running.
+// Caller holds lifecycle_m_.
+void RtspServer::close_listener() {
     if (listen_fd_ < 0) return;
     quit_ = true;
     shutdown(listen_fd_, SHUT_RDWR); close(listen_fd_); listen_fd_ = -1;
@@ -107,7 +113,62 @@ void RtspServer::stop() {
         for (auto& c : all) if (c->fd >= 0) shutdown(c->fd, SHUT_RDWR);
     }
     for (auto& c : all) if (c->th.joinable()) c->th.join();
+}
+
+Result RtspServer::start() {
+    std::lock_guard<std::mutex> lk(lifecycle_m_);
+    if (!cfg_.enabled) { LOGI(MOD, "disabled (rtsp.enabled=false): no listener"); return Result::ok(); }
+    return open_listener(cfg_.port);
+}
+
+void RtspServer::stop() {
+    std::lock_guard<std::mutex> lk(lifecycle_m_);
+    if (listen_fd_ < 0) return;
+    close_listener();
     LOGI(MOD, "stopped");
+}
+
+bool RtspServer::listening() const { return listen_fd_ >= 0; }
+
+power::ApplyResult RtspServer::set_enabled(bool on) {
+    using power::ApplyResult; using power::ApplyMode;
+    std::lock_guard<std::mutex> lk(lifecycle_m_);
+    if (on == cfg_.enabled && (on == (listen_fd_ >= 0)))
+        return ApplyResult::applied(ApplyMode::Live, on ? 1 : 0, on ? 1 : 0, on ? "already listening" : "already disabled");
+    if (!on) {
+        close_listener();
+        cfg_.enabled = false;
+        LOGI(MOD, "disabled at runtime: listener closed, sessions ended");
+        return ApplyResult::applied(ApplyMode::Live, 0, 0, "listener closed; sessions ended");
+    }
+    Result r = open_listener(cfg_.port);
+    if (!r) return ApplyResult::rejected(ApplyMode::Live, 1, std::string("cannot bind port ") + std::to_string(cfg_.port));
+    cfg_.enabled = true;
+    return ApplyResult::applied(ApplyMode::Live, 1, 1, "listener bound");
+}
+
+// Atomic re-bind: the old listener only stays closed if the new port binds.
+// If it does not, the previous port is restored so RTSP is never left dead.
+power::ApplyResult RtspServer::set_port(int port) {
+    using power::ApplyResult; using power::ApplyMode;
+    if (port < 1 || port > 65535)
+        return ApplyResult::rejected(ApplyMode::Live, port, "port must be in 1..65535");
+    std::lock_guard<std::mutex> lk(lifecycle_m_);
+    if (port == cfg_.port) return ApplyResult::applied(ApplyMode::Live, port, port, "unchanged");
+    if (!cfg_.enabled || listen_fd_ < 0) {          // nothing bound: just record it
+        cfg_.port = port;
+        return ApplyResult::applied(ApplyMode::Live, port, port, "stored; rtsp is disabled");
+    }
+    const int old_port = cfg_.port;
+    close_listener();
+    if (open_listener(port)) { cfg_.port = port; return ApplyResult::applied(ApplyMode::Live, port, port, "re-bound"); }
+    // roll back to the port we know worked; if even that fails we are honest
+    // about it rather than pretending the change succeeded
+    if (open_listener(old_port))
+        return ApplyResult::rejected(ApplyMode::Live, port, "cannot bind port " + std::to_string(port) + "; kept " + std::to_string(old_port));
+    cfg_.enabled = false;
+    LOGE(MOD, "re-bind to :%d failed AND :%d could not be restored - rtsp is now down", port, old_port);
+    return ApplyResult::rejected(ApplyMode::Live, port, "cannot bind " + std::to_string(port) + "; restoring " + std::to_string(old_port) + " also failed - rtsp disabled");
 }
 
 // Join and drop the clients that have finished. Without this every

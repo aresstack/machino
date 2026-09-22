@@ -69,6 +69,7 @@ struct SnapshotConfig {
 };
 
 struct RtspConfig {
+    bool        enabled = true;            // false: no listener at all (majestic rtsp.enabled)
     int         port = 554;
     std::string path = "/ch0";
     std::string sub_path = "/ch1";         // substream mount point (when video.1 is enabled)

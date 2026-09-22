@@ -14,6 +14,7 @@
 #include "core/hw/resolve.hpp"
 #include "core/json.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
+#include "ports/rtsp_control.hpp"
 #include "core/media/tuning_service.hpp"
 #include "core/power/performance_service.hpp"
 #include <cstdint>
@@ -33,7 +34,8 @@ class ApiService {
 public:
     ApiService(power::PerformanceService& perf, media::TuningService& tuning, lifecycle::PipelineManager& pipeline, ConfigStore& store,
                EventBus& bus, const hw::ResolvedHardware& hw, const AppConfig& cfg,
-               detection::DetectionService* detection = nullptr);
+               detection::DetectionService* detection = nullptr,
+               IRtspControl* rtsp = nullptr);
 
     Response discovery() const;
     Response capabilities() const;
@@ -75,6 +77,7 @@ private:
     hw::ResolvedHardware        hw_;
     AppConfig                   cfg_;              // startup snapshot (for non-runtime keys)
     detection::DetectionService* detection_ = nullptr;   // M9: optional, null when no AI subsystem
+    IRtspControl* rtsp_ = nullptr;                       // AP2: live rtsp.enabled/rtsp.port; null = not wired
     std::mutex                  patch_m_;          // PATCHes are serialised
 };
 

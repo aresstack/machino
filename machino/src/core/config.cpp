@@ -121,6 +121,7 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     OPTINT("image.dpc",                c.image.dpc,                0, 1)
     OPTINT("image.defog",              c.image.defog,              0, 1)
 
+    BOOL  ("rtsp.enabled",       c.rtsp.enabled)
     INT   ("rtsp.port",          c.rtsp.port,     1, 65535)
     STR   ("rtsp.path",          c.rtsp.path)
     INT   ("rtsp.send_buffer_bytes", c.rtsp.send_buffer_bytes, 4096, 1048576)

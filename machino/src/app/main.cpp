@@ -274,7 +274,11 @@ int main(int argc, char** argv) {
         if (cfg.ai.enabled) LOGI(MOD, "detection: %s (%s, %d fps) state=%s", cfg.ai.detector.c_str(),
                                  platform->capabilities().ai.motion == Cap::Supported ? "backend present" : "no backend",
                                  cfg.ai.inference_fps, detection::ai_state_name(detection.state()));
-        api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection);
+        // Constructed before the API so rtsp.enabled/rtsp.port can be applied
+        // live (AP2) instead of only at the next daemon start.
+        RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr);
+        IStreamServer& server = rtsp;
+        api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection, &rtsp);
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
         // Front-door: the Majestic drop-in login gates :80 exactly like
@@ -285,9 +289,6 @@ int main(int argc, char** argv) {
         // /ws/video and /ws/webrtc: hub consumers with their own demand;
         // stream=1 serves from the substream hub when it is configured.
         http::HttpServer httpd(hc, api, bus, &hub, &pipeline, sub_ok ? &sub_hub : nullptr);
-        RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr);
-        IStreamServer& server = rtsp;
-
         int tfd = -1;
         if (cfg.telemetry.log_interval_s > 0) {
             tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);

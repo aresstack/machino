@@ -46,15 +46,36 @@ hw::ResolvedHardware make_hw() {
     return hw;
 }
 
+// AP2: records what the API asks of the RTSP listener, and can refuse a bind
+// the way a port already in use would.
+struct FakeRtsp : public IRtspControl {
+    bool enabled = true; int port = 554;
+    bool fail_bind = false;            // next enable/port change cannot bind
+    int  enable_calls = 0, port_calls = 0;
+    power::ApplyResult set_enabled(bool on) override {
+        ++enable_calls;
+        if (on && fail_bind) return power::ApplyResult::rejected(ApplyMode::Live, 1, "cannot bind");
+        enabled = on;
+        return power::ApplyResult::applied(ApplyMode::Live, on ? 1 : 0, on ? 1 : 0, "");
+    }
+    power::ApplyResult set_port(int p) override {
+        ++port_calls;
+        if (p < 1 || p > 65535) return power::ApplyResult::rejected(ApplyMode::Live, p, "out of range");
+        if (fail_bind) return power::ApplyResult::rejected(ApplyMode::Live, p, "cannot bind");
+        port = p;
+        return power::ApplyResult::applied(ApplyMode::Live, p, p, "");
+    }
+};
+
 struct Rig {
     CallLog log; FakePowerControl power; FakePlatform platform{log, &power}; FakeTimer timer; StreamHub hub; FakeStats stats;
     EventBus bus; ConfigStore store{TMP_CONF};
     hw::ResolvedHardware hw; AppConfig cfg; EffectiveStream stream; LifecycleConfig lc;
     PipelineManager mgr; power::PerformanceService perf; media::TuningService tuning;
-    detection::DetectionService detection; api::ApiService api;
+    detection::DetectionService detection; FakeRtsp rtsp; api::ApiService api;
     Rig() : hw(make_hw()), stream(effective_stream(cfg.video, hw)), mgr(platform, stream, mk_lc(), timer, hub),
             perf(mgr, platform, stats, hw, cfg.video), tuning(mgr, platform, hub, stream, cfg.image, cfg.latency),
-            detection(mgr, platform, bus, cfg.ai), api(perf, tuning, mgr, store, bus, hw, cfg, &detection) {
+            detection(mgr, platform, bus, cfg.ai), api(perf, tuning, mgr, store, bus, hw, cfg, &detection, &rtsp) {
         FILE* f = fopen(TMP_CONF, "w"); if (f) { fputs("# test\nboard = board-x\nvideo.bitrate = 3000\nlog.level = 2\n", f); fclose(f); }
         std::string err; store.load(err);
         mgr.set_state_listener([this](State a, State b) { Json j = Json::object(); j.set("from", Json::string(state_name(a))); j.set("to", Json::string(state_name(b))); bus.publish("lifecycle", j.dump()); });
@@ -530,6 +551,56 @@ void test_reset_apply_failure_is_500() {
     ACHECK(r.store.get("sensor.fps").empty());            // persisted: next start converges
 }
 
+// AP2: rtsp.enabled / rtsp.port are LIVE runtime changes (no daemon restart),
+// they reach the listener, and a refused bind is an honest rejection that
+// leaves the persisted value alone.
+void test_ap2_rtsp_runtime() {
+    Rig r;
+    api::Response cfg0 = r.api.config();
+    ACHECK(cfg0.status == 200);
+    ACHECK(path(cfg0.body, "rtsp.enabled")->as_bool() == true);
+    ACHECK(path(cfg0.body, "rtsp.port")->as_int() == 554);
+
+    // disable: applied live, reaches the listener, and is persisted
+    api::Response d = r.api.patch_config("{\"rtsp\":{\"enabled\":false}}", "");
+    ACHECK(d.status == 200);
+    ACHECK(r.rtsp.enable_calls == 1 && r.rtsp.enabled == false);
+    ACHECK(path(r.api.config().body, "rtsp.enabled")->as_bool() == false);
+
+    // re-enable without any process restart
+    api::Response e = r.api.patch_config("{\"rtsp\":{\"enabled\":true}}", "");
+    ACHECK(e.status == 200 && r.rtsp.enabled == true && r.rtsp.enable_calls == 2);
+
+    // port change is live and lands on the listener
+    api::Response p1 = r.api.patch_config("{\"rtsp\":{\"port\":8554}}", "");
+    ACHECK(p1.status == 200 && r.rtsp.port == 8554 && r.rtsp.port_calls == 1);
+    ACHECK(path(r.api.config().body, "rtsp.port")->as_int() == 8554);
+    ACHECK(r.api.patch_config("{\"rtsp\":{\"port\":554}}", "").status == 200);
+    ACHECK(r.rtsp.port == 554);
+
+    // out-of-range / wrong-typed values are refused by validation before they
+    // ever reach the listener
+    const int before = r.rtsp.port_calls;
+    ACHECK(r.api.patch_config("{\"rtsp\":{\"port\":70000}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"rtsp\":{\"port\":0}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"rtsp\":{\"enabled\":\"yes\"}}", "").status == 422);
+    ACHECK(r.rtsp.port_calls == before);
+
+    // a port that cannot be bound: rejected, the old port stays in effect and
+    // the persisted value must not move to the port we could not take
+    r.rtsp.fail_bind = true;
+    ACHECK(r.api.patch_config("{\"rtsp\":{\"port\":9000}}", "").status >= 400);
+    ACHECK(r.rtsp.port == 554);
+    ACHECK(path(r.api.config().body, "rtsp.port")->as_int() == 554);
+    r.rtsp.fail_bind = false;
+
+    // with no control wired the value is still accepted and persisted, just
+    // deferred to the next start (never silently dropped)
+    Rig r2;
+    api::ApiService nolink(r2.perf, r2.tuning, r2.mgr, r2.store, r2.bus, r2.hw, r2.cfg, &r2.detection, nullptr);
+    ACHECK(nolink.patch_config("{\"rtsp\":{\"enabled\":false}}", "").status == 200);
+}
+
 void run_api_tests() {
     test_get_documents();
     test_patch_cold_and_partial();
@@ -548,5 +619,6 @@ void run_api_tests() {
     test_reset_unset_runtime();
     test_reset_fps_under_custom_profile();
     test_reset_apply_failure_is_500();
+    test_ap2_rtsp_runtime();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }
