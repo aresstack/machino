@@ -128,6 +128,51 @@ is ever forked while Ingenic devices and their mappings are live. That is
 architecturally better than any driver workaround - but it waits until the A/B
 test says the fork is actually the trigger.
 
+## Diagnostic restart in the broken kernel state — done
+
+Before power-cycling, one controlled daemon start was run **in the same kernel
+state the OOM left behind**, with a watchdog set to kill the daemon on the
+first `IMP_System_Init failed` so no retry round could run. It answers a
+question a power-cycle would have destroyed.
+
+| | |
+|---|---|
+| Daemon starts | **yes**, pid 3938 |
+| `IMP_System_Init` | **succeeds** |
+| Pipeline comes up | **yes** — 1 900 325 bytes of RTP in 4 s (≈3.8 Mbit/s, the configured rate) |
+| Teardown | clean: `demand all=0`, `unit main stopped (212 frames)`, `ING_PLAT down`, `COLD_IDLE` |
+
+`VmRSS` across the cycle:
+
+```
+no daemon                       MemAvailable 28 248 kB
+after start, COLD_IDLE          VmRSS  1 412 kB
+ACTIVE, streaming               VmRSS  3 780 kB
+after teardown, COLD_IDLE       VmRSS  2 656 kB
+for comparison, at the OOM      anon-rss 27 208 kB
+```
+
+**Two things follow.**
+
+*The broken state does not outlive the process.* A fresh process initialised
+IMP without trouble on a kernel that had just OOM-killed its predecessor. So
+there is no global, reboot-only stuck state — which is genuinely good news, and
+it is information a power-cycle would have thrown away.
+
+*This does not exonerate the fork hypothesis.* What the fork is suspected of
+damaging — per-process device references and VMAs — is exactly what the kernel
+reclaims when the process dies. "Does not survive process death" and
+"process-bound" are the same statement here. The test rules out a kernel-wide
+stuck state; it does not rule out the fork.
+
+*Normal is 3.8 MB.* A streaming pipeline costs about 2.4 MB over idle. The
+failure state was **27 MB — roughly seven times a working stream** with no
+pipeline running at all. Whatever happened, it is not ordinary consumption.
+
+One cycle also left ~1.2 MB behind (1 412 → 2 656 kB idle-to-idle). On its own
+that is unremarkable — musl does not return every arena to the OS — but it is
+the number to watch across repeated cycles in test A.
+
 ## Discriminating test (do not run yet)
 
 One power-cycle, then two sequences, in this order:
