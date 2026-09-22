@@ -815,14 +815,15 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
         // stay open is decided from it, and a half-read head cannot be judged.
         if (!c.relay_head_done) {
             c.relay_head.append(buf, (size_t)rd);
-            const size_t hend = c.relay_head.find("\r\n\r\n");
+            size_t sep = 0;
+            const size_t hend = http::relay_head_end(c.relay_head, sep);
             if (hend == std::string::npos) {
                 if (c.relay_head.size() > 8192) return fail(502, "OpenIPC WebUI backend sent an oversized header");
                 progress();
                 continue;
             }
-            std::string head = c.relay_head.substr(0, hend + 4);
-            std::string rest = c.relay_head.substr(hend + 4);
+            std::string head = c.relay_head.substr(0, hend + sep);
+            std::string rest = c.relay_head.substr(hend + sep);
             c.relay_head.clear();
             c.relay_head_done = true;
 

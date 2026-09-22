@@ -55,6 +55,13 @@ std::string forward_request(const Request& req, const std::string& upstream_host
 // `out` == `head` unchanged.
 bool relay_head_keepalive(const std::string& head, std::string& out, size_t& body_len);
 
+// Offset of the header terminator in a relayed upstream response, or npos.
+// `sep_len` receives 4 for "\r\n\r\n" and 2 for a bare "\n\n" - busybox uses
+// CRLF for static files but passes a CGI's own bare-LF headers through
+// untouched, and looking only for CRLF makes every CGI look like an endless
+// header (that shipped once, as a 502 on every WebUI page).
+size_t relay_head_end(const std::string& buf, size_t& sep_len);
+
 const char* status_text(int status);
 std::string response(int status, const std::string& content_type, const std::string& body, bool keep_alive,
                      const std::string& extra_headers = "");

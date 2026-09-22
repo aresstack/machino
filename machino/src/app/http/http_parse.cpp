@@ -141,12 +141,28 @@ std::string mjpeg_frame(const std::string& boundary, const uint8_t* data, size_t
 
 // See the header for why this is conservative. Anything it cannot frame
 // exactly keeps the old close-the-connection behaviour.
+size_t relay_head_end(const std::string& buf, size_t& sep_len) {
+    // busybox answers static files with proper CRLF, but a CGI's own output is
+    // passed through nearly verbatim and haserl emits BARE LF:
+    //   HTTP/1.1 200 OK\r\nContent-type: text/html\nPragma: no-cache\n\n
+    // So the head can end in either "\r\n\r\n" or "\n\n". Looking only for the
+    // former made every CGI look like an endless header. Note "\r\n\r\n" does
+    // not contain "\n\n", so the two never alias.
+    const size_t crlf = buf.find("\r\n\r\n");
+    const size_t lf   = buf.find("\n\n");
+    if (crlf != std::string::npos && (lf == std::string::npos || crlf <= lf)) { sep_len = 4; return crlf; }
+    if (lf != std::string::npos) { sep_len = 2; return lf; }
+    sep_len = 0;
+    return std::string::npos;
+}
+
 bool relay_head_keepalive(const std::string& head, std::string& out, size_t& body_len) {
     out = head;
     body_len = 0;
 
     // The head must be terminated; a partial head can never be judged.
-    const size_t end = head.find("\r\n\r\n");
+    size_t sep = 0;
+    const size_t end = relay_head_end(head, sep);
     if (end == std::string::npos) return false;
 
     // Status line: "HTTP/1.x NNN ..."
@@ -162,10 +178,15 @@ bool relay_head_keepalive(const std::string& head, std::string& out, size_t& bod
     size_t pos = 0;
     bool first = true;
     while (pos < end) {
-        size_t eol = head.find("\r\n", pos);
+        // Lines may end in CRLF or bare LF, and a head may mix the two: busybox
+        // writes the status line with CRLF and then hands the CGI's own LF
+        // headers through untouched.
+        size_t eol = head.find('\n', pos);
         if (eol == std::string::npos || eol > end) eol = end;
-        const std::string line = head.substr(pos, eol - pos);
-        pos = eol + 2;
+        size_t line_end = eol;
+        if (line_end > pos && head[line_end - 1] == '\r') --line_end;
+        const std::string line = head.substr(pos, line_end - pos);
+        pos = eol + 1;
         if (first) { rebuilt += line; rebuilt += "\r\n"; first = false; continue; }
         if (line.empty()) continue;
 

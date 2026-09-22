@@ -198,3 +198,74 @@ void run_relay_keepalive_tests() {
         HCHECK(len == 0);
     }
 }
+
+// busybox writes CRLF for static files but hands a CGI's own BARE-LF headers
+// through untouched. Taken verbatim off the camera:
+//
+//   static: "HTTP/1.1 200 OK\r\nDate: ...\r\nConnection: close\r\n...\r\n\r\n"
+//   CGI:    "HTTP/1.1 200 OK\r\nContent-type: text/html\nPragma: no-cache\n\n"
+//
+// Looking only for "\r\n\r\n" made every CGI look like an endless header and
+// turned the whole WebUI into 502s. That shipped once; these pin it.
+void run_relay_head_end_tests() {
+    size_t sep = 0;
+
+    // CRLF head
+    {
+        const std::string h = "HTTP/1.1 200 OK\r\nA: b\r\n\r\nBODY";
+        const size_t e = relay_head_end(h, sep);
+        HCHECK(sep == 4);
+        HCHECK(h.substr(e + sep) == "BODY");
+    }
+    // bare-LF head, as haserl emits
+    {
+        const std::string h = "HTTP/1.1 200 OK\r\nContent-type: text/html; charset=UTF-8\n"
+                              "Cache-Control: no-store\nPragma: no-cache\n\n<!DOCTYPE html>";
+        const size_t e = relay_head_end(h, sep);
+        HCHECK(e != std::string::npos);
+        HCHECK(sep == 2);
+        HCHECK(h.substr(e + sep) == "<!DOCTYPE html>");
+    }
+    // a CRLF terminator must win when it comes first, and never alias with "\n\n"
+    {
+        const std::string h = "HTTP/1.1 200 OK\r\n\r\nx\n\ny";
+        const size_t e = relay_head_end(h, sep);
+        HCHECK(sep == 4);
+        HCHECK(h.substr(e + sep) == "x\n\ny");
+    }
+    // ... and a bare-LF terminator must win when IT comes first
+    {
+        const std::string h = "HTTP/1.1 200 OK\nA: b\n\nbody\r\n\r\ntail";
+        const size_t e = relay_head_end(h, sep);
+        HCHECK(sep == 2);
+        HCHECK(h.substr(e + sep) == "body\r\n\r\ntail");
+    }
+    // unterminated: npos, and sep cleared so a caller cannot use a stale one
+    {
+        sep = 7;
+        HCHECK(relay_head_end("HTTP/1.1 200 OK\r\nA: b\r\n", sep) == std::string::npos);
+        HCHECK(sep == 0);
+        HCHECK(relay_head_end("", sep) == std::string::npos);
+    }
+
+    // The real CGI head must be judged, not choked on: no Content-Length, so it
+    // keeps the old close-the-connection behaviour - but it must be RECOGNISED.
+    {
+        const std::string cgi = "HTTP/1.1 200 OK\r\nContent-type: text/html; charset=UTF-8\n"
+                                "Cache-Control: no-store\nPragma: no-cache\n\n";
+        std::string out; size_t len = 99;
+        HCHECK(!relay_head_keepalive(cgi, out, len));
+        HCHECK(out == cgi);
+        HCHECK(len == 0);
+    }
+    // a mixed-ending head WITH a length is framed exactly and kept alive
+    {
+        const std::string mixed = "HTTP/1.1 200 OK\r\nContent-type: text/plain\nContent-Length: 42\n\n";
+        std::string out; size_t len = 0;
+        HCHECK(relay_head_keepalive(mixed, out, len));
+        HCHECK(len == 42);
+        HCHECK(out.find("Connection: keep-alive\r\n") != std::string::npos);
+        HCHECK(out.find("Content-Length: 42\r\n") != std::string::npos);   // normalised to CRLF
+        HCHECK(out.find("Content-type: text/plain\r\n") != std::string::npos);
+    }
+}
