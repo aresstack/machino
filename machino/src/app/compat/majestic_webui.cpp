@@ -367,6 +367,32 @@ Json majestic_config(const Json& native_config, const Json& state) {
         out.set("nightMode", nm);
     }
 
+    // AP20: this build has no audio path at all. Saying so matters, because
+    // upstream's audio-check.js treats silence and "off" as different answers
+    // and says why in its own words:
+    //
+    //   "Absent is not false. A camera that never sent the key has not said
+    //    its microphone is off - it has said nothing - and a panel that turns
+    //    silence into 'switched off' sends somebody looking for a control to
+    //    change that may not even be there."
+    //
+    // With the section missing the panel answers "The camera has not said what
+    // its audio settings are yet" - a waiting state, about a camera that will
+    // never answer. With both switches present and false it answers "This
+    // camera has both its microphone and its speaker switched off, so there is
+    // nothing to test yet", which is what a STOCK camera with stock defaults
+    // says (majestic.yaml ships audio.enabled and outputEnabled false).
+    //
+    // Only the two switches, not volume/srate/codec: those would be settings
+    // that do nothing. The player is unaffected either way - preview-page.js
+    // reads `audio.enabled === true`, so absent and false already agree there.
+    {
+        Json au = Json::object();
+        au.set("enabled", Json::boolean(false));
+        au.set("outputEnabled", Json::boolean(false));
+        out.set("audio", au);
+    }
+
     return out;
 }
 
@@ -458,6 +484,19 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
                         "led or infrared node in the device tree, no /sys/class/leds, no PWM, "
                         "no ADC, and upstream's wiki-harvested pin table has no entry for t40. "
                         "Pins are not accepted because nothing would act on them.";
+            return r;
+        }
+        // AP20: same rule as nightMode - audio is reported, so a write to it
+        // is refused with the reason rather than called unknown.
+        if (name == "audio") {
+            r.code = "unsupported_control";
+            r.status = 403;
+            r.path = name;
+            r.message = "this build has no audio path: nothing captures from /dev/dsp and "
+                        "nothing plays to it. The T40 inner codec is up and the SDK has "
+                        "IMP_AI/IMP_AO, so capture is possible later - but the audio driver "
+                        "was given spk_gpio=-1 and no external codec, so there is no "
+                        "configured output on this board at all.";
             return r;
         }
         r.code = "unknown_field";

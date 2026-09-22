@@ -339,9 +339,19 @@ void test_unoffered_subsystems() {
         CCHECK(r.message.find("t40") != std::string::npos);
     }
 
-    // And none of the four leaks into a patch: a refusal that still translated
+    // AP20: audio is reported too (two switches), so it gets a reason as well.
+    {
+        MajesticTranslation r = majestic_post_to_native("{\"audio\":{\"enabled\":\"true\"}}");
+        CCHECK(!r.ok);
+        CCHECK(r.status == 403);
+        CCHECK(r.code == "unsupported_control");
+        CCHECK(r.path == "audio");
+        CCHECK(r.message.find("spk_gpio=-1") != std::string::npos);
+    }
+
+    // And none of them leaks into a patch: a refusal that still translated
     // something would be worse than either answer.
-    for (const char* s : { "records", "analytics", "peers", "nightMode" }) {
+    for (const char* s : { "records", "analytics", "peers", "nightMode", "audio" }) {
         const std::string body = std::string("{\"") + s + "\":{\"enabled\":\"true\"}}";
         MajesticTranslation r = majestic_post_to_native(body);
         CCHECK(r.patch.members().empty());

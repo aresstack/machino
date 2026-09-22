@@ -189,3 +189,37 @@ anschlägt.
   besitzt, ist eine Frage an das Gerät, nicht an die Software — sichtbar nur
   am Bild bei Dunkelheit oder an der Platine. Solange das offen ist, wäre jede
   Ansteuerung geraten.
+
+---
+
+## Korrektur (aus der AP20-Bestandsaufnahme, derselbe Tag)
+
+Oben steht „kein ADC". **Das war unvollständig.** Ich hatte
+`/sys/bus/iio/devices` und `/sys/class/hwmon` geprüft — beide leer, das stimmt
+— und daraus zu früh geschlossen, es gebe keinen Wandler. Bei der Audiosuche
+fiel auf:
+
+```
+/proc/device-tree/apb/sadc@10070000   compatible = ingenic,sadc   status = okay
+/dev/ingenic_adc_aux_0 .. _5          char 10,53..58
+```
+
+Es **gibt** einen SAR-ADC, er ist im Device Tree aktiv, und er stellt sechs
+Hilfskanäle als Zeichengeräte bereit. Er taucht nur nicht unter IIO oder hwmon
+auf, weil der Ingenic-Treiber eigene `/dev`-Knoten anlegt statt das
+Standard-Subsystem zu benutzen.
+
+**Was das an der Schlussfolgerung ändert: nichts.** Der Lichtsensor im
+Majestic-Vertrag ist `nightMode.lightSensorPin` — eine **GPIO-Pinnummer**, kein
+ADC-Kanal. Ein vorhandener Wandler sagt nicht, ob ein Fotowiderstand
+angeschlossen ist, und schon gar nicht an welchem Kanal. Es bleibt bei: keine
+belastbare Zuordnung, also nichts zu veröffentlichen.
+
+Was sich ändert, ist die Beweislage: „kein ADC vorhanden" wäre ein stärkeres
+Argument gewesen, als mir zusteht. Richtig ist „ein ADC ist vorhanden, seine
+Beschaltung ist unbekannt" — und das trägt dieselbe Entscheidung, nur ehrlich.
+
+Zweiter Nachtrag derselben Runde: es ist ein Kernelmodul namens `gpio`
+(1704 B) geladen. Es legt **keinen** `/dev`-Knoten an und bringt über die vier
+Standard-`gpiochip`s hinaus keine Schnittstelle mit; an der Pinfrage ändert es
+nichts.
