@@ -687,11 +687,12 @@ bool HttpServer::rtc_ws_input(Client& c) {
         c.in.erase(0, used);
         if (op == 8) return false;
         if (op == 9) { queue(c, ws::pong_frame(payload)); continue; }
-        if (op != 1) continue;
+        if (op != 1) { LOGI(MOD, "webrtc: non-text frame op=%d len=%zu", op, payload.size()); continue; }
+        LOGI(MOD, "webrtc: frame len=%zu head=%.40s", payload.size(), payload.c_str());
         Json msg; std::string jerr;
-        if (!Json::parse(payload, msg, jerr)) continue;
+        if (!Json::parse(payload, msg, jerr)) { LOGW(MOD, "webrtc: json parse failed: %s", jerr.c_str()); continue; }
         const Json* req = msg.get("req");
-        if (!req || !req->is_string()) continue;
+        if (!req || !req->is_string()) { LOGW(MOD, "webrtc: no req field"); continue; }
         auto reply = [&](const char* kind, const std::string& data) {
             Json r = Json::object();
             r.set("reply", Json::string(kind));
@@ -699,7 +700,7 @@ bool HttpServer::rtc_ws_input(Client& c) {
             const std::string s = r.dump();
             return queue(c, ws::frame(true, s.data(), s.size()));
         };
-        if (req->as_string() != "offer") continue;
+        if (req->as_string() != "offer") { LOGI(MOD, "webrtc: req=%s (ignored)", req->as_string().c_str()); continue; }
         int active = 0;
         for (auto& o : clients_) if (o->rtc) ++active;
         if (c.rtc || active >= 2) { if (!reply("busy", "every session slot is taken")) return false; continue; }
@@ -712,7 +713,7 @@ bool HttpServer::rtc_ws_input(Client& c) {
         std::unique_ptr<webrtc::PeerSession> sess(new webrtc::PeerSession(ip));
         std::string err;
         const std::string answer = sess->on_offer(data->as_string(), err);
-        if (answer.empty()) { if (!reply("error", err)) return false; continue; }
+        if (answer.empty()) { LOGW(MOD, "webrtc: offer rejected: %s", err.c_str()); if (!reply("error", err)) return false; continue; }
         Result dr;
         lifecycle::DemandHandle d = pipeline_->acquire(lifecycle::ConsumerType::HttpStream, &dr);
         if (!d.active()) { if (!reply("error", "pipeline start failed")) return false; continue; }
