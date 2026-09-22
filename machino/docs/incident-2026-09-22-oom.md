@@ -49,11 +49,20 @@ imx307 stream on
 imx307 stream off          (~0.8 s later)
 ```
 
-Four full probe/stream cycles, one per retry round. So `IMP_System_Init`
-returning `-1` is **not** the driver refusing — the most likely reading is
-"already initialised", i.e. the previous `IMP_System_Exit` did not fully
-release even though our teardown path completed. There is also one
+Four full probe/stream cycles, one per retry round. There is also one
 `IRQ Error, cpu: 0 Cause:0x08800000` right after a `stream off`.
+
+**Classification: `INIT_FAILED_AFTER_DRIVER_BRINGUP`, cause unknown.**
+
+An earlier version of this note read the `-1` as "already initialised". That
+was over-reading the evidence and is withdrawn. All the driver messages prove
+is that initialisation gets *far* — sensor probed, framechans created, sensor
+streamed. It can still fail afterwards on a memory allocation, on a different
+IMP subsystem, or on a half-released resource object. `-1` is the vendor's
+generic failure and carries no such meaning on its own.
+
+What *is* established: the teardown reported success, and the next bring-up
+fails somewhere after the driver has come up.
 
 **Memory was not released on stop, and each failed retry added more.** By the
 time the OOM killer ran, machino held 27 MB anon-RSS of a 42 MB machine — with
@@ -78,25 +87,45 @@ sequence* is the `/ws/logs` child: it was `fork()`ed at **05:52:50**, five
 seconds **before** the teardown, while IMP was still initialised and holding
 its device mappings.
 
-A `fork()` duplicates the address space and every open descriptor. Our
-descriptors are `CLOEXEC`, so they close when the child `exec`s `logread` — but
-between `fork` and `exec` the child holds a reference to the IMP device nodes.
-If the vendor driver counts those references, the parent's `IMP_System_Exit`
-five seconds later would release nothing, and the next `IMP_System_Init` would
-return "already initialised".
+The mechanism is **not** descriptor lifetime. The child `exec`s `logread`
+immediately; `CLOEXEC` closes our descriptors at that point and the inherited
+mappings are replaced by the new image, all of it long before the teardown five
+seconds later. That reading was wrong and is withdrawn.
+
+What is worth suspecting is `fork()` **itself**: it duplicates the VMAs of a
+process that currently holds live Ingenic MMAP/DMA regions. On a vendor driver
+of this vintage, duplicating those VMAs can disturb refcounts or VMA state even
+though the child execs a moment later — and the damage would only become
+visible at the *next* teardown/re-init, which is exactly where it showed up.
 
 **This is a hypothesis, not a finding.** It fits the timing and it fits M4's
 result (twelve cold cycles in one process, proven before `/ws/logs` existed),
 but nothing here proves it.
 
-## An earlier reboot, unexplained
+## Withdrawn: the "second reboot" was a clock step
 
-`/var/log` is tmpfs. The log contains exactly one daemon start (05:49:47),
-while the deploy power-cycle was at 05:43:57 — so **the camera restarted at
-about 05:49:35** and that boot's log is gone. Nobody power-cycled it then. The
-UI was reported as "hanging sporadically" around that time, so this may have
-been a first, unrecorded occurrence of the same fault. It cannot be
-reconstructed.
+An earlier version of this note claimed the camera had restarted at ~05:49:35
+for no reason. **It had not.** Reviewer correction, and the evidence settles it:
+
+- `logread` begins at `Sep 21 05:49:38` with kernel timestamp `[0.656788]` and
+  contains **exactly one** boot.
+- The daemon start I had read earlier as `05:43:57` and the one in the current
+  log at `05:49:47` differ by **5 min 50 s** — and `05:43:57 + 5:50 = 05:49:47`
+  exactly. One event, two clock readings.
+- `ntpd` is running and the camera's date is a day off from the host's, so the
+  clock demonstrably moves.
+
+I had compared `uptime` against wall-clock timestamps **across a clock step**,
+which makes the arithmetic meaningless. There was one boot: the operator's
+cold power-cycle after the deploy. No phantom to chase.
+
+## If the fork is confirmed, the fix is probably small
+
+Start the `logread -f` helper **once at daemon start, before IMP is ever
+initialised**, and keep that one child for the process lifetime. Then nothing
+is ever forked while Ingenic devices and their mappings are live. That is
+architecturally better than any driver workaround - but it waits until the A/B
+test says the fork is actually the trigger.
 
 ## Discriminating test (do not run yet)
 
