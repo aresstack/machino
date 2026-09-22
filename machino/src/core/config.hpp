@@ -10,6 +10,7 @@
 #include "core/hw/resolve.hpp"
 #include "core/media/settings.hpp"
 #include "core/power/apply.hpp"
+#include "ports/iosd.hpp"
 #include <optional>
 #include <string>
 
@@ -28,6 +29,7 @@ struct StreamConfig {
     int    qp           = 35;     // FixQp only
     int    buffers      = 2;      // FrameSource video buffers
     int    encoder_buffers = 0;   // 0 = vendor default; otherwise stream buffers
+    bool   osd          = true;   // majestic video0.osd: draw the overlay here
 };
 
 // Fully determined stream parameters handed to the pipeline.
@@ -51,6 +53,7 @@ struct SubStreamConfig {
     int    qp           = 35;
     int    buffers      = 2;
     int    encoder_buffers = 0;
+    bool   osd          = true;   // majestic video1.osd
 };
 
 // M8: JPEG snapshots. The encoder is ephemeral - created on demand, torn down
@@ -118,6 +121,33 @@ struct TelemetryConfig {
     int log_interval_s = 0;        // 0 = off; otherwise one compact line every N seconds
 };
 
+// AP9: on-screen display. Field names, types and defaults are taken from the
+// section the unmodified majestic-webui renders (`osd` in its schema), not
+// invented here - `size`, `offsetX` and `offsetY` really are strings upstream,
+// because they carry a unit ("1.5em", "2%"), and keeping them strings is what
+// makes a GET/SET round trip through the stock page lossless.
+//
+// The CONTENT is global and the per-stream `video<N>.osd` booleans only say
+// where it is drawn. That is upstream's model exactly; per-stream text is not
+// offered here because the page has no way to set it.
+struct OsdConfig {
+    bool        enabled  = false;
+    std::string tmpl     = "%d.%m.%Y %H:%M:%S";    // osd.template
+    std::string font     = "/usr/share/fonts/truetype/UbuntuMono-Regular.ttf";
+    std::string size     = "1.0";                  // font scale factor
+    bool        thin     = false;                  // osd.weight: normal | thin
+    bool        outline  = true;
+    OsdAnchor   anchor   = OsdAnchor::Proportional;
+    std::string offset_x = "0";
+    std::string offset_y = "0";
+    int         pos_x    = 16;                     // proportional grid, 16 left .. -16 right
+    int         pos_y    = 16;                     // 16 top .. -16 bottom
+    int         bg_alpha = 25;                     // plate opacity, percent
+    // Where uploaded logo overlays live. One defined persistent path, never a
+    // caller-supplied one: the filename is derived from the overlay index.
+    std::string image_dir = "/etc/machino/osd";
+};
+
 // HTTP control/telemetry API (M6). Reads are never media demand.
 struct ApiConfig {
     bool        enabled = true;
@@ -152,6 +182,7 @@ struct AppConfig {
     media::ImageSettings image;
     media::LatencySettings latency;
     AiConfig          ai;
+    OsdConfig         osd;
     TelemetryConfig   telemetry;
     ApiConfig         api;
     LogConfig         log;

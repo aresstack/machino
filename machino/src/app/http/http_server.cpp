@@ -33,6 +33,18 @@ namespace machino { namespace http {
 static const char* MOD = "HTTP";
 static const size_t MAX_IN = 16 * 1024;
 
+// A logo upload is the one request whose body legitimately exceeds the 16 KiB
+// working buffer: the stock settings page posts raw BGRA pixels. The allowance
+// is granted from the REQUEST LINE, so it applies to that one route and no
+// other request inherits it - and the service still validates the body against
+// the declared w*h*4 afterwards, so this is a buffer bound, not a trust grant.
+static size_t input_cap(const std::string& in) {
+    static const char OSD_POST[] = "POST /api/v1/osd/image";
+    if (in.compare(0, sizeof(OSD_POST) - 1, OSD_POST) == 0)
+        return osd::OsdService::MAX_IMAGE_BYTES + 4096;
+    return MAX_IN;
+}
+
 static int64_t now_ms() { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
 
 // Sample the Linux side the majestic-webui Dashboard reads via /metrics. Every
@@ -255,8 +267,10 @@ bool HttpServer::flush(Client& c) {
 // Dispatches one complete request; returns false to close the connection.
 bool HttpServer::handle_request(Client& c) {
     size_t consumed = 0; Request req;
-    Parse p = parse_request(c.in, consumed, req);
-    if (p == Parse::Incomplete) return c.in.size() <= MAX_IN;
+    Limits lim;
+    lim.max_body = input_cap(c.in);
+    Parse p = parse_request(c.in, consumed, req, lim);
+    if (p == Parse::Incomplete) return c.in.size() <= input_cap(c.in);
     if (p == Parse::TooLarge) { queue(c, response(413, "application/json", api::ApiService::error("invalid_value", "", "request too large").dump(), false)); c.close_after_flush = true; return true; }
     if (p == Parse::Bad)      { queue(c, response(400, "application/json", api::ApiService::error("invalid_json", "", "malformed HTTP request").dump(), false)); c.close_after_flush = true; return true; }
     c.in.erase(0, consumed); ++c.requests; c.last_activity_ms = now_ms();
@@ -348,6 +362,67 @@ bool HttpServer::handle_request(Client& c) {
             if (!tr.ok)               r = api::ApiService::fail(tr.status, tr.code.c_str(), tr.path, tr.message);
             else if (!tr.unset.empty()) r = api_.unset_config(tr.unset);   // no-default: REMOVE the key (#416)
             else                      r = api_.patch_config(tr.patch.dump(), "");
+        }
+    } else if (path == "/api/v1/osd") {
+        // AP9. The stock settings page reads this for the real overlay
+        // rectangles (it counts regions and bytes from them) and the preview
+        // overlays read `group`/`streams` to map coordinates. A 404 is a
+        // legitimate answer the page handles as a property of the build, so
+        // "we cannot say" is never faked with an empty 200.
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else {
+            Json doc;
+            if (osd_ && osd_->report(doc)) {
+                bool ok = queue(c, response(200, "application/json", doc.dump(), req.keep_alive));
+                if (!req.keep_alive) c.close_after_flush = true;
+                return ok;
+            }
+            r = api::ApiService::fail(404, "unknown_field", path, "this build cannot report overlay geometry");
+        }
+    } else if (path == "/api/v1/osd/image") {
+        // GET  -> raw BGRA plus X-Osd-Width/Height/Ref, which is what the
+        //         page's canvas reader expects.
+        // POST with a body -> upload (w/h/ref in the query).
+        // POST with NO body -> remove, which is how the page's staged logo
+        //         deletion lands on save (flushLogoBin).
+        const std::string ov = SessionGate::form_value(req.query, "overlay");
+        const int overlay = ov.empty() ? -1 : atoi(ov.c_str());
+        if (!osd_) { r = api::ApiService::fail(404, "unknown_field", path, "no overlay store"); }
+        else if (m == "GET") {
+            osd::ImageInfo info; std::string pixels;
+            if (osd_->load_image(overlay, info, pixels)) {
+                char hdr[128];
+                std::snprintf(hdr, sizeof hdr,
+                              "X-Osd-Width: %d\r\nX-Osd-Height: %d\r\nX-Osd-Ref: %d\r\n",
+                              info.w, info.h, info.ref);
+                bool ok = queue(c, response(200, "application/octet-stream", pixels, req.keep_alive, hdr),
+                                osd::OsdService::MAX_IMAGE_BYTES + 4096);
+                if (!req.keep_alive) c.close_after_flush = true;
+                return ok;
+            }
+            r = api::ApiService::fail(404, "unknown_field", path, "no picture for this overlay");
+        } else if (m == "POST") {
+            osd::OsdService::ImageResult res =
+                req.body.empty()
+                    ? osd_->delete_image(overlay)
+                    : osd_->store_image(overlay,
+                                        atoi(SessionGate::form_value(req.query, "w").c_str()),
+                                        atoi(SessionGate::form_value(req.query, "h").c_str()),
+                                        atoi(SessionGate::form_value(req.query, "ref").c_str()),
+                                        reinterpret_cast<const uint8_t*>(req.body.data()),
+                                        req.body.size());
+            if (res.ok()) {
+                bool ok = queue(c, response(200, "application/json", std::string("{\"ok\":1}"), req.keep_alive));
+                if (!req.keep_alive) c.close_after_flush = true;
+                return ok;
+            }
+            // The page shows the response text verbatim when an upload is
+            // refused, so this body is the operator-facing message.
+            bool ok = queue(c, response(res.status, "text/plain", res.message + "\n", false));
+            c.close_after_flush = true;
+            return ok;
+        } else {
+            r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
         }
     } else if (path == "/metrics") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
@@ -915,7 +990,7 @@ void HttpServer::loop() {
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.rtc_ws)   { c.in.append(buf, (size_t)r); ok = rtc_ws_input(c); }
                 else if (c.sse || c.mjpeg || c.ws_logs) { /* ignore input on streaming connections */ }
-                else { c.in.append(buf, (size_t)r); if (c.in.size() > MAX_IN) ok = false; else while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
+                else { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; else while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && c.in.find("\r\n\r\n") != std::string::npos) { size_t before = c.in.size(); ok = handle_request(c); if (c.in.size() == before) break; } }
             }
             if (ok && c.relay_state != Client::Relay::None) ok = pump_relay(c, rre, t);
             if (ok && c.sse) {

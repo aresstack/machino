@@ -11,6 +11,7 @@
 #include "app/api/api_service.hpp"
 #include "app/compat/majestic_migrate.hpp"
 #include "app/http/http_server.hpp"
+#include "app/osd/osd_service.hpp"
 #include "app/linux_grace_timer.hpp"
 #include "app/linux_system_stats.hpp"
 #include "app/rtsp/rtsp_server.hpp"
@@ -297,6 +298,23 @@ int main(int argc, char** argv) {
         // /ws/video and /ws/webrtc: hub consumers with their own demand;
         // stream=1 serves from the substream hub when it is configured.
         http::HttpServer httpd(hc, api, bus, &hub, &pipeline, sub_ok ? &sub_hub : nullptr);
+
+        // AP9 OSD. The backend is the software one: it knows the placement
+        // arithmetic but cannot draw, so available() is false and
+        // /api/v1/osd answers 404 - the honest answer for a build with no
+        // overlay path, and the one the stock settings page is written to
+        // handle. The image store is fully live regardless, because a logo
+        // uploaded now must survive until the drawing backend arrives.
+        SoftOsdBackend osd_backend;
+        osd::OsdService osd_service(osd_backend, cfg.osd.image_dir);
+        osd_service.set_config(cfg.osd);
+        {
+            std::vector<osd::StreamGeometry> geo;
+            geo.push_back({0, stream.width, stream.height, cfg.video.osd});
+            if (sub_ok) geo.push_back({1, sub_stream.width, sub_stream.height, cfg.video1.osd});
+            osd_service.set_streams(geo);
+        }
+        httpd.set_osd(&osd_service);
         int tfd = -1;
         if (cfg.telemetry.log_interval_s > 0) {
             tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);

@@ -138,6 +138,35 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("video.1.profile",    c.video1.profile, 0, 2)
     INT   ("video.1.buffers",    c.video1.buffers, 1, 8)
     INT   ("video.1.encoder_buffers", c.video1.encoder_buffers, 0, 8)
+    // AP9 OSD. Keys mirror the section the stock settings page renders. The
+    // lengths stay strings on purpose (they carry a unit: "2%", "1.5em") and
+    // are validated where they are resolved, not here.
+    BOOL  ("osd.enabled",        c.osd.enabled)
+    STR   ("osd.template",       c.osd.tmpl)
+    STR   ("osd.font",           c.osd.font)
+    STR   ("osd.size",           c.osd.size)
+    BOOL  ("osd.outline",        c.osd.outline)
+    STR   ("osd.offset_x",       c.osd.offset_x)
+    STR   ("osd.offset_y",       c.osd.offset_y)
+    INT   ("osd.pos_x",          c.osd.pos_x, -16, 16)
+    INT   ("osd.pos_y",          c.osd.pos_y, -16, 16)
+    INT   ("osd.bg_alpha",       c.osd.bg_alpha, 0, 100)
+    STR   ("osd.image_dir",      c.osd.image_dir)
+    BOOL  ("video.0.osd",        c.video.osd)
+    BOOL  ("video.1.osd",        c.video1.osd)
+    if (k == "osd.weight") {
+        if (v == "normal") c.osd.thin = false;
+        else if (v == "thin") c.osd.thin = true;
+        else LOGW(MOD, "line %d: osd.weight=%s unknown (normal|thin)", line, v.c_str());
+        return true;
+    }
+    if (k == "osd.anchor") {
+        OsdAnchor a = OsdAnchor::Proportional;
+        if (osd_anchor_parse(v, a)) c.osd.anchor = a;
+        else LOGW(MOD, "line %d: osd.anchor=%s unknown - ignored", line, v.c_str());
+        return true;
+    }
+
     BOOL  ("jpeg.enabled",       c.jpeg.enabled)
     INT   ("jpeg.quality",       c.jpeg.quality, 1, 99)
     INT   ("snapshot.cache_ms",  c.snapshot.cache_ms, 0, 5000)

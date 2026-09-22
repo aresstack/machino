@@ -8,6 +8,7 @@
 #pragma once
 #include "app/api/api_service.hpp"
 #include "app/http/session.hpp"
+#include "app/osd/osd_service.hpp"
 #include "core/events.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/result.hpp"
@@ -66,12 +67,18 @@ public:
                StreamHub* hub = nullptr, lifecycle::PipelineManager* pipeline = nullptr,
                StreamHub* sub_hub = nullptr);
     ~HttpServer();
+    // AP9: the OSD surface (/api/v1/osd and /api/v1/osd/image). Null = the
+    // routes answer 404, which the stock settings page reads as "this build
+    // cannot say" and stops polling.
+    void set_osd(osd::OsdService* o) { osd_ = o; }
+
     Result start();
     void   stop();
     int    port() const { return cfg_.port; }
 
 private:
     struct Client;
+    osd::OsdService* osd_ = nullptr;
     void loop();
     void accept_client();
     bool handle_request(Client& c);

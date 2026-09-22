@@ -34,6 +34,7 @@ void run_detection_tests();
 void run_compat_tests();
 void run_schema_contract_tests();
 void run_logging_tests();
+void run_osd_tests();
 #define CHECK(cond) do { if (cond) { ++g_pass; } else { ++g_fail; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
 
 static hw::Registry make_registry() { hw::Registry r; profiles::register_builtin(r); return r; }
@@ -337,6 +338,7 @@ int main() {
     run_compat_tests();
     run_schema_contract_tests();
     run_logging_tests();
+    run_osd_tests();
     g_pass += g_pass_ext; g_fail += g_fail_ext;
     fprintf(stderr, "machino unit tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail;
