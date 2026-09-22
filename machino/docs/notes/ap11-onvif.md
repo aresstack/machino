@@ -141,8 +141,23 @@ operations faulting correctly.
 
 ## Remaining gaps — `NEEDS_HARDWARE_ACCEPTANCE`
 
-1. **No WS-Discovery.** Clients cannot find the camera by probing; it has to be
-   added by address. This is the first thing to add if ONVIF is pursued.
+1. ~~No WS-Discovery.~~ **Added** in a follow-up commit
+   (`src/app/onvif/discovery.*`): Probe is parsed with the same scanner —
+   a Probe arrives over UDP from anyone on the segment, so if anything it
+   deserves more suspicion than the SOAP endpoint — and answered with a
+   `ProbeMatches` that RelatesTo the Probe's MessageID. A Probe naming a type
+   this camera is not is **ignored**, because answering would put it in a list
+   it does not belong in. The endpoint `urn:uuid` is derived from durable
+   device facts rather than stored, so it survives a restart without another
+   state file that could disagree with reality. `Hello`/`Bye` are built too.
+
+   The responder has its **own socket and its own thread**, not another fd in
+   the HTTP poll loop: that loop carries the live media path for `/ws/video`
+   and `/ws/webrtc`, and discovery is not worth any risk to it. The reply is
+   unicast back to the sender, per spec, and the `XAddrs` it hands back uses
+   the local address the kernel picks *for that peer* — the only answer that is
+   right on a camera with more than one interface. Still unverified against a
+   real client (gap 3).
 2. **No HTTP Digest**, which the upstream hint mentions alongside WSSE
    PasswordDigest. Digest-only clients (tinyCam Monitor is named upstream) will
    not authenticate. The WSSE half is implemented.

@@ -11,6 +11,7 @@
 #include "app/api/api_service.hpp"
 #include "app/compat/majestic_migrate.hpp"
 #include "app/http/http_server.hpp"
+#include "app/onvif/discovery_server.hpp"
 #include "app/onvif/onvif_service.hpp"
 #include "app/osd/osd_service.hpp"
 #include "app/linux_grace_timer.hpp"
@@ -433,7 +434,20 @@ int main(int argc, char** argv) {
             onvif_service.set_profiles(mp);
             onvif_service.set_ports(cfg.api.port, cfg.rtsp.port);
         }
-        if (cfg.onvif.enabled) httpd.set_onvif(&onvif_service);
+        std::unique_ptr<onvif::DiscoveryServer> wsd;
+        if (cfg.onvif.enabled) {
+            httpd.set_onvif(&onvif_service);
+            // WS-Discovery is what lets a client FIND the camera instead of
+            // being told its address. Own socket and own thread, so the HTTP
+            // poll loop that carries the live media path is untouched. The
+            // endpoint uuid is derived from durable facts, not stored.
+            const std::string seed = hwr.board_id + ":" + hwr.platform.model;
+            wsd = std::make_unique<onvif::DiscoveryServer>(
+                seed,
+                "onvif://www.onvif.org/Profile/Streaming onvif://www.onvif.org/type/video_encoder",
+                cfg.api.port);
+            if (!wsd->start()) LOGW(MOD, "ws-discovery unavailable; clients must be given the address");
+        }
         LOGI(MOD, "onvif: %s", cfg.onvif.enabled ? "on" : "off");
         LOGI(MOD, "claim state: %s", setup_gate.unclaimed() ? "UNCLAIMED (serving only the setup flow)" : "claimed");
         int tfd = -1;
