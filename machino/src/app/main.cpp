@@ -30,6 +30,7 @@
 #include "core/log.hpp"
 #include "core/media/tuning_service.hpp"
 #include "core/power/performance_service.hpp"
+#include "core/random.hpp"
 #include "core/stream_hub.hpp"
 #include "profiles/builtin_profiles.hpp"
 
@@ -414,12 +415,7 @@ int main(int argc, char** argv) {
         // The HTTP Digest nonce is keyed with this, never with the password:
         // the challenge goes to any unauthenticated caller. No entropy means
         // no Digest, which is the fail-closed answer.
-        std::string onvif_nonce_secret;
-        if (FILE* ur = fopen("/dev/urandom", "rb")) {
-            char rnd[32];
-            if (fread(rnd, 1, sizeof rnd, ur) == sizeof rnd) onvif_nonce_secret.assign(rnd, sizeof rnd);
-            fclose(ur);
-        }
+        const std::string onvif_nonce_secret = secure_hex(32);
         if (cfg.onvif.enabled && onvif_nonce_secret.empty())
             LOGW(MOD, "onvif: no entropy for the digest nonce - HTTP Digest stays off");
         onvif::OnvifService onvif_service(cfg.onvif, shadow_check, onvif_nonce_secret);

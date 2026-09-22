@@ -48,7 +48,7 @@ endif
 .PHONY: check-mbedtls
 .DEFAULT_GOAL := all   # check-mbedtls above must not become the default goal
 
-CORE_SRC := src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp src/core/runtime_stats.cpp src/core/log_file.cpp \
+CORE_SRC := src/core/random.cpp src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp src/core/runtime_stats.cpp src/core/log_file.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp \
             src/core/lifecycle/pipeline_manager.cpp src/core/power/performance_service.cpp src/core/media/tuning_service.cpp \
             src/core/detection/detection_service.cpp \
@@ -76,8 +76,8 @@ ifeq ($(OS),Windows_NT)
 HOST_LIBS += -lbcrypt -lws2_32
 endif
 TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp tests/test_json.cpp tests/test_events.cpp \
-            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_webrtc.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/test_schema_contract.cpp tests/test_logging.cpp tests/test_osd.cpp tests/test_setup.cpp tests/test_onvif.cpp tests/test_discovery.cpp tests/test_onvif_digest.cpp tests/log_stub.cpp \
-            src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp src/core/runtime_stats.cpp src/core/log_file.cpp \
+            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_webrtc.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/test_schema_contract.cpp tests/test_logging.cpp tests/test_osd.cpp tests/test_setup.cpp tests/test_onvif.cpp tests/test_discovery.cpp tests/test_onvif_digest.cpp tests/test_random.cpp tests/log_stub.cpp \
+            src/core/random.cpp src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp src/core/runtime_stats.cpp src/core/log_file.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp src/core/lifecycle/pipeline_manager.cpp \
             src/core/power/performance_service.cpp src/core/media/tuning_service.cpp src/core/detection/detection_service.cpp \
             src/app/osd/osd_service.cpp \

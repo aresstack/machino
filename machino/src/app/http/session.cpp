@@ -1,6 +1,6 @@
 #include "app/http/session.hpp"
+#include "core/random.hpp"
 #include <cstdio>
-#include <random>
 
 namespace machino { namespace http {
 
@@ -106,12 +106,15 @@ bool SessionGate::authed(const std::string& cookie_header, int64_t now_ms) {
 }
 
 std::string SessionGate::new_token() {
-    // Not host-seeded state: fresh entropy per token. 128 bits as hex.
-    static thread_local std::mt19937_64 rng{std::random_device{}()};
-    char buf[33];
-    std::snprintf(buf, sizeof buf, "%016llx%016llx",
-                  (unsigned long long)rng(), (unsigned long long)rng());
-    return std::string(buf, 32);
+    // 128 bits from the system CSPRNG. This was a mt19937_64 seeded from
+    // random_device, which is not a CSPRNG: its state is recoverable from its
+    // output. Nothing was demonstrably exploitable - tokens are only minted
+    // after a credential check - but that is a property of today's call sites,
+    // not of the generator, and a session cookie is a bearer credential.
+    //
+    // Returns "" when the platform will not produce randomness. The callers
+    // turn that into a refused login rather than a guessable session.
+    return secure_hex(16);
 }
 
 void SessionGate::evict(int64_t now_ms) {
@@ -136,6 +139,11 @@ SessionGate::LoginResult SessionGate::login(const std::string& body, int64_t now
     if (!check_ || !check_(user, pass)) return {403, ""};   // webui shows "Invalid username or password."
     evict(now_ms);
     const std::string tok = new_token();
+    // No randomness, no session. Storing an empty token and handing back an
+    // empty cookie would look like a successful login and be one nobody can
+    // use - and authed() would then be the only thing standing between an
+    // empty Cookie header and a valid session.
+    if (tok.empty()) return {500, ""};
     tokens_[tok] = now_ms + (remember ? REMEMBER_MS : SESSION_MS);
     std::string sc = std::string("Set-Cookie: ") + COOKIE + "=" + tok + "; Path=/; HttpOnly; SameSite=Strict";
     if (remember) sc += "; Max-Age=2592000";
@@ -146,6 +154,7 @@ SessionGate::LoginResult SessionGate::login(const std::string& body, int64_t now
 std::string SessionGate::mint(int64_t now_ms) {
     evict(now_ms);
     const std::string tok = new_token();
+    if (tok.empty()) return "";        // caller signs the operator in some other way, or not at all
     tokens_[tok] = now_ms + SESSION_MS;
     return std::string("Set-Cookie: ") + COOKIE + "=" + tok + "; Path=/; HttpOnly; SameSite=Strict\r\n";
 }

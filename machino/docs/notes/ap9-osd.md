@@ -109,9 +109,13 @@ Validation is fail-closed and nothing is written when a request is refused:
 - body length must match the declared size **exactly** (short *and* long are refused),
 - a negative `ref` is refused; `ref = 0` means "drawn pixel for pixel" and is
   stored as the picture's own width,
-- **512×512 BGRA = 1 MiB** is the hard cap. Justified, not arbitrary: the store
-  lives on an overlay filesystem with 6.0 MB free (measured in AP8) and the
-  hardware keeps two buffers per region.
+- **256×256 BGRA = 256 KiB** is the hard cap. This was 512×512 until review:
+  the HTTP body cap has to be raised for this route, and that raise is applied
+  *before* the session gate, so the cap is also what an unauthenticated peer
+  can make the server buffer — times `max_clients`. At 1 MiB that was 16 MiB on
+  a camera with about 21 MB available. The store also lives on an overlay
+  filesystem with 6.0 MB free (measured in AP8) and the hardware keeps two
+  buffers per region.
 
 Storage is one file per overlay under the single configured directory. The
 caller supplies only an **index**, never a path, so no request can steer where
@@ -121,8 +125,8 @@ file on disk is re-validated on read and refused rather than turned into an
 allocation.
 
 One integration detail worth recording: the HTTP parser caps request bodies at
-8 KiB and the per-client input buffer at 16 KiB, so a 1 MiB upload would have
-been rejected *before* reaching any of this. The allowance is granted from the
+8 KiB and the per-client input buffer at 16 KiB, so the upload would have been
+rejected *before* reaching any of this. The allowance is granted from the
 **request line** (`POST /api/v1/osd/image`) so exactly one route gets it, and
 the service still validates the body against the declared `w*h*4` afterwards —
 a buffer bound, not a trust grant.

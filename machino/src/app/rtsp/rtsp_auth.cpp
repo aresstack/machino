@@ -1,10 +1,10 @@
 #include "app/rtsp/rtsp_auth.hpp"
+#include "core/random.hpp"
 
 #include <mbedtls/md5.h>
 
 #include <cstdio>
 #include <cstring>
-#include <random>
 
 
 namespace machino {
@@ -20,11 +20,13 @@ std::string md5_hex(const std::string& in) {
 }
 
 std::string new_nonce() {
-    static thread_local std::mt19937_64 rng{std::random_device{}()};
-    char buf[33];
-    snprintf(buf, sizeof buf, "%016llx%016llx",
-             (unsigned long long)rng(), (unsigned long long)rng());
-    return std::string(buf, 32);
+    // Was a mt19937_64. A Digest nonce is handed out unauthenticated, so it is
+    // exactly the output an attacker can collect; the generator being
+    // thread_local and RTSP using a thread per connection kept the sample per
+    // instance to one or two, which is why this was not exploitable - but that
+    // is an accident of the connection model, not a property of the nonce.
+    // Empty means no randomness, and check() then refuses every digest.
+    return secure_hex(16);
 }
 
 // RFC 4648 base64 decode, tolerant of missing padding.
