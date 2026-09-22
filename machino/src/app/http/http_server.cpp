@@ -471,6 +471,13 @@ bool HttpServer::handle_request(Client& c) {
             if (!req.keep_alive) c.close_after_flush = true;
             return ok;
         }
+    } else if (path == "/api/v1/image") {
+        // AP10: the live preview the settings page drives while a slider moves.
+        // POST with the values in the QUERY string - that is mj-settings.js's
+        // shape, not a choice of ours - and sendBeacon on pagehide posts the
+        // same way. Nothing is persisted; the Save button is a separate path.
+        if (m != "POST") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else             { r = api_.live_image(req.query); }
     } else if (path == "/api/v1/reset") {
         // Settings-page per-row reset: restore the built-in default; 404 =
         // "this camera has no such setting" (handled by the stock UI).

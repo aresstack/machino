@@ -53,6 +53,23 @@ public:
     // with patch_config via patch_m_.
     Response unset_config(const std::vector<std::string>& conf_keys);
 
+    // AP10: the live image preview the stock settings page drives while a
+    // slider is being dragged.
+    //
+    //   POST /api/v1/image?brightness=128&contrast=100&hflip=1
+    //
+    // The contract is read off mj-settings.js, not invented: leaf names only
+    // (`f.dot.split('.').pop()`), EVERY live field sent together on every push
+    // - "sending them together is what lets the backend apply combined
+    // settings (mirror and flip need each other)" - and the reply is only ever
+    // inspected for `r.ok`.
+    //
+    // NOTHING IS PERSISTED. The page saves separately; this is the preview,
+    // and a drag that wrote config would put every intermediate slider
+    // position on flash. It is also why this is not patch_config with a flag:
+    // two paths that must never share a persistence decision.
+    Response live_image(const std::string& query);
+
     // M8: one current frame as JPEG (binary, not JSON). Delegates to the
     // pipeline's snapshot path; the transport builds the image/jpeg response.
     // timeout_ms bounds the capture wait - streaming callers (MJPEG in the

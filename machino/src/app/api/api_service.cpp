@@ -493,6 +493,87 @@ Json change_json(const Change& c) {
 }
 } // namespace
 
+// Percent-decoding for the live-image query. Local rather than reaching for
+// SessionGate::form_value, because that looks a key up and this has to see
+// EVERY pair - an unknown control must be refused, not skipped.
+static std::string url_decode_one(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '+') { out += ' '; continue; }
+        if (s[i] == '%' && i + 2 < s.size()) {
+            const int h = hex(s[i + 1]), l = hex(s[i + 2]);
+            if (h >= 0 && l >= 0) { out += (char)((h << 4) | l); i += 2; continue; }
+        }
+        out += s[i];
+    }
+    return out;
+}
+
+// AP10. See the header for the contract; the two rules that shape this are
+// "every live field on every push" and "nothing is persisted".
+Response ApiService::live_image(const std::string& query) {
+    // Serialised with the config paths: a drag must not interleave with a save
+    // and leave the hardware holding a value neither of them chose.
+    std::lock_guard<std::mutex> lk(patch_m_);
+    Json applied = Json::object();
+    int ok = 0;
+
+    size_t pos = 0;
+    while (pos <= query.size()) {
+        const size_t amp = query.find('&', pos);
+        const std::string pair = query.substr(pos, amp == std::string::npos ? std::string::npos : amp - pos);
+        pos = amp == std::string::npos ? query.size() + 1 : amp + 1;
+        if (pair.empty()) continue;
+        const size_t eq = pair.find('=');
+        if (eq == std::string::npos)
+            return fail(400, "invalid_value", "/api/v1/image", "each parameter needs a value");
+        const std::string name = url_decode_one(pair.substr(0, eq));
+        const std::string val  = url_decode_one(pair.substr(eq + 1));
+
+        ImageControl c;
+        if (!image_control_from_name(name, c))
+            return fail(400, "unknown_field", "/api/v1/image", "unknown image control: " + name);
+
+        // anti_flicker is the one non-numeric control, exactly as the PATCH
+        // path decodes it - one spelling of the mapping, not two.
+        int iv;
+        if (c == ImageControl::AntiFlicker) {
+            iv = val == "off" ? 0 : val == "50hz" ? 50 : val == "60hz" ? 60 : -1;
+            if (iv < 0) return fail(422, "invalid_value", "/api/v1/image", "anti_flicker must be off|50hz|60hz");
+        } else {
+            if (val.empty()) return fail(422, "invalid_value", "/api/v1/image", name + " needs a numeric value");
+            size_t i = (val[0] == '-') ? 1 : 0;
+            if (i >= val.size()) return fail(422, "invalid_value", "/api/v1/image", name + " must be an integer");
+            for (; i < val.size(); ++i)
+                if (val[i] < '0' || val[i] > '9')
+                    return fail(422, "invalid_value", "/api/v1/image", name + " must be an integer");
+            iv = atoi(val.c_str());
+        }
+
+        // A control this platform does not have is NOT an error here: the page
+        // sends every live field it rendered, and refusing the whole push
+        // because one knob is unsupported would break the others with it.
+        const power::ApplyResult ar = tuning_.set_image(c, iv);
+        if (ar.ok) { ++ok; applied.set(name, Json::integer(ar.effective)); }
+    }
+
+    Response r;
+    r.status = 200;
+    r.body = Json::object();
+    r.body.set("applied", applied);
+    r.body.set("count", Json::integer(ok));
+    // Said explicitly because it is the whole difference from PATCH.
+    r.body.set("persisted", Json::boolean(false));
+    return r;
+}
+
 Response ApiService::unset_config(const std::vector<std::string>& conf_keys) {
     // Serialised with PATCH: a reset racing a save must not interleave
     // runtime state and ConfigStore.

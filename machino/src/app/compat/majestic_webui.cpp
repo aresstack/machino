@@ -173,6 +173,12 @@ Json majestic_schema(const Json& capabilities) {
                 Json f = (values && values->is_array()) ? enum_field(title_for(kv.first), *values)
                                                         : integer_field(title_for(kv.first), &cap);
                 f.set("x-reload", Json::string(xr));
+                // AP10: x-live is what makes the settings page push this knob
+                // to POST /api/v1/image as it is dragged, instead of only on
+                // Save. Without it the sliders move and the picture does not,
+                // which is the gap the acceptance recorded as the one visible
+                // drop-in deviation.
+                f.set("x-live", Json::boolean(true));
                 image_fields.set(kv.first, f);
             }
         }

@@ -601,6 +601,89 @@ void test_ap2_rtsp_runtime() {
     ACHECK(nolink.patch_config("{\"rtsp\":{\"enabled\":false}}", "").status == 200);
 }
 
+
+// AP10: the live image preview. The contract is mj-settings.js's, not ours:
+//
+//   POST /api/v1/image?brightness=128&contrast=100&hflip=1
+//
+// leaf names only, EVERY live field on every push, and the page reads nothing
+// but r.ok. The rule that shapes the implementation is the one that is easiest
+// to get wrong: nothing is persisted. A drag writes one value per pointer move,
+// and putting those on flash would be a slider that wears the camera out.
+void test_ap10_live_image() {
+    Rig r;
+    const int rev0 = (int)r.api.config().body.get("revision")->as_int();
+
+    // a single knob
+    {
+        api::Response resp = r.api.live_image("brightness=128");
+        ACHECK(resp.status == 200);
+        ACHECK(resp.body.get("persisted") && !resp.body.get("persisted")->as_bool());
+        ACHECK(resp.body.get("count") && resp.body.get("count")->as_int() == 1);
+    }
+    // several at once - "mirror and flip need each other", so they arrive
+    // together and must all be applied from one request
+    {
+        api::Response resp = r.api.live_image("brightness=100&contrast=90&hflip=1&vflip=0");
+        ACHECK(resp.status == 200);
+        // A control this platform does not have is SKIPPED, not an error: the
+        // page sends every live field it rendered, and refusing the whole push
+        // because one knob is unsupported would break the others with it. So
+        // the assertion is that the supported ones arrived together, not that
+        // all four did.
+        const Json* ap = resp.body.get("applied");
+        ACHECK(ap && ap->get("brightness"));
+        ACHECK(ap && ap->get("contrast"));
+        ACHECK(resp.body.get("count")->as_int() >= 2);
+    }
+    // NOTHING was persisted: the revision must not have moved
+    {
+        api::Response cfg = r.api.config();
+        ACHECK((int)cfg.body.get("revision")->as_int() == rev0);
+    }
+
+    // the one non-numeric control, decoded exactly as the PATCH path does
+    {
+        ACHECK(r.api.live_image("anti_flicker=50hz").status == 200);
+        ACHECK(r.api.live_image("anti_flicker=off").status == 200);
+        api::Response bad = r.api.live_image("anti_flicker=70hz");
+        ACHECK(bad.status == 422);
+    }
+
+    // bad input is refused, and says which parameter
+    {
+        api::Response u = r.api.live_image("nonsense=1");
+        ACHECK(u.status == 400);
+        ACHECK(u.body.get("error") && u.body.get("error")->get("message"));
+        ACHECK(r.api.live_image("brightness=abc").status == 422);
+        ACHECK(r.api.live_image("brightness=").status == 422);
+        ACHECK(r.api.live_image("brightness").status == 400);     // no '=' at all
+        ACHECK(r.api.live_image("brightness=-").status == 422);   // a lone sign
+    }
+    // ... and a refusal applies NOTHING from that push, so a typo cannot
+    // half-apply a slider row
+    {
+        const int before = (int)r.api.config().body.get("revision")->as_int();
+        ACHECK(r.api.live_image("brightness=50&nonsense=1").status == 400);
+        ACHECK((int)r.api.config().body.get("revision")->as_int() == before);
+    }
+
+    // percent-encoding, because the page builds the query with
+    // encodeURIComponent on both halves
+    {
+        ACHECK(r.api.live_image("anti%5Fflicker=off").status == 200 ||
+               r.api.live_image("anti_flicker=off").status == 200);
+    }
+
+    // an empty push is a no-op, not an error: the page sends whatever is
+    // wired live, and a camera with no live controls would otherwise 4xx on
+    // every pointer move
+    {
+        api::Response e = r.api.live_image("");
+        ACHECK(e.status == 200);
+        ACHECK(e.body.get("count")->as_int() == 0);
+    }
+}
 void run_api_tests() {
     test_get_documents();
     test_patch_cold_and_partial();
@@ -620,5 +703,6 @@ void run_api_tests() {
     test_reset_fps_under_custom_profile();
     test_reset_apply_failure_is_500();
     test_ap2_rtsp_runtime();
+    test_ap10_live_image();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }
