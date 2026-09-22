@@ -446,6 +446,20 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
             patch.set(name, value);
             continue;
         }
+        // AP18/AP19: nightMode is a section this layer REPORTS (one key,
+        // irCut "off"), so answering a write to it with "unknown section"
+        // would be the AP14 defect again - it reads as a typo on the caller's
+        // side when the cause is a property of the camera. Say which.
+        if (name == "nightMode") {
+            r.code = "unsupported_control";
+            r.status = 403;
+            r.path = name;
+            r.message = "this camera has no IR-cut hardware this build can drive: no ircut, "
+                        "led or infrared node in the device tree, no /sys/class/leds, no PWM, "
+                        "no ADC, and upstream's wiki-harvested pin table has no entry for t40. "
+                        "Pins are not accepted because nothing would act on them.";
+            return r;
+        }
         r.code = "unknown_field";
         r.path = name;
         r.message = "unknown majestic-webui section";
