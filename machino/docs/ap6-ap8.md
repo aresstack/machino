@@ -248,3 +248,115 @@ Zeile **4.3** („RTSP ohne Credentials, Defaults → Stream spielt") ist durch
 AP7 **ungültig geworden**: mit dem neuen Default antwortet die Kamera `401`.
 Das ist die beabsichtigte Korrektur des Drop-in-Vertrags, aber die Zeile muss
 beim nächsten Hardwarefenster umgeschrieben statt nachgetestet werden.
+
+---
+
+# AP9–AP11
+
+Commits `c41c17c` (AP9), `995cd7b` (AP10). AP11 war bereits gebaut.
+Hosttests 2372 → **2435**, CI inkl. MIPS grün.
+
+## AP9 — Schema-Parität
+
+Die Frage war nicht „was könnten wir exponieren", sondern **was erwartet
+Upstream**. `mj-settings.js` nennt genau vier Sektionen:
+
+```js
+'image'  'sensor'  'video0'  'video1'
+```
+
+Daraus folgt beides:
+
+* **`video1` gehört ins Schema** — es wegzulassen war die Abweichung, und mein
+  vorheriger Revert hat eine Sektion versteckt, nach der die Stock-Seite fragt.
+* **`rtsp.*` und `onvif.*` gehören NICHT hinein** — sie kommen in
+  `mj-settings.js` nirgends vor. Sie zu rendern hieße, Bedienelemente auf die
+  Stock-Seite zu setzen, die majestic nie hatte.
+
+### Der Kompromiss, den es nicht braucht
+
+`video1` ist jetzt als **`x-reload: "pipeline"`** exponiert, nicht als `live`.
+Aus dem ausgeführten `changeCost()`:
+
+```js
+if (spec === 'none' || spec === 'live') return 'none';
+...
+return 'pipeline';
+```
+
+Die Seite sagt dem Betreiber dann „After Save, a reload restarts the video
+streams" und bietet Apply an — und **Apply ist ein SIGHUP**. Also musste die
+zweite Hälfte dazu: `main.cpp`s SIGHUP-Handler konfiguriert jetzt auch die
+Substream-Unit. Ohne sie hätte die Seite ein Apply angeboten, das nichts
+liefert.
+
+Beide meiner früheren Positionen waren falsch: `live` hätte eine Änderung als
+angewendet gemeldet, obwohl nichts passiert; das Weglassen versteckte eine
+erwartete Sektion.
+
+Der Schema-Contract-Test erzwang „nur `live`". Diese Invariante galt, solange
+jedes exponierte Feld im POST angewendet wurde — sie gilt nicht mehr. Er
+akzeptiert jetzt `pipeline` und beschränkt es auf `video1`, damit nichts
+anderes es stillschweigend beansprucht.
+
+## AP10 — `/api/v1/image`
+
+Die Acceptance führte den 404 hier als „die eine sichtbar betroffene
+Drop-in-Lücke". Der Vertrag stammt aus `mj-settings.js`, nicht aus einem
+Entwurf:
+
+```
+POST /api/v1/image?brightness=128&contrast=100&hflip=1
+```
+
+Nur Blattnamen (`f.dot.split('.').pop()`), **alle** Live-Felder bei **jedem**
+Push — „sending them together is what lets the backend apply combined settings
+(mirror and flip need each other)" — und ausgewertet wird nur `r.ok`.
+`sendBeacon` beim `pagehide` postet dieselbe Form, weshalb die Werte im Query
+stehen und nicht im Body.
+
+**Nichts wird persistiert.** Das ist die Regel, um die herum implementiert
+wurde, kein Nachgedanke: ein Zug am Regler erzeugt einen Write pro
+Zeigerbewegung, und die auf Flash zu schreiben wäre ein Regler, der die Kamera
+verschleißt. Bewusst **nicht** `patch_config` mit einem Flag — zwei Pfade, die
+sich keine Persistenzentscheidung teilen dürfen. Ein Test prüft, dass die
+Config-Revision über einen Push hinweg unverändert bleibt.
+
+Ein **nicht unterstützter** Regler wird übersprungen statt den Push abzulehnen:
+die Seite sendet jedes gerenderte Live-Feld, und wegen eines fehlenden Knopfes
+die anderen mitzureißen wäre falsch. Ein **fehlerhafter** wird abgelehnt, und
+zwar der ganze Push — ein Tippfehler darf keine halbe Reglerreihe anwenden.
+
+Dazu markiert das Schema die Bildfelder als `x-live`; ohne diese Hälfte gäbe es
+den Endpunkt und niemand riefe ihn.
+
+## AP11 — Setup / First-Run / Claiming
+
+**War bereits gebaut**, und die Prüfung bestätigt es statt es nachzubauen.
+`tests/test_setup.cpp` trägt **102 Zusicherungen**, darunter genau die Punkte
+des Pakets:
+
+| Anforderung | Stand |
+|---|---|
+| Shadow-Hash ist die einzige Wahrheit | `shadow_check()` und `claim_state()` lesen beide `/etc/shadow`, sonst nichts |
+| kein zweiter Credential-Store | auf dem Gerät geprüft: keiner vorhanden |
+| leerer Hash → Setup verfügbar | abgedeckt |
+| Passwort setzen → claimed | abgedeckt, inkl. „Schreiben behauptet Erfolg und tat nichts" |
+| danach normales Login | durch die **echte** `SessionGate` getestet |
+| Restart-Persistenz | abgedeckt |
+| `system.unsafe` konsistent | Setup-Gate (`http_server.cpp:364`), Session-Auth (420), ONVIF (348) und `RtspAuth::required()` hängen alle daran |
+| Entropie | `/dev/urandom` unverändert, kein schwacher Fallback |
+
+Die `SetupGate` selbst kennt `unsafe` bewusst nicht — die Entscheidung liegt
+beim Aufrufer, was die Schichtung sauber hält.
+
+### `PENDING_PHYSICAL` — und warum ich es nicht erzwungen habe
+
+Der echte Factory-/Unclaimed-Test fehlt. Ihn hier zu fahren hieße, den
+root-Hash in `/etc/shadow` zu leeren — und das bricht **sofort** die
+Passwort-Authentifizierung von dropbear. Ich hätte in derselben Sekunde keinen
+SSH-Zugang mehr, um den Zustand wiederherzustellen. Das ist exakt der
+`NEEDS_HUMAN`-Fall, und unbeaufsichtigt auszulösen wäre unverantwortlich.
+
+Er gehört an eine Kamera, die neu geflasht werden kann, oder ans Ende einer
+Sitzung mit physischem Zugang.
