@@ -13,6 +13,7 @@
 #include "app/http/http_server.hpp"
 #include "app/onvif/discovery_server.hpp"
 #include "app/onvif/onvif_service.hpp"
+#include "app/log_reader.hpp"
 #include "app/osd/osd_service.hpp"
 #include "app/linux_grace_timer.hpp"
 #include "app/linux_system_stats.hpp"
@@ -287,6 +288,18 @@ int main(int argc, char** argv) {
     log_set_syslog(cfg.log.syslog || dropin, dropin ? "majestic" : "machino");
     LOGI(MOD, "machino %s starting (pid %d)", MACHINO_VERSION, (int)getpid());
 
+    // THE ONLY fork() in the daemon's steady-state life, and it happens HERE -
+    // before the hardware registry, before any platform adapter exists, and
+    // long before IMP can have been initialised. Forking later, while IMP is
+    // live, leaves the process permanently unable to re-initialise it after
+    // the next teardown (measured; docs/incident-2026-09-22-oom.md). /ws/logs
+    // from here on only adds and removes subscribers.
+    //
+    // Failure is not fatal: the camera streams fine without a log viewer.
+    LogReader log_reader;
+    if (!log_reader.start())
+        LOGW(MOD, "no log reader - /ws/logs will accept and close");
+
     hw::Registry reg;
     profiles::register_builtin(reg);
     if (!cfg.board_profile_file.empty()) {
@@ -408,6 +421,7 @@ int main(int argc, char** argv) {
         // rather than silently dropped.
         http::SetupGate setup_gate(claim_state, set_root_password, shadow_check, eula_present);
         httpd.set_setup(&setup_gate);
+        httpd.set_log_reader(&log_reader);
 
         // AP11 ONVIF. Off by default until it has met a real client; the
         // profiles it advertises are the ones the pipeline actually has, so

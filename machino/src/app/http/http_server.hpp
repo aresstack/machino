@@ -9,6 +9,7 @@
 #include "app/api/api_service.hpp"
 #include "app/http/session.hpp"
 #include "app/http/setup.hpp"
+#include "app/log_reader.hpp"
 #include "app/onvif/onvif_service.hpp"
 #include "app/osd/osd_service.hpp"
 #include "core/events.hpp"
@@ -87,6 +88,10 @@ public:
     // and fall through to the relay, exactly as before.
     void set_onvif(onvif::OnvifService* o) { onvif_ = o; }
 
+    // The one logread child, forked in main() before any IMP initialisation.
+    // Null = no log streaming; /ws/logs then accepts and closes at once.
+    void set_log_reader(LogReader* r) { log_reader_ = r; }
+
     Result start();
     void   stop();
     int    port() const { return cfg_.port; }
@@ -107,11 +112,12 @@ private:
     // /ws/logs: ONE shared "logread -f" child feeds every subscriber, its pipe
     // rides the same poll() so nothing blocks the media path. Started with the
     // first subscriber, reaped with the last.
-    void logs_start();
-    void logs_stop();
+    // The logread child is NOT started or stopped here any more: it is forked
+    // once in main() before IMP can exist, and /ws/logs only adds and removes
+    // subscribers. See app/log_reader.hpp for why that matters on this camera.
     void logs_pump(short revents);
-    void logs_reap();                 // collect the logread child once it is really gone
     bool logs_wanted() const;
+    int  logs_fd() const;
     void pump_rtc(Client& c);       // webrtc per tick: DTLS timers, PLI->IDR, AU->RTP
     bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
     bool relay_open(Client& c);                          // open the upstream socket for a prepared relay
@@ -130,12 +136,8 @@ private:
     int  unit_for_stream(const std::string& sv) const;
     std::unique_ptr<SessionGate> gate_;   // set when cfg_.session_auth
     int               listen_fd_ = -1;
-    int               logs_fd_ = -1;      // read end of the logread pipe
-    int               logs_pid_ = -1;     // the logread child
-    // Children signalled but not yet collected. Without this a child that
-    // outlives its SIGTERM by a moment became an unreapable zombie as soon as
-    // the next subscriber started a new one.
-    std::vector<pid_t> logs_reaping_;
+    LogReader*        log_reader_ = nullptr;   // owned by main, forked before IMP
+
     std::string       logs_buf_;          // partial line carried between reads
     std::atomic<bool> quit_{false};
     std::thread       thread_;

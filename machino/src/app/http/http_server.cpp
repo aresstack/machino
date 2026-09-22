@@ -232,7 +232,9 @@ void HttpServer::stop() {
         close(c->fd);
     }
     clients_.clear();
-    logs_stop();
+    // The logread child is NOT touched here: main owns it, it was forked
+    // before IMP existed, and it must outlive every HTTP restart.
+
     close(listen_fd_); listen_fd_ = -1;
     LOGI(MOD, "stopped");
 }
@@ -592,8 +594,9 @@ bool HttpServer::handle_request(Client& c) {
         else {
             queue(c, ws::handshake_response(wskey));
             c.ws_logs = true;
-            logs_start();
-            if (logs_fd_ < 0) { c.close_after_flush = true; return true; }   // no logread on this box
+            // Subscribe only. No fork, no kill, nothing from a request that
+            // can reach the media path - see app/log_reader.hpp.
+            if (logs_fd() < 0) { c.close_after_flush = true; return true; }   // no reader on this box
             LOGI(MOD, "%s: /ws/logs subscribed", c.peer.c_str());
             return true;
         }
@@ -964,46 +967,7 @@ bool HttpServer::logs_wanted() const {
 // One "logread -f" for the whole server. fork+exec (no shell) so nothing is
 // parsed on our behalf, the read end is non-blocking and joins poll(); the
 // child is reaped when the last subscriber goes.
-void HttpServer::logs_start() {
-    if (logs_fd_ >= 0) return;
-    int fds[2];
-    if (pipe(fds) != 0) { LOGW(MOD, "/ws/logs: pipe failed: %s", strerror(errno)); return; }
-    const pid_t pid = fork();
-    if (pid < 0) { close(fds[0]); close(fds[1]); LOGW(MOD, "/ws/logs: fork failed: %s", strerror(errno)); return; }
-    if (pid == 0) {                                   // child: only async-signal-safe calls
-        close(fds[0]);
-        dup2(fds[1], STDOUT_FILENO);
-        dup2(fds[1], STDERR_FILENO);
-        close(fds[1]);
-        execl("/sbin/logread", "logread", "-f", (char*)nullptr);
-        execlp("logread", "logread", "-f", (char*)nullptr);
-        _exit(127);
-    }
-    close(fds[1]);
-    fcntl(fds[0], F_SETFL, O_NONBLOCK);
-    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
-    logs_fd_ = fds[0];
-    logs_pid_ = pid;
-    logs_buf_.clear();
-    LOGI(MOD, "/ws/logs: streaming logread (pid %d)", (int)pid);
-}
 
-void HttpServer::logs_stop() {
-    if (logs_fd_ >= 0) { close(logs_fd_); logs_fd_ = -1; }
-    if (logs_pid_ > 0) {
-        kill(logs_pid_, SIGTERM);
-        // WNOHANG immediately after the signal almost always returns 0: the
-        // child has not died yet. Clearing the pid here left a zombie behind
-        // for every subscribe/unsubscribe cycle of the Logs page.
-        //
-        // It goes on a pending list rather than staying in logs_pid_, because
-        // the next subscriber may start a new child before this one has died,
-        // and overwriting the pid would make the old one unreapable.
-        if (waitpid(logs_pid_, nullptr, WNOHANG) != logs_pid_) logs_reaping_.push_back(logs_pid_);
-        logs_pid_ = -1;
-    }
-    logs_buf_.clear();
-}
 
 // Forward whole lines only: the viewer splits on newline and keeps a partial
 // tail, but sending half a line to every subscriber would interleave badly
@@ -1011,27 +975,33 @@ void HttpServer::logs_stop() {
 // Collect the logread child once it has actually exited. Non-blocking, called
 // from the poll loop, so a child that takes a moment to die after SIGTERM is
 // still reaped instead of accumulating as a zombie PID.
-void HttpServer::logs_reap() {
-    for (size_t i = 0; i < logs_reaping_.size();) {
-        const pid_t p = logs_reaping_[i];
-        const pid_t r = waitpid(p, nullptr, WNOHANG);
-        // ECHILD means somebody already collected it, which is just as done.
-        if (r == p || (r < 0 && errno == ECHILD)) logs_reaping_.erase(logs_reaping_.begin() + (long)i);
-        else ++i;
-    }
-}
 
+int HttpServer::logs_fd() const { return log_reader_ ? log_reader_->fd() : -1; }
+
+// Drain the reader's pipe and fan whole lines out to whoever is subscribed.
+//
+// This runs whether or not anybody is listening. With no subscribers the lines
+// are read and dropped, because an undrained pipe blocks `logread` and turns
+// the log stream into a dead one. Nothing here forks or signals: a reader that
+// dies is marked dead and stays dead for the life of the daemon, since forking
+// a replacement could happen while IMP is live - which is the whole defect
+// this design exists to avoid.
 void HttpServer::logs_pump(short revents) {
-    if (logs_fd_ < 0) return;
-    if (revents & (POLLERR | POLLNVAL)) { logs_stop(); return; }
+    if (logs_fd() < 0) return;
+    const auto reader_died = [this](const char* why) {
+        LOGW(MOD, "/ws/logs: reader gone (%s) - not restarting it, see log_reader.hpp", why);
+        if (log_reader_) log_reader_->mark_dead();
+        for (auto& c : clients_) if (c->ws_logs) c->close_after_flush = true;
+    };
+    if (revents & (POLLERR | POLLNVAL)) { reader_died("poll error"); return; }
     if (!(revents & (POLLIN | POLLHUP))) return;
     char buf[4096];
     for (;;) {
-        const ssize_t n = read(logs_fd_, buf, sizeof buf);
-        if (n == 0) { LOGW(MOD, "/ws/logs: logread ended"); logs_stop(); return; }
+        const ssize_t n = read(logs_fd(), buf, sizeof buf);
+        if (n == 0) { reader_died("logread exited"); return; }
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return;
-            logs_stop(); return;
+            reader_died("read error"); return;
         }
         logs_buf_.append(buf, (size_t)n);
         const size_t nl = logs_buf_.rfind(0x0a);
@@ -1082,8 +1052,8 @@ void HttpServer::loop() {
             }
         }
         for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
-        const size_t logs_idx = (logs_fd_ >= 0) ? pfds.size() : (size_t)-1;
-        if (logs_fd_ >= 0) pfds.push_back({logs_fd_, POLLIN, 0});
+        const size_t logs_idx = (logs_fd() >= 0) ? pfds.size() : (size_t)-1;
+        if (logs_fd() >= 0) pfds.push_back({logs_fd(), POLLIN, 0});
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)
@@ -1139,8 +1109,10 @@ void HttpServer::loop() {
                                       [](const std::unique_ptr<Client>& p) { return p->fd < 0; }),
                        clients_.end());
         if (logs_idx != (size_t)-1 && logs_idx < pfds.size()) logs_pump(pfds[logs_idx].revents);
-        if (logs_fd_ >= 0 && !logs_wanted()) { LOGI(MOD, "/ws/logs: last subscriber left"); logs_stop(); }
-        logs_reap();
+        // The reader keeps running with no subscribers on purpose: its pipe must
+        // be drained or logread blocks on it. logs_pump discards when nobody
+        // is listening.
+
         if (t - last_heartbeat_ms_ >= 15000) last_heartbeat_ms_ = t;
         // 1 Hz telemetry only while somebody listens (cheap otherwise)
         bool any_sse = false; for (auto& c : clients_) if (c->sse) { any_sse = true; break; }

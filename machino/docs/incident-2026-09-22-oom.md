@@ -273,10 +273,20 @@ So the child's lifetime overlapping the teardown is **not sufficient**.
 Same camera, same build, same `/ws/logs` code path, same lingering child. The
 one variable is whether Ingenic/IMP state existed at the moment of `fork()`.
 
-**`fork()` while IMP is initialised is the trigger.** That is now an
-experimental result rather than a hypothesis — though *why* it damages things,
-and in which layer, is still unknown, and `IMP_System_Init` failing only after
-a full driver bring-up remains unexplained.
+Stated precisely, because the distinction matters:
+
+- **Proven:** opening `/ws/logs` while IMP is ACTIVE makes the *next* IMP init
+  fail after the following teardown.
+- **Proven:** a `logread` child started in COLD_IDLE may then overlap an IMP
+  start, a teardown and a re-init without triggering anything.
+- **Therefore:** "`fork()` while IMP is live" is the leading mechanism and is
+  strongly supported — but **the fork itself has not been isolated**. Doing so
+  needs a build that forks something harmless at the same point, which has been
+  deferred because the architectural fix avoids the dangerous operation either
+  way.
+
+*Why* it damages anything, in which layer, and why `IMP_System_Init` fails only
+after a full driver bring-up all remain unexplained.
 
 It also means the proposed fix is aimed at the right thing: start the `logread`
 helper **once at daemon start, before the first IMP init**, and keep it. C2 as
