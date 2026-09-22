@@ -47,6 +47,10 @@ private:
     Announcement announcement_for(const std::string& local_ip) const;
 
     std::string uuid_, scopes_;
+    // The interface address the multicast membership was taken on. Used as the
+    // announcement source when the routing table cannot answer for the group -
+    // without it the Hello carries an XAddr of 0.0.0.0, which is useless.
+    std::string mcast_if_;
     int         http_port_;
     int         fd_ = -1;
     int         wake_[2] = {-1, -1};      // self-pipe, so stop() never waits for a timeout

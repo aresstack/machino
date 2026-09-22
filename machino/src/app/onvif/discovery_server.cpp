@@ -2,6 +2,8 @@
 #include "core/log.hpp"
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -9,6 +11,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <ctime>
+#include <string>
 #include <unistd.h>
 
 namespace machino { namespace onvif {
@@ -79,13 +82,60 @@ Result DiscoveryServer::start() {
         return Result::error(errno);
     }
 
-    struct ip_mreq mreq{};
-    mreq.imr_multiaddr.s_addr = inet_addr(GROUP);
-    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-    if (setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof mreq) != 0) {
-        // Not fatal: a unicast Probe still reaches us, which is how some
-        // clients ask once they know the address.
-        LOGW(MOD, "multicast join failed (%s) - unicast probes only", strerror(errno));
+    // AP8: join on a CONCRETE interface, not INADDR_ANY.
+    //
+    // INADDR_ANY makes the kernel pick the interface from the routing table,
+    // and on this camera that fails with ENODEV: the only route is the local
+    // /24, there is no default gateway, and nothing routes 239.255.255.250.
+    // A camera on a flat LAN with no gateway is the NORMAL deployment, and
+    // multicast is exactly how an ONVIF client finds it - so falling back to
+    // "unicast probes only" means the camera is undiscoverable for every
+    // client that does not already know its address.
+    //
+    // So: try INADDR_ANY first (correct when a route exists), then every
+    // up, multicast-capable, non-loopback IPv4 interface in turn. The first
+    // that takes the membership wins.
+    {
+        struct ip_mreq mreq{};
+        mreq.imr_multiaddr.s_addr = inet_addr(GROUP);
+        mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+        bool joined = setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof mreq) == 0;
+        std::string via = "the routing table";
+        if (!joined) {
+            const int any_err = errno;
+            struct ifaddrs* ifa = nullptr;
+            if (getifaddrs(&ifa) == 0) {
+                for (struct ifaddrs* p = ifa; p && !joined; p = p->ifa_next) {
+                    if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
+                    if (!(p->ifa_flags & IFF_UP)) continue;
+                    if (p->ifa_flags & IFF_LOOPBACK) continue;
+                    if (!(p->ifa_flags & IFF_MULTICAST)) continue;
+                    struct ip_mreq m{};
+                    m.imr_multiaddr.s_addr = inet_addr(GROUP);
+                    m.imr_interface = ((struct sockaddr_in*)p->ifa_addr)->sin_addr;
+                    if (setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &m, sizeof m) == 0) {
+                        joined = true;
+                        mcast_if_ = inet_ntoa(m.imr_interface);
+                        via = std::string(p->ifa_name ? p->ifa_name : "?") + " " + mcast_if_;
+                        // Send our own multicast out of the same interface, or
+                        // the Hello goes wherever the routing table guesses.
+                        setsockopt(fd_, IPPROTO_IP, IP_MULTICAST_IF, &m.imr_interface, sizeof m.imr_interface);
+                    }
+                }
+                freeifaddrs(ifa);
+            }
+            if (joined)
+                LOGI(MOD, "multicast joined via %s (INADDR_ANY refused: %s)", via.c_str(), strerror(any_err));
+        }
+        if (!joined) {
+            // Still not fatal: a unicast Probe reaches us, which is how a
+            // client asks once it already knows the address. But that is a
+            // fallback, not discovery.
+            LOGW(MOD, "multicast join failed on every interface (%s) - unicast probes only, "
+                      "this camera will NOT be discovered", strerror(errno));
+        } else if (via == "the routing table") {
+            LOGI(MOD, "multicast joined via %s", via.c_str());
+        }
     }
 
     if (pipe(wake_) != 0) {
@@ -120,7 +170,10 @@ void DiscoveryServer::announce(bool alive) {
     grp.sin_port = htons(PORT);
     // The announcement is not aimed at one peer, so there is no per-peer route
     // to ask about; the group address is the best available answer.
-    const std::string local = local_address_for(&grp, sizeof grp);
+    std::string local = local_address_for(&grp, sizeof grp);
+    // No route to the group: fall back to the interface the membership was
+    // taken on, or the announcement advertises 0.0.0.0 and nobody can reach us.
+    if (local == "0.0.0.0" && !mcast_if_.empty()) local = mcast_if_;
     const Announcement a = announcement_for(local);
     const std::string id = message_id(++msg_counter_, (int64_t)::time(nullptr));
     const std::string msg = alive ? hello(a, id) : bye(a, id);
