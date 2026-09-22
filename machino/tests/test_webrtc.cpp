@@ -332,3 +332,80 @@ void run_webrtc_tests() {
         WCHECK(!browser.unprotect_rtcp(bad));
     }
 }
+
+// A refused offer has to say what the browser DID offer. The old message was
+// the same whether the browser had no H264 at all - a platform limitation the
+// user can act on - or offered it only in mode 0, which is a negotiation
+// detail. Those need opposite answers, and on 2026-09-22 one such refusal sat
+// in the camera log with no way to tell which it had been.
+void run_sdp_refusal_tests() {
+    auto offer = [](const std::string& video_lines) {
+        return std::string(
+            "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+            "a=ice-ufrag:abcd\r\na=ice-pwd:0123456789abcdef0123\r\n"
+            "a=fingerprint:sha-256 AA:BB:CC\r\n"
+            "m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:0\r\n") + video_lines;
+    };
+
+    // no video codec at all beyond the housekeeping payloads
+    {
+        webrtc::Offer o = webrtc::parse_offer(offer(
+            "a=rtpmap:97 rtx/90000\r\na=rtpmap:98 red/90000\r\n"));
+        WCHECK(!o.ok);
+        WCHECK(o.error.find("offered: nothing") != std::string::npos);
+        WCHECK(o.error.find("but not in mode 1") == std::string::npos);
+    }
+
+    // VP8/VP9/AV1 but no H264 - a browser build without H264
+    {
+        webrtc::Offer o = webrtc::parse_offer(offer(
+            "a=rtpmap:96 VP8/90000\r\na=rtpmap:98 VP9/90000\r\n"
+            "a=rtpmap:99 AV1/90000\r\na=rtpmap:97 rtx/90000\r\n"));
+        WCHECK(!o.ok);
+        WCHECK(o.error.find("VP8") != std::string::npos);
+        WCHECK(o.error.find("VP9") != std::string::npos);
+        WCHECK(o.error.find("AV1") != std::string::npos);
+        WCHECK(o.error.find("rtx") == std::string::npos);      // housekeeping stays out
+        WCHECK(o.error.find("but not in mode 1") == std::string::npos);
+    }
+
+    // H264 offered, but only packetization-mode=0 - the other diagnosis
+    {
+        webrtc::Offer o = webrtc::parse_offer(offer(
+            "a=rtpmap:96 H264/90000\r\n"
+            "a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f\r\n"));
+        WCHECK(!o.ok);
+        WCHECK(o.error.find("H264") != std::string::npos);
+        WCHECK(o.error.find("but not in mode 1") != std::string::npos);
+    }
+    // H264 with NO fmtp at all: RFC 6184 says mode 0 by default, so also refused
+    {
+        webrtc::Offer o = webrtc::parse_offer(offer("a=rtpmap:96 H264/90000\r\n"));
+        WCHECK(!o.ok);
+        WCHECK(o.error.find("but not in mode 1") != std::string::npos);
+    }
+    // and the happy path still works, with mode 1 among several payloads
+    {
+        webrtc::Offer o = webrtc::parse_offer(offer(
+            "a=rtpmap:96 VP8/90000\r\n"
+            "a=rtpmap:102 H264/90000\r\n"
+            "a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n"));
+        WCHECK(o.ok);
+        WCHECK(o.video_index == 0);
+        WCHECK(o.media[0].h264_pt == 102);
+        WCHECK(o.media[0].h264_profile == "42e01f");
+        WCHECK(o.error.empty());
+    }
+    // the codec list is bounded: a hostile offer cannot grow the message
+    {
+        std::string many;
+        for (int i = 0; i < 40; ++i) {
+            char b[64];
+            snprintf(b, sizeof b, "a=rtpmap:%d CODEC%d/90000\r\n", 96 + i, i);
+            many += b;
+        }
+        webrtc::Offer o = webrtc::parse_offer(offer(many));
+        WCHECK(!o.ok);
+        WCHECK(o.error.size() < 400);
+    }
+}

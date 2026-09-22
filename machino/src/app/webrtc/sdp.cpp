@@ -51,13 +51,19 @@ Offer parse_offer(const std::string& sdp) {
     // per-media: payload types seen as H264 in rtpmap, and their fmtp params
     std::map<int, bool> h264_pt;                      // pt -> is H264 (current media only)
     std::map<int, std::string> fmtp;                  // pt -> fmtp params (current media only)
+    std::vector<std::string> offered_video;           // every video codec name seen, for the refusal message
+    bool saw_h264_any_mode = false;                   // H264 offered, but not in mode 1
     auto settle_video = [&](int idx) {
         // choose the first offered H264 payload with packetization-mode=1
         if (idx < 0 || (size_t)idx >= o.media.size() || o.media[idx].kind != "video") return;
         for (const auto& kv : h264_pt) {
             if (!kv.second) continue;
+            saw_h264_any_mode = true;
             auto f = fmtp.find(kv.first);
             const std::string params = f == fmtp.end() ? "" : f->second;
+            // RFC 6184: an absent packetization-mode means 0, so it is not
+            // enough that H264 is offered - only mode 1 carries the FU-A
+            // fragmentation this sender emits.
             if (fmtp_value(params, "packetization-mode") != "1") continue;
             o.media[idx].h264_pt = kv.first;
             o.media[idx].h264_profile = fmtp_value(params, "profile-level-id");
@@ -91,8 +97,24 @@ Offer parse_offer(const std::string& sdp) {
             }
         } else if (starts(l, "a=rtpmap:")) {
             int pt = -1; char codec[64] = {0};
-            if (sscanf(l.c_str() + 9, "%d %63[^/]", &pt, codec) == 2 && pt >= 0)
+            if (sscanf(l.c_str() + 9, "%d %63[^/]", &pt, codec) == 2 && pt >= 0) {
                 if (strcmp(codec, "H264") == 0) h264_pt[pt] = true;
+                // Remember every video codec the browser offered, so a refusal
+                // can say what it DID offer. "no H264 packetization-mode=1" on
+                // its own does not distinguish a browser with no H264 at all
+                // from one that offers H264 only in mode 0 - and without the
+                // offer in hand those need opposite answers.
+                if (cur >= 0 && o.media[cur].kind == "video" && offered_video.size() < 12) {
+                    const std::string name(codec);
+                    // Skip the RTP housekeeping payloads: they are in every
+                    // offer and say nothing about what can be decoded.
+                    if (name != "rtx" && name != "red" && name != "ulpfec" && name != "flexfec-03") {
+                        bool seen = false;
+                        for (const auto& s : offered_video) if (s == name) { seen = true; break; }
+                        if (!seen) offered_video.push_back(name);
+                    }
+                }
+            }
         } else if (starts(l, "a=fmtp:")) {
             int pt = -1; int off = 0;
             if (sscanf(l.c_str() + 7, "%d %n", &pt, &off) >= 1 && pt >= 0 && off > 0)
@@ -100,7 +122,18 @@ Offer parse_offer(const std::string& sdp) {
         }
     }
     settle_video(cur);
-    if (o.video_index < 0)            { o.error = "no H264 packetization-mode=1 video"; return o; }
+    if (o.video_index < 0) {
+        // Name what the browser DID offer. Without this the log line is the
+        // same whether the browser has no H264 at all (a build or platform
+        // limitation the user can act on) or offers it only in mode 0 (a
+        // negotiation detail) - and those need opposite answers.
+        std::string what;
+        for (const auto& c : offered_video) { if (!what.empty()) what += ","; what += c; }
+        o.error = "no H264 packetization-mode=1 video (offered: " +
+                  (what.empty() ? std::string("nothing") : what) + ")";
+        if (saw_h264_any_mode) o.error += " - H264 was offered, but not in mode 1";
+        return o;
+    }
     if (o.ice_ufrag.empty() || o.ice_pwd.empty()) { o.error = "missing ice credentials"; return o; }
     if (o.fingerprint.empty())        { o.error = "missing DTLS fingerprint"; return o; }
     o.ok = true;
