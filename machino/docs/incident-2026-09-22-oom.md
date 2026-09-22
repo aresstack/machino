@@ -580,3 +580,96 @@ Stufe **browser-like burst** dazwischen: mehrere gleichzeitig offene
 Verbindungen mit Keep-Alive und Connection-Reuse. Erst danach Medien, und diese
 einzeln getrennt: `/ws/video` allein, WebRTC-Signalisierung allein, dann der
 tatsächliche MSE-Stream, dann der tatsächliche WebRTC-Stream.
+
+---
+
+## Runde 6 — der Lockup MIT Paketmitschnitt: es ist das erste relayed CGI
+
+Zum ersten Mal lief ein lokaler Mitschnitt, als die Box starb. Ergebnis: der
+Ausfallpunkt ist auf einen einzelnen HTTP-Request und auf Mikrosekunden
+eingegrenzt.
+
+### Die Sequenz des Browsers
+
+| Zeit (rel.) | Request | Antwort |
+|---|---|---|
+| 1231.567 | `GET /` | 302 (Session-Gate) |
+| 1231.572 | `GET /login.html?next=/` | 304 |
+| 1231.589 | `GET /cgi-bin/j/pulse.cgi` | 302 |
+| 1234.837 | `POST /login` | **200**, 2 B |
+| 1234.855 | `GET /` | **200**, 225 B (relayed, = `/var/www/index.html`) |
+| 1234.883 | **`GET /cgi-bin/live.cgi`** | **nie beantwortet** |
+
+### Der Todeszeitpunkt
+
+```
+1234.883414  Browser: GET /cgi-bin/live.cgi
+1234.884231  Kamera:  ACK auf den Request            (Kernel lebt)
+1234.886887  Browser: SYN (dritte Verbindung)
+1234.887404  Kamera:  SYN,ACK                        <- LETZTES Paket ueberhaupt
+             danach: kein FIN, kein RST, keine ARP-Antwort, nie wieder etwas
+1279.897     Browser: TCP Keep-Alive x2              -> keine Reaktion
+1284.484     ARP "Who has 192.168.1.10?"             -> keine Antwort
+```
+
+Der TCP-Stack hat den Request quittiert **und 3,2 ms spaeter noch einen
+vollstaendigen Handshake abgewickelt**, dann ist alles innerhalb von
+Mikrosekunden stehen geblieben. Ein sterbender Userspace-Prozess sieht anders
+aus: dabei schliesst der Kernel die Sockets mit FIN oder RST und beantwortet
+weiter ARP. Hier stirbt der Kernel mit.
+
+### Was damit AUSGESCHLOSSEN ist
+
+Der Browser kam nie bis zu den Assets, nie bis zu einem Medienstrom. Damit sind
+als Ausloeser raus: der parallele Asset-Burst, `/ws/video`, WebRTC, MSE,
+`/ws/logs`, mehrere Live-Clients. Es ist **das erste relayed CGI nach dem
+Login** - busybox forkt dafuer `haserl`.
+
+### Was den toedlichen Request von meinem erfolgreichen unterscheidet
+
+Meine Zerlegungsstufe 3b holte dieselbe URL erfolgreich (200, 18 923 B). Der
+Unterschied liegt in den Headern, die der Relay **woertlich** weiterreicht
+(`http_parse.cpp`: "keep the rest verbatim ... so haserl/CGI see the real
+request") und die busybox als CGI-Umgebung setzt:
+
+| | mein Request | Browser |
+|---|---|---|
+| Header | 3 | 8 |
+| | `Host`, `Connection: close`, `Cookie` | + `User-Agent` (langer Chrome-String), `Accept` (8 Typen), `Accept-Encoding: gzip, deflate`, `Accept-Language`, `Referer`, `Upgrade-Insecure-Requests`, `Connection: keep-alive` |
+
+Ausserdem oeffnete der Browser 3,5 ms nach dem Request eine **weitere**
+Verbindung, es waren also zwei Browser-Verbindungen plus die Upstream-Verbindung
+des Relays gleichzeitig offen.
+
+### Was sich gegenueber dem ERFOLGREICHEN Browser-Login unterschied
+
+Der Ladevorgang um 17:44 lief sauber durch. Unterschiede zu diesem hier, ohne
+Wertung welcher davon zaehlt:
+
+1. **Config**: damals Default; hier Substream + ONVIF + `rtsp.auth` aktiv
+2. **Prozess**: damals frisch kalt gebootet; hier nach einem **warmen** Restart
+3. **Vorlast**: damals meine Zerlegung; hier RTSP- und ONVIF-Tests
+4. **Sampler**: in **beiden** Faellen keiner
+
+Punkt 4 ist wichtig: **meine Sampler-Hypothese aus Runde 5 ist damit
+geschwaecht.** In diesem Lauf lief kein Sampler, und die Box starb trotzdem. Gut,
+dass sie als Kandidat und nicht als Ursache dokumentiert war.
+
+Punkt 2 relativiert auch die Cold-Boot-Korrektur nicht: Runde 4 starb nach
+kaltem Boot, Runde 6 nach warmem Restart. Weder warm noch kalt ist notwendige
+Voraussetzung.
+
+### Der naechste Test ist jetzt klein und deterministisch
+
+Statt einen Browser zu werfen: nach dem Power-Cycle **einen einzigen Request**
+mit exakt den Browser-Headern an `/cgi-bin/live.cgi`.
+
+```
+stirbt die Box  -> minimaler deterministischer Reproducer;
+                   danach Header einzeln herausnehmen und bisektieren
+ueberlebt sie   -> die Header allein sind es nicht;
+                   dann ist die zweite, gleichzeitig geoeffnete Verbindung
+                   der naechste Verdaechtige
+```
+
+Beides ist ein Fortschritt gegenueber "der Browser legt die Box um".
