@@ -109,3 +109,92 @@ void run_http_parse_tests() {
                              used, r) == Parse::Bad);
     }
 }
+
+// Relayed responses may only keep the browser connection open when the end of
+// the body is knowable WITHOUT the upstream close - the relay uses EOF as its
+// framing and never parses chunk syntax. Getting this wrong truncates or
+// concatenates replies, so every branch is pinned here.
+void run_relay_keepalive_tests() {
+    std::string out; size_t len = 0;
+
+    // static asset from busybox: has Content-Length -> may stay open
+    {
+        const std::string head =
+            "HTTP/1.0 200 OK\r\nDate: x\r\nConnection: close\r\nContent-type: application/javascript\r\n"
+            "Content-Length: 14923\r\nETag: \"abc\"\r\n\r\n";
+        HCHECK(relay_head_keepalive(head, out, len));
+        HCHECK(len == 14923);
+        HCHECK(out.find("Connection: keep-alive\r\n") != std::string::npos);
+        HCHECK(out.find("Connection: close") == std::string::npos);   // the upstream's is gone
+        HCHECK(out.find("Content-Length: 14923\r\n") != std::string::npos);
+        HCHECK(out.find("ETag: \"abc\"\r\n") != std::string::npos);   // other headers survive
+        HCHECK(out.compare(0, 15, "HTTP/1.0 200 OK") == 0);           // status line untouched
+        HCHECK(out.size() >= 4 && out.compare(out.size() - 4, 4, "\r\n\r\n") == 0);
+    }
+
+    // CGI without Content-Length: EOF is the only framing -> must NOT stay open
+    {
+        const std::string head = "HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n";
+        out.clear(); len = 12345;
+        HCHECK(!relay_head_keepalive(head, out, len));
+        HCHECK(out == head);                                          // unchanged
+        HCHECK(len == 0);
+    }
+
+    // chunked: we do not parse chunk framing, so we cannot know the end
+    {
+        const std::string head =
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n";
+        out.clear(); len = 0;
+        HCHECK(!relay_head_keepalive(head, out, len));
+        HCHECK(out == head);
+        HCHECK(len == 0);
+    }
+
+    // 304 carries no body by definition - no Content-Length needed, and none
+    // may be invented. This is the common case for cached WebUI assets.
+    {
+        const std::string head = "HTTP/1.0 304 Not Modified\r\nETag: \"abc\"\r\nConnection: close\r\n\r\n";
+        out.clear(); len = 99;
+        HCHECK(relay_head_keepalive(head, out, len));
+        HCHECK(len == 0);
+        HCHECK(out.find("Connection: keep-alive\r\n") != std::string::npos);
+        HCHECK(out.find("Content-Length") == std::string::npos);
+    }
+    {
+        const std::string head = "HTTP/1.0 204 No Content\r\n\r\n";
+        out.clear(); len = 99;
+        HCHECK(relay_head_keepalive(head, out, len));
+        HCHECK(len == 0);
+    }
+
+    // a redirect WITH a length is still framed exactly
+    {
+        const std::string head = "HTTP/1.0 302 Found\r\nLocation: /x\r\nContent-Length: 0\r\n\r\n";
+        out.clear(); len = 7;
+        HCHECK(relay_head_keepalive(head, out, len));
+        HCHECK(len == 0);
+        HCHECK(out.find("Location: /x\r\n") != std::string::npos);
+    }
+
+    // hop-by-hop headers from the upstream must never be forwarded
+    {
+        const std::string head =
+            "HTTP/1.0 200 OK\r\nKeep-Alive: timeout=5\r\nProxy-Connection: close\r\n"
+            "Content-Length: 3\r\n\r\n";
+        out.clear(); len = 0;
+        HCHECK(relay_head_keepalive(head, out, len));
+        HCHECK(out.find("Keep-Alive: timeout") == std::string::npos);
+        HCHECK(out.find("Proxy-Connection") == std::string::npos);
+    }
+
+    // garbage in, old behaviour out - never a crash, never a guess
+    {
+        out.clear(); len = 5;
+        HCHECK(!relay_head_keepalive("", out, len));
+        HCHECK(!relay_head_keepalive("HTTP/1.0 200 OK\r\nContent-Length: 5\r\n", out, len));  // unterminated
+        HCHECK(!relay_head_keepalive("garbage\r\n\r\n", out, len));
+        HCHECK(!relay_head_keepalive("\r\n\r\n", out, len));
+        HCHECK(len == 0);
+    }
+}

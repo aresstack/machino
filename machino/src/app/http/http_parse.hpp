@@ -34,6 +34,27 @@ Parse parse_request(const std::string& buf, size_t& consumed, Request& out, cons
 // through so the SAME OpenIPC login still applies.
 std::string forward_request(const Request& req, const std::string& upstream_host);
 
+// Decide whether a relayed upstream response head can be handed downstream on a
+// KEPT-ALIVE connection, and rewrite it accordingly.
+//
+// The relay streams busybox's bytes through opaquely and learns that a response
+// ended only when busybox closes the socket - EOF is the framing. That is why
+// every relayed reply used to close the browser's connection too, which costs
+// two TCP connections per asset: one measured browser page load burns ~515
+// TIME_WAIT entries against this camera's budget of 512.
+//
+// A downstream connection may only stay open when the end of the body is
+// knowable WITHOUT the close: an explicit Content-Length, or a status that
+// carries no body at all. Chunked upstreams are refused because the relay does
+// not parse chunk framing. Getting this wrong truncates or concatenates
+// responses, so the default on any doubt is the old behaviour.
+//
+// Returns true when keep-alive is safe; `out` then holds the head with its
+// hop-by-hop headers replaced by `Connection: keep-alive`, and `body_len` the
+// exact number of body bytes to forward. Returns false otherwise, leaving
+// `out` == `head` unchanged.
+bool relay_head_keepalive(const std::string& head, std::string& out, size_t& body_len);
+
 const char* status_text(int status);
 std::string response(int status, const std::string& content_type, const std::string& body, bool keep_alive,
                      const std::string& extra_headers = "");

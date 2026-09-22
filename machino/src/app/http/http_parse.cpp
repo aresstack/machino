@@ -1,6 +1,7 @@
 #include "app/http/http_parse.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 
 namespace machino { namespace http {
 
@@ -136,6 +137,67 @@ std::string mjpeg_frame(const std::string& boundary, const uint8_t* data, size_t
     f.append(reinterpret_cast<const char*>(data), len);
     f += "\r\n";
     return f;
+}
+
+// See the header for why this is conservative. Anything it cannot frame
+// exactly keeps the old close-the-connection behaviour.
+bool relay_head_keepalive(const std::string& head, std::string& out, size_t& body_len) {
+    out = head;
+    body_len = 0;
+
+    // The head must be terminated; a partial head can never be judged.
+    const size_t end = head.find("\r\n\r\n");
+    if (end == std::string::npos) return false;
+
+    // Status line: "HTTP/1.x NNN ..."
+    const size_t sp = head.find(' ');
+    if (sp == std::string::npos || sp + 4 > head.size()) return false;
+    const int status = atoi(head.c_str() + sp + 1);
+    if (status < 100) return false;
+
+    bool have_len = false, chunked = false;
+    std::string rebuilt;
+    rebuilt.reserve(head.size() + 32);
+
+    size_t pos = 0;
+    bool first = true;
+    while (pos < end) {
+        size_t eol = head.find("\r\n", pos);
+        if (eol == std::string::npos || eol > end) eol = end;
+        const std::string line = head.substr(pos, eol - pos);
+        pos = eol + 2;
+        if (first) { rebuilt += line; rebuilt += "\r\n"; first = false; continue; }
+        if (line.empty()) continue;
+
+        const size_t colon = line.find(':');
+        std::string name = colon == std::string::npos ? line : line.substr(0, colon);
+        for (char& ch : name) ch = (char)tolower((unsigned char)ch);
+
+        if (name == "content-length") {
+            have_len = true;
+            body_len = (size_t)strtoul(line.c_str() + colon + 1, nullptr, 10);
+            rebuilt += line; rebuilt += "\r\n";
+            continue;
+        }
+        if (name == "transfer-encoding") { chunked = true; continue; }
+        // Hop-by-hop: we decide these ourselves.
+        if (name == "connection" || name == "keep-alive" || name == "proxy-connection") continue;
+        rebuilt += line; rebuilt += "\r\n";
+    }
+
+    // Chunked upstream: we do not parse chunk framing, so we cannot know where
+    // the body ends without the close.
+    if (chunked) { out = head; body_len = 0; return false; }
+
+    // 1xx, 204 and 304 carry no body by definition - a Content-Length is not
+    // required for them and must not be invented.
+    const bool bodyless = (status >= 100 && status < 200) || status == 204 || status == 304;
+    if (bodyless) body_len = 0;
+    else if (!have_len) { out = head; body_len = 0; return false; }
+
+    rebuilt += "Connection: keep-alive\r\n\r\n";
+    out = rebuilt;
+    return true;
 }
 
 }} // namespace machino::http

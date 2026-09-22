@@ -189,6 +189,17 @@ struct HttpServer::Client {
     int64_t     relay_idle_deadline_ms = 0;   // refreshed on connect/send/recv progress
     int64_t     relay_abs_deadline_ms = 0;    // hard ceiling, never refreshed
     std::string relay_what;         // "METHOD /path" for logging
+    // Downstream keep-alive for relayed replies. The head is held back until
+    // it is complete so it can be judged and rewritten; the body then streams
+    // as before. Only a head with an exact length lets the browser connection
+    // survive - see relay_head_keepalive(). Everything else closes, as it
+    // always did.
+    bool        keep_alive_wanted = false;    // what the BROWSER asked for
+    std::string relay_head;         // partial upstream head, before framing is known
+    bool        relay_head_done = false;
+    bool        relay_keep = false; // this reply may leave the downstream open
+    size_t      relay_body_len = 0; // exact body bytes to expect when relay_keep
+    size_t      relay_body_seen = 0;
 };
 
 static const char* MJPEG_BOUNDARY = "machinoframe";
@@ -646,6 +657,12 @@ bool HttpServer::relay_upstream(Client& c, const Request& req) {
     c.relay_req = forward_request(req, cfg_.upstream_host);
     c.relay_off = 0;
     c.relay_total = 0;
+    c.relay_head.clear();
+    c.relay_head_done = false;
+    c.relay_keep = false;
+    c.relay_body_len = 0;
+    c.relay_body_seen = 0;
+    c.keep_alive_wanted = req.keep_alive;
     const int64_t now = now_ms();
     c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
     c.relay_abs_deadline_ms  = now + cfg_.relay_max_ms;
@@ -692,9 +709,19 @@ bool HttpServer::relay_open(Client& c) {
 // max_relay_bytes. Returns false only when the client itself must be dropped.
 bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
     auto done = [&]() {                                            // upstream finished cleanly
-        LOGD(MOD, "relay %s -> %zu B", c.relay_what.c_str(), c.relay_total);
+        LOGD(MOD, "relay %s -> %zu B%s", c.relay_what.c_str(), c.relay_total,
+             c.relay_keep ? " (downstream kept)" : "");
         close(c.relay_fd); c.relay_fd = -1; c.relay_state = Client::Relay::None;
         c.relay_req.clear();
+        if (c.relay_keep) {
+            // The browser connection survives: reset the per-reply state so the
+            // next request on it starts clean. The UPSTREAM socket is still one
+            // per request - only the expensive half is reused.
+            c.relay_head.clear(); c.relay_head_done = false;
+            c.relay_keep = false; c.relay_body_len = 0; c.relay_body_seen = 0;
+            c.relay_total = 0;
+            return true;
+        }
         c.close_after_flush = true;
         return true;
     };
@@ -753,16 +780,67 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
     char buf[8192];
     while (c.out.size() < cfg_.max_out_buffer) {
         ssize_t rd = recv(c.relay_fd, buf, sizeof buf, MSG_DONTWAIT);
-        if (rd == 0) return done();                                // EOF: upstream done (Connection: close)
+        if (rd == 0) {
+            // EOF: upstream done (it was asked for Connection: close). If we
+            // already promised a Content-Length downstream and got fewer bytes,
+            // the upstream truncated: cutting the connection is the only honest
+            // signal left, exactly as in fail() - never leave a kept-alive
+            // connection desynchronised behind a short body.
+            if (c.relay_keep && c.relay_body_seen < c.relay_body_len) {
+                LOGW(MOD, "relay: %s: upstream ended %zu B short of its Content-Length",
+                     c.relay_what.c_str(), c.relay_body_len - c.relay_body_seen);
+                c.relay_keep = false;
+            }
+            return done();
+        }
         if (rd < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return true;
             return fail(502, "OpenIPC WebUI backend failed");
         }
-        if (c.relay_total + (size_t)rd > cfg_.max_relay_bytes)
+        if (c.relay_total + c.relay_head.size() + (size_t)rd > cfg_.max_relay_bytes)
             return fail(502, "upstream response exceeds the relay size limit");
-        // Verbatim pass-through; cap = threshold + one read so this never trips.
-        if (!queue(c, std::string(buf, (size_t)rd), cfg_.max_out_buffer + sizeof buf)) return false;
-        c.relay_total += (size_t)rd;
+
+        // Hold the head back until it is complete: whether the downstream may
+        // stay open is decided from it, and a half-read head cannot be judged.
+        if (!c.relay_head_done) {
+            c.relay_head.append(buf, (size_t)rd);
+            const size_t hend = c.relay_head.find("\r\n\r\n");
+            if (hend == std::string::npos) {
+                if (c.relay_head.size() > 8192) return fail(502, "OpenIPC WebUI backend sent an oversized header");
+                progress();
+                continue;
+            }
+            std::string head = c.relay_head.substr(0, hend + 4);
+            std::string rest = c.relay_head.substr(hend + 4);
+            c.relay_head.clear();
+            c.relay_head_done = true;
+
+            std::string patched;
+            c.relay_keep = c.keep_alive_wanted &&
+                           http::relay_head_keepalive(head, patched, c.relay_body_len);
+            const std::string& send_head = c.relay_keep ? patched : head;
+            if (!queue(c, send_head, cfg_.max_out_buffer + sizeof buf)) return false;
+            c.relay_total += send_head.size();
+
+            if (!rest.empty()) {
+                if (c.relay_keep && rest.size() > c.relay_body_len) rest.resize(c.relay_body_len);
+                if (!queue(c, rest, cfg_.max_out_buffer + sizeof buf)) return false;
+                c.relay_total += rest.size();
+                c.relay_body_seen += rest.size();
+            }
+            if (c.relay_keep && c.relay_body_seen >= c.relay_body_len) return done();
+            progress();
+            continue;
+        }
+
+        // Body. Verbatim pass-through; cap = threshold + one read so this never trips.
+        size_t take = (size_t)rd;
+        if (c.relay_keep && c.relay_body_seen + take > c.relay_body_len)
+            take = c.relay_body_len - c.relay_body_seen;      // never overrun the declared length
+        if (take && !queue(c, std::string(buf, take), cfg_.max_out_buffer + sizeof buf)) return false;
+        c.relay_total += take;
+        c.relay_body_seen += take;
+        if (c.relay_keep && c.relay_body_seen >= c.relay_body_len) return done();
         progress();
     }
     progress();                                                    // paused on backpressure, not idle

@@ -20,6 +20,7 @@ void run_power_tests();
 void run_json_tests();
 void run_event_tests();
 void run_http_parse_tests();
+void run_relay_keepalive_tests();
 void run_session_tests();
 void run_fmp4_tests();
 void run_sps_tests();
@@ -330,6 +331,7 @@ int main() {
     run_json_tests();
     run_event_tests();
     run_http_parse_tests();
+    run_relay_keepalive_tests();
     run_session_tests();
     run_fmp4_tests();
     run_sps_tests();
