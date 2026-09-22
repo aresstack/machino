@@ -237,6 +237,38 @@ from a defect in the `/ws/logs` teardown path itself that has nothing to do
 with forking. A test that forks something harmless at the same point, with no
 `logread` involved, would separate those.
 
+## Fix A — hardware accepted
+
+Deployed `107f05f`, cold power-cycle, then the acceptance run with no browser
+at any point: RTSP and scripted WebSocket only.
+
+| check | result |
+|---|---|
+| `logread` at daemon start, **zero** log clients | **1** (pid 993, ppid 990) - forked before IMP could exist |
+| `logread` with 1 client, 2 clients, back to 0 | **1**, unchanged throughout |
+| `/ws/logs` subscriptions over the run | **10** |
+| forks of `logread` over the run | **1** (`started once at boot`) |
+| pipeline generations over the run | **8** |
+| **`IMP_System_Init` failures** | **0** |
+
+The decisive one: a media start **after** a `/ws/logs` cycle taken while the
+pipeline was ACTIVE. Before Fix A that answered `503 Service Unavailable` every
+time. Now:
+
+```
+after 1 log client   RTSP/1.0 200 OK   2 050 049 B
+after 2 log clients  RTSP/1.0 200 OK   1 966 536 B
+```
+
+`VmRSS` 3 880 kB and `MemAvailable` 26 240 kB at COLD_IDLE after the whole run -
+the same healthy figures as a fresh boot, with no accumulation.
+
+What this does *not* prove is the mechanism. The fix removes the dangerous
+operation rather than explaining the Ingenic behaviour behind it, and the
+`fork()` itself was never isolated. But the reproducible failure is gone, and
+the three invariants that were broken - one logread ever, no fork from a
+request, no orphaned child - all hold.
+
 ## C1 — run, and it settles the question (and subsumes C3)
 
 Cold boot, scripted session, no browser. `/ws/logs` opened and closed
