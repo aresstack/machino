@@ -201,3 +201,81 @@ Zwei Dinge sind dabei heikel und gehoeren vor die Umsetzung, nicht danach:
 2. **Ein Watchdog verdeckt Fehler.** Genau die Forensik, die uns heute gefehlt
    hat, waere nach einem automatischen Reset ebenfalls weg. Sinnvoll ist er
    deshalb erst zusammen mit einer Spur, die einen Reset ueberlebt.
+
+## NEU 2026-09-22: Der Relay erzwingt `Connection: close` und treibt die Box an ihr Socket-Budget
+
+**Schwere: hoch.** Erster harter Messwert fuer Ressourcenknappheit an der Stelle,
+an der die Hardlocks auftreten.
+
+### Der Mechanismus
+
+`src/app/http/http_parse.cpp` setzt beim Weiterreichen an busybox hart:
+
+```cpp
+out += "Connection: close\r\n";
+```
+
+Gemessen am laufenden Geraet:
+
+| Pfad | Request 1 | Request 2 auf demselben Socket |
+|---|---|---|
+| nativ (`/api/v1/state`) | 200, `Connection: keep-alive` | **200** - Reuse funktioniert |
+| relayed (`/a/main.js`) | 200, `Connection: close` | **nichts**, Socket weg |
+| relayed CGI | 200 | **nichts**, Socket weg |
+
+Machinos eigener Code kann Keep-Alive und gewaehrt es. Der **Relay-Pfad schliesst
+immer** - und zwar auf beiden Seiten: eine Verbindung Browser->Machino und eine
+Verbindung Machino->busybox, beide landen danach in TIME_WAIT.
+
+### Die Zahlen
+
+Ein einziger Seitenaufbau der Live-Seite zieht **38 Assets**. Ueber den Relay
+kostet das rund **76 TCP-Verbindungen** statt der ~6, die ein Browser mit
+Keep-Alive brauchen wuerde. Jede haengt anschliessend 60 s in TIME_WAIT
+(`tcp_fin_timeout = 60`).
+
+Das Budget dieser Kamera:
+
+```
+tcp_max_tw_buckets = 512
+tcp_max_orphans    = 512
+somaxconn          = 128
+tcp_mem            = 483 645 966 Seiten
+MemTotal           = 42 816 kB
+```
+
+Gemessen nach **einem** synthetischen Seitenaufbau bei sechs laufenden
+Medien-Clients:
+
+```
+netstat TIME_WAIT      = 213
+sockstat tw            = 183
+TW (kumuliert)         = 1744
+TCPTimeWaitOverflow    = 2      <-- das Limit wurde tatsaechlich ueberschritten
+MemFree                = 1436 kB
+```
+
+Im selben Burst bekam ein Asset (`/a/mj-luma.js`) **keine Antwort**, ohne dass
+Machino eine Zeile geloggt haette - der Ausfall lag unterhalb der Anwendung.
+
+### Was das bedeutet und was nicht
+
+**Belegt:** Der Relay vervielfacht die Verbindungszahl pro Seitenaufbau um den
+Faktor ~6 und treibt eine 42-MB-Kamera mit einem 512er TIME_WAIT-Budget
+nachweislich ueber dieses Budget. Ein Request blieb unbeantwortet.
+
+**Nicht belegt:** Dass dies die Hardlocks verursacht. `TCPTimeWaitOverflow` ist
+normalerweise ein geordneter Vorgang - der Kernel verwirft dann einfach
+TIME_WAIT-Eintraege. Es ist ein Beleg fuer Druck an der richtigen Stelle, keine
+Ursachenkette.
+
+### Vorschlag (nicht umgesetzt)
+
+Keep-Alive auch auf dem Relay-Pfad halten: die Upstream-Verbindung zu busybox
+wiederverwenden statt pro Request neu aufzubauen, und die Downstream-Verbindung
+offen lassen, wenn der Client sie offen haben will. Das wuerde die
+Verbindungszahl pro Seitenaufbau von ~76 auf ~12 druecken.
+
+Der Kommentar im Code begruendet das verbatim-Weiterreichen der Header damit,
+dass "haserl/CGI see the real request" - das bleibt richtig und ist von dieser
+Aenderung nicht betroffen. Betroffen ist nur der Verbindungslebenszyklus.
