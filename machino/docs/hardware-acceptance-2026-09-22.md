@@ -218,6 +218,21 @@ enable/port controls that 5.1–5.4 just proved work are reachable only through
 the native API, never from the stock settings page. Neither is a regression;
 both belong in `dropin-gaps.md`.
 
+## Run 1 stopped here
+
+| # | Verdict | Observed |
+|---|---|---|
+| 3.1 | **PASS** | MAIN WebRTC ~57 ms, 0 % loss, EXCELLENT |
+| 3.2 | **PASS** | MAIN MSE ~247-285 ms |
+| 3.5 | **PASS** | WebRTC <-> MSE switching |
+| 3.6 | **PASS** | two live windows, WebRTC ~54 ms and MSE >=285 ms in parallel |
+| 6.1 | **PASS** | /ws/logs, one viewer |
+| 6.2 | **PASS** | /ws/logs, two viewers |
+| 10.4 | **FAIL** | a further live client stays on "connecting", memory climbs to ~95 %, WebUI becomes unreachable. Kernel OOM-killed machino (anon-rss 27 208 kB). See `docs/incident-2026-09-22-oom.md` |
+
+The overlay sitting at ~32 % is **not** implicated: AP8 measured 6.0 MB free of
+8.7 MB before the deploy, which is the same occupancy.
+
 ## Still open
 
 - **Browser rows**, which need a person at the UI: 2.3–2.5, 3.1–3.6 (Live
