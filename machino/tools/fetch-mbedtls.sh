@@ -9,8 +9,11 @@
 # Leaves headers in <build-dir>/mbedtls-<ver>/include and the three .a in
 # <build-dir>/mbedtls-<ver>/library. Idempotent: a finished build is reused.
 set -e
-VER=3.6.2
-SHA256=8b54fb9bcf4d5a7078028e0520acddefb7900b3e66fec7f7175bb5b7d85ccdca
+# 3.6.7 (LTS): >= 3.6.6 is REQUIRED - it adds server-side re-assembly of
+# fragmented DTLS 1.2 ClientHellos (mbedtls#7549); a real browser ClientHello
+# is ~1.4 KB and always fragments, so 3.6.2 failed the handshake outright.
+VER=3.6.7
+SHA256=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
 DIR=${1:?usage: fetch-mbedtls.sh <build-dir> [CC] [AR]}
 CC=${2:-cc}
 AR=${3:-ar}

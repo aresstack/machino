@@ -43,7 +43,7 @@ LIBS += $(MBEDTLS_LIB)
 check-mbedtls: ;
 else
 check-mbedtls:
-	$(error MBEDTLS is not set - run machino/tools/fetch-mbedtls.sh <dir> <cc> <ar> and pass MBEDTLS=<dir>/mbedtls-3.6.2)
+	$(error MBEDTLS is not set - run machino/tools/fetch-mbedtls.sh <dir> <cc> <ar> and pass MBEDTLS=<dir>/mbedtls-<ver>)
 endif
 .PHONY: check-mbedtls
 .DEFAULT_GOAL := all   # check-mbedtls above must not become the default goal

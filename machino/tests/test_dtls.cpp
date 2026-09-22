@@ -91,6 +91,9 @@ struct Client {
 void run_dtls_tests() {
     webrtc::DtlsTransport srv;
     DCHECK(srv.ok());
+    // cookies (HelloVerifyRequest) are enabled: the server needs the peer's
+    // transport id before it will process a ClientHello
+    srv.set_peer(0x7f000001, 12345);
     // fingerprint: 32 uppercase hex pairs, colon separated = 95 chars
     const std::string fp = srv.fingerprint();
     DCHECK(fp.size() == 95);

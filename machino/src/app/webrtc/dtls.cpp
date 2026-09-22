@@ -33,7 +33,10 @@ struct DtlsTransport::Impl {
     mbedtls_x509_crt         cert;
     mbedtls_ssl_config       conf;
     mbedtls_ssl_context      ssl;
+    mbedtls_ssl_cookie_ctx   cookie;
     mbedtls_timing_delay_context timer;
+    uint8_t  cli_id[6] = {0};    // peer ip(4)+port(2), the cookie's transport id
+    bool     have_cli_id = false;
 
     std::deque<std::vector<uint8_t>> in, out;
     std::string fp;
@@ -125,6 +128,7 @@ DtlsTransport::DtlsTransport() : im_(new Impl) {
     mbedtls_x509_crt_init(&s.cert);
     mbedtls_ssl_config_init(&s.conf);
     mbedtls_ssl_init(&s.ssl);
+    mbedtls_ssl_cookie_init(&s.cookie);
 
     const char* pers = "machino-dtls";
     // NON-BLOCKING entropy (see urandom_entropy): never mbedtls_entropy_func,
@@ -164,8 +168,13 @@ DtlsTransport::DtlsTransport() : im_(new Impl) {
     mbedtls_ssl_conf_authmode(&s.conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
     mbedtls_ssl_conf_verify(&s.conf, Impl::verify_cb, &s);
     if (mbedtls_ssl_conf_own_cert(&s.conf, &s.cert, &s.key) != 0) return;
-    // One peer per socket: no HelloVerifyRequest round-trip needed.
-    mbedtls_ssl_conf_dtls_cookies(&s.conf, nullptr, nullptr, nullptr);
+    // Cookie / HelloVerifyRequest: required, not optional - a real browser
+    // ClientHello is ~1.4 KB and fragments across DTLS records; only the HVR
+    // round-trip puts mbedtls into the stateful path that reassembles it (a
+    // fragmented initial ClientHello without HVR fails with DECODE_ERROR).
+    if (mbedtls_ssl_cookie_setup(&s.cookie, mbedtls_ctr_drbg_random, &s.drbg) != 0) return;
+    mbedtls_ssl_conf_dtls_cookies(&s.conf, mbedtls_ssl_cookie_write,
+                                  mbedtls_ssl_cookie_check, &s.cookie);
     static const mbedtls_ssl_srtp_profile profiles[] = {
         MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80,
         MBEDTLS_TLS_SRTP_UNSET,
@@ -181,6 +190,7 @@ DtlsTransport::DtlsTransport() : im_(new Impl) {
 
 DtlsTransport::~DtlsTransport() {
     Impl& s = *im_;
+    mbedtls_ssl_cookie_free(&s.cookie);
     mbedtls_ssl_free(&s.ssl);
     mbedtls_ssl_config_free(&s.conf);
     mbedtls_x509_crt_free(&s.cert);
@@ -193,6 +203,15 @@ bool DtlsTransport::ok() const { return im_->ok; }
 std::string DtlsTransport::fingerprint() const { return im_->fp; }
 bool DtlsTransport::handshake_done() const { return im_->done; }
 
+void DtlsTransport::set_peer(uint32_t ip_host, uint16_t port) {
+    Impl& s = *im_;
+    s.cli_id[0] = (uint8_t)(ip_host >> 24); s.cli_id[1] = (uint8_t)(ip_host >> 16);
+    s.cli_id[2] = (uint8_t)(ip_host >> 8);  s.cli_id[3] = (uint8_t)ip_host;
+    s.cli_id[4] = (uint8_t)(port >> 8);     s.cli_id[5] = (uint8_t)port;
+    s.have_cli_id = true;
+    mbedtls_ssl_set_client_transport_id(&s.ssl, s.cli_id, sizeof s.cli_id);
+}
+
 void DtlsTransport::feed(const uint8_t* p, size_t n) {
     if (n) im_->in.emplace_back(p, p + n);
 }
@@ -204,6 +223,12 @@ bool DtlsTransport::step() {
     const int rc = mbedtls_ssl_handshake(&s.ssl);
     if (rc == 0) { s.done = true; return true; }
     if (rc == MBEDTLS_ERR_SSL_WANT_READ || rc == MBEDTLS_ERR_SSL_WANT_WRITE) return true;
+    if (rc == MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED) {
+        // Cookie sent; wait for the client to resend the ClientHello with it.
+        mbedtls_ssl_session_reset(&s.ssl);
+        if (s.have_cli_id) mbedtls_ssl_set_client_transport_id(&s.ssl, s.cli_id, sizeof s.cli_id);
+        return true;
+    }
     char err[96];
     mbedtls_strerror(rc, err, sizeof err);
     LOGW(MOD, "handshake failed: -0x%04x (%s)", (unsigned)-rc, err);

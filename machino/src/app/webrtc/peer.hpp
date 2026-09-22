@@ -65,7 +65,6 @@ private:
     // media-plane telemetry (logged periodically): the exact fault localisation
     // GPT asked for - where the H.264 stops on its way to the browser.
     bool        dtls_logged_ = false;
-    bool        dtls_hexdumped_ = false;
     uint64_t    stun_reqs_ = 0;
     uint64_t    au_count_ = 0, rtp_count_ = 0, rtp_bytes_ = 0;
     uint64_t    send_ok_ = 0, send_err_ = 0;

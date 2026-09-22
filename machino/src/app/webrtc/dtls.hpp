@@ -28,6 +28,11 @@ public:
     // "AA:BB:..." SHA-256 of the certificate DER, for a=fingerprint.
     std::string fingerprint() const;
 
+    // Bind the DTLS cookie (HelloVerifyRequest) to the peer's address. Must
+    // be set once the ICE STUN check has revealed the peer, before the DTLS
+    // ClientHello is processed.
+    void set_peer(uint32_t ip_host, uint16_t port);
+
     // One incoming DTLS datagram from the demux.
     void feed(const uint8_t* p, size_t n);
 
