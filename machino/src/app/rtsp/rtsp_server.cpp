@@ -82,21 +82,36 @@ const std::string& RtspServer::path_for(int unit) const { return unit == lifecyc
 
 RtspServer::~RtspServer() { stop(); }
 
-// Bind a listener on `port` and start the acceptor. Caller holds lifecycle_m_.
-Result RtspServer::open_listener(int port) {
+// Bind and listen, WITHOUT touching any listener already running. Returns the
+// fd or -1. Kept separate from adoption so a re-bind can prove the new port
+// works before the working one is given up (AP3.5).
+int RtspServer::bind_listener(int port) {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return Result::error(errno);
+    if (fd < 0) { LOGE(MOD, "socket: %s", strerror(errno)); return -1; }
     int one = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     sockaddr_in a{}; a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_ANY); a.sin_port = htons((uint16_t)port);
     if (bind(fd, (sockaddr*)&a, sizeof a) < 0 || listen(fd, 8) < 0) {
-        int e = errno; LOGE(MOD, "bind/listen :%d failed: %s", port, strerror(e));
-        close(fd); return Result::error(e);
+        const int e = errno; LOGE(MOD, "bind/listen :%d failed: %s", port, strerror(e));
+        close(fd); errno = e; return -1;
     }
+    return fd;
+}
+
+// Take ownership of an already-bound fd and start accepting on it.
+// Caller holds lifecycle_m_ and has ensured no listener is running.
+void RtspServer::adopt_listener(int fd, int port) {
     listen_fd_ = fd;
     quit_ = false;
     acceptor_ = std::thread([this] { accept_loop(); });
     if (sub_hub_) LOGI(MOD, "listening on :%d paths %s (main) %s (sub) (pipeline stays cold until PLAY)", port, cfg_.path.c_str(), cfg_.sub_path.c_str());
     else          LOGI(MOD, "listening on :%d path %s (pipeline stays cold until PLAY)", port, cfg_.path.c_str());
+}
+
+// Bind and adopt in one step, for the paths that have no listener to protect.
+Result RtspServer::open_listener(int port) {
+    const int fd = bind_listener(port);
+    if (fd < 0) return Result::error(errno ? errno : -1);
+    adopt_listener(fd, port);
     return Result::ok();
 }
 
@@ -166,15 +181,19 @@ power::ApplyResult RtspServer::set_port(int port) {
         return ApplyResult::applied(ApplyMode::Live, port, port, "stored; rtsp is disabled");
     }
     const int old_port = cfg_.port;
-    close_listener();
-    if (open_listener(port)) { cfg_.port = port; return ApplyResult::applied(ApplyMode::Live, port, port, "re-bound"); }
-    // roll back to the port we know worked; if even that fails we are honest
-    // about it rather than pretending the change succeeded
-    if (open_listener(old_port))
-        return ApplyResult::rejected(ApplyMode::Live, port, "cannot bind port " + std::to_string(port) + "; kept " + std::to_string(old_port));
-    cfg_.enabled = false;
-    LOGE(MOD, "re-bind to :%d failed AND :%d could not be restored - rtsp is now down", port, old_port);
-    return ApplyResult::rejected(ApplyMode::Live, port, "cannot bind " + std::to_string(port) + "; restoring " + std::to_string(old_port) + " also failed - rtsp disabled");
+    // Prove the new port works BEFORE giving up the one that does. Two
+    // different ports never collide, so this needs no window in which RTSP is
+    // down - and it removes the failure mode the previous close-then-open had,
+    // where a failed re-bind could also fail to restore the old port and leave
+    // the camera with no RTSP at all.
+    const int fd = bind_listener(port);
+    if (fd < 0)
+        return ApplyResult::rejected(ApplyMode::Live, port,
+            "cannot bind port " + std::to_string(port) + "; kept " + std::to_string(old_port));
+    close_listener();                 // ends existing sessions; their demand releases
+    adopt_listener(fd, port);
+    cfg_.port = port;
+    return ApplyResult::applied(ApplyMode::Live, port, port, "re-bound");
 }
 
 // Join and drop the clients that have finished. Without this every

@@ -61,6 +61,10 @@ private:
         std::atomic<bool> done{false};
     };
     void accept_loop();
+    // Bind+listen only, leaving any running listener alone; -1 on failure.
+    int    bind_listener(int port);
+    // Adopt an already-bound fd and start accepting.
+    void   adopt_listener(int fd, int port);
     Result open_listener(int port);    // bind+listen+acceptor (lifecycle_m_ held)
     void   close_listener();           // stop acceptor, drop sessions (lifecycle_m_ held)
     void reap_finished();
