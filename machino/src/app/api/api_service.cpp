@@ -789,6 +789,17 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     long long n; if (!get_int(val, n) || n < 1 || n > 60) return bad(422, "invalid_value", path, "inference_fps must be an integer in 1..60");
                     c.key = "ai.inference_fps"; c.value = std::to_string(n);
                 } else return bad(400, "unknown_field", path, "unknown field");
+            } else if (s == "jpeg") {
+                // AP14: reported by /api/v1/config, deliberately NOT writable.
+                // Enabling the JPEG encoder on this platform wedges the whole
+                // daemon - IMP blocks under the manager lock and RTSP and the
+                // API die with it until a power-cycle. A bare "unknown field"
+                // for a key we ourselves publish is not an answer, so the
+                // refusal says why and where the decision lives.
+                return bad(403, "unsupported_control", path,
+                           "jpeg is reported but not settable here: enabling the JPEG encoder "
+                           "wedges this platform (machino-t40nn-jpeg-wedge). Set jpeg.enabled in "
+                           "machino.conf and restart if you have isolated that on your hardware.");
             } else return bad(400, "unknown_field", path, "unknown field");
             changes.push_back(c);
         }

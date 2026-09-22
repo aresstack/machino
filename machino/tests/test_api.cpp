@@ -610,6 +610,27 @@ void test_ap2_rtsp_runtime() {
 // but r.ok. The rule that shapes the implementation is the one that is easiest
 // to get wrong: nothing is persisted. A drag writes one value per pointer move,
 // and putting those on flash would be a slider that wears the camera out.
+// AP14: jpeg is REPORTED so the dashboard can read its own gate, and is
+// deliberately not writable - enabling the encoder wedges this platform. A key
+// the API publishes deserves a refusal that says why, not a bare "unknown
+// field".
+void test_ap14_jpeg_reported_not_writable() {
+    Rig r;
+    // reported, with a real value
+    const Json* j = r.api.config().body.get("jpeg");
+    ACHECK(j && j->is_object());
+    ACHECK(j && j->get("enabled") && j->get("enabled")->is_bool());
+    ACHECK(j && j->get("quality") && j->get("quality")->is_number());
+    // and refused, with a reason and the right code
+    api::Response p = r.api.patch_config("{\"jpeg\":{\"enabled\":true}}", "");
+    ACHECK(p.status == 403);
+    const Json* err = p.body.get("error");
+    ACHECK(err && err->get("code") && err->get("code")->as_string() == "unsupported_control");
+    ACHECK(err && err->get("message") && err->get("message")->as_string().find("wedge") != std::string::npos);
+    // nothing moved
+    ACHECK(r.api.config().body.get("jpeg")->get("enabled")->as_bool() == j->get("enabled")->as_bool());
+}
+
 void test_ap10_live_image() {
     Rig r;
     const int rev0 = (int)r.api.config().body.get("revision")->as_int();
@@ -731,5 +752,6 @@ void run_api_tests() {
     test_reset_apply_failure_is_500();
     test_ap2_rtsp_runtime();
     test_ap10_live_image();
+    test_ap14_jpeg_reported_not_writable();
     remove(TMP_CONF); remove((std::string(TMP_CONF) + ".tmp").c_str());
 }
