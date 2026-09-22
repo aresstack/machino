@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <time.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -165,6 +166,15 @@ struct HttpServer::Client {
     uint32_t ws_seq = 1;
     uint64_t ws_dts = 0;            // 90 kHz decode timeline
     int64_t  ws_last_pts_us = 0;
+    // AP15: the timeline is DERIVED from the capture clock, not accumulated
+    // from per-fragment durations - adding a truncated duration 20 times a
+    // second is a drift of its own, and drift is exactly what climbing MSE
+    // latency is made of. `ws_pts_origin` is the first sent frame (timeline
+    // zero); `ws_skew_us` is the time deliberately REMOVED at discontinuities
+    // so a long stall does not punch a hole the playhead would stall in.
+    int64_t  ws_pts_origin = 0;
+    int64_t  ws_skew_us = 0;
+    bool     ws_origin_set = false;
     int64_t  ws_last_idr_req_ms = 0;
     // /ws/webrtc: the signalling WebSocket owns one PeerSession (UDP socket
     // in the same poll loop) and, like /ws/video, is a StreamHub consumer
@@ -910,6 +920,17 @@ void HttpServer::push_mjpeg(Client& c) {
     }
 }
 
+namespace {
+// A resync is an EPISODE, not a tick: while a socket is behind, the cap is hit
+// on every pass through the loop, and counting those would report a hundred
+// hiccups where the viewer saw one.
+template <class C> void mark_resync(C& c) {
+    if (c.ws_await_key) return;
+    c.ws_await_key = true;
+    RuntimeStats::get().inc(&RuntimeCounters::ws_video_resyncs);
+}
+} // namespace
+
 // Drain the hub sink into ws frames - bounded per tick, drop-until-key on
 // backpressure (old frames are worse than dropped frames; the decoder must
 // never see a P-frame whose reference was dropped).
@@ -917,10 +938,10 @@ void HttpServer::pump_ws_video(Client& c) {
     if (!c.ws_sink) return;
     const size_t soft_cap = cfg_.ws_out_cap;                  // an IDR burst fits, runaway buffers do not
     for (int i = 0; i < 8; ++i) {
-        if (c.out.size() > soft_cap / 2) { c.ws_await_key = true; return; }
+        if (c.out.size() > soft_cap / 2) { mark_resync(c); return; }
         AuPtr au; bool disc = false;
         if (!c.ws_sink->pop(au, 0, &disc)) return;
-        if (disc) c.ws_await_key = true;
+        if (disc) mark_resync(c);
         if (!au || au->data.empty()) continue;
 
         if (au->key) {
@@ -955,19 +976,52 @@ void HttpServer::pump_ws_video(Client& c) {
         if (c.ws_await_key) continue;                          // resumes at the next key frame
 
         uint32_t dur = 4500;                                   // 20 fps fallback at 90 kHz
+        int64_t  step_us = 50000;
         if (c.ws_last_pts_us > 0) {
-            int64_t d_us = au->pts_us - c.ws_last_pts_us;
-            if (d_us > 1000 && d_us < 1000000) dur = (uint32_t)(d_us * 90000 / 1000000);
+            const int64_t d_us = au->pts_us - c.ws_last_pts_us;
+            if (d_us > 1000 && d_us < 1000000) {
+                step_us = d_us;
+                dur = (uint32_t)((d_us * 90000 + 500000) / 1000000);   // rounded, not truncated
+            }
+        }
+        // The decode time is the capture clock, shifted by whatever has been
+        // removed at discontinuities - NOT a running sum of durations. A sum
+        // accumulates every rounding error; this one cannot drift at all, and
+        // it stays contiguous because a gap the player could stall in is
+        // absorbed into the skew instead of appearing in the timeline.
+        if (!c.ws_origin_set) {
+            c.ws_pts_origin = au->pts_us; c.ws_skew_us = 0; c.ws_origin_set = true;
+        } else if (c.ws_last_pts_us > 0) {
+            const int64_t d_us = au->pts_us - c.ws_last_pts_us;
+            if (d_us <= 1000 || d_us >= 1000000) c.ws_skew_us += d_us - step_us;
         }
         c.ws_last_pts_us = au->pts_us;
+        int64_t tl_us = au->pts_us - c.ws_pts_origin - c.ws_skew_us;
+        if (tl_us < 0) tl_us = 0;                              // monotonic, whatever the clock did
+        c.ws_dts = (uint64_t)((tl_us * 90000 + 500000) / 1000000);
         std::vector<uint8_t> sample = fmp4::annexb_to_avcc(au->data.data(), au->data.size());
         if (sample.empty()) continue;
-        std::vector<uint8_t> frag = fmp4::fragment(c.ws_seq++, c.ws_dts, dur, sample, au->key);
-        c.ws_dts += dur;
+        std::vector<uint8_t> frag;
+        // A producer reference time, when the camera actually knows what time
+        // it is (AP12 bound): upstream's player reads it to show the true
+        // end-to-end lag. A camera with an unset clock stays silent rather
+        // than reporting an invented one.
+        struct timespec rt;
+        if (clock_gettime(CLOCK_REALTIME, &rt) == 0 && rt.tv_sec > 1700000000) {
+            const uint64_t ntp = ((uint64_t)(rt.tv_sec + 2208988800ull) << 32)
+                               | (uint64_t)((double)rt.tv_nsec * 4.294967296);
+            frag = fmp4::prft(1, ntp, c.ws_dts);
+        }
+        const std::vector<uint8_t> body = fmp4::fragment(c.ws_seq++, c.ws_dts, dur, sample, au->key);
+        frag.insert(frag.end(), body.begin(), body.end());
         if (!queue(c, ws::frame(false, frag.data(), frag.size()), soft_cap)) {
-            c.ws_await_key = true;                             // dropped: wait for the next key
+            RuntimeStats::get().inc(&RuntimeCounters::ws_video_overruns);
+            mark_resync(c);                                    // dropped: wait for the next key
             return;
         }
+        RuntimeStats::get().inc(&RuntimeCounters::ws_video_frames);
+        RuntimeStats::get().inc(&RuntimeCounters::ws_video_bytes, frag.size());
+        RuntimeStats::get().high_water(&RuntimeCounters::ws_video_out_peak, (int)c.out.size());
     }
 }
 

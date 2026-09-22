@@ -373,6 +373,15 @@ Json ApiService::telemetry_json() {
         s.set("webrtc_rtp_bytes", Json::integer((long long)rs.webrtc_rtp_bytes));
         s.set("webrtc_send_errors", Json::integer((long long)rs.webrtc_send_errors));
         s.set("webrtc_pli", Json::integer((long long)rs.webrtc_pli));
+        // AP15: the MSE side. A climbing ws_video_resyncs is what a viewer sees
+        // as a hiccup, and ws_video_out_peak is the server-side backlog in
+        // bytes - the one number that says whether a growing browser buffer
+        // started here or in the browser.
+        s.set("ws_video_frames", Json::integer((long long)rs.ws_video_frames));
+        s.set("ws_video_bytes", Json::integer((long long)rs.ws_video_bytes));
+        s.set("ws_video_resyncs", Json::integer((long long)rs.ws_video_resyncs));
+        s.set("ws_video_overruns", Json::integer((long long)rs.ws_video_overruns));
+        s.set("ws_video_out_peak", Json::integer(rs.ws_video_out_peak));
         // Bring-up failures survive here even though the log is on tmpfs.
         // init_retries must stay 0: the five-retry loop that amplified one
         // failure into an OOM is gone, and this is how we notice if it returns.

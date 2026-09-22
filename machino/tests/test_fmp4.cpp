@@ -1,4 +1,5 @@
 // fMP4 muxer for the majestic /ws/video contract: structural checks a browser
+#include <cstdlib>
 // byte-stream parser would enforce (box sizes walk exactly, avcC carries the
 // parameter sets, trun's data offset lands on the mdat payload).
 #include "app/http/fmp4.hpp"
@@ -101,4 +102,108 @@ void run_fmp4_tests() {
     FCHECK(has_tag(frag, "tfdt") && has_tag(frag, "tfhd"));
     // the only difference besides seq/tfdt is the sample flags word
     FCHECK(!std::equal(frag.begin(), frag.end(), frag2.begin()));
+}
+
+// AP15: the producer reference time box, read back exactly the way upstream
+// preview.js readPrft() reads it - it is the only consumer that matters, and
+// it addresses the NTP field by absolute offset, not by walking the box.
+void run_fmp4_prft_tests() {
+    const uint64_t unix_s = 1758579000ull;                 // 2025-09-22, plausible
+    const uint64_t ntp = ((unix_s + 2208988800ull) << 32) | 0x80000000ull;   // .5 s
+    std::vector<uint8_t> p = fmp4::prft(1, ntp, 4500);
+
+    // Upstream's guard: at least 32 bytes and the type at offset 4.
+    FCHECK(p.size() == 32);
+    FCHECK(rd32(p, 0) == 32);
+    FCHECK(p[4] == 'p' && p[5] == 'r' && p[6] == 'f' && p[7] == 't');
+    FCHECK(p[8] == 1);                                     // version 1 -> 64-bit media_time
+    FCHECK(rd32(p, 12) == 1);                              // reference_track_ID
+
+    // readPrft(): secs at 16..19 minus the NTP epoch, fraction at 20..23.
+    const uint32_t secs = rd32(p, 16) - 2208988800u;
+    const uint32_t frac = rd32(p, 20);
+    FCHECK(secs == (uint32_t)unix_s);
+    const double wall_ms = (double)secs * 1000.0 + (double)frac / 4294967.296;
+    FCHECK(wall_ms > (double)unix_s * 1000.0 + 499.0 && wall_ms < (double)unix_s * 1000.0 + 501.0);
+
+    // A prft-prefixed fragment is still a fragment once the box is skipped:
+    // readPrft returns u8.subarray(size) and the parser must find moof there.
+    const std::vector<uint8_t> avcc = {0, 0, 0, 4, 0x65, 0x11, 0x22, 0x33};
+    std::vector<uint8_t> whole = p;
+    const std::vector<uint8_t> body = fmp4::fragment(3, 4500, 4500, avcc, true);
+    whole.insert(whole.end(), body.begin(), body.end());
+    FCHECK(walk(whole) == "prftmoofmdat");
+    std::vector<uint8_t> rest(whole.begin() + 32, whole.end());
+    FCHECK(walk(rest) == "moofmdat");
+    FCHECK(rest == body);
+}
+
+// AP15: the decode timeline. The server derives it from the capture clock and
+// removes discontinuities, instead of summing per-fragment durations - this
+// reproduces that arithmetic and pins the property that matters: over a long
+// continuous run the timeline must not drift away from the capture clock.
+void run_fmp4_timeline_tests() {
+    // The arithmetic under test, lifted from HttpServer::pump_ws_video.
+    struct Tl {
+        int64_t origin = 0, skew = 0, last = 0; bool set = false;
+        uint64_t feed(int64_t pts) {
+            int64_t step = 50000;
+            if (last > 0) { const int64_t d = pts - last; if (d > 1000 && d < 1000000) step = d; }
+            if (!set) { origin = pts; skew = 0; set = true; }
+            else if (last > 0) { const int64_t d = pts - last; if (d <= 1000 || d >= 1000000) skew += d - step; }
+            last = pts;
+            int64_t tl = pts - origin - skew;
+            if (tl < 0) tl = 0;
+            return (uint64_t)((tl * 90000 + 500000) / 1000000);
+        }
+    };
+
+    // 1. A continuous hour at a rate that does NOT divide the timescale
+    //    evenly (33367 us ~ 29.97 fps). Summing a truncated duration would
+    //    lose ~0.4 units per frame; deriving it loses nothing.
+    {
+        Tl t; const int64_t base = 1000000, step = 33367;
+        const int n = 30 * 60 * 60;                        // one hour of frames
+        uint64_t dts = 0;
+        for (int i = 0; i < n; ++i) dts = t.feed(base + (int64_t)i * step);
+        const int64_t span_us = (int64_t)(n - 1) * step;
+        const int64_t expect  = (span_us * 90000 + 500000) / 1000000;
+        FCHECK((int64_t)dts == expect);
+        // and the drift against the capture clock is under one 90 kHz tick
+        FCHECK(llabs((int64_t)dts - expect) <= 1);
+    }
+
+    // 2. Monotonic, always: a stalled, repeated or backwards timestamp may
+    //    never move the timeline backwards - MSE would reject the fragment.
+    {
+        Tl t; uint64_t prev = 0; bool mono = true;
+        const int64_t pts[] = {1000000, 1050000, 1050000, 1049000, 1100000, 1150000};
+        for (size_t i = 0; i < sizeof pts / sizeof pts[0]; ++i) {
+            const uint64_t d = t.feed(pts[i]);
+            if (i && d <= prev && i != 0) mono = mono && (d >= prev);
+            prev = d;
+        }
+        FCHECK(mono);
+    }
+
+    // 3. A long stall is ABSORBED, not punched into the timeline: a five
+    //    second gap must advance the timeline by one frame, so the buffered
+    //    range stays contiguous and the playhead has nothing to stall in.
+    {
+        Tl t;
+        t.feed(1000000);
+        const uint64_t before = t.feed(1050000);
+        const uint64_t after  = t.feed(6050000);           // 5 s gap
+        FCHECK(after - before == 4500);                    // one 20 fps frame, not 5 s
+    }
+
+    // 4. A gap just under the cut is REAL and stays in the timeline: it is
+    //    how the browser learns that time passed and keeps up with the clock.
+    {
+        Tl t;
+        t.feed(1000000);
+        const uint64_t before = t.feed(1050000);
+        const uint64_t after  = t.feed(1950000);           // 900 ms, still continuous
+        FCHECK(after - before == 81000);                   // 0.9 s at 90 kHz
+    }
 }

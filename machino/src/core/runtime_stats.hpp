@@ -31,6 +31,18 @@ struct RuntimeCounters {
     uint64_t webrtc_send_errors = 0;
     uint64_t webrtc_pli = 0;           // picture-loss requests honoured
 
+    // AP15: the MSE side of the same question. `ws_video_resyncs` is the one
+    // that matters for latency - every resync is a visible hiccup, and a
+    // climbing count means the browser feed is being starved or the socket
+    // can not keep up. `ws_video_out_peak` is the largest an MSE socket's
+    // output buffer has ever been: it is the server-side backlog in bytes,
+    // and it is what a growing browser buffer would look like from here.
+    uint64_t ws_video_frames = 0;      // fMP4 fragments handed to a socket
+    uint64_t ws_video_bytes = 0;
+    uint64_t ws_video_resyncs = 0;     // drop-until-key episodes entered
+    uint64_t ws_video_overruns = 0;    // fragments not sent: the socket was behind
+    int      ws_video_out_peak = 0;    // high-water mark of an MSE out buffer
+
     // Platform bring-up failures. A failed bring-up used to be invisible
     // except in the log, and the log is on tmpfs - the OOM of 2026-09-22 was
     // reconstructed only because the box happened to still be up. These make
@@ -77,6 +89,12 @@ public:
     void inc(int RuntimeCounters::* g) {
         std::lock_guard<std::mutex> lk(m_);
         ++(c_.*g);
+    }
+    // A gauge that only ever moves up: a high-water mark is not a counter and
+    // must not be incremented, or a quiet socket would inflate it.
+    void high_water(int RuntimeCounters::* g, int v) {
+        std::lock_guard<std::mutex> lk(m_);
+        if (v > c_.*g) c_.*g = v;
     }
     void dec(int RuntimeCounters::* g) {
         std::lock_guard<std::mutex> lk(m_);

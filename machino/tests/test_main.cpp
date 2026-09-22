@@ -25,6 +25,8 @@ void run_relay_keepalive_tests();
 void run_relay_head_end_tests();
 void run_session_tests();
 void run_fmp4_tests();
+void run_fmp4_prft_tests();
+void run_fmp4_timeline_tests();
 void run_sps_tests();
 void run_webrtc_tests();
 void run_sdp_refusal_tests();
@@ -344,6 +346,8 @@ int main() {
     run_relay_head_end_tests();
     run_session_tests();
     run_fmp4_tests();
+    run_fmp4_prft_tests();
+    run_fmp4_timeline_tests();
     run_sps_tests();
     run_webrtc_tests();
     run_sdp_refusal_tests();

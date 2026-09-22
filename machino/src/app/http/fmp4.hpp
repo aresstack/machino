@@ -23,6 +23,15 @@ std::string codec_string(const std::vector<uint8_t>& sps);
 std::vector<uint8_t> init_segment(const std::vector<uint8_t>& sps, const std::vector<uint8_t>& pps,
                                   int width, int height, uint32_t timescale);
 
+// AP15: a ProducerReferenceTime box (ISO 14496-12), 32 bytes, version 1.
+// Prepended to a fragment it tells the player the wall-clock instant the frame
+// was captured; upstream preview.js readPrft() samples it for its latency
+// read-out and then appends from the moof that follows. `ntp` is an NTP
+// timestamp (seconds since 1900 in the high 32 bits, binary fraction in the
+// low 32). Emitted only when the camera clock is plausible - a camera without
+// a set clock would otherwise report an invented latency.
+std::vector<uint8_t> prft(uint32_t track_id, uint64_t ntp, uint64_t media_time);
+
 // One frame: moof + mdat. `decode_time` and `duration` are in the init
 // segment's timescale; `sample` is the AVCC-converted access unit.
 std::vector<uint8_t> fragment(uint32_t sequence, uint64_t decode_time, uint32_t duration,

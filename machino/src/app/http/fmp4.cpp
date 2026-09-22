@@ -178,6 +178,16 @@ std::vector<uint8_t> init_segment(const std::vector<uint8_t>& sps, const std::ve
     return b;
 }
 
+std::vector<uint8_t> prft(uint32_t track_id, uint64_t ntp, uint64_t media_time) {
+    std::vector<uint8_t> b;
+    size_t at = open_full(b, "prft", 1, 0);
+    be32(b, track_id);
+    be64(b, ntp);
+    be64(b, media_time);
+    close_box(b, at);
+    return b;                                          // exactly 32 bytes
+}
+
 std::vector<uint8_t> fragment(uint32_t sequence, uint64_t decode_time, uint32_t duration,
                               const std::vector<uint8_t>& sample, bool key) {
     std::vector<uint8_t> b;
