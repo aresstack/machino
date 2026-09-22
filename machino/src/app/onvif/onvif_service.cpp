@@ -34,7 +34,10 @@ std::string OnvifService::utc_datetime(int64_t unix_s) {
 #else
     gmtime_r(&t, &tm_buf);
 #endif
-    char b[32];
+    // Sized for what the compiler must ASSUME, not for what a clock produces:
+    // every %d here can in principle be 11 characters, and -Wformat-truncation
+    // is right to insist the buffer cover that.
+    char b[96];
     snprintf(b, sizeof b, "%04d-%02d-%02dT%02d:%02d:%02dZ",
              tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
              tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
@@ -159,7 +162,7 @@ std::string OnvifService::system_date_and_time(int64_t now_unix) const {
 #else
     gmtime_r(&t, &g);
 #endif
-    char b[768];
+    char b[1024];
     // DateTimeType Manual and DaylightSavings false: Machino does not run an
     // NTP client of its own, so claiming NTP here would be a lie a client can
     // act on.
@@ -233,7 +236,7 @@ std::string OnvifService::scopes() const {
 }
 
 std::string OnvifService::profile_xml(const MediaProfile& p) const {
-    char geom[512];
+    char geom[640];
     snprintf(geom, sizeof geom,
              "<tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution>"
              "<tt:Quality>4</tt:Quality>"
@@ -279,7 +282,7 @@ std::string OnvifService::stream_uri(const MediaProfile& p, const std::string& h
 std::string OnvifService::video_sources() const {
     int w = 0, h = 0, fps = 0;
     if (!profiles_.empty()) { w = profiles_[0].width; h = profiles_[0].height; fps = profiles_[0].fps; }
-    char b[384];
+    char b[512];
     snprintf(b, sizeof b,
              "<trt:GetVideoSourcesResponse><trt:VideoSources token=\"vs0\">"
              "<tt:Framerate>%d</tt:Framerate>"
@@ -291,7 +294,7 @@ std::string OnvifService::video_sources() const {
 std::string OnvifService::encoder_configurations() const {
     std::string out = "<trt:GetVideoEncoderConfigurationsResponse>";
     for (const MediaProfile& p : profiles_) {
-        char geom[512];
+        char geom[640];
         snprintf(geom, sizeof geom,
                  "<tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution>"
                  "<tt:Quality>4</tt:Quality>"
