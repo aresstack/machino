@@ -30,6 +30,20 @@ struct RuntimeCounters {
     uint64_t webrtc_rtp_bytes = 0;
     uint64_t webrtc_send_errors = 0;
     uint64_t webrtc_pli = 0;           // picture-loss requests honoured
+
+    // Platform bring-up failures. A failed bring-up used to be invisible
+    // except in the log, and the log is on tmpfs - the OOM of 2026-09-22 was
+    // reconstructed only because the box happened to still be up. These make
+    // the same facts survive in /api/v1/telemetry.
+    uint64_t init_failures = 0;        // bring-up attempts that failed
+    uint64_t init_retries = 0;         // immediate retries of an unchanged state;
+                                       // MUST stay 0 - the five-retry loop that
+                                       // amplified a single failure into an OOM
+                                       // was removed, and this proves it stays gone
+    int      last_init_rc = 0;         // the vendor return code, verbatim
+    // Which stage failed. Free-form rather than an enum because the adapter
+    // owns the stage names and the core must not need to know them.
+    char     last_init_stage[24] = {0};
 };
 
 class RuntimeStats {
@@ -54,6 +68,18 @@ public:
     void dec(int RuntimeCounters::* g) {
         std::lock_guard<std::mutex> lk(m_);
         if (c_.*g > 0) --(c_.*g);      // a gauge must never go negative
+    }
+
+    // One bring-up attempt failed at `stage` with vendor code `rc`.
+    // `stage` is truncated rather than allowed to overflow: a diagnostic must
+    // never be the thing that corrupts memory.
+    void init_failed(const char* stage, int rc) {
+        std::lock_guard<std::mutex> lk(m_);
+        ++c_.init_failures;
+        c_.last_init_rc = rc;
+        size_t i = 0;
+        if (stage) for (; stage[i] && i + 1 < sizeof c_.last_init_stage; ++i) c_.last_init_stage[i] = stage[i];
+        c_.last_init_stage[i] = 0;
     }
 
 private:

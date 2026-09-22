@@ -48,10 +48,22 @@ private:
     bool added_ = false, enabled_ = false; int rc_ = 0;
 };
 
-// IMP_System_Init (with retries) / IMP_System_Exit
+// IMP_System_Init / IMP_System_Exit.
+//
+// EXACTLY ONE ATTEMPT. This used to retry five times, 200 ms apart, and that
+// loop was the amplifier that turned a single init failure into an OOM: each
+// failed attempt cost about 1.2 MB that was never returned, so five per round,
+// repeated while a consumer kept asking, exhausted a 42 MB camera. See
+// docs/incident-2026-09-22-oom.md. Retrying an unchanged state 200 ms later
+// was never going to help anyway.
+//
+// The destructor calls IMP_System_Exit ONLY when the init actually succeeded.
+// After a failed init the vendor stack may be half-initialised and nothing
+// documents Exit as the correct rollback for that; a bounded FAILED state is
+// better than a rollback that might damage it further.
 class SystemSession : NonCopyable {
 public:
-    SystemSession(int retries, int retry_delay_ms);
+    SystemSession();
     ~SystemSession();
     bool ok() const { return ok_; }
     int  rc() const { return rc_; }

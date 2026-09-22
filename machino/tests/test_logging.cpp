@@ -5,6 +5,7 @@
 #include "core/log_file.hpp"
 #include "core/runtime_stats.hpp"
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 using namespace machino;
@@ -116,4 +117,41 @@ void run_logging_tests() {
     LCHECK(rs.snapshot().webrtc_rtp_bytes > 4ull * 1000 * 1000 * 1000);
 
     LCHECK(&RuntimeStats::get() == &rs);               // really one instance
+
+    // ---- Fix B: bring-up failures are telemetered, retries are not ---------
+    // The five-retry loop that turned one init failure into an OOM is gone.
+    // init_retries exists so its return would be visible rather than silent.
+    {
+        const RuntimeCounters before = rs.snapshot();
+        LCHECK(before.init_retries == 0);
+
+        rs.init_failed("IMP_SYSTEM_INIT", -1);
+        RuntimeCounters a = rs.snapshot();
+        LCHECK(a.init_failures == before.init_failures + 1);
+        LCHECK(a.last_init_rc == -1);
+        LCHECK(std::string(a.last_init_stage) == "IMP_SYSTEM_INIT");
+        LCHECK(a.init_retries == 0);                   // nothing retries any more
+
+        // a later failure at a different stage replaces the stage, not appends
+        rs.init_failed("SENSOR_ENABLE", -7);
+        a = rs.snapshot();
+        LCHECK(a.init_failures == before.init_failures + 2);
+        LCHECK(a.last_init_rc == -7);
+        LCHECK(std::string(a.last_init_stage) == "SENSOR_ENABLE");
+
+        // a stage name longer than the field is truncated, never overflowed:
+        // a diagnostic must not be the thing that corrupts memory
+        rs.init_failed("A_STAGE_NAME_FAR_LONGER_THAN_THE_FIELD_ALLOWS", -2);
+        a = rs.snapshot();
+        LCHECK(strlen(a.last_init_stage) == sizeof(a.last_init_stage) - 1);
+        // 24-byte field = 23 characters plus the terminator
+        LCHECK(std::string(a.last_init_stage) == "A_STAGE_NAME_FAR_LONGER");
+
+        // a null stage is not a crash
+        rs.init_failed(nullptr, -3);
+        a = rs.snapshot();
+        LCHECK(a.last_init_stage[0] == 0);
+        LCHECK(a.last_init_rc == -3);
+        LCHECK(a.init_retries == 0);
+    }
 }

@@ -3,6 +3,7 @@
 #include "adapters/ingenic/ingenic_encoder.hpp"
 #include "adapters/ingenic/ingenic_framesource.hpp"
 #include "core/log.hpp"
+#include "core/runtime_stats.hpp"
 #include <cstdio>
 #include <cstring>
 
@@ -60,12 +61,16 @@ Result IngenicPlatform::bring_up() {
     info_.mclk               = (IMPSensorMclk)params_.mclk;
     info_.default_boot       = 0;
 
+    // Bring-up stages, in order. Each local is RAII: an early return here
+    // destroys the ones already built, in reverse, with no goto chain - and
+    // each failure records WHICH stage it was, because "bring-up failed (-1)"
+    // alone cost an evening of forensics once already.
     auto isp = std::make_unique<imp::IspSession>();
-    if (!isp->ok()) return Result::error(isp->rc());
+    if (!isp->ok()) { RuntimeStats::get().init_failed("ISP_OPEN", isp->rc()); return Result::error(isp->rc()); }
     auto sensor = std::make_unique<imp::SensorSession>(info_);
-    if (!sensor->ok()) return Result::error(sensor->rc());
-    auto system = std::make_unique<imp::SystemSession>(5, 200);
-    if (!system->ok()) return Result::error(system->rc());
+    if (!sensor->ok()) { RuntimeStats::get().init_failed("SENSOR_ENABLE", sensor->rc()); return Result::error(sensor->rc()); }
+    auto system = std::make_unique<imp::SystemSession>();
+    if (!system->ok()) { RuntimeStats::get().init_failed("IMP_SYSTEM_INIT", system->rc()); return Result::error(system->rc()); }
     auto tuning = std::make_unique<imp::TuningSession>();
 
     isp_ = std::move(isp); sensor_session_ = std::move(sensor);

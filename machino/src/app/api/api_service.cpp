@@ -350,6 +350,13 @@ Json ApiService::telemetry_json() {
         s.set("webrtc_rtp_bytes", Json::integer((long long)rs.webrtc_rtp_bytes));
         s.set("webrtc_send_errors", Json::integer((long long)rs.webrtc_send_errors));
         s.set("webrtc_pli", Json::integer((long long)rs.webrtc_pli));
+        // Bring-up failures survive here even though the log is on tmpfs.
+        // init_retries must stay 0: the five-retry loop that amplified one
+        // failure into an OOM is gone, and this is how we notice if it returns.
+        s.set("init_failures", Json::integer((long long)rs.init_failures));
+        s.set("init_retries", Json::integer((long long)rs.init_retries));
+        s.set("last_init_rc", Json::integer(rs.last_init_rc));
+        s.set("last_init_stage", Json::string(rs.last_init_stage));
         j.set("sessions", s);
     }
     Json pr = Json::object(); pr.set("cpu_percent", opt(t.cpu_percent)); pr.set("rss_kb", opt(t.rss_kb)); pr.set("threads", opt(t.threads)); j.set("process", pr);

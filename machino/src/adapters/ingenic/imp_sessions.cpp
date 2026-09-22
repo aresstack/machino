@@ -32,14 +32,12 @@ SensorSession::~SensorSession() {
 }
 
 // ---- SystemSession --------------------------------------------------------
-SystemSession::SystemSession(int retries, int retry_delay_ms) {
-    for (int t = 0; ; ++t) {
-        rc_ = IMP_System_Init();
-        if (rc_ >= 0) { ok_ = true; return; }
-        if (t + 1 >= retries) { LOGE(MOD, "IMP_System_Init failed (%d) after %d tries", rc_, t + 1); return; }
-        LOGW(MOD, "IMP_System_Init failed (%d) - retry %d", rc_, t + 1);
-        usleep((useconds_t)retry_delay_ms * 1000);
-    }
+SystemSession::SystemSession() {
+    rc_ = IMP_System_Init();
+    if (rc_ >= 0) { ok_ = true; return; }
+    // One attempt, then give up - see the header for why the five-retry loop
+    // had to go. The caller records the stage and moves to FAILED.
+    LOGE(MOD, "IMP_System_Init failed (%d) - not retrying", rc_);
 }
 SystemSession::~SystemSession() { if (ok_) IMP_System_Exit(); }
 
