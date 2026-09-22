@@ -138,72 +138,91 @@ void run_fmp4_prft_tests() {
     FCHECK(rest == body);
 }
 
-// AP15: the decode timeline. The server derives it from the capture clock and
-// removes discontinuities, instead of summing per-fragment durations - this
-// reproduces that arithmetic and pins the property that matters: over a long
-// continuous run the timeline must not drift away from the capture clock.
+// AP15: the decode timeline, exercising fmp4::Timeline ITSELF.
+//
+// The first version of this test carried its own copy of the arithmetic and
+// checked that. That proves the copy, not the code - and a copy drifts from
+// what it copied without anyone noticing. The timeline now lives in the muxer
+// so this can call it.
 void run_fmp4_timeline_tests() {
-    // The arithmetic under test, lifted from HttpServer::pump_ws_video.
-    struct Tl {
-        int64_t origin = 0, skew = 0, last = 0; bool set = false;
-        uint64_t feed(int64_t pts) {
-            int64_t step = 50000;
-            if (last > 0) { const int64_t d = pts - last; if (d > 1000 && d < 1000000) step = d; }
-            if (!set) { origin = pts; skew = 0; set = true; }
-            else if (last > 0) { const int64_t d = pts - last; if (d <= 1000 || d >= 1000000) skew += d - step; }
-            last = pts;
-            int64_t tl = pts - origin - skew;
-            if (tl < 0) tl = 0;
-            return (uint64_t)((tl * 90000 + 500000) / 1000000);
-        }
-    };
-
-    // 1. A continuous hour at a rate that does NOT divide the timescale
-    //    evenly (33367 us ~ 29.97 fps). Summing a truncated duration would
-    //    lose ~0.4 units per frame; deriving it loses nothing.
+    // 1. A continuous hour at a rate that does NOT divide the timescale evenly
+    //    (33367 us ~ 29.97 fps). Summing a rounded duration would lose a
+    //    fraction of a tick per frame; deriving it loses nothing.
     {
-        Tl t; const int64_t base = 1000000, step = 33367;
-        const int n = 30 * 60 * 60;                        // one hour of frames
-        uint64_t dts = 0;
-        for (int i = 0; i < n; ++i) dts = t.feed(base + (int64_t)i * step);
+        fmp4::Timeline t;
+        const int64_t base = 1000000, step = 33367;
+        const int n = 30 * 60 * 60;                       // one hour of frames
+        uint64_t dts = 0; uint32_t dur = 0;
+        for (int i = 0; i < n; ++i) dts = t.next(base + (int64_t)i * step, dur);
         const int64_t span_us = (int64_t)(n - 1) * step;
         const int64_t expect  = (span_us * 90000 + 500000) / 1000000;
         FCHECK((int64_t)dts == expect);
-        // and the drift against the capture clock is under one 90 kHz tick
-        FCHECK(llabs((int64_t)dts - expect) <= 1);
+        FCHECK(dur == 3003);                              // 33367 us rounded, not 3002
+        // What summing durations would have produced, for the record: the
+        // rounding error per frame, times the frames.
+        const int64_t summed = (int64_t)(n - 1) * 3003;
+        FCHECK(llabs(summed - expect) > 100);             // the drift this design removes
     }
 
     // 2. Monotonic, always: a stalled, repeated or backwards timestamp may
     //    never move the timeline backwards - MSE would reject the fragment.
     {
-        Tl t; uint64_t prev = 0; bool mono = true;
+        fmp4::Timeline t;
         const int64_t pts[] = {1000000, 1050000, 1050000, 1049000, 1100000, 1150000};
+        uint64_t prev = 0; uint32_t dur = 0; bool mono = true;
         for (size_t i = 0; i < sizeof pts / sizeof pts[0]; ++i) {
-            const uint64_t d = t.feed(pts[i]);
-            if (i && d <= prev && i != 0) mono = mono && (d >= prev);
+            const uint64_t d = t.next(pts[i], dur);
+            if (i && d < prev) mono = false;
             prev = d;
         }
         FCHECK(mono);
     }
 
     // 3. A long stall is ABSORBED, not punched into the timeline: a five
-    //    second gap must advance the timeline by one frame, so the buffered
-    //    range stays contiguous and the playhead has nothing to stall in.
+    //    second gap must advance it by one frame, so the buffered range stays
+    //    contiguous and the playhead has nothing to stall in.
     {
-        Tl t;
-        t.feed(1000000);
-        const uint64_t before = t.feed(1050000);
-        const uint64_t after  = t.feed(6050000);           // 5 s gap
-        FCHECK(after - before == 4500);                    // one 20 fps frame, not 5 s
+        fmp4::Timeline t; uint32_t dur = 0;
+        t.next(1000000, dur);
+        const uint64_t before = t.next(1050000, dur);
+        const uint64_t after  = t.next(6050000, dur);     // 5 s gap
+        FCHECK(after - before == 4500);                   // one 20 fps frame, not 5 s
     }
 
-    // 4. A gap just under the cut is REAL and stays in the timeline: it is
-    //    how the browser learns that time passed and keeps up with the clock.
+    // 4. A gap just under the cut is REAL and stays in the timeline: it is how
+    //    the browser learns that time passed and keeps up with the clock.
     {
-        Tl t;
-        t.feed(1000000);
-        const uint64_t before = t.feed(1050000);
-        const uint64_t after  = t.feed(1950000);           // 900 ms, still continuous
-        FCHECK(after - before == 81000);                   // 0.9 s at 90 kHz
+        fmp4::Timeline t; uint32_t dur = 0;
+        t.next(1000000, dur);
+        const uint64_t before = t.next(1050000, dur);
+        const uint64_t after  = t.next(1950000, dur);     // 900 ms, still continuous
+        FCHECK(after - before == 81000);                  // 0.9 s at 90 kHz
+    }
+
+    // 5. The very first frame is the origin, and it reports the fallback
+    //    duration - there is no previous interval to measure.
+    {
+        fmp4::Timeline t; uint32_t dur = 0;
+        FCHECK(t.next(987654321, dur) == 0);
+        FCHECK(dur == 4500);
+    }
+
+    // 6. The camera's own clock, replayed: 20 fps with realistic jitter must
+    //    track the capture clock to within a tick over ten minutes. This is
+    //    the property the field measurement checks from the other end.
+    {
+        fmp4::Timeline t; uint32_t dur = 0;
+        const int64_t base = 5000000;
+        int64_t pts = base;
+        uint64_t dts = 0;
+        unsigned seed = 12345;
+        for (int i = 0; i < 20 * 600; ++i) {
+            dts = t.next(pts, dur);
+            seed = seed * 1103515245u + 12345u;
+            pts += 50000 + (int64_t)((seed >> 16) % 400) - 200;   // +-200 us jitter
+        }
+        // Derived, so it is exactly the elapsed capture time - no accumulation.
+        const int64_t elapsed_us = t.last_us - base;
+        FCHECK((int64_t)dts == (elapsed_us * 90000 + 500000) / 1000000);
     }
 }

@@ -125,9 +125,22 @@ Diskontinuität **absichtlich entfernt** wird — das erhält das bisherige,
 richtige Verhalten: eine fünf Sekunden lange Pause rückt die Zeitachse um *ein*
 Frame vor, statt ein Loch zu schlagen, in dem der Playhead stehen bliebe.
 
-Hosttests pinnen das: eine Stunde bei 29,97 fps (Abweichung ≤ 1 Tick), ein
-stehender und ein rückwärts laufender Zeitstempel (Monotonie), eine 5-s-Lücke
-(genau ein Frame), eine 900-ms-Lücke (bleibt echt, 81 000 Ticks).
+Hosttests pinnen das: eine Stunde bei 29,97 fps (Abweichung ≤ 1 Tick, und
+ausdrücklich der Nachweis, dass dieselbe Strecke aufsummiert *mehr als* 100
+Ticks danebenläge), ein stehender und ein rückwärts laufender Zeitstempel
+(Monotonie), eine 5-s-Lücke (genau ein Frame), eine 900-ms-Lücke (bleibt echt,
+81 000 Ticks), das allererste Frame (Ursprung, Fallback-Dauer) und zehn Minuten
+mit ±200 µs Jitter gegen die Aufnahmeuhr.
+
+**Korrektur am eigenen Test.** Die erste Fassung dieses Tests trug die
+Arithmetik als **Kopie** im Test und prüfte die. Das beweist die Kopie, nicht
+den Code — und eine Kopie läuft von ihrem Original weg, ohne dass es jemand
+merkt. Die Zeitachse ist deshalb jetzt `fmp4::Timeline`, eine eigene Einheit
+neben dem Muxer, und der Server benutzt sie. Der Test ruft dieselbe Einheit.
+Der Grund, warum sie überhaupt dort liegt und nicht inline im Server:
+`http_server.cpp` ist nicht im Hosttest-Build (POSIX-Sockets, von
+`tools/check-linux-only.sh` bewacht) — eine Arithmetik, die nur von einem Test
+*nachgebaut* wird, ist von ihm nicht getestet.
 
 ### 2. `prft` — die Lücke, die niemand gesehen hat
 

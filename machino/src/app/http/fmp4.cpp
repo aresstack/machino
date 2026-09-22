@@ -178,6 +178,31 @@ std::vector<uint8_t> init_segment(const std::vector<uint8_t>& sps, const std::ve
     return b;
 }
 
+uint64_t Timeline::next(int64_t pts_us, uint32_t& duration_out) {
+    int64_t step_us = FALLBACK_STEP_US;
+    if (last_us > 0) {
+        const int64_t d = pts_us - last_us;
+        if (d > MIN_STEP_US && d < MAX_STEP_US) step_us = d;
+    }
+    // Rounded, not truncated: a truncation here would be the very drift this
+    // class exists to remove, reintroduced through the duration.
+    duration_out = (uint32_t)((step_us * 90000 + 500000) / 1000000);
+
+    if (!started) {
+        origin_us = pts_us; skew_us = 0; started = true;
+    } else if (last_us > 0) {
+        const int64_t d = pts_us - last_us;
+        // A stalled, repeated, backwards or very long step is absorbed, so the
+        // timeline advances by one nominal frame and stays contiguous.
+        if (d <= MIN_STEP_US || d >= MAX_STEP_US) skew_us += d - step_us;
+    }
+    last_us = pts_us;
+
+    int64_t tl = pts_us - origin_us - skew_us;
+    if (tl < 0) tl = 0;                                 // monotonic, whatever the clock did
+    return (uint64_t)((tl * 90000 + 500000) / 1000000);
+}
+
 std::vector<uint8_t> prft(uint32_t track_id, uint64_t ntp, uint64_t media_time) {
     std::vector<uint8_t> b;
     size_t at = open_full(b, "prft", 1, 0);

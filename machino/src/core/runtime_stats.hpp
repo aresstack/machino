@@ -38,7 +38,8 @@ struct RuntimeCounters {
     // output buffer has ever been: it is the server-side backlog in bytes,
     // and it is what a growing browser buffer would look like from here.
     uint64_t ws_video_frames = 0;      // fMP4 fragments handed to a socket
-    uint64_t ws_video_bytes = 0;
+    uint64_t ws_video_bytes = 0;      // fMP4 payload, NOT wire bytes: the
+                                       // WebSocket header and TCP are not in it
     uint64_t ws_video_resyncs = 0;     // drop-until-key episodes entered
     uint64_t ws_video_overruns = 0;    // fragments not sent: the socket was behind
     int      ws_video_out_peak = 0;    // high-water mark of an MSE out buffer

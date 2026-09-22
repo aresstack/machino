@@ -161,7 +161,12 @@ Offer parse_offer(const std::string& sdp, const std::string& prefer_profile) {
                     size_t e = l.find(' ', at);
                     if (e == std::string::npos) e = l.size();
                     if (field >= 2 && e > at && m.pts.size() < 64) {
-                        int pt = atoi(l.c_str() + at);
+                        // Digits only: atoi on a non-numeric token quietly yields
+                        // 0, and 0 is a real payload type (PCMU). A malformed
+                        // m-line must add nothing, not add PCMU.
+                        bool num = true;
+                        for (size_t k = at; k < e; ++k) if (l[k] < 0x30 || l[k] > 0x39) { num = false; break; }
+                        const int pt = num ? atoi(l.c_str() + at) : -1;
                         if (pt >= 0 && pt < 128) m.pts.push_back(pt);
                     }
                     ++field;

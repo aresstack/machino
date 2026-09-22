@@ -165,16 +165,10 @@ struct HttpServer::Client {
     std::vector<uint8_t> ws_sps, ws_pps;
     uint32_t ws_seq = 1;
     uint64_t ws_dts = 0;            // 90 kHz decode timeline
-    int64_t  ws_last_pts_us = 0;
-    // AP15: the timeline is DERIVED from the capture clock, not accumulated
-    // from per-fragment durations - adding a truncated duration 20 times a
-    // second is a drift of its own, and drift is exactly what climbing MSE
-    // latency is made of. `ws_pts_origin` is the first sent frame (timeline
-    // zero); `ws_skew_us` is the time deliberately REMOVED at discontinuities
-    // so a long stall does not punch a hole the playhead would stall in.
-    int64_t  ws_pts_origin = 0;
-    int64_t  ws_skew_us = 0;
-    bool     ws_origin_set = false;
+    // AP15: the decode timeline. Derived from the capture clock, not summed
+    // from per-fragment durations - see fmp4::Timeline for why, and for the
+    // host tests that hold it to that.
+    fmp4::Timeline ws_timeline;
     int64_t  ws_last_idr_req_ms = 0;
     // /ws/webrtc: the signalling WebSocket owns one PeerSession (UDP socket
     // in the same poll loop) and, like /ws/video, is a StreamHub consumer
@@ -983,30 +977,10 @@ void HttpServer::pump_ws_video(Client& c) {
         if (!c.ws_init_sent) continue;
         if (c.ws_await_key) continue;                          // resumes at the next key frame
 
-        uint32_t dur = 4500;                                   // 20 fps fallback at 90 kHz
-        int64_t  step_us = 50000;
-        if (c.ws_last_pts_us > 0) {
-            const int64_t d_us = au->pts_us - c.ws_last_pts_us;
-            if (d_us > 1000 && d_us < 1000000) {
-                step_us = d_us;
-                dur = (uint32_t)((d_us * 90000 + 500000) / 1000000);   // rounded, not truncated
-            }
-        }
-        // The decode time is the capture clock, shifted by whatever has been
-        // removed at discontinuities - NOT a running sum of durations. A sum
-        // accumulates every rounding error; this one cannot drift at all, and
-        // it stays contiguous because a gap the player could stall in is
-        // absorbed into the skew instead of appearing in the timeline.
-        if (!c.ws_origin_set) {
-            c.ws_pts_origin = au->pts_us; c.ws_skew_us = 0; c.ws_origin_set = true;
-        } else if (c.ws_last_pts_us > 0) {
-            const int64_t d_us = au->pts_us - c.ws_last_pts_us;
-            if (d_us <= 1000 || d_us >= 1000000) c.ws_skew_us += d_us - step_us;
-        }
-        c.ws_last_pts_us = au->pts_us;
-        int64_t tl_us = au->pts_us - c.ws_pts_origin - c.ws_skew_us;
-        if (tl_us < 0) tl_us = 0;                              // monotonic, whatever the clock did
-        c.ws_dts = (uint64_t)((tl_us * 90000 + 500000) / 1000000);
+        // The timeline lives in fmp4::Timeline, where a host test can reach
+        // it: derived from the capture clock, discontinuities absorbed.
+        uint32_t dur = 0;
+        c.ws_dts = c.ws_timeline.next(au->pts_us, dur);
         std::vector<uint8_t> sample = fmp4::annexb_to_avcc(au->data.data(), au->data.size());
         if (sample.empty()) continue;
         std::vector<uint8_t> frag;

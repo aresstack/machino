@@ -32,6 +32,40 @@ std::vector<uint8_t> init_segment(const std::vector<uint8_t>& sps, const std::ve
 // a set clock would otherwise report an invented latency.
 std::vector<uint8_t> prft(uint32_t track_id, uint64_t ntp, uint64_t media_time);
 
+// AP15: the decode timeline of one MSE viewer.
+//
+// DERIVED from the capture clock, never accumulated from per-fragment
+// durations: adding a rounded duration twenty times a second is a drift of its
+// own, always in the same direction, and drift is what climbing MSE latency is
+// made of. A continuous run therefore cannot drift away from the capture clock
+// at all.
+//
+// `skew` is the time deliberately REMOVED at a discontinuity. A five second
+// stall must advance the timeline by one frame, not punch a five second hole
+// the playhead would stall in - the buffered range has to stay contiguous.
+//
+// It lives here, next to the muxer, rather than inline in the server, because
+// this is the part worth testing and http_server.cpp is not in the host test
+// build. An arithmetic that is only reproduced by a test is not tested by it.
+struct Timeline {
+    // Returns the 90 kHz decode time for a frame captured at `pts_us`, and
+    // writes the duration to advertise for it (the previous interval, which is
+    // the only one known when the fragment is written).
+    uint64_t next(int64_t pts_us, uint32_t& duration_out);
+
+    // Continuous as long as the step stays inside these bounds. Outside them
+    // the gap is absorbed into the skew instead of entering the timeline.
+    static const int64_t MIN_STEP_US = 1000;
+    static const int64_t MAX_STEP_US = 1000000;
+    static const int64_t FALLBACK_STEP_US = 50000;      // 20 fps
+
+    int64_t origin_us = 0;
+    int64_t skew_us   = 0;
+    int64_t last_us   = 0;
+    bool    started   = false;
+};
+
+
 // One frame: moof + mdat. `decode_time` and `duration` are in the init
 // segment's timescale; `sample` is the AVCC-converted access unit.
 std::vector<uint8_t> fragment(uint32_t sequence, uint64_t decode_time, uint32_t duration,
