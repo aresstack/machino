@@ -326,7 +326,7 @@ void run_osd_tests() {
 
         // the largest picture that is allowed is allowed, and one pixel more
         // in either direction is not
-        LCHECK(OsdService::MAX_IMAGE_DIM == 512);
+        LCHECK(OsdService::MAX_IMAGE_DIM == 256);   // lowered in review: see the header
         LCHECK((size_t)OsdService::MAX_IMAGE_DIM * OsdService::MAX_IMAGE_DIM * 4 == OsdService::MAX_IMAGE_BYTES);
         LCHECK(s.store_image(2, OsdService::MAX_IMAGE_DIM + 1, 1, 0, px.data(), 4).status == 400);
 

@@ -384,7 +384,7 @@ OsdService::ImageResult OsdService::store_image(int overlay, int w, int h, int r
     if (overlay < 0 || overlay > MAX_OVERLAY_INDEX)
         return {400, "overlay index out of range"};
     if (w <= 0 || h <= 0 || w > MAX_IMAGE_DIM || h > MAX_IMAGE_DIM)
-        return {400, "picture must be between 1x1 and 512x512"};
+        return {400, "picture must be between 1x1 and 256x256"};
     // Multiply in 64 bits: w and h are already bounded above, but the check
     // must not be the thing that overflows.
     const uint64_t need = (uint64_t)w * (uint64_t)h * 4ull;
@@ -412,7 +412,10 @@ OsdService::ImageResult OsdService::store_image(int overlay, int w, int h, int r
     const bool closed = fclose(f) == 0;
     if (!wrote || !closed) { remove(tmp_path.c_str()); return {500, "the overlay store is full"}; }
 
-    remove(final_path.c_str());           // rename() will not replace on every libc
+    // rename() replaces atomically on POSIX, which is every platform this runs
+    // on. Removing the target first only opened a window in which the overlay
+    // had no logo at all, and lost the old one outright if the rename then
+    // failed.
     if (rename(tmp_path.c_str(), final_path.c_str()) != 0) {
         remove(tmp_path.c_str());
         return {500, "cannot commit the picture"};

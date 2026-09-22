@@ -50,6 +50,19 @@ static size_t input_cap(const std::string& in) {
     return MAX_IN;
 }
 
+// atoi() on a value outside int range is undefined behaviour, and these values
+// come straight off the query string. The service range-checks the result
+// anyway, so the consequence was bounded - but the UB should not be there.
+static int query_int(const std::string& s, int fallback) {
+    if (s.empty()) return fallback;
+    errno = 0;
+    char* end = nullptr;
+    const long v = strtol(s.c_str(), &end, 10);
+    if (errno == ERANGE || !end || *end != 0) return fallback;
+    if (v < -2147483647L - 1 || v > 2147483647L) return fallback;
+    return (int)v;
+}
+
 static int64_t now_ms() { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
 
 // Sample the Linux side the majestic-webui Dashboard reads via /metrics. Every
@@ -468,7 +481,7 @@ bool HttpServer::handle_request(Client& c) {
         // POST with NO body -> remove, which is how the page's staged logo
         //         deletion lands on save (flushLogoBin).
         const std::string ov = SessionGate::form_value(req.query, "overlay");
-        const int overlay = ov.empty() ? -1 : atoi(ov.c_str());
+        const int overlay = query_int(ov, -1);
         if (!osd_) { r = api::ApiService::fail(404, "unknown_field", path, "no overlay store"); }
         else if (m == "GET") {
             osd::ImageInfo info; std::string pixels;
@@ -488,9 +501,9 @@ bool HttpServer::handle_request(Client& c) {
                 req.body.empty()
                     ? osd_->delete_image(overlay)
                     : osd_->store_image(overlay,
-                                        atoi(SessionGate::form_value(req.query, "w").c_str()),
-                                        atoi(SessionGate::form_value(req.query, "h").c_str()),
-                                        atoi(SessionGate::form_value(req.query, "ref").c_str()),
+                                        query_int(SessionGate::form_value(req.query, "w"), 0),
+                                        query_int(SessionGate::form_value(req.query, "h"), 0),
+                                        query_int(SessionGate::form_value(req.query, "ref"), 0),
                                         reinterpret_cast<const uint8_t*>(req.body.data()),
                                         req.body.size());
             if (res.ok()) {

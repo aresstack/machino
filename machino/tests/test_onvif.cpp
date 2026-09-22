@@ -349,6 +349,31 @@ void run_onvif_tests() {
         LCHECK(r.status == 400);
     }
 
+    // ---- regressions found in review ------------------------------------------
+    {
+        // A comment must not be able to truncate a credential. The close-tag
+        // scan runs on unauthenticated input too, and it did not skip comments.
+        std::string v;
+        LCHECK(element_text("<P>ab<!-- </P> -->cd</P>", "P", v) && v == "ab<!-- </P> -->cd");
+        LCHECK(!element_text("<P>ab<!-- unterminated", "P", v));
+        // the ordinary cases still work
+        LCHECK(element_text("<P>plain</P>", "P", v) && v == "plain");
+        LCHECK(element_text("<a:P>ns</a:P>", "P", v) && v == "ns");
+
+        // A constant-time compare still has to be a CORRECT compare.
+        LCHECK(secure_equals("", ""));
+        LCHECK(secure_equals("abc", "abc"));
+        LCHECK(!secure_equals("abc", "abd"));
+        LCHECK(!secure_equals("abc", "ab"));
+        LCHECK(!secure_equals("ab", "abc"));
+        LCHECK(!secure_equals("", "a"));
+        // embedded NULs are compared, not treated as terminators
+        const std::string z1(std::string("a") + '\0' + "b");
+        const std::string z2(std::string("a") + '\0' + "c");
+        LCHECK(z1.size() == 3 && !secure_equals(z1, z2));
+        LCHECK(secure_equals(z1, z1));
+    }
+
     // ---- routing and config -------------------------------------------------
     {
         LCHECK(OnvifService::is_onvif_path("/onvif/device_service"));

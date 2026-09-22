@@ -138,7 +138,17 @@ bool element_text(const std::string& xml, const std::string& local_name, std::st
     if (selfc) { out.clear(); return true; }
     // The matching close tag, found by local name rather than by nesting: the
     // elements this is used for never contain a child of the same name.
-    for (size_t i = e; (i = xml.find("</", i)) != std::string::npos; ++i) {
+    for (size_t i = e; i < xml.size(); ++i) {
+        // Skip comments whole here too: a comment containing "</Password>"
+        // would otherwise truncate the value, and this runs on
+        // unauthenticated input.
+        if (xml.compare(i, 4, "<!--") == 0) {
+            const size_t c = xml.find("-->", i + 4);
+            if (c == std::string::npos) return false;
+            i = c + 2;
+            continue;
+        }
+        if (xml.compare(i, 2, "</") != 0) continue;
         size_t j = i + 2;
         while (j < xml.size() && (name_char(xml[j]) || xml[j] == ':')) ++j;
         if (local_of(xml.substr(i + 2, j - i - 2)) == local_name) {
@@ -212,6 +222,16 @@ bool b64_decode(const std::string& in, std::string& out) {
         if (bits >= 8) { bits -= 8; out += (char)((acc >> bits) & 0xff); }
     }
     return pad <= 2;
+}
+
+bool secure_equals(const std::string& a, const std::string& b) {
+    // The LENGTH is not secret - it is visible in the message anyway - so a
+    // length mismatch may short-circuit; the CONTENT comparison may not.
+    if (a.size() != b.size()) return false;
+    unsigned char diff = 0;
+    for (size_t i = 0; i < a.size(); ++i)
+        diff = (unsigned char)(diff | ((unsigned char)a[i] ^ (unsigned char)b[i]));
+    return diff == 0;
 }
 
 std::string xml_escape(const std::string& s) {

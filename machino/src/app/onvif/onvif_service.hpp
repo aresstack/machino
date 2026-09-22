@@ -70,7 +70,12 @@ public:
         std::string extra_headers;
     };
 
-    OnvifService(const OnvifConfig& cfg, CheckFn check);
+    // `nonce_secret` keys the HTTP Digest nonce. It MUST be unpredictable and
+    // it must NOT be the password: the challenge is handed to any
+    // unauthenticated caller, so a nonce derived from the password would be an
+    // offline brute-force oracle for it. Empty = no secret available, and
+    // Digest is then neither offered nor accepted (fail closed).
+    OnvifService(const OnvifConfig& cfg, CheckFn check, std::string nonce_secret = "");
 
     void set_device(const DeviceInfo& d)                  { dev_ = d; }
     void set_profiles(const std::vector<MediaProfile>& p) { profiles_ = p; }
@@ -132,6 +137,7 @@ private:
     std::string xaddr(const std::string& host, const char* service) const;
 
     bool seen_nonce(const std::string& nonce_b64, int64_t now_unix);
+    bool digest_available() const { return !cfg_.password.empty() && !nonce_secret_.empty(); }
 
     OnvifConfig               cfg_;
     CheckFn                   check_;
@@ -141,6 +147,7 @@ private:
     int                       rtsp_port_ = 554;
     bool                      claimed_ = true;
     bool                      unsafe_  = false;
+    std::string               nonce_secret_;
     // Replay window. Bounded: a digest is only valid for CLOCK_SKEW_S anyway,
     // so the cache never has to outlive that, and the cap stops a flood of
     // distinct nonces from growing it without limit.

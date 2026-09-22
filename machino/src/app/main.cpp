@@ -411,7 +411,18 @@ int main(int argc, char** argv) {
         // AP11 ONVIF. Off by default until it has met a real client; the
         // profiles it advertises are the ones the pipeline actually has, so
         // a client is never handed a stream that does not exist.
-        onvif::OnvifService onvif_service(cfg.onvif, shadow_check);
+        // The HTTP Digest nonce is keyed with this, never with the password:
+        // the challenge goes to any unauthenticated caller. No entropy means
+        // no Digest, which is the fail-closed answer.
+        std::string onvif_nonce_secret;
+        if (FILE* ur = fopen("/dev/urandom", "rb")) {
+            char rnd[32];
+            if (fread(rnd, 1, sizeof rnd, ur) == sizeof rnd) onvif_nonce_secret.assign(rnd, sizeof rnd);
+            fclose(ur);
+        }
+        if (cfg.onvif.enabled && onvif_nonce_secret.empty())
+            LOGW(MOD, "onvif: no entropy for the digest nonce - HTTP Digest stays off");
+        onvif::OnvifService onvif_service(cfg.onvif, shadow_check, onvif_nonce_secret);
         {
             onvif::DeviceInfo di;
             di.firmware = MACHINO_VERSION;

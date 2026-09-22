@@ -22,13 +22,18 @@ namespace {
 const int64_t NOW = 1609556645;
 const char* URI = "/onvif/device_service";
 
-OnvifService make(const std::string& password) {
+// A fixed nonce secret so the tests are deterministic. In the daemon this
+// comes from /dev/urandom - see the review note on why it must NOT be the
+// password.
+const char* SECRET = "test-nonce-secret-0123456789";
+
+OnvifService make(const std::string& password, const char* secret = SECRET) {
     OnvifConfig c;
     c.enabled = true;
     c.password = password;
     OnvifService s(c, [](const std::string& u, const std::string& p) {
         return u == "root" && p == "shadowpass";
-    });
+    }, secret ? secret : "");
     s.set_ports(80, 554);
     return s;
 }
@@ -79,10 +84,32 @@ void run_onvif_digest_tests() {
         GCHECK(!s.nonce_ok("", NOW));
         GCHECK(!s.nonce_ok("99999999999999999999.abc", NOW));   // overlong timestamp
 
-        // and a camera with a different password issues a different one
-        OnvifService t = make("other");
-        GCHECK(t.make_nonce(NOW) != n);
-        GCHECK(!t.nonce_ok(n, NOW));
+        // The nonce must NOT depend on the password. challenge() hands it to
+        // any unauthenticated caller, so keying it with the password published
+        // sha1(known-prefix || password) to the whole network - a
+        // single-iteration offline oracle. Found in review, after shipping it.
+        OnvifService same_secret_other_pw = make("completely-different");
+        GCHECK(same_secret_other_pw.make_nonce(NOW) == n);
+
+        // It must depend on the process secret, so two cameras do not share one
+        OnvifService other_secret = make("secret", "a-different-process-secret");
+        GCHECK(other_secret.make_nonce(NOW) != n);
+        GCHECK(!other_secret.nonce_ok(n, NOW));
+    }
+
+    // ---- no entropy for the secret: Digest is neither offered nor accepted ----
+    {
+        // Fail closed. Without a secret the camera cannot have issued a genuine
+        // nonce, so it cannot judge a digest built on one.
+        OnvifService s = make("secret", nullptr);
+        GCHECK(!has(s.challenge(NOW), "Digest"));
+        GCHECK(has(s.challenge(NOW), "Basic"));
+        GCHECK(s.authenticate("<s:Envelope/>",
+                              digest_header("root", "secret", OnvifService::DIGEST_REALM,
+                                            "1.abc", "POST", URI), NOW, "POST")
+               == AuthResult::Unverifiable);
+        // Basic against the configured password still works
+        GCHECK(s.authenticate("<s:Envelope/>", "Basic cm9vdDpzZWNyZXQ=", NOW, "POST") == AuthResult::Ok);
     }
 
     // ---- the challenge ---------------------------------------------------------

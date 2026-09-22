@@ -38,6 +38,7 @@ public:
 
 private:
     void loop();
+    void announce(bool alive);       // Hello (true) / Bye (false), multicast
     // The local address this camera has towards `peer`, so the XAddrs it hands
     // back are reachable from where the client is standing. Determined per
     // reply rather than configured, which is the only thing that is right on a
@@ -53,6 +54,11 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<unsigned> answered_{0}, ignored_{0};
     uint64_t    msg_counter_ = 0;
+    // Reflection bound: a UDP source address cannot be verified, so every
+    // reply is a packet a third party can be made to receive. Loop thread only.
+    static const unsigned MAX_REPLIES_PER_SEC = 20;
+    int64_t     rate_window_ = 0;
+    unsigned    rate_count_ = 0;
 };
 
 }} // namespace machino::onvif

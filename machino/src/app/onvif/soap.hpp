@@ -63,6 +63,12 @@ bool b64_decode(const std::string& in, std::string& out);
 
 std::string xml_escape(const std::string& s);
 
+// Compare two secrets without an early exit. std::string::operator== stops at
+// the first differing byte, which over enough samples tells an attacker how
+// much of a digest or password they have guessed right. Everything compared
+// here is short, so the cost of always walking both is nothing.
+bool secure_equals(const std::string& a, const std::string& b);
+
 // A complete SOAP envelope around `body_xml`, with the namespace declarations
 // ONVIF clients expect.
 std::string envelope(const std::string& body_xml);

@@ -23,8 +23,8 @@ const char* auth_result_name(AuthResult r) {
     return "?";
 }
 
-OnvifService::OnvifService(const OnvifConfig& cfg, CheckFn check)
-    : cfg_(cfg), check_(std::move(check)) {}
+OnvifService::OnvifService(const OnvifConfig& cfg, CheckFn check, std::string nonce_secret)
+    : cfg_(cfg), check_(std::move(check)), nonce_secret_(std::move(nonce_secret)) {}
 
 bool OnvifService::is_onvif_path(const std::string& path) {
     return path.compare(0, 7, "/onvif/") == 0;
@@ -98,7 +98,11 @@ bool OnvifService::seen_nonce(const std::string& nonce_b64, int64_t now_unix) {
 std::string OnvifService::make_nonce(int64_t now_unix) const {
     char ts[32];
     snprintf(ts, sizeof ts, "%lld", (long long)now_unix);
-    const std::string material = std::string(ts) + ":" + DIGEST_REALM + ":" + cfg_.password;
+    // Keyed with a PROCESS SECRET, never with the password: challenge() hands
+    // this value to any unauthenticated caller, so keying it with the password
+    // would publish sha1(known-prefix || password) to the whole network - a
+    // single-iteration offline oracle. Found in review, after shipping it.
+    const std::string material = std::string(ts) + ":" + DIGEST_REALM + ":" + nonce_secret_;
     uint8_t d[20];
     ws::sha1((const uint8_t*)material.data(), material.size(), d);
     char tag[33];
@@ -122,9 +126,10 @@ bool OnvifService::nonce_ok(const std::string& nonce, int64_t now_unix) const {
 std::string OnvifService::challenge(int64_t now_unix) const {
     if (unsafe_) return "";
     std::string out;
-    // Digest needs the cleartext to build HA1, so it is offered only when
-    // there is one - the same reason PasswordDigest is Unverifiable without it.
-    if (!cfg_.password.empty()) {
+    // Digest needs BOTH the cleartext (for HA1) and a nonce secret (so the
+    // challenge is not an oracle). Without either it is not offered, because
+    // inviting a client to try something that cannot succeed helps nobody.
+    if (digest_available()) {
         out += "WWW-Authenticate: Digest realm=\"" + std::string(DIGEST_REALM) +
                "\", nonce=\"" + make_nonce(now_unix) + "\", qop=\"auth\"\r\n";
     }
@@ -150,7 +155,7 @@ AuthResult OnvifService::authenticate(const std::string& xml, const std::string&
         if (!tok.digest) {
             // PasswordText: the cleartext is on the wire, so it can be checked
             // against either source.
-            if (have_cleartext) return tok.password == cfg_.password ? AuthResult::Ok : AuthResult::Bad;
+            if (have_cleartext) return secure_equals(tok.password, cfg_.password) ? AuthResult::Ok : AuthResult::Bad;
             if (check_ && check_(tok.username, tok.password)) return AuthResult::Ok;
             return AuthResult::Bad;
         }
@@ -172,7 +177,7 @@ AuthResult OnvifService::authenticate(const std::string& xml, const std::string&
 
         // Compare BEFORE recording the nonce, so a wrong password cannot be
         // used to burn a nonce the real client is about to send.
-        if (password_digest(nonce_raw, tok.created, cfg_.password) != tok.password)
+        if (!secure_equals(password_digest(nonce_raw, tok.created, cfg_.password), tok.password))
             return AuthResult::Bad;
         if (seen_nonce(tok.nonce_b64, now_unix)) return AuthResult::Stale;
         return AuthResult::Ok;
@@ -184,7 +189,10 @@ AuthResult OnvifService::authenticate(const std::string& xml, const std::string&
     // second half of that. The hashing is RtspAuth's, which is already
     // host-tested, rather than a second implementation that can drift.
     if (authorization.compare(0, 7, "Digest ") == 0) {
-        if (!have_cleartext) return AuthResult::Unverifiable;
+        // No cleartext, or no nonce secret to have issued a genuine nonce
+        // with: either way this cannot be judged, and it is not the client's
+        // fault. Fail closed.
+        if (!digest_available()) return AuthResult::Unverifiable;
         const std::string user  = RtspAuth::auth_param(authorization, "username");
         const std::string realm = RtspAuth::auth_param(authorization, "realm");
         const std::string nonce = RtspAuth::auth_param(authorization, "nonce");
@@ -208,8 +216,8 @@ AuthResult OnvifService::authenticate(const std::string& xml, const std::string&
         // told to retry with the fresh one in the challenge rather than being
         // sent away as if its password were wrong.
         if (!nonce_ok(nonce, now_unix)) return AuthResult::Stale;
-        if (RtspAuth::digest_response(user, cfg_.password, realm, nonce,
-                                      method, uri, nc, cnonce, qop) != resp)
+        if (!secure_equals(RtspAuth::digest_response(user, cfg_.password, realm, nonce,
+                                                      method, uri, nc, cnonce, qop), resp))
             return AuthResult::Bad;
         // Replay: the same nonce may be reused with an increasing nc, so the
         // pair is what must be unique. Recorded only after the response
@@ -226,7 +234,7 @@ AuthResult OnvifService::authenticate(const std::string& xml, const std::string&
             if (c != std::string::npos) {
                 const std::string u = plain.substr(0, c), p = plain.substr(c + 1);
                 if (u != cfg_.username) return AuthResult::Bad;
-                if (have_cleartext) return p == cfg_.password ? AuthResult::Ok : AuthResult::Bad;
+                if (have_cleartext) return secure_equals(p, cfg_.password) ? AuthResult::Ok : AuthResult::Bad;
                 if (check_ && check_(u, p)) return AuthResult::Ok;
             }
         }

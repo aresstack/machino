@@ -97,16 +97,44 @@ Result DiscoveryServer::start() {
     fcntl(wake_[0], F_SETFD, FD_CLOEXEC);
     fcntl(wake_[1], F_SETFD, FD_CLOEXEC);
 
+    // Announce BEFORE the thread exists, so nothing else is touching
+    // msg_counter_ while this does. Ordering, not a lock: the counter has
+    // exactly one writer at any moment, and that is cheaper and easier to
+    // check than making it atomic.
+    announce(true);
+
     running_.store(true);
     th_ = std::thread([this] { loop(); });
     LOGI(MOD, "ws-discovery on %s:%d, endpoint %s", GROUP, PORT, uuid_.c_str());
     return Result::ok();
 }
 
+// Hello on start, Bye on clean shutdown - both multicast to the discovery
+// group, both best-effort: failing to announce is not a reason to refuse to
+// serve probes, which are what actually matter.
+void DiscoveryServer::announce(bool alive) {
+    if (fd_ < 0) return;
+    struct sockaddr_in grp{};
+    grp.sin_family = AF_INET;
+    grp.sin_addr.s_addr = inet_addr(GROUP);
+    grp.sin_port = htons(PORT);
+    // The announcement is not aimed at one peer, so there is no per-peer route
+    // to ask about; the group address is the best available answer.
+    const std::string local = local_address_for(&grp, sizeof grp);
+    const Announcement a = announcement_for(local);
+    const std::string id = message_id(++msg_counter_, (int64_t)::time(nullptr));
+    const std::string msg = alive ? hello(a, id) : bye(a, id);
+    if (sendto(fd_, msg.data(), msg.size(), 0, (struct sockaddr*)&grp, sizeof grp) < 0)
+        LOGW(MOD, "%s failed: %s", alive ? "hello" : "bye", strerror(errno));
+}
+
 void DiscoveryServer::stop() {
     if (!running_.exchange(false)) return;
     if (wake_[1] >= 0) { const char b = 1; ssize_t n = write(wake_[1], &b, 1); (void)n; }
     if (th_.joinable()) th_.join();
+    // Bye AFTER the join and BEFORE the socket closes: the thread is gone, so
+    // msg_counter_ has one writer again, and fd_ is still open to send on.
+    announce(false);
     for (int* p : {&wake_[0], &wake_[1]}) { if (*p >= 0) { close(*p); *p = -1; } }
     if (fd_ >= 0) { close(fd_); fd_ = -1; }
     LOGI(MOD, "ws-discovery stopped (answered=%llu ignored=%llu)",
@@ -139,6 +167,16 @@ void DiscoveryServer::loop() {
             ignored_.fetch_add(1);
             continue;
         }
+
+        // Rate limit. The source address of a UDP probe cannot be verified, so
+        // every reply is a packet we can be made to send to a third party. The
+        // gain to an attacker is small (the reply is under twice the probe) but
+        // an unbounded responder is a reflector, and a camera has no business
+        // being one. Real discovery sends a handful of probes, so a ceiling of
+        // 20 a second costs nothing.
+        const int64_t sec = (int64_t)::time(nullptr);
+        if (sec != rate_window_) { rate_window_ = sec; rate_count_ = 0; }
+        if (++rate_count_ > MAX_REPLIES_PER_SEC) { ignored_.fetch_add(1); continue; }
 
         const std::string local = local_address_for(&peer, plen);
         const std::string reply = probe_matches(announcement_for(local), p.message_id,

@@ -62,11 +62,18 @@ class OsdService {
 public:
     // A logo bigger than this cannot be justified on this camera: the store
     // lives on an overlay filesystem with single-digit megabytes free, and the
-    // hardware keeps two buffers per region. 512x512 BGRA is exactly 1 MiB and
-    // is already far larger than any watermark anyone has asked for.
+    // hardware keeps two buffers per region.
+    //
+    // 256x256 BGRA = 256 KiB. This was 512x512 (1 MiB) until review: the HTTP
+    // parser has to raise its body cap for this route, and that raise happens
+    // BEFORE the session gate, so the cap is also what an UNAUTHENTICATED peer
+    // can make the server buffer - times max_clients. At 1 MiB that was 16 MiB
+    // on a camera with about 21 MB available, which is a denial of service.
+    // 256x256 is still 13% of a 1080p frame's width and larger than any
+    // watermark anyone has asked for.
     static constexpr int    MAX_OVERLAY_INDEX = 3;
-    static constexpr int    MAX_IMAGE_DIM     = 512;
-    static constexpr size_t MAX_IMAGE_BYTES   = 512u * 512u * 4u;
+    static constexpr int    MAX_IMAGE_DIM     = 256;
+    static constexpr size_t MAX_IMAGE_BYTES   = 256u * 256u * 4u;
 
     OsdService(IOsdBackend& backend, std::string image_dir);
 
