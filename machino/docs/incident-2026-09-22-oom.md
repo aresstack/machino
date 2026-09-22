@@ -237,6 +237,74 @@ from a defect in the `/ws/logs` teardown path itself that has nothing to do
 with forking. A test that forks something harmless at the same point, with no
 `logread` involved, would separate those.
 
+## C1 — run, and it settles the question (and subsumes C3)
+
+Cold boot, scripted session, no browser. `/ws/logs` opened and closed
+**entirely while COLD_IDLE**, so IMP had never been initialised when the child
+was forked. Then media.
+
+```
+05:58:19  /ws/logs: streaming logread (pid 1036)      <- fork, IMP never up
+05:58:26  /ws/logs: last subscriber left
+06:00:03  COLD_IDLE -> STARTING   ING_PLAT up          -> 200 OK, 2 098 618 B
+06:00:15  ING_PLAT down                                   [child still alive]
+06:00:25  COLD_IDLE -> STARTING   ING_PLAT up          -> 200 OK, 2 047 694 B
+```
+
+**C1 PASSES.** Both starts worked. `VmRSS` finished at 2 948 kB, the same
+healthy pattern as Test A.
+
+### This also answers C3, without needing to run it
+
+C3 was meant to test whether the logread child *overlapping the IMP teardown*
+is what breaks things. In C1 that is exactly what happened — the child was
+still alive at `ING_PLAT down` and right through the following restart — and
+**nothing broke**.
+
+So the child's lifetime overlapping the teardown is **not sufficient**.
+
+### What is left is the fork's timing
+
+| | fork happened while | next re-init |
+|---|---|---|
+| Test B | IMP **live** (ACTIVE) | **FAIL** |
+| C1 | IMP **down** (COLD_IDLE) | **PASS** |
+
+Same camera, same build, same `/ws/logs` code path, same lingering child. The
+one variable is whether Ingenic/IMP state existed at the moment of `fork()`.
+
+**`fork()` while IMP is initialised is the trigger.** That is now an
+experimental result rather than a hypothesis — though *why* it damages things,
+and in which layer, is still unknown, and `IMP_System_Init` failing only after
+a full driver bring-up remains unexplained.
+
+It also means the proposed fix is aimed at the right thing: start the `logread`
+helper **once at daemon start, before the first IMP init**, and keep it. C2 as
+designed cannot be run anyway — see the next finding.
+
+## New defect found while setting C1 up: the logread child never dies
+
+The log says `/ws/logs: last subscriber left`, and `logs_stop()` sends
+`SIGTERM` — but the child is still there:
+
+```
+05:58:26  last subscriber left
+06:01:xx  1036  991  S  logread -f        (still running, >2 minutes later)
+          State: S (sleeping)   SigIgn: 0000...0000
+```
+
+`SigIgn` is zero, so it is not ignoring the signal. Either the `kill` never
+reached it or busybox's handler does not exit. Two consequences:
+
+1. **A child forked from the daemon outlives its purpose indefinitely.** In the
+   original incident this is why the child was still alive across the teardown —
+   not because of timing, but because it never leaves.
+2. `logs_start()` returns early only while `logs_fd_ >= 0`. After a stop that
+   is `-1`, so **the next subscriber forks another child while the old one
+   lives** — repeated visits to the Logs page accumulate `logread` processes.
+
+This is independent of the OOM and wants its own fix.
+
 ## Planned next: C1/C2/C3, no code change
 
 The `/bin/true` diagnostic build is deferred. Three tests can separate the
