@@ -358,15 +358,23 @@ Dazu: `init_failures 0`, `init_retries 0`, `dtls_failures 0`, `srtp_failures 0`,
 `bring-up failed`. Zustandsmaschine sauber
 `COLD_IDLE -> STARTING -> ACTIVE -> GRACE_IDLE -> STOPPING -> COLD_IDLE`, zweimal.
 
-### Retention, kein Leck — und warum das belegt ist
+### Kein Hinweis auf ein lineares Lifecycle-Leak
 
-Nach dem ersten vollen Lauf standen **4948 kB** statt der 1536 kB vom Boot: 3,4 MB
-wurden nicht ans System zurückgegeben. Aus **einem** Zyklus ist das nicht von
-einem Leck zu unterscheiden. Der zweite Zyklus entscheidet es: **4952 kB**, also
-**+4 kB**. Ein Leck hätte sich wiederholt. Die 3,4 MB sind das warme Arbeitsset,
-das die Puffer-Pools absichtlich behalten (`keeps capacity: no per-frame
-allocation once warm`), plus musl-Heap, der freigegeben aber nicht zurückgegeben
-wird.
+```text
+Boot:          1536 kB
+COLD_IDLE #1:  4948 kB
+COLD_IDLE #2:  4952 kB   (+4 kB)
+```
+
+Das belegt **bounded warm retention über die beobachteten Zyklen**. Ein lineares
+Zyklusleck hätte sich im zweiten Durchlauf wiederholt; +4 kB tut das nicht.
+
+**Die Ursache der retained ~3,4 MB ist damit nicht experimentell isoliert.**
+Naheliegend sind die Puffer-Pools, die ihre Kapazität absichtlich behalten
+(`keeps capacity: no per-frame allocation once warm`), und musl-Heap, der
+freigegeben aber nicht ans System zurückgegeben wird — beides ist eine
+**Vermutung**, kein Messergebnis. Zwei Zyklen zeigen die Schranke, nicht den
+Mechanismus.
 
 ### `send_err=3 (errno 11)` — vernachlässigbar, aber korrekt eingeordnet
 
@@ -408,8 +416,13 @@ auf dieser Box muss passiv sein. Der Paketmitschnitt kostet die Kamera nichts.
 Das gesicherte WebUI-Log des Laufs enthält als einzige Nicht-Routinezeilen genau
 drei `dropbear`-Logins - meine eigenen Abfragen.
 
-### Offen geblieben
+### Was 10.4 ausdrücklich NICHT mit abgenommen hat
 
-`ws_logs_clients` stand am Ende auf **0**, obwohl die Logs-Seite offen sein
-sollte. Ob der Tab geschlossen war oder die WebSocket-Verbindung abriss, ist
-ungeklärt. Zeile 6.1-6.4 bleibt damit **nicht** abgenommen.
+**Einen dauerhaft offenen `/ws/logs`-Client.** `ws_logs_clients` stand am Ende
+auf **0**, obwohl die Logs-Seite offen sein sollte. Ob der Tab geschlossen war
+oder die WebSocket-Verbindung abriss, ist ungeklärt. Die Log-WebSocket-Zeilen
+**6.1-6.4 bleiben separat offen** und dürfen nicht aus 10.4 abgeleitet werden.
+
+Der Nachweis "genau ein persistenter `logread`" gilt davon unberührt: der
+Prozess existierte durchgehend genau einmal — das ist eine Aussage über Fix A,
+nicht über einen abonnierten Client.
