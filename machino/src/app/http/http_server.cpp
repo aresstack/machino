@@ -615,10 +615,18 @@ bool HttpServer::handle_request(Client& c) {
         if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
         else {
             queue(c, ws::handshake_response(wskey));
-            c.ws_logs = true;
             // Subscribe only. No fork, no kill, nothing from a request that
             // can reach the media path - see app/log_reader.hpp.
             if (logs_fd() < 0) { c.close_after_flush = true; return true; }   // no reader on this box
+            // Count it BEFORE anything can fail below: the two teardown paths
+            // decrement on c.ws_logs, so the flag and the gauge have to be set
+            // together or the gauge drifts. This increment was missing
+            // entirely - the counter had a dec() in both teardown paths and no
+            // inc() anywhere, so it read 0 for the life of the process while
+            // clients were connected and receiving. It was quoted as evidence
+            // that a Logs page was closed when it was not.
+            c.ws_logs = true;
+            RuntimeStats::get().inc(&RuntimeCounters::ws_logs_clients);
             LOGI(MOD, "%s: /ws/logs subscribed", c.peer.c_str());
             return true;
         }
