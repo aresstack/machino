@@ -233,6 +233,26 @@ from a defect in the `/ws/logs` teardown path itself that has nothing to do
 with forking. A test that forks something harmless at the same point, with no
 `logread` involved, would separate those.
 
+## Planned next: C1/C2/C3, no code change
+
+The `/bin/true` diagnostic build is deferred. Three tests can separate the
+candidates without touching code, each from a cold boot, no browser, scripted
+session:
+
+- **C1** - `/ws/logs` opened and closed entirely while COLD_IDLE, child reaped,
+  *then* the first media start. Fails ⇒ the `/ws/logs`/logread lifecycle alone
+  is enough and "fork during live IMP" is largely cleared.
+- **C2** (if C1 passes) - `/ws/logs` opened and closed while ACTIVE, child
+  fully reaped, streaming continued afterwards, *then* teardown and restart.
+  Fails ⇒ forking/cleanup during live IMP is enough, independent of the
+  teardown.
+- **C3** (if C2 passes) - `/ws/logs` held open *across* the teardown and closed
+  only after COLD_IDLE. Fails alone ⇒ the overlap of the logread child with
+  `IMP_System_Exit` is the interaction, which is exactly what the original
+  incident looked like.
+
+Stop at the first FAIL, capture, cold power-cycle before the next branch.
+
 ## Test C — could not be run as designed, and what was found instead
 
 The test asked for was `fork()` + `exec("/bin/true")` from machino while the
@@ -266,7 +286,7 @@ Why the earlier restart worked is unexplained. The two cases differ in when
 `/ws/logs` was opened (GRACE_IDLE then, ACTIVE now) and in how much else the
 OOM killer tore down, but nothing here settles it.
 
-### The driver is not the one refusing
+### How far the bring-up gets before it fails
 
 On every failed attempt, including after the restarts:
 
@@ -276,9 +296,18 @@ tx_isp_vic_start · imx307 stream on · imx307 stream off   (~0.8 s later)
 IRQ Error, cpu: 1 Cause:0x08800000
 ```
 
-`lsmod` shows `tx_isp_t40` and `avpu` loaded with their usual users. The kernel
-side brings the sensor up and streams every time. Whatever fails, fails in
-`libimp` — and it fails *after* getting far enough to start the sensor.
+`lsmod` shows `tx_isp_t40` and `avpu` loaded with their usual users.
+
+**What this establishes:** `IMP_System_Init()` reports failure only *after* an
+extensive and apparently successful driver bring-up — probe, chip detection,
+three frame channels, VIC start, sensor streaming on and off again.
+
+**What it does not establish:** which layer is at fault. An earlier version of
+this note concluded "the driver is fine, the fault is in libimp". That does not
+follow and is withdrawn — a driver, ioctl or underlying-resource problem can
+produce exactly this picture, with the vendor library only noticing at the end.
+The `IRQ Error` after `stream off` is a hint that something below is unhappy,
+not proof either way.
 
 ### Practical severity
 
