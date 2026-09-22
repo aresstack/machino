@@ -349,6 +349,20 @@ void test_unoffered_subsystems() {
         CCHECK(r.message.find("spk_gpio=-1") != std::string::npos);
     }
 
+    // A MIXED body is the case worth stating rather than implying: a POST that
+    // carries a good section AND a refused one must apply NEITHER. The good
+    // half is translated into the local patch before the bad half is reached,
+    // and only the success path ever copies it out - so the refusal carries
+    // nothing. Partial application of a config POST would be the worst of the
+    // three possible answers.
+    {
+        MajesticTranslation r = majestic_post_to_native(
+            "{\"video0\":{\"bitrate\":\"2000\"},\"audio\":{\"enabled\":\"true\"}}");
+        CCHECK(!r.ok);
+        CCHECK(r.status == 403 && r.path == "audio");
+        CCHECK(r.patch.members().empty());
+    }
+
     // And none of them leaks into a patch: a refusal that still translated
     // something would be worse than either answer.
     for (const char* s : { "records", "analytics", "peers", "nightMode", "audio" }) {

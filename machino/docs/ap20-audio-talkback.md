@@ -208,3 +208,71 @@ Dagegen stehen drei Dinge, und keines davon ist Bequemlichkeit:
 * Platine: gibt es einen Lautsprecheranschluss, den der Treiber nur nicht
   kennt? `spk_gpio = -1` ist eine Treiberkonfiguration, keine Aussage über
   Kupfer.
+
+---
+
+## Nachtrag aus „Korrektur & Review"
+
+### Das Risiko, das ich mit der `audio`-Sektion hätte einbauen können
+
+Eine Sektion in `config.json` zu veröffentlichen, auf die ein Schreibversuch
+mit 403 antwortet, ist nur dann harmlos, wenn die Settings-Seite sie nicht
+zurückschickt. Zwei Dinge geprüft, beide am ausgeführten Code:
+
+```
+mj-settings.js   der Save-Body wird aus `dirty` gebaut, und gesendet wird
+                 ueberhaupt nur `if (dirty.length)` - also nie der ganze
+                 gelesene Zustand, sondern nur geaenderte Felder.
+GET /api/v1/config.schema.json
+                 Sektionen: video0, sensor, image, latency, performance, ai
+                 audio: nein      nightMode: nein
+```
+
+Ohne Schema-Eintrag entsteht kein Bedienelement, ohne Bedienelement kann nichts
+„dirty" werden, und ohne dirty enthält kein Save die Sektion. Die 403-Antwort
+ist damit eine Abwehr gegen einen direkten API-Aufrufer, **kein Pfad, den die
+WebUI je nimmt**. Wäre der Save dagegen ein Rückschreiben des gelesenen
+Zustands gewesen, hätte jede Speicherung ab sofort 403 bekommen — das wäre
+eine schwere Drop-in-Regression gewesen, und sie wäre mir ohne diese Prüfung
+durchgegangen.
+
+### Der gemischte POST
+
+Ein Body mit einer guten **und** einer abgelehnten Sektion darf **keine** von
+beiden anwenden. Geprüft: die gute Hälfte landet im lokalen `patch`, aber nur
+der Erfolgspfad kopiert ihn nach `r.patch` — eine Ablehnung trägt also nichts.
+Das galt schon, war aber nur implizit; jetzt steht es als eigener Test da
+(`video0` + `audio` → 403, `patch` leer).
+
+### Die Prüfer gegen die *neue* Ausgabe
+
+Bisher liefen sie gegen die Konfiguration des **laufenden** (alten) Builds.
+`tools/upstream-checks/dump-majestic-config.cpp` druckt jetzt, was **dieser**
+Build ausliefert, ohne Kamera und ohne Neustart:
+
+```
+{"jpeg":{"enabled":false},"nightMode":{"irCut":"off"},
+ "audio":{"enabled":false,"outputEnabled":false}}
+
+ircut-check.js    0 Befunde
+audio-check.js    "This camera has both its microphone and its speaker
+                   switched off, so there is nothing to test yet."
+storage-verdict   "There is no SD card in the camera - nothing is being
+                   recorded."
+```
+
+Alle drei Urteile stehen damit gegen den Code, der ausgeliefert wird, nicht
+gegen den, der gerade läuft.
+
+### Zwei Kleinigkeiten am eigenen Werkzeug
+
+* `ircut-verdict.js` hatte `process.argv[2] || '../majestic-webui'` als
+  Vorgabe. Ein relativer `require`-Pfad löst gegen das **Modulverzeichnis** auf,
+  nicht gegen das Arbeitsverzeichnis — die Vorgabe hätte also irgendwo
+  verwirrend gescheitert. Der Pfad ist jetzt Pflicht, mit Hinweis.
+* Der Dumper wird mit einer **leeren** nativen Konfiguration aufgerufen; er
+  zeigt also nur, was die Compat-Schicht von sich aus hinzufügt. Steht jetzt
+  in seinem Kopf, damit niemand die fehlenden `video0`/`sensor`-Abschnitte für
+  einen Befund hält.
+
+2534 Hosttests, 0 failed.

@@ -14,8 +14,15 @@
 // a red hardware fault, invent a pin and the page starts describing a filter
 // this board has no evidence of having.
 const path = require('path');
-const ic = require(path.join(process.argv[2] || '../majestic-webui', 'www', 'a', 'ircut-check.js'));
-const pads = require(path.join(process.argv[2] || '../majestic-webui', 'www', 'a', 'ircut-pads.js'));
+const UP = process.argv[2];
+if (!UP) {
+    console.error('usage: node ircut-verdict.js <majestic-webui-clone> <cfg.json>');
+    console.error('the clone path is required - a relative default would resolve against');
+    console.error('this file, not the working directory, and fail somewhere confusing.');
+    process.exit(2);
+}
+const ic = require(path.join(UP, 'www', 'a', 'ircut-check.js'));
+const pads = require(path.join(UP, 'www', 'a', 'ircut-pads.js'));
 const cfg = JSON.parse(require('fs').readFileSync(process.argv[3] || 'cfg.json', 'utf8'));
 const nm = cfg.nightMode || {};
 
