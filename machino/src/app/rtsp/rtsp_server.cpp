@@ -18,6 +18,7 @@
 namespace machino {
 
 static const char* MOD = "RTSP";
+static int64_t now_ms() { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
 static const size_t RTP_MTU = 1400;
 
 // defined below, used by refuse() above the parser section
@@ -49,10 +50,13 @@ struct RtspServer::Session {
     int64_t     pts0_us = -1;
     bool        wait_key = true;
     std::string inbuf;
+    RtspAuth::Ctx auth;                // per-connection; dies with the socket
 };
 
-RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub, StreamHub* sub_hub)
-    : cfg_(cfg), pipeline_(pipeline), hub_(hub), sub_hub_(sub_hub) {}
+RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub,
+                       StreamHub* sub_hub, RtspAuth::CheckFn auth_check)
+    : cfg_(cfg), pipeline_(pipeline), hub_(hub), sub_hub_(sub_hub),
+      auth_(cfg.auth, std::move(auth_check)) {}
 
 int RtspServer::unit_from_url(const std::string& url) const {
     // Extract the mount path from the request URL and compare it exactly, so an
@@ -131,7 +135,7 @@ void RtspServer::stop() {
 bool RtspServer::listening() const { return listen_fd_ >= 0; }
 
 power::ApplyResult RtspServer::set_enabled(bool on) {
-    using power::ApplyResult; using power::ApplyMode;
+    using power::ApplyResult;
     std::lock_guard<std::mutex> lk(lifecycle_m_);
     if (on == cfg_.enabled && (on == (listen_fd_ >= 0)))
         return ApplyResult::applied(ApplyMode::Live, on ? 1 : 0, on ? 1 : 0, on ? "already listening" : "already disabled");
@@ -150,7 +154,7 @@ power::ApplyResult RtspServer::set_enabled(bool on) {
 // Atomic re-bind: the old listener only stays closed if the new port binds.
 // If it does not, the previous port is restored so RTSP is never left dead.
 power::ApplyResult RtspServer::set_port(int port) {
-    using power::ApplyResult; using power::ApplyMode;
+    using power::ApplyResult;
     if (port < 1 || port > 65535)
         return ApplyResult::rejected(ApplyMode::Live, port, "port must be in 1..65535");
     std::lock_guard<std::mutex> lk(lifecycle_m_);
@@ -341,6 +345,35 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
         if (ru < 0) { quick("404 Not Found"); return false; }              // unknown mount
         if (s.unit >= 0 && s.unit != ru) { quick("455 Method Not Valid in This State"); return true; }  // one session, one stream
         s.unit = ru;
+
+        // Authorise BEFORE any path that can take demand or subscribe a sink:
+        // an unauthenticated client must never start the sensor. Identical for
+        // main and sub - the mount point does not change the rule.
+        if (auth_.required()) {
+            const RtspAuth::Verdict v = auth_.check(s.auth, method, url, header(req, "Authorization"), now_ms());
+            if (v != RtspAuth::Verdict::Ok) {
+                const std::string ch = auth_.challenge(s.auth, now_ms(), v == RtspAuth::Verdict::Stale);
+                std::string extra;
+                size_t at = 0;
+                while (at <= ch.size()) {                       // one header line per offered scheme
+                    const size_t nl = ch.find('
+', at);
+                    const std::string one = ch.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
+                    if (!one.empty()) extra += "WWW-Authenticate: " + one + "
+";
+                    if (nl == std::string::npos) break;
+                    at = nl + 1;
+                }
+                // never log the credential, only that it was refused
+                LOGW(MOD, "%s %s %s: unauthorised", s.peer.c_str(), method.c_str(), unit_name(s.unit));
+                std::string r = "RTSP/1.0 401 Unauthorized
+CSeq: " + cseq + "
+" + extra + "
+";
+                send_all(s.fd, r.data(), r.size(), cfg_.send_stall_ms);
+                return true;                                     // keep the connection for the retry
+            }
+        }
     }
 
     auto reply = [&](const char* status, const std::string& extra, const std::string& body) {

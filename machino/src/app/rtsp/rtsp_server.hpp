@@ -14,6 +14,7 @@
 #include "core/config.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/stream_hub.hpp"
+#include "app/rtsp/rtsp_auth.hpp"
 #include "ports/rtsp_control.hpp"
 #include "ports/stream_server.hpp"
 #include <atomic>
@@ -28,8 +29,12 @@ namespace machino {
 
 class RtspServer final : public IStreamServer, public IRtspControl {
 public:
+    // `auth_check` is the same system-account validator the WebUI session gate
+    // uses (crypt(3) against /etc/shadow) - the stock UI states RTSP
+    // authenticates as root with the WebUI password, so there is no separate
+    // RTSP account. Null = no credential source, auth stays off.
     RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub,
-               StreamHub* sub_hub = nullptr);
+               StreamHub* sub_hub = nullptr, RtspAuth::CheckFn auth_check = nullptr);
     ~RtspServer() override;
     Result start() override;
     void   stop() override;
@@ -73,6 +78,7 @@ private:
     std::thread acceptor_;
     std::mutex  clients_m_;
     std::vector<std::unique_ptr<Client>> clients_;
+    RtspAuth    auth_;
     std::mutex  lifecycle_m_;            // serialises start/stop/set_enabled/set_port
     std::mutex  params_m_;
     std::vector<uint8_t> sps_[2], pps_[2];   // cached per unit (main, sub)

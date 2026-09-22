@@ -68,6 +68,18 @@ struct SnapshotConfig {
     int grace_ms = 2000;           // keep the hardware encoder warm this long after the last capture
 };
 
+// RTSP authentication. The stock webui states these endpoints authenticate as
+// root with the WebUI password, so there is no separate RTSP account here -
+// only the switch and which wire scheme is offered. See app/rtsp/rtsp_auth.hpp
+// for why Digest needs a stored secret while Basic works with /etc/shadow.
+struct RtspAuthConfig {
+    bool        enabled = false;          // AP3 ships prepared-but-off; system.unsafe will drive it
+    bool        offer_basic = true;       // the only scheme /etc/shadow can serve
+    bool        offer_digest = false;     // needs an HA1 provider (a stored secret)
+    std::string realm = "Machino";
+    int         nonce_lifetime_s = 300;
+};
+
 struct RtspConfig {
     bool        enabled = true;            // false: no listener at all (majestic rtsp.enabled)
     int         port = 554;
@@ -76,6 +88,7 @@ struct RtspConfig {
     int         send_buffer_bytes = 65536; // bounded kernel backlog per socket
     int         send_stall_ms = 750;       // disconnect, never accumulate seconds of stale live video
     int         max_clients = 4;           // concurrent connections (each costs a thread); refused, not queued
+    RtspAuthConfig auth;
 };
 
 // Demand-driven lifecycle ("no consumer, no pipeline").

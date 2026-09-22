@@ -276,7 +276,10 @@ int main(int argc, char** argv) {
                                  cfg.ai.inference_fps, detection::ai_state_name(detection.state()));
         // Constructed before the API so rtsp.enabled/rtsp.port can be applied
         // live (AP2) instead of only at the next daemon start.
-        RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr);
+        // The credential is the system account, exactly as the stock UI states
+        // for these endpoints ("root with the same password you use for this
+        // WebUI") - the same validator the HTTP session gate uses.
+        RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr, shadow_check);
         IStreamServer& server = rtsp;
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection, &rtsp);
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
