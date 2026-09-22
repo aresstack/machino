@@ -41,8 +41,23 @@ Parse parse_request(const std::string& buf, size_t& consumed, Request& out, cons
     std::string conn = lower(r.header("connection"));
     if (conn == "close") r.keep_alive = false; else if (conn == "keep-alive") r.keep_alive = true;
     size_t body_len = 0;
+    // More than one Content-Length is ambiguous, and disagreeing about which
+    // one counts is the whole of request smuggling. RFC 7230 3.3.3 says reject.
+    // The relay already recomputes the header from the body it actually parsed
+    // and opens a fresh upstream connection per request, so nothing downstream
+    // could have been desynchronised - but an ambiguous request should not be
+    // answered at all.
+    {
+        size_t n = 0;
+        for (const auto& h : r.headers) if (h.first == "content-length") ++n;
+        if (n > 1) return Parse::Bad;
+    }
     std::string cl = r.header("content-length");
     if (!cl.empty()) {
+        // strtoull accepts a leading sign and leading space; neither is a
+        // valid field-value here, and "-1" would otherwise wrap to a huge
+        // number that merely trips the size check instead of being refused.
+        for (char c : cl) if (c < '0' || c > '9') return Parse::Bad;
         char* ep = nullptr; unsigned long long v = strtoull(cl.c_str(), &ep, 10);
         if (ep == cl.c_str() || *ep) return Parse::Bad;
         if (v > lim.max_body) return Parse::TooLarge;

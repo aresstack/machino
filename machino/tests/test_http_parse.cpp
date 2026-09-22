@@ -76,4 +76,36 @@ void run_http_parse_tests() {
         HCHECK(w.find("Content-Length: 7\r\n") != std::string::npos);  // re-added from the body
         HCHECK(w.size() >= 7 && w.substr(w.size() - 7) == "{\"a\":1}");
     }
+
+    // ---- ambiguous framing is refused, not resolved (review) ----------------
+    {
+        size_t used = 0;
+        Request r;
+        // Two Content-Length headers: disagreeing about which one counts is
+        // the whole of request smuggling. RFC 7230 3.3.3 says reject.
+        HCHECK(parse_request("POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n"
+                             "Content-Length: 6\r\nConnection: close\r\n\r\nhelloX",
+                             used, r) == Parse::Bad);
+        // even when they agree
+        HCHECK(parse_request("POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n"
+                             "Content-Length: 5\r\nConnection: close\r\n\r\nhello",
+                             used, r) == Parse::Bad);
+        // a single one still works
+        HCHECK(parse_request("POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello",
+                             used, r) == Parse::Ok && r.body == "hello");
+
+        // A signed or padded length is not a valid field-value. "-1" used to
+        // wrap to a huge number and merely trip the size check.
+        HCHECK(parse_request("POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: -1\r\n\r\n",
+                             used, r) == Parse::Bad);
+        HCHECK(parse_request("POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: +5\r\n\r\nhello",
+                             used, r) == Parse::Bad);
+        HCHECK(parse_request("POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: 5x\r\n\r\nhello",
+                             used, r) == Parse::Bad);
+        HCHECK(parse_request("POST /x HTTP/1.1\r\nHost: a\r\nContent-Length: 0x5\r\n\r\nhello",
+                             used, r) == Parse::Bad);
+        // Transfer-Encoding was already refused outright; keep it that way
+        HCHECK(parse_request("POST /x HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+                             used, r) == Parse::Bad);
+    }
 }

@@ -22,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <sys/types.h>   // pid_t for the pending-reap list
 
 namespace machino { namespace http {
 
@@ -109,6 +110,7 @@ private:
     void logs_start();
     void logs_stop();
     void logs_pump(short revents);
+    void logs_reap();                 // collect the logread child once it is really gone
     bool logs_wanted() const;
     void pump_rtc(Client& c);       // webrtc per tick: DTLS timers, PLI->IDR, AU->RTP
     bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
@@ -130,6 +132,10 @@ private:
     int               listen_fd_ = -1;
     int               logs_fd_ = -1;      // read end of the logread pipe
     int               logs_pid_ = -1;     // the logread child
+    // Children signalled but not yet collected. Without this a child that
+    // outlives its SIGTERM by a moment became an unreapable zombie as soon as
+    // the next subscriber started a new one.
+    std::vector<pid_t> logs_reaping_;
     std::string       logs_buf_;          // partial line carried between reads
     std::atomic<bool> quit_{false};
     std::thread       thread_;

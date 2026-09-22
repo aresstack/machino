@@ -992,7 +992,14 @@ void HttpServer::logs_stop() {
     if (logs_fd_ >= 0) { close(logs_fd_); logs_fd_ = -1; }
     if (logs_pid_ > 0) {
         kill(logs_pid_, SIGTERM);
-        waitpid(logs_pid_, nullptr, WNOHANG);         // reaped again below if it lingers
+        // WNOHANG immediately after the signal almost always returns 0: the
+        // child has not died yet. Clearing the pid here left a zombie behind
+        // for every subscribe/unsubscribe cycle of the Logs page.
+        //
+        // It goes on a pending list rather than staying in logs_pid_, because
+        // the next subscriber may start a new child before this one has died,
+        // and overwriting the pid would make the old one unreapable.
+        if (waitpid(logs_pid_, nullptr, WNOHANG) != logs_pid_) logs_reaping_.push_back(logs_pid_);
         logs_pid_ = -1;
     }
     logs_buf_.clear();
@@ -1001,6 +1008,19 @@ void HttpServer::logs_stop() {
 // Forward whole lines only: the viewer splits on newline and keeps a partial
 // tail, but sending half a line to every subscriber would interleave badly
 // once there is more than one.
+// Collect the logread child once it has actually exited. Non-blocking, called
+// from the poll loop, so a child that takes a moment to die after SIGTERM is
+// still reaped instead of accumulating as a zombie PID.
+void HttpServer::logs_reap() {
+    for (size_t i = 0; i < logs_reaping_.size();) {
+        const pid_t p = logs_reaping_[i];
+        const pid_t r = waitpid(p, nullptr, WNOHANG);
+        // ECHILD means somebody already collected it, which is just as done.
+        if (r == p || (r < 0 && errno == ECHILD)) logs_reaping_.erase(logs_reaping_.begin() + (long)i);
+        else ++i;
+    }
+}
+
 void HttpServer::logs_pump(short revents) {
     if (logs_fd_ < 0) return;
     if (revents & (POLLERR | POLLNVAL)) { logs_stop(); return; }
@@ -1120,6 +1140,7 @@ void HttpServer::loop() {
                        clients_.end());
         if (logs_idx != (size_t)-1 && logs_idx < pfds.size()) logs_pump(pfds[logs_idx].revents);
         if (logs_fd_ >= 0 && !logs_wanted()) { LOGI(MOD, "/ws/logs: last subscriber left"); logs_stop(); }
+        logs_reap();
         if (t - last_heartbeat_ms_ >= 15000) last_heartbeat_ms_ = t;
         // 1 Hz telemetry only while somebody listens (cheap otherwise)
         bool any_sse = false; for (auto& c : clients_) if (c->sse) { any_sse = true; break; }

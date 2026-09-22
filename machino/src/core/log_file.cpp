@@ -1,7 +1,17 @@
+// THREAD SAFETY. Every thread in the daemon logs: the HTTP poll loop, one
+// thread per RTSP client, the pipeline, and the WS-Discovery responder. stdio
+// locks a FILE* internally, so concurrent fputs would have been fine on its
+// own - but rotate() CLOSES that FILE* and opens another, and a thread already
+// inside fputs on the old one is then writing through a freed handle. The byte
+// counter was a plain read-modify-write across those same threads.
+//
+// One mutex over the whole sink. Logging is per event, not per frame, so the
+// cost is nothing next to the fflush that is already there.
 #include "core/log_file.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #ifndef _WIN32
 #include <fcntl.h>
@@ -28,6 +38,10 @@ bool        g_tried = false;
 std::string g_path;
 size_t      g_max = 256 * 1024;
 size_t      g_bytes = 0;
+
+// Guards every global above. Recursive is not needed: nothing under the lock
+// logs.
+std::mutex& mu() { static std::mutex m; return m; }
 
 // Keep exactly one previous generation: <path> and <path>.1. Two small files
 // bound the worst case at 2 * max_bytes, which a small overlay can live with;
@@ -59,6 +73,7 @@ void open_once() {
 } // namespace
 
 void log_file_open(const char* path, size_t max_bytes) {
+    std::lock_guard<std::mutex> lk(mu());
     if (g_file) { fclose(g_file); g_file = nullptr; }
     g_path = path ? path : "";
     g_max = max_bytes;
@@ -67,13 +82,18 @@ void log_file_open(const char* path, size_t max_bytes) {
 }
 
 void log_file_close() {
+    std::lock_guard<std::mutex> lk(mu());
     if (g_file) { fclose(g_file); g_file = nullptr; }
     g_tried = true;
 }
 
-size_t log_file_bytes() { return g_bytes; }
+size_t log_file_bytes() {
+    std::lock_guard<std::mutex> lk(mu());
+    return g_bytes;
+}
 
 void log_file_write(const char* line) {
+    std::lock_guard<std::mutex> lk(mu());
     open_once();
     if (!g_file || !line) return;
     const size_t n = strlen(line);
