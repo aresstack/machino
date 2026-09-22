@@ -294,7 +294,22 @@ void test_webui_post_strings_and_reset() {
     Json mc2 = majestic_config(Json::object(), Json::object());
     const Json* nm = mc2.get("nightMode");
     CCHECK(nm && nm->get("irCut") && nm->get("irCut")->as_string() == "off");
-    CCHECK(nm && !nm->get("irCutPin1"));
+
+    // AP18: not one pin key, ALL of them. These are the nightMode keys the
+    // stock UI reads as a wiring fact (extracted from the pages that use them,
+    // not from a doc): every one that appears makes the camera claim a pad it
+    // can drive. This board has no evidence for any of them - no IR-cut, LED,
+    // infrared or motor node in the device tree, no /sys/class/leds, no PWM,
+    // no ADC, no exported GPIO, and the wiki-harvested pin table in upstream's
+    // ircut-pads.js lists t10/t20/t21/t31/t31l/t31n but no t40 at all.
+    static const char* const PIN_KEYS[] = {
+        "irCutPin1", "irCutPin2", "lightSensorPin", "backlightPin", "backlightPwmChannel"
+    };
+    for (const char* k : PIN_KEYS) CCHECK(nm && !nm->get(k));
+
+    // And nothing else either: exactly one key, so a later edit cannot slip a
+    // capability in here without this test noticing.
+    CCHECK(nm && nm->members().size() == 1);
 }
 
 } // namespace
