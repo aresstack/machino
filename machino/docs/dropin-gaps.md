@@ -140,3 +140,64 @@ any of 1–4, because it may reclassify several of them.
   appear here. The two extraction passes (literal `fetch`/`apiFetch` arguments
   and `/api/v1/...` literals anywhere in the JS) agree with each other, which is
   weak evidence that the list is complete, not proof.
+
+## NEU 2026-09-22: Machino laesst majestics Watchdog fallen
+
+**Schwere: hoch.** Das ist die Antwort auf die Frage, warum die Kamera sich aus
+einem Hardlock nie selbst befreit.
+
+Stock-majestic auf dieser Kamera:
+
+```yaml
+# /etc/majestic.yaml
+watchdog:
+  enabled: true
+  timeout: 15
+```
+
+Machino:
+
+```cpp
+// src/app/compat/majestic_migrate.cpp:282
+if (sec_l == "watchdog") return ignored(key, val, "handled by the OpenIPC init + streamerctl");
+```
+
+**Diese Begruendung ist auf dieser Kamera nachweislich falsch.** Gemessen im
+laufenden Betrieb:
+
+* kein Prozess haelt `/dev/watchdog` offen (alle `/proc/*/fd` durchsucht)
+* kein Skript unter `/etc/init.d/` oder `/etc/` fasst den Watchdog an - der
+  einzige Treffer fuer "watchdog" unterhalb `/etc` ist `majestic.yaml` selbst
+* `/sys/class/watchdog/watchdog0/` existiert, aber der Timer laeuft nicht
+
+Auf diesem SoC startet der Watchdog-Timer erst, wenn `/dev/watchdog` geoeffnet
+wird. Wird er nie geoeffnet, ist er nie scharf.
+
+### Konsequenz
+
+Jeder der drei beobachteten Hardlocks (2026-09-22, Runden 4 und 6, dazu der
+Freeze vom 2026-09-21) endete damit, dass ein Mensch den Stecker ziehen musste.
+Mit majestics Verhalten haette sich die Kamera nach 15 Sekunden selbst
+zurueckgesetzt. Fuer eine Ueberwachungskamera an einer schwer zugaenglichen
+Stelle ist das der Unterschied zwischen einer Stoerung und einem Totalausfall.
+
+Das macht den Watchdog **nicht** zu einer Loesung der Ursache - ein Geraet, das
+sich alle paar Stunden selbst neu startet, ist immer noch kaputt. Aber es ist
+eine Verhaltensabweichung gegenueber majestic, die Machino unbemerkt eingefuehrt
+hat, und sie hat genau in der Situation zugeschlagen, fuer die der Watchdog da
+ist.
+
+### Vorschlag (nicht umgesetzt)
+
+`/dev/watchdog` beim Start oeffnen, `timeout` aus der Config setzen (Default 15 s
+wie majestic), aus dem bestehenden Lifecycle-Timer fuettern und bei einem
+geordneten Shutdown mit dem Magic-Close-Zeichen `V` sauber entschaerfen.
+
+Zwei Dinge sind dabei heikel und gehoeren vor die Umsetzung, nicht danach:
+
+1. **Ein Fehler im Fuetter-Pfad startet die Kamera alle 15 s neu.** Der Feed
+   muss aus einem Pfad kommen, der nachweislich laeuft, solange der Daemon
+   gesund ist - nicht aus einem Thread, der bei Last verhungern kann.
+2. **Ein Watchdog verdeckt Fehler.** Genau die Forensik, die uns heute gefehlt
+   hat, waere nach einem automatischen Reset ebenfalls weg. Sinnvoll ist er
+   deshalb erst zusammen mit einer Spur, die einen Reset ueberlebt.

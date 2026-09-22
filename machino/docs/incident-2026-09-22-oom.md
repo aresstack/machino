@@ -673,3 +673,59 @@ ueberlebt sie   -> die Header allein sind es nicht;
 ```
 
 Beides ist ein Fortschritt gegenueber "der Browser legt die Box um".
+
+### Korrektur zweier eigener Formulierungen
+
+**"Wir wissen, woran die Box stirbt" war zu stark.** Richtig ist:
+
+```text
+Belegt:
+Der beobachtete Hardlock beginnt beim ersten authenticated
+GET /cgi-bin/live.cgi. Der Kernel ACKt diesen Request und
+verarbeitet unmittelbar danach noch einen neuen TCP-Handshake.
+
+Nicht belegt:
+Welcher Header, die Relay/CGI-Verarbeitung oder die nahezu
+gleichzeitige zweite Verbindung den Hardlock verursacht.
+```
+
+Asset-Burst, WebRTC, MSE und `/ws/logs` sind fuer **diesen** Lauf ausgeschlossen,
+weil der Browser sie nie erreicht hat - als eigenstaendige Fehlermechanismen
+sind sie damit nicht widerlegt.
+
+**Und die Zeitangabe war falsch.** Zwischen dem Request (1234.883414) und dem
+letzten Paket der Kamera (1234.887404) liegen rund **4 ms**, nicht Mikrosekunden.
+Was danach geschah, ist unbeobachtet - belegt ist nur, dass nichts mehr kam.
+
+### Vier Reproduktionsversuche, alle ueberlebt
+
+| Faktor | Ergebnis |
+|---|---|
+| Chromes exakte Header, eine einzige Verbindung | 200 OK, 18 923 B |
+| dieselben Header + zweite Verbindung im gleichen Zeitabstand | 200 OK |
+| dazu Vorgeschichte: RTSP main+sub gelaufen und abgebaut | 200 OK |
+| dazu ONVIF- und Substream-Konfiguration aktiv | 200 OK |
+
+`browser headers alone insufficient` - und die zweite Verbindung reicht ebenfalls
+nicht. Aus dem Mitschnittvergleich kommt dazu ein Argument **gegen**
+Ueberlastung: im **erfolgreichen** Lauf brauchte `live.cgi` 133 ms und Chrome
+hielt in dieser Zeit rund 20 parallele Verbindungen offen. Der toedliche Lauf
+starb nach 4 ms bei 2-3 Verbindungen - also frueher und unter leichterer Last.
+
+### Es ist kein Panic - und niemand haelt den Watchdog
+
+```
+/proc/sys/kernel/panic = 20      -> ein Panic wuerde nach 20 s rebooten
+Die Box rebootet nie.            -> also harter Hang, kein Panic
+/proc/sys/kernel/printk = 0 0 0 0 -> Kernelmeldungen gehen gar nicht erst
+                                     auf die Konsole; ein Oops waere auch
+                                     bei lebendem UART unsichtbar gewesen
+```
+
+Zur Ressourcen-These (Heap/Sockets/Stack, analog ESP32): die passt auf **Runde 2**
+- dort feuerte der OOM-Killer und SSH ueberlebte, ein klassischer
+Userspace-Speichermangel. Auf Runde 4 und 6 passt sie nicht: dort stirbt der
+Kernel mit, ohne OOM-Killer und ohne Panic. Ein erschoepfter Userspace-Heap
+haengt keinen MIPS-Kernel auf; der OOM-Killer raeumt auf, wie er es in Runde 2
+getan hat. Im Leerlauf gemessen: `MemFree 14 856 kB`, 30 Sockets, 96 von 8192
+Dateideskriptoren - keine Knappheit.
