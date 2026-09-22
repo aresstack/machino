@@ -42,6 +42,8 @@ public:
     void send_au(const uint8_t* p, size_t n, int64_t pts_us, bool key);
     // Edge-triggered: a PLI arrived since the last call.
     bool take_pli();
+    // Compact media-plane fault localisation, logged ~every 2 s by the caller.
+    void log_stats();
 
 private:
     void flush_dtls();
@@ -69,7 +71,6 @@ private:
     int         last_send_errno_ = 0;
     uint64_t    rtcp_in_ = 0, pli_in_ = 0;
     int64_t     last_stat_ms_ = 0;
-    void log_stats();
 };
 
 }} // namespace machino::webrtc
