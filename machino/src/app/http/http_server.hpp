@@ -59,8 +59,12 @@ public:
     // hub/pipeline are the /ws/video media wiring (majestic-webui Live): a WS
     // client is a StreamHub consumer with its OWN DemandHandle, exactly like
     // an RTSP session - no second encoder, no JPEG path. Null = route off.
+    // `sub_hub` is the substream's AU feed (null = no substream): stream=1 on
+    // /ws/video and /ws/webrtc serves from it with UNIT_SUB demand, exactly
+    // like RTSP's second mount point.
     HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus,
-               StreamHub* hub = nullptr, lifecycle::PipelineManager* pipeline = nullptr);
+               StreamHub* hub = nullptr, lifecycle::PipelineManager* pipeline = nullptr,
+               StreamHub* sub_hub = nullptr);
     ~HttpServer();
     Result start();
     void   stop();
@@ -87,7 +91,11 @@ private:
     api::ApiService&  api_;
     EventBus&         bus_;
     StreamHub*        hub_ = nullptr;
+    StreamHub*        sub_hub_ = nullptr;
     lifecycle::PipelineManager* pipeline_ = nullptr;
+    bool sub_available() const;                       // substream configured and fed
+    // -1 = not served; else the lifecycle unit for a ?stream= query value
+    int  unit_for_stream(const std::string& sv) const;
     std::unique_ptr<SessionGate> gate_;   // set when cfg_.session_auth
     int               listen_fd_ = -1;
     std::atomic<bool> quit_{false};

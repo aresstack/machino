@@ -282,7 +282,9 @@ int main(int argc, char** argv) {
         hc.session_auth = cfg.api.upstream_port > 0 && cfg.api.auth;
         if (hc.session_auth) hc.auth_check = shadow_check;
         LOGI(MOD, "webui session auth: %s", hc.session_auth ? "on (system account)" : "off");
-        http::HttpServer httpd(hc, api, bus, &hub, &pipeline);   // /ws/video: hub consumer + own demand
+        // /ws/video and /ws/webrtc: hub consumers with their own demand;
+        // stream=1 serves from the substream hub when it is configured.
+        http::HttpServer httpd(hc, api, bus, &hub, &pipeline, sub_ok ? &sub_hub : nullptr);
         RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr);
         IStreamServer& server = rtsp;
 

@@ -121,6 +121,8 @@ struct HttpServer::Client {
     // /ws/video: one live MSE feed = one StreamHub consumer with its own
     // demand, exactly like an RTSP session (no second encoder, no JPEG).
     bool ws_video = false;
+    int  ws_unit = 0;               // lifecycle unit this viewer watches (main/sub)
+    StreamHub* ws_hub = nullptr;    // the hub ws_sink came from (for unsubscribe)
     std::shared_ptr<Sink>    ws_sink;
     lifecycle::DemandHandle  ws_demand;
     bool ws_init_sent = false;
@@ -134,6 +136,8 @@ struct HttpServer::Client {
     // in the same poll loop) and, like /ws/video, is a StreamHub consumer
     // with its OWN demand; PLI maps onto the existing on-demand IDR.
     bool rtc_ws = false;
+    int  rtc_unit = 0;              // lifecycle unit the session streams (main/sub)
+    StreamHub* rtc_hub = nullptr;   // the hub rtc_sink came from
     std::unique_ptr<webrtc::PeerSession> rtc;
     std::shared_ptr<Sink>    rtc_sink;
     lifecycle::DemandHandle  rtc_demand;
@@ -156,8 +160,8 @@ struct HttpServer::Client {
 static const char* MJPEG_BOUNDARY = "machinoframe";
 
 HttpServer::HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus,
-                       StreamHub* hub, lifecycle::PipelineManager* pipeline)
-    : cfg_(cfg), api_(api), bus_(bus), hub_(hub), pipeline_(pipeline) {
+                       StreamHub* hub, lifecycle::PipelineManager* pipeline, StreamHub* sub_hub)
+    : cfg_(cfg), api_(api), bus_(bus), hub_(hub), sub_hub_(sub_hub), pipeline_(pipeline) {
     if (cfg_.session_auth && cfg_.auth_check)
         gate_.reset(new SessionGate(cfg_.auth_check));
 }
@@ -185,8 +189,8 @@ void HttpServer::stop() {
     if (thread_.joinable()) thread_.join();
     for (auto& c : clients_) {
         if (c->sub) bus_.unsubscribe(c->sub);
-        if (c->ws_sink && hub_) { c->ws_sink->close(); hub_->unsubscribe(c->ws_sink); }
-        if (c->rtc_sink && hub_) { c->rtc_sink->close(); hub_->unsubscribe(c->rtc_sink); }
+        if (c->ws_sink) { StreamHub* h = c->ws_hub ? c->ws_hub : hub_; if (h) { c->ws_sink->close(); h->unsubscribe(c->ws_sink); } }
+        if (c->rtc_sink) { StreamHub* h = c->rtc_hub ? c->rtc_hub : hub_; if (h) { c->rtc_sink->close(); h->unsubscribe(c->rtc_sink); } }
         if (c->relay_fd >= 0) close(c->relay_fd);
         close(c->fd);
     }
@@ -209,6 +213,18 @@ void HttpServer::accept_client() {
     char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &ca.sin_addr, ip, sizeof ip);
     c->peer = std::string(ip) + ":" + std::to_string(ntohs(ca.sin_port));
     clients_.push_back(std::move(c));
+}
+
+bool HttpServer::sub_available() const {
+    return sub_hub_ && pipeline_ && pipeline_->unit_configured(lifecycle::UNIT_SUB);
+}
+
+// The stock webui's ?stream= query: absent/0 = main, 1 = sub when it exists,
+// anything else fail-closed (never a silent main feed).
+int HttpServer::unit_for_stream(const std::string& sv) const {
+    if (sv.empty() || sv == "0") return lifecycle::UNIT_MAIN;
+    if (sv == "1" && sub_available()) return lifecycle::UNIT_SUB;
+    return -1;
 }
 
 bool HttpServer::queue(Client& c, const std::string& data, size_t cap) {
@@ -347,25 +363,27 @@ bool HttpServer::handle_request(Client& c) {
         // The stock webui's Live player (upstream preview.js): WebSocket, one
         // JSON init + fMP4 init segment, then one moof+mdat per frame.
         const std::string wskey = req.header("sec-websocket-key");
+        const std::string sv = SessionGate::form_value(req.query, "stream");
+        const int unit = unit_for_stream(sv);
         if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
         else if (!hub_ || !pipeline_)    { r = api::ApiService::fail(501, "unavailable", path, "no media wiring"); }
-        else if (const std::string sv = SessionGate::form_value(req.query, "stream");
-                 !sv.empty() && sv != "0") {
-            // main stream only until the substream is wired end to end; any
-            // stream id we do not serve is a 404, never a silent main feed
+        else if (unit < 0) {
             r = api::ApiService::fail(404, "unknown_field", path, "stream " + sv + " is not available");
         } else {
+            StreamHub* h = unit == lifecycle::UNIT_SUB ? sub_hub_ : hub_;
             Result dr;
-            lifecycle::DemandHandle d = pipeline_->acquire(lifecycle::ConsumerType::HttpStream, &dr);
+            lifecycle::DemandHandle d = pipeline_->acquire_unit(unit, lifecycle::ConsumerType::HttpStream, &dr);
             if (!d.active()) { r = api::ApiService::fail(503, "unavailable", path, "pipeline start failed"); }
             else {
                 queue(c, ws::handshake_response(wskey));
                 c.ws_video = true;
+                c.ws_unit = unit;
+                c.ws_hub = h;
                 c.ws_demand = std::move(d);
-                c.ws_sink = hub_->subscribe();
+                c.ws_sink = h->subscribe();
                 c.ws_await_key = true;
-                pipeline_->request_idr();
-                LOGI(MOD, "%s: /ws/video session started", c.peer.c_str());
+                pipeline_->request_idr(unit);
+                LOGI(MOD, "%s: /ws/video session started (unit %d)", c.peer.c_str(), unit);
                 return true;
             }
         }
@@ -373,15 +391,17 @@ bool HttpServer::handle_request(Client& c) {
         // The stock webui's preferred Live transport (preview-webrtc.js):
         // this socket only signals; media runs over the session's UDP port.
         const std::string wskey = req.header("sec-websocket-key");
+        const std::string sv = SessionGate::form_value(req.query, "stream");
+        const int unit = unit_for_stream(sv);
         if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
         else if (!hub_ || !pipeline_)    { r = api::ApiService::fail(501, "unavailable", path, "no media wiring"); }
-        else if (const std::string sv = SessionGate::form_value(req.query, "stream");
-                 !sv.empty() && sv != "0") {
+        else if (unit < 0) {
             r = api::ApiService::fail(404, "unknown_field", path, "stream " + sv + " is not available");
         } else {
             queue(c, ws::handshake_response(wskey));
             c.rtc_ws = true;
-            LOGI(MOD, "%s: /ws/webrtc signalling open", c.peer.c_str());
+            c.rtc_unit = unit;
+            LOGI(MOD, "%s: /ws/webrtc signalling open (unit %d)", c.peer.c_str(), unit);
             return true;
         }
     } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream") {
@@ -611,12 +631,8 @@ void HttpServer::pump_ws_video(Client& c) {
                 sps = h264::sps_with_bitstream_restriction(sps);
                 if (!c.ws_init_sent || sps != c.ws_sps || pps != c.ws_pps) {
                     c.ws_sps = sps; c.ws_pps = pps;
-                    int w = 0, h = 0;
-                    Json st = api_.state().body;   // keep the document alive while reading
-                    if (const Json* med = st.get("media")) {
-                        if (const Json* jw = med->get("width");  jw && jw->is_number()) w = (int)jw->as_int();
-                        if (const Json* jh = med->get("height"); jh && jh->is_number()) h = (int)jh->as_int();
-                    }
+                    const EffectiveStream es = pipeline_ ? pipeline_->stream_unit(c.ws_unit) : EffectiveStream{};
+                    const int w = es.width, h = es.height;
                     const std::string cs = fmp4::codec_string(sps);
                     Json info = Json::object();
                     info.set("type", Json::string("init"));
@@ -669,7 +685,7 @@ bool HttpServer::ws_video_input(Client& c) {
             const int64_t t = now_ms();
             if (t - c.ws_last_idr_req_ms >= 1000) {            // the client rate-limits too; belt and braces
                 c.ws_last_idr_req_ms = t;
-                pipeline_->request_idr();
+                pipeline_->request_idr(c.ws_unit);
             }
         }
     }
@@ -717,15 +733,17 @@ bool HttpServer::rtc_ws_input(Client& c) {
         std::string err;
         const std::string answer = sess->on_offer(data->as_string(), err);
         if (answer.empty()) { LOGW(MOD, "webrtc: offer rejected: %s", err.c_str()); if (!reply("error", err)) return false; continue; }
+        StreamHub* h = c.rtc_unit == lifecycle::UNIT_SUB ? sub_hub_ : hub_;
         Result dr;
-        lifecycle::DemandHandle d = pipeline_->acquire(lifecycle::ConsumerType::HttpStream, &dr);
+        lifecycle::DemandHandle d = pipeline_->acquire_unit(c.rtc_unit, lifecycle::ConsumerType::HttpStream, &dr);
         if (!d.active()) { if (!reply("error", "pipeline start failed")) return false; continue; }
         c.rtc = std::move(sess);
         c.rtc_demand = std::move(d);
-        c.rtc_sink = hub_->subscribe();
-        pipeline_->request_idr();
+        c.rtc_hub = h;
+        c.rtc_sink = h->subscribe();
+        pipeline_->request_idr(c.rtc_unit);
         if (!reply("answer", answer)) return false;
-        LOGI(MOD, "%s: webrtc session negotiated", c.peer.c_str());
+        LOGI(MOD, "%s: webrtc session negotiated (unit %d)", c.peer.c_str(), c.rtc_unit);
     }
 }
 
@@ -734,7 +752,7 @@ void HttpServer::pump_rtc(Client& c) {
     if (!c.rtc) return;
     c.rtc->tick();
     c.rtc->log_stats();
-    if (c.rtc->take_pli() && pipeline_) pipeline_->request_idr();
+    if (c.rtc->take_pli() && pipeline_) pipeline_->request_idr(c.rtc_unit);
     if (!c.rtc->media_ready() || !c.rtc_sink) return;
     for (int i = 0; i < 8; ++i) {
         AuPtr au; bool disc = false;
@@ -816,8 +834,8 @@ void HttpServer::loop() {
                 // Close now, erase after the iteration: refs holds pointers
                 // into clients_, so the vector must not shift under it.
                 if (c.sub) bus_.unsubscribe(c.sub);
-                if (c.ws_sink && hub_) { c.ws_sink->close(); hub_->unsubscribe(c.ws_sink); }
-                if (c.rtc_sink && hub_) { c.rtc_sink->close(); hub_->unsubscribe(c.rtc_sink); }
+                if (c.ws_sink) { StreamHub* h = c.ws_hub ? c.ws_hub : hub_; if (h) { c.ws_sink->close(); h->unsubscribe(c.ws_sink); } }
+                if (c.rtc_sink) { StreamHub* h = c.rtc_hub ? c.rtc_hub : hub_; if (h) { c.rtc_sink->close(); h->unsubscribe(c.rtc_sink); } }
                 c.rtc.reset();                          // closes the UDP socket, demand releases
                 if (c.relay_fd >= 0) { close(c.relay_fd); c.relay_fd = -1; }
                 close(c.fd); c.fd = -1;
