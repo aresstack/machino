@@ -616,11 +616,15 @@ void test_ap2_rtsp_runtime() {
 // field".
 void test_ap14_jpeg_reported_not_writable() {
     Rig r;
-    // reported, with a real value
-    const Json* j = r.api.config().body.get("jpeg");
+    // reported, with a real value. The Response is kept alive in a named
+    // local - get() hands back a pointer INTO its body, and a pointer into a
+    // temporary is dead the moment the full expression ends.
+    api::Response before = r.api.config();
+    const Json* j = before.body.get("jpeg");
     ACHECK(j && j->is_object());
     ACHECK(j && j->get("enabled") && j->get("enabled")->is_bool());
     ACHECK(j && j->get("quality") && j->get("quality")->is_number());
+    const bool was = (j && j->get("enabled")) ? j->get("enabled")->as_bool() : true;
     // and refused, with a reason and the right code
     api::Response p = r.api.patch_config("{\"jpeg\":{\"enabled\":true}}", "");
     ACHECK(p.status == 403);
@@ -628,7 +632,9 @@ void test_ap14_jpeg_reported_not_writable() {
     ACHECK(err && err->get("code") && err->get("code")->as_string() == "unsupported_control");
     ACHECK(err && err->get("message") && err->get("message")->as_string().find("wedge") != std::string::npos);
     // nothing moved
-    ACHECK(r.api.config().body.get("jpeg")->get("enabled")->as_bool() == j->get("enabled")->as_bool());
+    api::Response after = r.api.config();
+    const Json* ja = after.body.get("jpeg");
+    ACHECK(ja && ja->get("enabled") && ja->get("enabled")->as_bool() == was);
 }
 
 void test_ap10_live_image() {
