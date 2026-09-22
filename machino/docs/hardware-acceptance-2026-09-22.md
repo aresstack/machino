@@ -426,3 +426,60 @@ oder die WebSocket-Verbindung abriss, ist ungeklärt. Die Log-WebSocket-Zeilen
 Der Nachweis "genau ein persistenter `logread`" gilt davon unberührt: der
 Prozess existierte durchgehend genau einmal — das ist eine Aussage über Fix A,
 nicht über einen abonnierten Client.
+
+## Runde 8 — Relay-Keep-Alive (`c1edd92`) hardwareverifiziert
+
+### Die direkt beobachtete Verhaltensaenderung
+
+Zwei Requests ueber **einen** Socket, gemessen am Geraet:
+
+| Pfad | vor dem Fix | nach dem Fix |
+|---|---|---|
+| nativ `/api/v1/state` | req2: 200 | req2: **200** |
+| **relayed `/a/main.js`** | req2: **keine Antwort** | req2: **200, 15 155 B** |
+| relayed CGI `live.cgi` | 200, 18 923 B (schliesst) | **200, 18 923 B** (schliesst weiterhin - kein `Content-Length`) |
+
+Das ist der Nachweis fuer die Zustandsrueckstellung im Server, die sich als
+Hosttest nicht schreiben laesst: `http_server.cpp` ist nicht im Host-Testbuild.
+
+### Verbindungen pro Seitenaufbau (aus dem Paketmitschnitt)
+
+Gleicher Reiz (echter Chrome-Seitenaufbau), gleiche Metrik, 20-s-Fenster:
+
+| | vor dem Fix | nach dem Fix |
+|---|---|---|
+| SYNs zu :80 | 45 | **4** |
+| HTTP-Requests | 57 | 46 |
+| **Verbindungen pro Request** | **0,79** | **0,09** |
+
+46 Requests ueber 4 TCP-Verbindungen. Faktor ~9.
+
+**Vorbehalt:** der Vorher-Lauf war ein frischer Login, der Nachher-Lauf ein F5
+mit warmem Cache - die Reize sind aehnlich, nicht identisch. Deshalb ist die auf
+den Request normierte Zahl die belastbare, nicht die absolute.
+
+### Zurueckgezogen: die "90 % weniger TIME_WAIT"-Zahl
+
+Ich hatte `TW +515` (vorher) gegen `TW +51` (nachher) gestellt und daraus 90 %
+gemacht. **Das war methodisch falsch und ist zurueckgezogen.** Das
+Vorher-Fenster lief **neun Minuten** mit drei Browsern, mehreren Tabs und sechs
+laufenden Medien-Consumern; das Nachher-Fenster zwei Minuten auf einem frisch
+gebooteten System mit einem Consumer. Die +515 enthalten Hintergrundverkehr
+vieler Tabs, nicht einen Seitenaufbau. Der Nutzer hat den Fehler gesehen, bevor
+ich ihn gesehen habe.
+
+Ebenfalls misslungen: der Peak-Sampler fuer gleichzeitig belegte TIME_WAIT-Slots
+las das falsche Feld aus `/proc/net/sockstat` (`$6` ist das Wort `tw`, die Zahl
+steht in `$7`) und meldete durchgehend 0. Der Peak ist damit **nicht gemessen**.
+
+### Die Regression, die der Fix zuerst einbaute
+
+Unmittelbar nach dem ersten Deploy: statische Assets korrekt mit Keep-Alive,
+aber **jedes CGI 502** - die ganze WebUI waere tot gewesen. Ursache aus den
+Bytes des Geraets: busybox schreibt fuer statische Dateien CRLF, reicht die
+**bare-LF-Header eines CGI** aber unveraendert durch, und `find("\r\n\r\n")`
+fand nie ein Ende. Behoben in `c1edd92`, 20 Zusicherungen mit den verbatim
+abgegriffenen Bytes.
+
+Gefunden wurde das, weil nach dem Install als erstes eine Zwei-Request-Probe
+gegen einen statischen **und** einen CGI-Pfad lief - nicht ein Browser.
