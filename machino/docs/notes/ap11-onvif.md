@@ -153,6 +153,6 @@ operations faulting correctly.
 5. **The cleartext password is stored in `machino.conf`.** That is upstream's
    own design and its own warning, repeated here rather than silently improved:
    turning it on is a decision with a cost.
-6. **RTSP is still not gated on the claim state** (carried over from AP10). An
-   unclaimed camera now refuses ONVIF, but the RTSP stream ONVIF would have
-   pointed at is still reachable.
+6. ~~RTSP is still not gated on the claim state.~~ **CLOSED** in a follow-up
+   commit, so the stream this service points at is now refused on an unclaimed
+   camera too — ONVIF and RTSP finally say the same thing. See the AP10 note.

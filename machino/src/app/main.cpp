@@ -367,7 +367,9 @@ int main(int argc, char** argv) {
         // The credential is the system account, exactly as the stock UI states
         // for these endpoints ("root with the same password you use for this
         // WebUI") - the same validator the HTTP session gate uses.
-        RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr, shadow_check);
+        RtspServer rtsp(cfg.rtsp, pipeline, hub, sub_ok ? &sub_hub : nullptr, shadow_check,
+                        [] { return claim_state() == http::ClaimState::Claimed; },
+                        cfg.system.unsafe);
         IStreamServer& server = rtsp;
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection, &rtsp);
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;

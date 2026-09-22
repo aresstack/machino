@@ -40,11 +40,30 @@ public:
     // Only set when a Digest-capable credential store exists; absent means
     // Digest cannot be served (see the note above).
     using Ha1Fn = std::function<std::string(const std::string&, const std::string&)>;
+    // AP10 follow-up: has this camera been set up? Upstream is explicit that
+    // while root's shadow hash is empty the camera "streams nothing" and RTSP
+    // answers 401. Absent = assume claimed, which is the behaviour every
+    // existing caller had.
+    using ClaimFn = std::function<bool()>;
 
-    RtspAuth(const RtspAuthConfig& cfg, CheckFn check, Ha1Fn ha1 = nullptr)
-        : cfg_(cfg), check_(std::move(check)), ha1_(std::move(ha1)) {}
+    RtspAuth(const RtspAuthConfig& cfg, CheckFn check, Ha1Fn ha1 = nullptr,
+             ClaimFn claimed = nullptr, bool unsafe = false)
+        : cfg_(cfg), check_(std::move(check)), ha1_(std::move(ha1)),
+          claim_(std::move(claimed)), unsafe_(unsafe) {}
 
-    bool required() const { return cfg_.enabled && (digest_usable() || cfg_.offer_basic); }
+    bool claimed() const { return !claim_ || claim_(); }
+    bool unsafe() const  { return unsafe_; }
+
+    // system.unsafe switches authentication off "for every endpoint", and it
+    // outranks the unclaimed state too - upstream calls that the supported way
+    // to run a deliberately-open camera. Otherwise an UNCLAIMED camera always
+    // challenges, whatever rtsp.auth says: there is no credential yet, so
+    // there is nothing that could be right.
+    bool required() const {
+        if (unsafe_) return false;
+        if (!claimed()) return true;
+        return cfg_.enabled && (digest_usable() || cfg_.offer_basic);
+    }
     bool digest_usable() const { return cfg_.offer_digest && ha1_ != nullptr; }
 
     // Per-CONNECTION state. A nonce belongs to one connection and dies with
@@ -84,6 +103,8 @@ private:
     RtspAuthConfig cfg_;
     CheckFn        check_;
     Ha1Fn          ha1_;
+    ClaimFn        claim_;
+    bool           unsafe_ = false;
 };
 
 } // namespace machino

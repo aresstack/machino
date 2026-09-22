@@ -26,6 +26,7 @@ void run_sps_tests();
 void run_webrtc_tests();
 void run_dtls_tests();
 void run_rtsp_auth_tests();
+void run_rtsp_claim_tests();
 void run_websocket_tests();
 void run_api_tests();
 void run_tuning_tests();
@@ -332,6 +333,7 @@ int main() {
     run_webrtc_tests();
     run_dtls_tests();
     run_rtsp_auth_tests();
+    run_rtsp_claim_tests();
     run_websocket_tests();
     run_api_tests();
     run_tuning_tests();

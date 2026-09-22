@@ -149,13 +149,15 @@ unparseable value never opens it.
    the **303** majestic answers there. The scripted path — which is what the
    page uses whenever JavaScript runs — is exact; the no-script fallback would
    land on a blank page with the text instead of being redirected.
-3. **RTSP and ONVIF are not gated on the claim state.** Upstream says an
-   unclaimed camera streams nothing and RTSP answers 401. Only the HTTP surface
-   is gated here. RTSP auth exists (AP3) but is off by default, so on an
-   unclaimed camera RTSP is currently still reachable. This is the most
-   significant gap and it is a security one — it needs `rtsp.auth` wired to the
-   claim state, which touches the RTSP session path and is kept out of this
-   package deliberately.
+3. ~~RTSP and ONVIF are not gated on the claim state.~~ **CLOSED.** ONVIF was
+   gated in AP11, and RTSP in a follow-up commit: `RtspAuth` now takes a claim
+   predicate, `required()` is true whenever the camera is unclaimed *regardless
+   of `rtsp.auth`*, and `check()` refuses every credential outright in that
+   state rather than relying on `/etc/shadow` happening to reject them.
+   `system.unsafe` outranks both, as upstream specifies. The predicate is
+   consulted per request, not cached, so a camera claimed over SSH starts
+   serving without a daemon restart — which is what keeps the two doors in
+   agreement.
 4. **Camera-local callers are still waved through while unclaimed**, matching
    the existing Majestic local-trust rule that the CGIs depend on. On an
    unclaimed camera that means a local process has full access — defensible,

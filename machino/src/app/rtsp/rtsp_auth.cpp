@@ -121,6 +121,13 @@ std::string RtspAuth::challenge(Ctx& ctx, int64_t now_ms, bool stale) const {
 RtspAuth::Verdict RtspAuth::check(Ctx& ctx, const std::string& method, const std::string& uri,
                                   const std::string& authz, int64_t now_ms) const {
     if (!required()) return Verdict::Ok;
+    // An UNCLAIMED camera refuses every credential outright rather than
+    // letting one through the schemes below. In practice /etc/shadow would
+    // reject them anyway - an empty hash matches nothing - but relying on that
+    // would make a security property an accident of another function's
+    // behaviour, and the point here is that there is nothing to be right about
+    // until the camera has been set up.
+    if (!claimed()) return Verdict::Bad;
     if (authz.empty()) return Verdict::Missing;
     if (!check_) return Verdict::Bad;
 

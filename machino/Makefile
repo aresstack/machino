@@ -82,7 +82,7 @@ TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp te
             src/core/power/performance_service.cpp src/core/media/tuning_service.cpp src/core/detection/detection_service.cpp \
             src/app/osd/osd_service.cpp \
             src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/onvif/soap.cpp src/app/onvif/onvif_service.cpp src/app/http/setup.cpp \
-            src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp tests/test_rtsp_auth.cpp \
+            src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp tests/test_rtsp_auth.cpp tests/test_rtsp_claim.cpp \
             src/app/webrtc/sdp.cpp src/app/webrtc/stun.cpp src/app/webrtc/rtp.cpp src/app/webrtc/aes.cpp src/app/webrtc/srtp.cpp src/app/webrtc/dtls.cpp tests/test_dtls.cpp \
             src/profiles/builtin_profiles.cpp src/adapters/ingenic/sensor_params.cpp
 

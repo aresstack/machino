@@ -55,9 +55,10 @@ struct RtspServer::Session {
 };
 
 RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub,
-                       StreamHub* sub_hub, RtspAuth::CheckFn auth_check)
+                       StreamHub* sub_hub, RtspAuth::CheckFn auth_check,
+                       RtspAuth::ClaimFn claimed, bool unsafe)
     : cfg_(cfg), pipeline_(pipeline), hub_(hub), sub_hub_(sub_hub),
-      auth_(cfg.auth, std::move(auth_check)) {}
+      auth_(cfg.auth, std::move(auth_check), nullptr, std::move(claimed), unsafe) {}
 
 int RtspServer::unit_from_url(const std::string& url) const {
     // Extract the mount path from the request URL and compare it exactly, so an

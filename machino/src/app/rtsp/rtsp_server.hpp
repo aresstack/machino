@@ -33,8 +33,13 @@ public:
     // uses (crypt(3) against /etc/shadow) - the stock UI states RTSP
     // authenticates as root with the WebUI password, so there is no separate
     // RTSP account. Null = no credential source, auth stays off.
+    // `claimed` reports whether the camera has been set up; while it says no,
+    // RTSP answers 401 to everything, because upstream is explicit that an
+    // unclaimed camera streams nothing. `unsafe` is majestic system.unsafe and
+    // outranks both. Defaults keep the previous behaviour exactly.
     RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub,
-               StreamHub* sub_hub = nullptr, RtspAuth::CheckFn auth_check = nullptr);
+               StreamHub* sub_hub = nullptr, RtspAuth::CheckFn auth_check = nullptr,
+               RtspAuth::ClaimFn claimed = nullptr, bool unsafe = false);
     ~RtspServer() override;
     Result start() override;
     void   stop() override;
