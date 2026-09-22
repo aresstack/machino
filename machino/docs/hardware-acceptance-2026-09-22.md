@@ -337,3 +337,79 @@ Beweislage: keine. `/tmp/soak.csv` (Sekundenkurve in den Lockup hinein) und
 Für den nächsten Lauf läuft daher ab Sekunde 0 ein **lokaler Paketmitschnitt**
 auf `Ethernet 5` — der überlebt jeden Kamerawedge und zeigt, welcher Request
 zuletzt beantwortet wurde und welcher nur noch SYN sah.
+
+## Runde 5 — 10.4 durchgeführt und **PASS**, 2026-09-22
+
+Gleicher Cold Boot, gleiches Binary `065da41`. Diesmal **ohne** den
+Sekunden-Sampler auf der Kamera (siehe "Störgröße" unten); gemessen wurde
+passiv über einen lokalen Paketmitschnitt plus drei kurze SSH-Abfragen.
+
+### Die vier Kriterien
+
+| Kriterium | Ergebnis |
+|---|---|
+| mehrere parallele Live-Clients | **3 gleichzeitig** (1× WebRTC, 2× MSE), ~15 min, 302 MB via WebRTC ausgeliefert |
+| ein persistenter `logread` | **durchgehend genau 1**, State `S`, einziges Kind von machino |
+| Speicher fällt zurück | COLD_IDLE **4948 kB**, nach einem weiteren Zyklus **4952 kB** |
+| **der nächste Start gelingt** | `/ws/video` nach dem Teardown: **2 105 342 Bytes in 6 s**, Generation 3 |
+
+Dazu: `init_failures 0`, `init_retries 0`, `dtls_failures 0`, `srtp_failures 0`,
+0 Zombies, 0 CLOSE_WAIT, **0** Zeilen mit `send stalled` / `refusing bring-up` /
+`bring-up failed`. Zustandsmaschine sauber
+`COLD_IDLE -> STARTING -> ACTIVE -> GRACE_IDLE -> STOPPING -> COLD_IDLE`, zweimal.
+
+### Retention, kein Leck — und warum das belegt ist
+
+Nach dem ersten vollen Lauf standen **4948 kB** statt der 1536 kB vom Boot: 3,4 MB
+wurden nicht ans System zurückgegeben. Aus **einem** Zyklus ist das nicht von
+einem Leck zu unterscheiden. Der zweite Zyklus entscheidet es: **4952 kB**, also
+**+4 kB**. Ein Leck hätte sich wiederholt. Die 3,4 MB sind das warme Arbeitsset,
+das die Puffer-Pools absichtlich behalten (`keeps capacity: no per-frame
+allocation once warm`), plus musl-Heap, der freigegeben aber nicht zurückgegeben
+wird.
+
+### `send_err=3 (errno 11)` — vernachlässigbar, aber korrekt eingeordnet
+
+`EAGAIN`: der UDP-Sendepuffer war dreimal kurz voll. Über den **gesamten**
+13-Minuten-Mitschnitt blieb der Zähler bei **3**, bei 256 395 RTP-Paketen und
+302 MB — 0,001 %. `pli` ging von 0 auf 1.
+
+Ausdrücklich **nicht** behauptet: dass der Browser den Verlust "nicht bemerkt"
+hat. `pli=0` beweist nur, dass **kein** Keyframe-Request kam, nicht dass nichts
+aufgefallen wäre. Belastbar ist: der Zähler steigt nicht weiter und das Bild
+blieb stabil.
+
+### Nebenbefund: MSE degradiert unter Parallellast, WebRTC nicht
+
+Gemessen im Browser bei drei gleichzeitigen Consumern:
+
+| | WebRTC | MSE |
+|---|---|---|
+| Delay | **73 ms** | **>= 904 ms** |
+| Verlust | 0,0 % | 165 von 11 788 Frames verworfen |
+| Re-Buffering | picture restarts 1 | **60x** |
+
+Der bekannte MSE-Wert aus dem Latenz-Paket war ~276 ms. Die UI nennt den Grund
+selbst: `fMP4 over WebSocket/TCP - no feedback channel`. WebRTC sieht den Verlust
+über RTCP und passt sich an, MSE über TCP kann nur puffern. Erwartbares
+Verhalten, aber es gehört als Messwert festgehalten und nicht stillschweigend
+unter "10.4 PASS" verbucht.
+
+### Störgröße: mein eigener Sampler
+
+Im gescheiterten Lauf (Runde 4) lief ein Sekunden-Sampler **auf der Kamera**, der
+pro Sekunde rund sechs Prozesse forkte (`date`, 3x `awk`, `pidof`, `wc`) und alle
+fünf Sekunden zusätzlich zwei `wget` plus vier `sed`. In diesem Lauf lief er
+nicht — und derselbe Browser, dieselbe Seite, dasselbe Binary kamen sauber durch.
+
+Das ist ein **Kandidat, kein Beweis**: der OOM aus Runde 2 lief ohne Sampler und
+ist damit nicht erklärt. Die belastbare Konsequenz ist methodisch: Messapparatur
+auf dieser Box muss passiv sein. Der Paketmitschnitt kostet die Kamera nichts.
+Das gesicherte WebUI-Log des Laufs enthält als einzige Nicht-Routinezeilen genau
+drei `dropbear`-Logins - meine eigenen Abfragen.
+
+### Offen geblieben
+
+`ws_logs_clients` stand am Ende auf **0**, obwohl die Logs-Seite offen sein
+sollte. Ob der Tab geschlossen war oder die WebSocket-Verbindung abriss, ist
+ungeklärt. Zeile 6.1-6.4 bleibt damit **nicht** abgenommen.
