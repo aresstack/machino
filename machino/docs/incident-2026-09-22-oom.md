@@ -233,6 +233,61 @@ from a defect in the `/ws/logs` teardown path itself that has nothing to do
 with forking. A test that forks something harmless at the same point, with no
 `logread` involved, would separate those.
 
+## Test C — could not be run as designed, and what was found instead
+
+The test asked for was `fork()` + `exec("/bin/true")` from machino while the
+pipeline is ACTIVE, to separate "forking is the problem" from "`/ws/logs`'s own
+lifecycle is the problem". **It cannot be run without changing code.** The fork
+has to happen *inside* the machino process to mean anything, and machino forks
+in exactly two places: `logread` (the suspect) and `chpasswd` in the setup path,
+which this claimed camera refuses with 403 before it ever forks. A fork from a
+shell proves nothing about machino's IMP state.
+
+The substitute — open `/ws/logs` while COLD_IDLE, so no IMP state exists at
+fork time — **also could not run**: the session cookie was invalidated by the
+daemon restart and the upgrade answered `401`, so no child was forked. But the
+attempt produced a more important result anyway.
+
+### The damage survives process replacement
+
+After Test B had broken it:
+
+| | result |
+|---|---|
+| graceful `restart`, fresh process, `/ws/logs` never touched | `IMP_System_Init failed (-1)`, **503** |
+| `SIGKILL` + start, fresh process | `IMP_System_Init failed (-1)`, **503** |
+
+**This contradicts an earlier conclusion in this note and withdraws it.** After
+the *original* OOM, a restarted process initialised IMP without trouble, and I
+wrote that the broken state "does not outlive the process". It does. Two
+different terminations, both followed by a process that cannot initialise.
+
+Why the earlier restart worked is unexplained. The two cases differ in when
+`/ws/logs` was opened (GRACE_IDLE then, ACTIVE now) and in how much else the
+OOM killer tore down, but nothing here settles it.
+
+### The driver is not the one refusing
+
+On every failed attempt, including after the restarts:
+
+```
+probe ok ------->imx307 · chip found @ 0x1a · Create framechan0/1/2 OK
+tx_isp_vic_start · imx307 stream on · imx307 stream off   (~0.8 s later)
+IRQ Error, cpu: 1 Cause:0x08800000
+```
+
+`lsmod` shows `tx_isp_t40` and `avpu` loaded with their usual users. The kernel
+side brings the sensor up and streams every time. Whatever fails, fails in
+`libimp` — and it fails *after* getting far enough to start the sensor.
+
+### Practical severity
+
+On this build, **one visit to the Logs page while the camera is streaming
+appears to stop it streaming until the box is rebooted.** Restarting the daemon
+does not recover it. That has not been confirmed against an actual
+power-cycle — the camera is in the broken state now and a power-cycle is the
+obvious next thing to try — but every process-level recovery tried has failed.
+
 ## Discriminating test (superseded by the A/B result above)
 
 One power-cycle, then two sequences, in this order:
