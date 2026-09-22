@@ -8,6 +8,7 @@
 #pragma once
 #include "app/api/api_service.hpp"
 #include "app/http/session.hpp"
+#include "app/http/setup.hpp"
 #include "app/osd/osd_service.hpp"
 #include "core/events.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
@@ -41,6 +42,10 @@ struct ServerConfig {
     // Front-door relay: any request that is not a native Machino/Majestic route
     // is forwarded to this internal OpenIPC WebUI (busybox httpd). port 0 = off.
     std::string upstream_host = "127.0.0.1";
+    // majestic system.unsafe: authentication off for every endpoint, unclaimed
+    // cameras included. Upstream calls this the supported way to run a
+    // deliberately-open camera.
+    bool        unsafe = false;
     int         upstream_port = 0;
     int         relay_timeout_ms = 6000;      // upstream INACTIVITY bound: refreshed on connect/send/recv progress
     int         relay_max_ms = 120000;        // absolute safety ceiling per relayed request
@@ -72,6 +77,10 @@ public:
     // cannot say" and stops polling.
     void set_osd(osd::OsdService* o) { osd_ = o; }
 
+    // AP10: the unclaimed / first-run gate. Null = this build has no claim
+    // concept and behaves exactly as before.
+    void set_setup(SetupGate* s) { setup_ = s; }
+
     Result start();
     void   stop();
     int    port() const { return cfg_.port; }
@@ -79,6 +88,7 @@ public:
 private:
     struct Client;
     osd::OsdService* osd_ = nullptr;
+    SetupGate*       setup_ = nullptr;
     void loop();
     void accept_client();
     bool handle_request(Client& c);

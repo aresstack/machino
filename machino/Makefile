@@ -54,7 +54,7 @@ CORE_SRC := src/core/config.cpp src/core/config_store.cpp src/core/events.cpp sr
             src/core/detection/detection_service.cpp \
             src/profiles/builtin_profiles.cpp
 SRC := src/core/log.cpp $(CORE_SRC) \
-       src/app/osd/osd_service.cpp src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/http/http_server.cpp \
+       src/app/osd/osd_service.cpp src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/http/setup.cpp src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/http/http_server.cpp \
        src/app/linux_grace_timer.cpp src/app/linux_system_stats.cpp \
        src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp src/app/rtsp/rtsp_server.cpp src/app/main.cpp \
        src/app/webrtc/sdp.cpp src/app/webrtc/stun.cpp src/app/webrtc/rtp.cpp src/app/webrtc/aes.cpp src/app/webrtc/srtp.cpp src/app/webrtc/dtls.cpp src/app/webrtc/peer.cpp \
@@ -76,12 +76,12 @@ ifeq ($(OS),Windows_NT)
 HOST_LIBS += -lbcrypt -lws2_32
 endif
 TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp tests/test_json.cpp tests/test_events.cpp \
-            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_webrtc.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/test_schema_contract.cpp tests/test_logging.cpp tests/test_osd.cpp tests/log_stub.cpp \
+            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_webrtc.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/test_schema_contract.cpp tests/test_logging.cpp tests/test_osd.cpp tests/test_setup.cpp tests/log_stub.cpp \
             src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp src/core/runtime_stats.cpp src/core/log_file.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp src/core/lifecycle/pipeline_manager.cpp \
             src/core/power/performance_service.cpp src/core/media/tuning_service.cpp src/core/detection/detection_service.cpp \
             src/app/osd/osd_service.cpp \
-            src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp \
+            src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/http/setup.cpp \
             src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp tests/test_rtsp_auth.cpp \
             src/app/webrtc/sdp.cpp src/app/webrtc/stun.cpp src/app/webrtc/rtp.cpp src/app/webrtc/aes.cpp src/app/webrtc/srtp.cpp src/app/webrtc/dtls.cpp tests/test_dtls.cpp \
             src/profiles/builtin_profiles.cpp src/adapters/ingenic/sensor_params.cpp

@@ -45,6 +45,12 @@ public:
         std::string set_cookie;  // full "Set-Cookie: ...\r\n" header line, empty unless 200
     };
     LoginResult login(const std::string& form_body, int64_t now_ms);
+    // Mint a session WITHOUT checking credentials. The one caller is the
+    // setup flow, which has just set the password and then re-authenticated
+    // against it - so the check has already happened, with the plaintext that
+    // must not be handed around a second time to repeat it. Returns the full
+    // Set-Cookie header line, terminated like the others.
+    std::string mint(int64_t now_ms);
     void        logout(const std::string& cookie_header);
 
     // "Set-Cookie: <name>=; Max-Age=0; Path=/\r\n" - clears the browser cookie.

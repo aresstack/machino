@@ -138,6 +138,10 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("video.1.profile",    c.video1.profile, 0, 2)
     INT   ("video.1.buffers",    c.video1.buffers, 1, 8)
     INT   ("video.1.encoder_buffers", c.video1.encoder_buffers, 0, 8)
+    // AP10: majestic system section. `unsafe` disables authentication
+    // everywhere, unclaimed cameras included - see SystemConfig.
+    BOOL  ("system.unsafe",      c.system.unsafe)
+
     // AP9 OSD. Keys mirror the section the stock settings page renders. The
     // lengths stay strings on purpose (they carry a unit: "2%", "1.5em") and
     // are validated where they are resolved, not here.

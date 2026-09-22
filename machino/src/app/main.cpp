@@ -42,6 +42,8 @@
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
 #include <sys/timerfd.h>
+#include <sys/wait.h>
+#include <cerrno>
 #include <unistd.h>
 
 using namespace machino;
@@ -64,10 +66,10 @@ static bool shadow_check(const std::string& user, const std::string& pass) {
         if (user != line) continue;
         char* hash = c1 + 1;
         if (char* c2 = strchr(hash, ':')) *c2 = 0;
-        // An EMPTY hash means an UNCLAIMED camera (OpenIPC then forces the
-        // /setup flow) - it must NEVER count as "empty password accepted".
-        // The setup flow itself is not implemented yet; until it is, an
-        // unclaimed camera simply cannot log in over the WebUI.
+        // An EMPTY hash means an UNCLAIMED camera - it must NEVER count as
+        // "empty password accepted". Nobody logs in until the claim flow
+        // (AP10, see claim_state/SetupGate) has set a real password; the same
+        // emptiness is what that flow reads as its state.
         if (hash[0] == 0) { ok = false; }
         else if (hash[0] != '!' && hash[0] != '*') {              // '!' / '*' = locked
             const char* enc = crypt(pass.c_str(), hash);
@@ -77,6 +79,85 @@ static bool shadow_check(const std::string& user, const std::string& pass) {
     }
     fclose(f);
     return ok;
+}
+
+// AP10: the claim state IS root's shadow entry - there is no second record,
+// because SSH (`openipc-claim`) sets the same one and the two must never be
+// able to disagree.
+//
+// Fail CLOSED: if the file cannot be read we report CLAIMED, so a camera that
+// cannot answer the question never opens an unauthenticated page that sets the
+// root password.
+static http::ClaimState claim_state() {
+    FILE* f = fopen("/etc/shadow", "r");
+    if (!f) return http::ClaimState::Claimed;
+    char line[512];
+    http::ClaimState st = http::ClaimState::Claimed;
+    while (fgets(line, sizeof line, f)) {
+        char* c1 = strchr(line, ':');
+        if (!c1) continue;
+        *c1 = 0;
+        if (strcmp(line, "root") != 0) continue;
+        char* hash = c1 + 1;
+        if (char* c2 = strchr(hash, ':')) *c2 = 0;
+        if (hash[0] == 0) st = http::ClaimState::Unclaimed;   // empty hash = unclaimed
+        break;
+    }
+    fclose(f);
+    return st;
+}
+
+// `root:<password>` piped to chpasswd, which is what the stock flow does and
+// what keeps the on-disk write (temp file + rename inside chpasswd) out of this
+// process. The password never reaches a command line, a log or an environment
+// variable - only that pipe. SIGPIPE is blocked process-wide, so a chpasswd
+// that dies early surfaces as EPIPE rather than killing the daemon.
+static bool set_root_password(const std::string& pw, std::string& err) {
+    int fds[2];
+    if (pipe(fds) != 0) { err = "The camera could not start the password helper."; return false; }
+    const pid_t pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); err = "The camera could not start the password helper."; return false; }
+    if (pid == 0) {
+        close(fds[1]);
+        dup2(fds[0], STDIN_FILENO);
+        close(fds[0]);
+        execlp("chpasswd", "chpasswd", (char*)nullptr);
+        _exit(127);
+    }
+    close(fds[0]);
+    const std::string line = "root:" + pw + "\n";
+    size_t off = 0;
+    bool wrote = true;
+    while (off < line.size()) {
+        const ssize_t n = write(fds[1], line.data() + off, line.size() - off);
+        if (n > 0) { off += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR) continue;
+        wrote = false;
+        break;
+    }
+    close(fds[1]);
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    if (!wrote) { err = "The password could not be handed to the system."; return false; }
+    if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) {
+        err = WIFEXITED(st) && WEXITSTATUS(st) == 127
+                  ? "This image has no chpasswd, so the password cannot be set here."
+                  : "The system refused the password.";
+        return false;
+    }
+    return true;
+}
+
+// Upstream enforces EULA acceptance "whenever the document is on the image".
+// setup.html fetches /eula.<lang>.txt from the web root, so the presence of any
+// of them is the same question.
+static bool eula_present() {
+    static const char* LANGS[] = {"en", "ru", "zh-CN"};
+    for (const char* l : LANGS) {
+        const std::string p = std::string("/var/www/eula.") + l + ".txt";
+        if (access(p.c_str(), R_OK) == 0) return true;
+    }
+    return false;
 }
 
 static void usage(const char* argv0) {
@@ -292,6 +373,7 @@ int main(int argc, char** argv) {
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
         // Front-door: the Majestic drop-in login gates :80 exactly like
         // Majestic did - the WebUI login IS the camera's system login.
+        hc.unsafe = cfg.system.unsafe;
         hc.session_auth = cfg.api.upstream_port > 0 && cfg.api.auth;
         if (hc.session_auth) hc.auth_check = shadow_check;
         LOGI(MOD, "webui session auth: %s", hc.session_auth ? "on (system account)" : "off");
@@ -315,6 +397,13 @@ int main(int argc, char** argv) {
             osd_service.set_streams(geo);
         }
         httpd.set_osd(&osd_service);
+
+        // AP10: the unclaimed / first-run gate. No key installer is wired, so a
+        // key offered during setup is reported as "claimed, key not installed"
+        // rather than silently dropped.
+        http::SetupGate setup_gate(claim_state, set_root_password, shadow_check, eula_present);
+        httpd.set_setup(&setup_gate);
+        LOGI(MOD, "claim state: %s", setup_gate.unclaimed() ? "UNCLAIMED (serving only the setup flow)" : "claimed");
         int tfd = -1;
         if (cfg.telemetry.log_interval_s > 0) {
             tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);

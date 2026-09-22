@@ -164,6 +164,16 @@ struct ApiConfig {
     bool        auth = true;
 };
 
+// majestic `system` section. `unsafe` is upstream's "Disable authentication"
+// switch (schema: boolean, default false). Upstream is explicit about its
+// reach: it "overrides everything, unclaimed cameras included - that, not a
+// blank password, is how a deliberately-open camera is configured". So it
+// turns off the session gate AND the unclaimed redirect, and no other meaning
+// is invented for it here.
+struct SystemConfig {
+    bool unsafe = false;
+};
+
 struct LogConfig {
     int  level  = 2;
     bool syslog = false;
@@ -183,6 +193,7 @@ struct AppConfig {
     media::LatencySettings latency;
     AiConfig          ai;
     OsdConfig         osd;
+    SystemConfig      system;
     TelemetryConfig   telemetry;
     ApiConfig         api;
     LogConfig         log;

@@ -279,8 +279,51 @@ bool HttpServer::handle_request(Client& c) {
     api::Response r;
     if (m == "OPTIONS") { queue(c, response(204, "text/plain", "", req.keep_alive, "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, If-Match\r\n")); if (!req.keep_alive) c.close_after_flush = true; return true; }
 
+    // AP10: unclaimed / first-run. Runs BEFORE the session gate, because on an
+    // unclaimed camera there is no credential that could satisfy it. Upstream:
+    // while root's shadow hash is empty the camera serves NOTHING but the claim
+    // flow, and once it is set /setup must stop existing - "an unauthenticated
+    // page that sets the root password must not outlive the state that
+    // justifies it".
+    if (setup_ && !cfg_.unsafe) {
+        const bool unclaimed = setup_->unclaimed();
+        if (path == "/setup" && m == "POST") {
+            SetupOutcome so = setup_->post(req.body);
+            std::string cookie;
+            if (so.mint_session && gate_) cookie = gate_->mint(now_ms());
+            // Never the password, never the body - only what happened.
+            LOGI(MOD, "%s: setup -> %d%s", c.peer.c_str(), so.status,
+                 so.mint_session ? " (claimed, session minted)" : "");
+            bool ok = queue(c, response(so.status, "text/plain", so.body, false, cookie));
+            c.close_after_flush = true;
+            return ok;
+        }
+        if (!unclaimed && m == "GET" && path == "/setup.html") {
+            bool ok = queue(c, response(404, "text/plain", "Not Found\n", false));
+            c.close_after_flush = true;
+            return ok;
+        }
+        if (unclaimed && !SetupGate::is_setup_path(m, path) && !SessionGate::is_local_peer(c.peer)) {
+            if (m == "GET" && req.header("accept").find("text/html") != std::string::npos) {
+                bool ok = queue(c, response(302, "text/plain", "", false, "Location: /setup.html\r\n"));
+                c.close_after_flush = true;
+                return ok;
+            }
+            bool ok = queue(c, response(401, "application/json",
+                                        api::ApiService::error("unauthorized", path,
+                                                               "this camera has not been set up yet").dump(),
+                                        false));
+            c.close_after_flush = true;
+            return ok;
+        }
+    }
+
     // Majestic drop-in session auth (see session.hpp for the exact webui
     // contract). Runs BEFORE every route, native or relayed.
+    // /login and /logout stay wired even with authentication off: they are
+    // routes the stock UI calls, and relaying them upstream instead would be a
+    // different answer, not an absent one. Only the ENFORCEMENT below is
+    // skipped when system.unsafe is set.
     if (gate_) {
         const int64_t t = now_ms();
         if (path == "/login" && m == "POST") {
@@ -298,7 +341,7 @@ bool HttpServer::handle_request(Client& c) {
             return ok;
         }
         const bool local = SessionGate::is_local_peer(c.peer);   // camera-local = trusted, like Majestic
-        if (!local && !SessionGate::is_public(m, path) && !gate_->authed(req.header("cookie"), t)
+        if (!cfg_.unsafe && !local && !SessionGate::is_public(m, path) && !gate_->authed(req.header("cookie"), t)
             && !gate_->authed_basic(req.header("authorization"))) {
             // Top-level navigation -> the login page; fetch()/assets -> 401
             // WITHOUT WWW-Authenticate (never the browser's Basic popup;

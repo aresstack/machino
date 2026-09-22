@@ -143,6 +143,13 @@ SessionGate::LoginResult SessionGate::login(const std::string& body, int64_t now
     return {200, sc};
 }
 
+std::string SessionGate::mint(int64_t now_ms) {
+    evict(now_ms);
+    const std::string tok = new_token();
+    tokens_[tok] = now_ms + SESSION_MS;
+    return std::string("Set-Cookie: ") + COOKIE + "=" + tok + "; Path=/; HttpOnly; SameSite=Strict\r\n";
+}
+
 void SessionGate::logout(const std::string& cookie_header) {
     const std::string tok = cookie_value(cookie_header, COOKIE);
     if (!tok.empty()) tokens_.erase(tok);
