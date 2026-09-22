@@ -729,3 +729,72 @@ Kernel mit, ohne OOM-Killer und ohne Panic. Ein erschoepfter Userspace-Heap
 haengt keinen MIPS-Kernel auf; der OOM-Killer raeumt auf, wie er es in Runde 2
 getan hat. Im Leerlauf gemessen: `MemFree 14 856 kB`, 30 Sockets, 96 von 8192
 Dateideskriptoren - keine Knappheit.
+
+---
+
+## Runde 7 — A/B-Test der Flash-Hypothese: NEGATIV
+
+Der Nutzer beschrieb ein Muster, das praeziser war als meine Analyse:
+
+1. am haeufigsten stirbt sie, nachdem machino neu hinuebergespielt wurde -
+   dann killt der Klick auf Login fast immer
+2. sie starb auch von allein nach einiger Zeit, waehrend zwei Streams liefen
+3. sie stirbt, wenn irgendetwas am System installiert oder geaendert wird
+
+Gemeinsamer Nenner: **vorher wurde auf den Flash geschrieben.** Das
+Wurzeldateisystem ist ein Overlay, dessen beschreibbare Seite auf jffs2 auf
+SPI-NOR liegt (`/dev/mtdblock4`, `ingenic-sfc 13440000.sfc`); `/usr/bin` und
+`/etc` sind Flash, `/tmp` und `/var/log` tmpfs. jffs2 raeumt asynchron auf, was
+Punkt 2 erklaeren wuerde, ohne dass jemand etwas tut.
+
+### Der Versuch
+
+| Phase | Aktion | Ergebnis |
+|---|---|---|
+| 1 | 200 KiB auf das jffs2-Overlay, `sync`, **90 s nichts tun** | ueberlebt |
+| 2 | ohne weiteren Write: Login + `GET /cgi-bin/live.cgi` mit Chromes Headern | **200 OK**, 18 923 B |
+| 3 | 3x 1,4 MB mit Ueberschreiben (erzeugt obsolete Knoten -> echter GC-Druck), `sync` | ueberlebt |
+| 4 | 110 s Ruhe, dann derselbe CGI-Reproducer | **200 OK** |
+
+SFC-Interrupts stiegen dabei von 12 271/5 335 auf 26 305/41 052, die
+Flash-Aktivitaet war also real und erheblich. Der GC-Thread ging nachweislich in
+`state=D`.
+
+```text
+flash write alone        -> nicht ausreichend
+flash write + CGI        -> nicht ausreichend
+deployment-sized writes
+  + overwrite + GC + CGI -> nicht ausreichend
+```
+
+### Vorbehalt, der das Ergebnis schwaecht
+
+**Die "Ruhephasen" waren nicht ruhig.** Waehrend des Versuchs hielt ein
+Browser-Tab des Nutzers (Chrome, 2 ESTABLISHED) einen `/ws/video`-Client offen;
+die Pipeline ging um 09:56:41 mitten in Phase 3 auf ACTIVE. Der Test lief also
+unter mehr Last als geplant - was ihn als Negativbefund nicht entwertet, aber
+"Flash-Last bei sonst ruhendem System" ist damit **nicht** sauber geprueft.
+
+Ausserdem korrigiert: `nr_written 0` hatte ich als Beweis fuer null Flash-I/O
+gelesen. Das ist eine Page-Cache-Statistik und bildet MTD/JFFS2-Schreibpfade
+nicht zwingend ab - ein Indiz, kein Beweis.
+
+### Was der Versuch NICHT widerlegt
+
+Das Muster des Nutzers bleibt empirisch stark. Ein echter
+`machino-manager install` macht mehr als ein `dd`: er schreibt ueber den
+**overlayfs-copy-up-Pfad** in den Upperdir, ersetzt eine Datei, die im
+squashfs-Lower liegt, beendet den laufenden Daemon, startet ihn neu und fuehrt
+Skripte aus. Mein `dd` auf eine frische Datei im jffs2 trifft davon nur einen
+Teil.
+
+Der naechste ehrliche Test waere deshalb ein **echter Re-Install desselben
+Builds** (kein Codewechsel, nur derselbe Tarball), gefolgt vom CGI-Reproducer.
+Das ist genau die Sequenz, die der Nutzer als zuverlaessigsten Killer
+beschreibt.
+
+### Nebenbefund
+
+`printk` steht jetzt auf `7 0 0 0` (war `0 0 0 0`). Nicht persistent, verschwindet
+beim naechsten Boot. Bis dahin wuerde ein Kernel-Oops die serielle Konsole
+erreichen, statt wie bisher stumm zu bleiben.
