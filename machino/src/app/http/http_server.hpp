@@ -123,6 +123,15 @@ private:
     bool logs_wanted() const;
     int  logs_fd() const;
     void pump_rtc(Client& c);       // webrtc per tick: DTLS timers, PLI->IDR, AU->RTP
+    // AP16: what this camera actually emits, per unit, learned from the SPS of
+    // any key frame that happens to pass through - never by waiting for one.
+    // The RTSP side may block up to 3 s for an IDR to answer DESCRIBE; the
+    // poll loop may not, and an SDP answer that arrives late is worse than an
+    // answer that follows the browser's own codec preference.
+    // Written and read only from the poll loop, like every other Client-facing
+    // member here - no lock, and none needed.
+    void note_h264_profile(int unit, const std::vector<uint8_t>& sps);
+    std::string h264_profile_[4];   // profile-level-id, "" until first seen
     bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
     bool relay_open(Client& c);                          // open the upstream socket for a prepared relay
     bool pump_relay(Client& c, short re, int64_t now);   // advance it; false drops the client

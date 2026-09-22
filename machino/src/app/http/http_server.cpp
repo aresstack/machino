@@ -920,6 +920,13 @@ void HttpServer::push_mjpeg(Client& c) {
     }
 }
 
+void HttpServer::note_h264_profile(int unit, const std::vector<uint8_t>& sps) {
+    if (unit < 0 || unit >= 4 || sps.size() < 4) return;
+    char b[8];
+    snprintf(b, sizeof b, "%02x%02x%02x", sps[1], sps[2], sps[3]);
+    if (h264_profile_[unit] != b) h264_profile_[unit] = b;   // follows a reconfigure
+}
+
 namespace {
 // A resync is an EPISODE, not a tick: while a socket is behind, the cap is hit
 // on every pass through the loop, and counting those would report a hundred
@@ -947,6 +954,7 @@ void HttpServer::pump_ws_video(Client& c) {
         if (au->key) {
             std::vector<uint8_t> sps, pps;
             if (h264::extract_params(au->data.data(), au->data.size(), sps, pps) && !sps.empty() && !pps.empty()) {
+                note_h264_profile(c.ws_unit, sps);      // the UNREWRITTEN sps: the profile bytes
                 // MSE only: state the stream's true reorder/DPB bounds in the
                 // avcC SPS so the browser stops holding ~1 s of frames (the
                 // in-band SPS is stripped from mdat anyway). RTSP is untouched.
@@ -1086,7 +1094,8 @@ bool HttpServer::rtc_ws_input(Client& c) {
             inet_ntop(AF_INET, &la.sin_addr, ip, sizeof ip);
         std::unique_ptr<webrtc::PeerSession> sess(new webrtc::PeerSession(ip));
         std::string err;
-        const std::string answer = sess->on_offer(data->as_string(), err);
+        const std::string answer = sess->on_offer(data->as_string(), err,
+                                                  c.rtc_unit >= 0 && c.rtc_unit < 4 ? h264_profile_[c.rtc_unit] : std::string());
         if (answer.empty()) { LOGW(MOD, "webrtc: offer rejected: %s", err.c_str()); if (!reply("error", err)) return false; continue; }
         StreamHub* h = c.rtc_unit == lifecycle::UNIT_SUB ? sub_hub_ : hub_;
         Result dr;
@@ -1114,6 +1123,10 @@ void HttpServer::pump_rtc(Client& c) {
         AuPtr au; bool disc = false;
         if (!c.rtc_sink->pop(au, 0, &disc)) return;
         if (!au || au->data.empty()) continue;
+        if (au->key) {
+            std::vector<uint8_t> sps, pps;
+            if (h264::extract_params(au->data.data(), au->data.size(), sps, pps)) note_h264_profile(c.rtc_unit, sps);
+        }
         c.rtc->send_au(au->data.data(), au->data.size(), au->pts_us, au->key);
     }
 }

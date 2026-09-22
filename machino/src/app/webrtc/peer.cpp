@@ -58,10 +58,11 @@ PeerSession::~PeerSession() {
     if (sock_ >= 0) close(sock_);
 }
 
-std::string PeerSession::on_offer(const std::string& offer_sdp, std::string& error) {
+std::string PeerSession::on_offer(const std::string& offer_sdp, std::string& error,
+                                  const std::string& local_profile) {
     if (!ok()) { error = "session setup failed"; return ""; }
     if (offered_) { error = "already offered"; return ""; }
-    Offer o = parse_offer(offer_sdp);
+    Offer o = parse_offer(offer_sdp, local_profile);
     if (!o.ok) { error = o.error; return ""; }
     sockaddr_in a{}; socklen_t al = sizeof a;
     if (getsockname(sock_, (sockaddr*)&a, &al) < 0) { error = "getsockname failed"; return ""; }
@@ -76,7 +77,13 @@ std::string PeerSession::on_offer(const std::string& offer_sdp, std::string& err
     p.port = ntohs(a.sin_port);
     p.ssrc = rtp_.ssrc;
     offered_ = true;
-    LOGI(MOD, "offer accepted: pt=%d candidate %s:%u", rtp_.payload_type, ip, (unsigned)p.port);
+    // The negotiated profile next to the one actually sent: when they differ
+    // the browser is decoding a stream whose label it chose, and that is the
+    // first thing to look at if a picture is green, blocky or absent.
+    const std::string& np = o.media[(size_t)o.video_index].h264_profile;
+    LOGI(MOD, "offer accepted: pt=%d profile %s (camera sends %s) candidate %s:%u",
+         rtp_.payload_type, np.empty() ? "unstated" : np.c_str(),
+         local_profile.empty() ? "unknown" : local_profile.c_str(), ip, (unsigned)p.port);
     return build_answer(o, p);
 }
 

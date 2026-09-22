@@ -8,6 +8,7 @@
 #include "app/webrtc/srtp.hpp"
 #include "app/webrtc/stun.hpp"
 #include "core/json.hpp"
+#include "sdp_offers.hpp"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -407,5 +408,159 @@ void run_sdp_refusal_tests() {
         webrtc::Offer o = webrtc::parse_offer(offer(many));
         WCHECK(!o.ok);
         WCHECK(o.error.size() < 400);
+    }
+}
+
+// ---------------------------------------------------------------- AP16
+// Browser compatibility, against a REAL captured Chrome 153 offer rather than
+// a sketch of one. The sketch is what let the defect below survive: it offered
+// a single H264 payload, so payload-number order and preference order were the
+// same thing and the difference could not show.
+void run_webrtc_ap16_tests() {
+    using namespace machino::webrtc;
+    const std::string chrome = test::chrome_153_offer();
+
+    // What Chrome 153 actually offers, so the expectations below are anchored
+    // in the fixture and not in memory of it.
+    WCHECK(chrome.find("a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f") != std::string::npos);
+    WCHECK(chrome.find("a=fmtp:41 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=f4001f") != std::string::npos);
+
+    // 1. The defect: picking by payload NUMBER walked past everything the
+    //    browser preferred and landed on pt 41, High 4:4:4 Predictive - a
+    //    chroma format this camera does not produce. The m-line lists
+    //    102 before 41, and 102 is what the answer must name.
+    {
+        Offer o = parse_offer(chrome);
+        WCHECK(o.ok && o.video_index == 0);
+        WCHECK(o.media[0].h264_pt == 102);
+        WCHECK(o.media[0].h264_profile == "42001f");
+        WCHECK(o.media[0].pts.size() == 34);              // the whole preference list is kept
+        WCHECK(o.media[0].pts[0] == 96 && o.media[0].pts[10] == 102);
+    }
+
+    // 2. An exact profile match beats preference: a camera that really emits
+    //    Main gets the Main payload, and the answer names the stream instead
+    //    of approximating it.
+    {
+        Offer o = parse_offer(chrome, "4d001f");
+        WCHECK(o.ok && o.media[0].h264_pt == 116 && o.media[0].h264_profile == "4d001f");
+    }
+    // The level is NOT part of the match - level-asymmetry-allowed exists for
+    // exactly that, and a camera at level 5.1 must still find its own profile.
+    {
+        Offer o = parse_offer(chrome, "4d0033");
+        WCHECK(o.ok && o.media[0].h264_pt == 116);
+    }
+    // This camera emits High (avc1.640033) and Chrome offers no High at all,
+    // so it falls back to the browser's own first choice rather than to a
+    // number. That fallback is the common case and must stay correct.
+    {
+        Offer o = parse_offer(chrome, "640033");
+        WCHECK(o.ok && o.media[0].h264_pt == 102);
+    }
+
+    // 3. The audio m-line is mirrored and declined, and BUNDLE names only the
+    //    section actually served - unchanged behaviour, pinned against the
+    //    real offer this time.
+    {
+        Offer o = parse_offer(chrome);
+        AnswerParams p;
+        p.ice_ufrag = "aaaa"; p.ice_pwd = "bbbbbbbbbbbbbbbbbbbbbbbb";
+        p.fingerprint = "AA:BB:CC"; p.host_ip = "192.168.1.10"; p.port = 40000; p.ssrc = 42;
+        const std::string a = build_answer(o, p);
+        WCHECK(a.find("a=group:BUNDLE 0\r\n") != std::string::npos);
+        WCHECK(a.find("m=video 40000 UDP/TLS/RTP/SAVPF 102\r\n") != std::string::npos);
+        WCHECK(a.find("a=rtpmap:102 H264/90000\r\n") != std::string::npos);
+        WCHECK(a.find("profile-level-id=42001f\r\n") != std::string::npos);
+        WCHECK(a.find("a=rtcp-fb:102 nack pli\r\n") != std::string::npos);
+        WCHECK(a.find("m=audio 0 UDP/TLS/RTP/SAVPF 0\r\n") != std::string::npos);
+        WCHECK(a.find("a=inactive\r\n") != std::string::npos);
+        WCHECK(a.find("a=setup:passive\r\n") != std::string::npos);
+        WCHECK(a.find("a=sendonly\r\n") != std::string::npos);
+        // never the payload the old ordering would have chosen
+        WCHECK(a.find(" 41\r\n") == std::string::npos && a.find("f4001f") == std::string::npos);
+    }
+
+    // 4. Bare LF, as a permissive peer or a hand-rolled client may send it.
+    {
+        std::string lf = chrome;
+        for (size_t i = lf.find('\r'); i != std::string::npos; i = lf.find('\r')) lf.erase(i, 1);
+        Offer o = parse_offer(lf);
+        WCHECK(o.ok && o.media[0].h264_pt == 102);
+    }
+
+    // 5. Case. rtpmap codec names and fmtp parameter names are both
+    //    case-insensitive (RFC 4566, RFC 6184); comparing them exactly is a
+    //    refusal waiting for the one peer that writes them differently.
+    {
+        const std::string sdp =
+            "v=0\r\ns=-\r\nt=0 0\r\n"
+            "a=ice-ufrag:u\r\na=ice-pwd:pppppppppppppppppppppppp\r\n"
+            "a=fingerprint:sha-256 AA:BB\r\n"
+            "m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:0\r\n"
+            "a=rtpmap:96 h264/90000\r\n"
+            "a=fmtp:96 Packetization-Mode=1;Profile-Level-Id=42E01F\r\n";
+        Offer o = parse_offer(sdp);
+        WCHECK(o.ok && o.media[0].h264_pt == 96 && o.media[0].h264_profile == "42E01F");
+    }
+
+    // 6. The refusals still refuse, and still say which kind of refusal it is.
+    //    Synthetic on purpose: no browser is named for these, because none was
+    //    captured producing them.
+    {
+        const std::string mode0 =
+            "v=0\r\ns=-\r\nt=0 0\r\n"
+            "a=ice-ufrag:u\r\na=ice-pwd:pppppppppppppppppppppppp\r\n"
+            "a=fingerprint:sha-256 AA:BB\r\n"
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 97\r\na=mid:0\r\n"
+            "a=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=0\r\n"
+            "a=rtpmap:97 VP8/90000\r\n";
+        Offer o = parse_offer(mode0);
+        WCHECK(!o.ok);
+        WCHECK(o.error.find("H264 was offered, but not in mode 1") != std::string::npos);
+        WCHECK(o.error.find("H264") != std::string::npos && o.error.find("VP8") != std::string::npos);
+    }
+    {
+        const std::string noh264 =
+            "v=0\r\ns=-\r\nt=0 0\r\n"
+            "a=ice-ufrag:u\r\na=ice-pwd:pppppppppppppppppppppppp\r\n"
+            "a=fingerprint:sha-256 AA:BB\r\n"
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 97\r\na=mid:0\r\n"
+            "a=rtpmap:96 VP8/90000\r\na=rtpmap:97 rtx/90000\r\n";
+        Offer o = parse_offer(noh264);
+        WCHECK(!o.ok);
+        WCHECK(o.error.find("offered: VP8") != std::string::npos);   // rtx is housekeeping, not a codec
+        WCHECK(o.error.find("but not in mode 1") == std::string::npos);
+    }
+
+    // 7. The m-line is the list and the attributes describe it: when the list
+    //    holds a usable payload, that is the one, whatever else was described.
+    {
+        const std::string odd =
+            "v=0\r\ns=-\r\nt=0 0\r\n"
+            "a=ice-ufrag:u\r\na=ice-pwd:pppppppppppppppppppppppp\r\n"
+            "a=fingerprint:sha-256 AA:BB\r\n"
+            "m=video 9 UDP/TLS/RTP/SAVPF 98\r\na=mid:0\r\n"
+            "a=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1\r\n"
+            "a=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;profile-level-id=42e01f\r\n";
+        Offer o = parse_offer(odd);
+        WCHECK(o.ok && o.media[0].h264_pt == 98);
+    }
+
+    // 8. But a malformed offer that describes a usable H264 and forgets to
+    //    list it is still answered. Refusing a compatible stream over a
+    //    missing number would be the unnecessary rejection this work exists
+    //    to remove - and it is what the older sketch-shaped offers look like.
+    {
+        const std::string missing =
+            "v=0\r\ns=-\r\nt=0 0\r\n"
+            "a=ice-ufrag:u\r\na=ice-pwd:pppppppppppppppppppppppp\r\n"
+            "a=fingerprint:sha-256 AA:BB\r\n"
+            "m=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:0\r\n"
+            "a=rtpmap:96 VP8/90000\r\n"
+            "a=rtpmap:102 H264/90000\r\n"
+            "a=fmtp:102 packetization-mode=1;profile-level-id=42e01f\r\n";
+        Offer o = parse_offer(missing);
+        WCHECK(o.ok && o.media[0].h264_pt == 102 && o.media[0].h264_profile == "42e01f");
     }
 }

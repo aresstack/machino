@@ -28,7 +28,11 @@ public:
     int  fd() const { return sock_; }
 
     // Browser offer in, camera answer out ("" = refuse; `error` says why).
-    std::string on_offer(const std::string& offer_sdp, std::string& error);
+    // `local_profile` is the profile-level-id this camera really emits (from
+    // the SPS, e.g. "640033"); an offer that contains it is answered with it
+    // instead of an approximation. Empty = follow the browser's preference.
+    std::string on_offer(const std::string& offer_sdp, std::string& error,
+                         const std::string& local_profile = "");
 
     // The UDP socket is readable: drain and demux.
     void on_readable();

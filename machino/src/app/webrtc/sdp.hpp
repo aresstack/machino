@@ -16,6 +16,9 @@ namespace machino { namespace webrtc {
 struct OfferMedia {
     std::string kind;        // "video" / "audio" / other
     std::string mid;
+    std::vector<int> pts;              // payload types in OFFER order = the
+                                       // offerer's preference, which is the
+                                       // only place that order exists
     int         h264_pt = -1;          // payload type with packetization-mode=1 (video only)
     std::string h264_profile;          // its profile-level-id (verbatim, may be empty)
 };
@@ -32,7 +35,13 @@ struct Offer {
 
 // Parses a browser SDP offer. `ok` requires: at least one video m-line with an
 // H264 payload of packetization-mode=1, ice credentials and a DTLS fingerprint.
-Offer parse_offer(const std::string& sdp);
+//
+// Among the offered mode-1 H264 payloads the choice is made in OFFER order,
+// except that an exact match on `prefer_profile` (the profile-level-id this
+// camera really emits, e.g. "640033" from the SPS) wins - then the answer
+// names the stream instead of approximating it. Empty = no preference, which
+// falls back to the browser's own order.
+Offer parse_offer(const std::string& sdp, const std::string& prefer_profile = "");
 
 // Everything the answer needs from the camera side.
 struct AnswerParams {
