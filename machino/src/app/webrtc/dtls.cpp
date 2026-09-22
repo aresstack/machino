@@ -15,8 +15,11 @@
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/x509_csr.h>
 
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 
 static const char* MOD = "DTLS";
@@ -80,6 +83,29 @@ struct DtlsTransport::Impl {
 
 namespace {
 
+// Seed the DRBG straight from /dev/urandom. mbedtls_entropy_func would call
+// getrandom() in BLOCKING mode, and this camera's kernel never credits its
+// CRNG ("jitterentropy failed", DTRNG unbound) - so getrandom() blocks
+// forever and, run from the HTTP poll thread on the first WebRTC offer,
+// freezes the whole WebUI. /dev/urandom never blocks on Linux 4.4; for a
+// LAN camera's per-session DTLS keys that is the right trade, and it is the
+// best this box can offer anyway.
+int urandom_entropy(void*, unsigned char* out, size_t len) {
+    FILE* f = fopen("/dev/urandom", "rb");
+    if (f) {
+        const size_t got = fread(out, 1, len, f);
+        fclose(f);
+        if (got == len) return 0;
+    }
+    // Dev-host fallback ONLY (a box without /dev/urandom, i.e. the Windows
+    // unit-test run): never reached on the camera, where the node always
+    // exists. Keeps the in-memory handshake test runnable off-Linux.
+    static bool seeded = false;
+    if (!seeded) { srand((unsigned)time(nullptr) ^ (unsigned)(uintptr_t)out); seeded = true; }
+    for (size_t i = 0; i < len; ++i) out[i] = (unsigned char)(rand() & 0xff);
+    return 0;
+}
+
 std::string fingerprint_of(const uint8_t* der, size_t len) {
     uint8_t h[32];
     if (mbedtls_sha256(der, len, h, 0) != 0) return "";
@@ -101,7 +127,9 @@ DtlsTransport::DtlsTransport() : im_(new Impl) {
     mbedtls_ssl_init(&s.ssl);
 
     const char* pers = "machino-dtls";
-    if (mbedtls_ctr_drbg_seed(&s.drbg, mbedtls_entropy_func, &s.entropy,
+    // NON-BLOCKING entropy (see urandom_entropy): never mbedtls_entropy_func,
+    // which would block forever on this kernel's uncredited getrandom().
+    if (mbedtls_ctr_drbg_seed(&s.drbg, urandom_entropy, nullptr,
                               (const unsigned char*)pers, strlen(pers)) != 0) return;
     // EC P-256 key + self-signed certificate, regenerated per process start.
     if (mbedtls_pk_setup(&s.key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0) return;
