@@ -34,6 +34,7 @@
 #include "core/media/tuning_service.hpp"
 #include "core/power/performance_service.hpp"
 #include "core/random.hpp"
+#include "core/runtime_stats.hpp"
 #include "core/stream_hub.hpp"
 #include "profiles/builtin_profiles.hpp"
 
@@ -60,6 +61,14 @@ using namespace machino;
 using lifecycle::ConsumerType;
 
 static const char* MOD = "MAIN";
+
+// Monotonic milliseconds for the watchdog. steady_clock, not the wall clock:
+// ONVIF SetSystemDateAndTime can step the system time, and a feeder whose
+// schedule jumps backwards would stop feeding until the clock caught up.
+static int64_t now_ms() {
+    return (int64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 // Validate credentials against the system account, exactly like Majestic: the
 // WebUI login IS the camera's root login (/etc/shadow, crypt(3) - musl carries
