@@ -687,10 +687,13 @@ bool HttpServer::rtc_ws_input(Client& c) {
         c.in.erase(0, used);
         if (op == 8) return false;
         if (op == 9) { queue(c, ws::pong_frame(payload)); continue; }
-        if (op != 1) { LOGI(MOD, "webrtc: non-text frame op=%d len=%zu", op, payload.size()); continue; }
-        LOGI(MOD, "webrtc: frame len=%zu head=%.40s", payload.size(), payload.c_str());
+        if (op != 1) continue;
+        // A real Chrome SDP offer is ~7.5 KB inside one JSON string; the
+        // default JsonLimits (4 KB string / 16 KB total) reject it. Raise the
+        // caps for signalling messages, bounded by the WS frame cap (32 KB).
         Json msg; std::string jerr;
-        if (!Json::parse(payload, msg, jerr)) { LOGW(MOD, "webrtc: json parse failed: %s", jerr.c_str()); continue; }
+        const JsonLimits sig_limits{16, 32768, 65536};
+        if (!Json::parse(payload, msg, jerr, sig_limits)) { LOGW(MOD, "webrtc: json parse failed: %s", jerr.c_str()); continue; }
         const Json* req = msg.get("req");
         if (!req || !req->is_string()) { LOGW(MOD, "webrtc: no req field"); continue; }
         auto reply = [&](const char* kind, const std::string& data) {
@@ -700,7 +703,7 @@ bool HttpServer::rtc_ws_input(Client& c) {
             const std::string s = r.dump();
             return queue(c, ws::frame(true, s.data(), s.size()));
         };
-        if (req->as_string() != "offer") { LOGI(MOD, "webrtc: req=%s (ignored)", req->as_string().c_str()); continue; }
+        if (req->as_string() != "offer") continue;   // trickled candidates: ICE-lite learns from STUN
         int active = 0;
         for (auto& o : clients_) if (o->rtc) ++active;
         if (c.rtc || active >= 2) { if (!reply("busy", "every session slot is taken")) return false; continue; }
