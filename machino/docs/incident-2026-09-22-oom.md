@@ -538,3 +538,45 @@ zu retten.
 Ziel ist die Frage, ob bereits der parallele Proxy-/Asset-Burst die Box umlegt,
 **bevor Video überhaupt beteiligt ist**. Erst danach der Restart-Batch
 (3.3/3.4, 4.2, 4.4-4.6, 9.2-9.8) als eigener Block mit eigenem Power-Cycle.
+
+### UART ebenfalls tot — es ist ein SoC-/Kernel-Lockup
+
+Nach dem Verlust des Netzes wurde die serielle Konsole geprüft: **auch tot**.
+Das schließt die harmloseren Erklärungen aus. Ein OOM-gekillter oder
+abgestürzter Machino-Prozess nimmt die UART nicht mit; ein hängender
+Netzwerkdienst auch nicht. Was hier ausfällt, liegt unterhalb des Userspace.
+
+Damit unterscheidet sich dieser Vorfall **qualitativ** von Runde 2:
+
+| | Runde 2 (OOM) | Runde 4 |
+|---|---|---|
+| Auslöser | 3./4. Live-Client | **erster** Post-Login-Seitenaufbau |
+| Vorzustand | warm installiert | **echter Cold Boot** |
+| Machino | vom OOM-Killer beendet | unbekannt |
+| SSH | **lebte** | tot |
+| UART | lebte | **tot** |
+| Diagnose möglich | ja, ausführlich | **keine** |
+
+Es ist deshalb nicht belegt und sollte nicht behauptet werden, dass beides
+derselbe Mechanismus ist. Runde 2 war ein Userspace-Speicherproblem mit
+vollständiger Forensik. Runde 4 ist ein Hardlock ohne jede Forensik.
+
+### Konsequenz für die nächsten Läufe
+
+Ab sofort läuft ein **lokaler Paketmitschnitt** (dumpcap auf `Ethernet 5`,
+funktioniert ohne Admin-Rechte) ab Sekunde 0 mit. Er überlebt jeden
+Kamerawedge und beantwortet die Frage, die uns diesmal fehlte: welcher Request
+wurde zuletzt vollständig beantwortet, und welcher bekam nur noch SYN oder gar
+nichts mehr. tmpfs-Beweise auf der Kamera sind bei einem Hardlock wertlos.
+
+### Offene Lücke im Zerlegungsplan
+
+Die ersten Stufen (`/login.html`, `POST /login`, `GET /`, Assets sequenziell,
+Assets parallel) nutzen `Connection: close`. Das ist für die Isolation richtig,
+bildet Firefox aber **nicht** ab: ein echter Browser hält Verbindungen offen und
+wiederverwendet sie. Bestehen Stufe 1-5, ist der HTTP-/Asset-Pfad daher
+**nicht** entlastet. Vor jedem Verdacht gegen MSE/WebRTC muss deshalb eine
+Stufe **browser-like burst** dazwischen: mehrere gleichzeitig offene
+Verbindungen mit Keep-Alive und Connection-Reuse. Erst danach Medien, und diese
+einzeln getrennt: `/ws/video` allein, WebRTC-Signalisierung allein, dann der
+tatsächliche MSE-Stream, dann der tatsächliche WebRTC-Stream.

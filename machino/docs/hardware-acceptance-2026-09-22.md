@@ -302,3 +302,38 @@ condition we removed the trigger for.
   `rtsp.auth`, 9.2–9.8 ONVIF) are still batched and still deliberately not
   attempted: a warm restart is the documented lockup hazard, so that batch
   wants its own power-cycle window rather than being slipped into this run.
+
+### 10.4 — BLOCKED / FAIL-PRECONDITION (nicht ausgeführt)
+
+```
+10.4 BLOCKED/FAIL-PRECONDITION:
+first authenticated browser page load hard-locks device;
+multi-client portion not reached.
+```
+
+Die Zeile darf **nicht** als durchgeführter Mehrclient-Test gelesen werden. Der
+Ablauf endete an der Voraussetzung:
+
+| Schritt | | |
+|---|---|---|
+| Cold Boot | ok | uptime 0 min, VmRSS 1516 kB, COLD_IDLE |
+| Login-Seite | ok | |
+| Login | ok | |
+| erster Post-Login-Seitenaufbau | **Hard-Lockup** | weiße Seite, lange Ladephase, dann netztot |
+| 2./3./4. Client, `/ws/logs`, 10-min-Soak | **nie erreicht** | |
+
+Es liegen daher **keine** Aussagen vor zu: mehreren parallelen Live-Clients,
+Speicherverlauf unter Last, `logread`-Stabilität unter Last oder dem Re-Init
+nach dem Teardown. Die vier Kriterien, an denen 10.4 zu messen wäre, sind
+sämtlich **unbeantwortet**, nicht etwa negativ beantwortet.
+
+**UART war ebenfalls tot.** Das ist ein eigener Befund: ein harter SoC-/Kernel-
+Lockup, nicht ein gestorbener Machino-Prozess und nicht ein ausgefallener
+Netzwerkdienst. Ein Userspace-Prozess, der stirbt, nimmt die serielle Konsole
+nicht mit.
+
+Beweislage: keine. `/tmp/soak.csv` (Sekundenkurve in den Lockup hinein) und
+`/var/log/machino.log` liegen auf tmpfs und sind mit dem Power-Cycle verloren.
+Für den nächsten Lauf läuft daher ab Sekunde 0 ein **lokaler Paketmitschnitt**
+auf `Ethernet 5` — der überlebt jeden Kamerawedge und zeigt, welcher Request
+zuletzt beantwortet wurde und welcher nur noch SYN sah.
