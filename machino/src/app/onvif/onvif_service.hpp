@@ -59,11 +59,15 @@ public:
         std::string body;
         std::string authorization;   // HTTP Authorization header, if any
         std::string host;            // "192.168.1.10" - for the URLs handed back
+        std::string method = "POST"; // part of the HTTP Digest hash
     };
     struct Response {
         int         status = 200;
         std::string content_type = "application/soap+xml; charset=utf-8";
         std::string body;
+        // Full header lines, CRLF-terminated. Carries the WWW-Authenticate
+        // challenge on a 401 so a digest-only client can retry.
+        std::string extra_headers;
     };
 
     OnvifService(const OnvifConfig& cfg, CheckFn check);
@@ -80,8 +84,24 @@ public:
     static bool is_onvif_path(const std::string& path);
 
     // now_unix is injected so the digest freshness window is testable.
+    // `method` is only used by HTTP Digest, which hashes it.
     AuthResult authenticate(const std::string& xml, const std::string& authorization,
-                            int64_t now_unix);
+                            int64_t now_unix, const std::string& method = "POST",
+                            const std::string& path = "");
+
+    // The WWW-Authenticate line(s) for a 401, CRLF-terminated, or "" when
+    // nothing can be offered. Digest appears only with a cleartext password,
+    // because /etc/shadow cannot produce the HA1 a digest needs.
+    std::string challenge(int64_t now_unix) const;
+
+    // HTTP Digest realm. Fixed rather than configurable: upstream defines no
+    // field for it, and inventing a config key would be inventing contract.
+    static const char* const DIGEST_REALM;
+
+    // Exposed for tests: a nonce a client cannot forge and we need not store -
+    // "<unix_s>.<mac>", where the mac binds the timestamp to the password.
+    std::string make_nonce(int64_t now_unix) const;
+    bool        nonce_ok(const std::string& nonce, int64_t now_unix) const;
 
     Response handle(const Request& req, int64_t now_unix);
 

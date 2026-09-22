@@ -300,6 +300,7 @@ bool HttpServer::handle_request(Client& c) {
         oreq.path = path;
         oreq.body = req.body;
         oreq.authorization = req.header("authorization");
+        oreq.method = m;
         // The host the client used, so the XAddr and RTSP URLs it gets back
         // are reachable from where it is standing. Port stripped: the service
         // appends the ports it knows.
@@ -311,7 +312,8 @@ bool HttpServer::handle_request(Client& c) {
         if (setup_) onvif_->set_claimed(!setup_->unclaimed());
         onvif::OnvifService::Response ores = onvif_->handle(oreq, (int64_t)::time(nullptr));
         LOGD(MOD, "%s: onvif %s -> %d", c.peer.c_str(), path.c_str(), ores.status);
-        bool ok = queue(c, response(ores.status, ores.content_type.c_str(), ores.body, false));
+        bool ok = queue(c, response(ores.status, ores.content_type.c_str(), ores.body, false,
+                                    ores.extra_headers));
         c.close_after_flush = true;
         return ok;
     }

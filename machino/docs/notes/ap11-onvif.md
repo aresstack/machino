@@ -35,9 +35,9 @@ be a URL that does not work.
 `GetCapabilities` advertises **only** Device and Media. Advertising Events or
 PTZ would have clients call operations that fault.
 
-**WS-Discovery (UDP 3702) is not implemented.** A client must therefore be
-pointed at the camera by address rather than finding it by probing. This is the
-single largest functional gap and it is called out again at the bottom.
+**WS-Discovery (UDP 3702) was added afterwards** and is described under gap 1
+below, together with why its responder deliberately does not share the HTTP
+poll loop.
 
 ## Architecture
 
@@ -82,7 +82,7 @@ bounded, non-recursive scanner with:
 | WSSE **PasswordText** | compared against it | falls back to the `/etc/shadow` check |
 | WSSE **PasswordDigest** | recomputed and compared | **`Unverifiable`** |
 | HTTP **Basic** | compared against it | falls back to `/etc/shadow` |
-| HTTP **Digest** | *not implemented* | *not implemented* |
+| HTTP **Digest** | recomputed and compared | **`Unverifiable`** |
 
 `PasswordDigest` is `Base64(SHA1(nonce ‖ created ‖ password))`, reusing the
 SHA-1 and Base64 already in the tree for the WebSocket handshake. It needs the
@@ -158,9 +158,19 @@ operations faulting correctly.
    the local address the kernel picks *for that peer* — the only answer that is
    right on a camera with more than one interface. Still unverified against a
    real client (gap 3).
-2. **No HTTP Digest**, which the upstream hint mentions alongside WSSE
-   PasswordDigest. Digest-only clients (tinyCam Monitor is named upstream) will
-   not authenticate. The WSSE half is implemented.
+2. ~~No HTTP Digest.~~ **Added** in a follow-up commit, completing what the
+   upstream hint says `onvif.password` unlocks. The hashing is `RtspAuth`'s,
+   already host-tested, rather than a second implementation that can drift.
+   The nonce is `<unix_s>.<mac>` where the mac binds the timestamp to the
+   configured password: the camera can validate it without storing anything,
+   which matters on a box with 42 MB of RAM, and a client cannot mint one.
+   A 401 now carries the `WWW-Authenticate` challenge, without which a
+   digest-only client never offers a credential at all. An unknown or expired
+   nonce answers **Stale**, not Bad, so the client retries instead of being
+   told its password is wrong. Replay is keyed on (nonce, nc), recorded only
+   after the response verified. Writing the tests turned up that the declared
+   `uri` was trusted, so a digest computed for one resource would have
+   authorised another; it is now checked against the request path.
 3. **Never tested against a real client.** No ODM, no tinyCam, no VLC-via-ONVIF
    run has happened. Every response above is built to the specification and
    checked by unit tests, which is not the same thing as a client accepting it.

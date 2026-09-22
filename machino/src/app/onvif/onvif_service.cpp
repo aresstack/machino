@@ -1,11 +1,15 @@
 #include "app/onvif/onvif_service.hpp"
 #include "app/http/websocket.hpp"     // ws::sha1, ws::base64
+#include "app/rtsp/rtsp_auth.hpp"      // RtspAuth::digest_response, auth_param - already host-tested
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
 namespace machino { namespace onvif {
+
+const char* const OnvifService::DIGEST_REALM = "Machino";
 
 const char* auth_result_name(AuthResult r) {
     switch (r) {
@@ -86,8 +90,51 @@ bool OnvifService::seen_nonce(const std::string& nonce_b64, int64_t now_unix) {
     return false;
 }
 
+// A nonce the camera need not remember and a client cannot forge: the
+// timestamp is in the clear so freshness is checkable, and the tag binds it to
+// the configured password so a client cannot mint one of its own. This is what
+// lets Digest work without server-side session state on a box with 42 MB of
+// RAM.
+std::string OnvifService::make_nonce(int64_t now_unix) const {
+    char ts[32];
+    snprintf(ts, sizeof ts, "%lld", (long long)now_unix);
+    const std::string material = std::string(ts) + ":" + DIGEST_REALM + ":" + cfg_.password;
+    uint8_t d[20];
+    ws::sha1((const uint8_t*)material.data(), material.size(), d);
+    char tag[33];
+    for (int i = 0; i < 16; ++i) snprintf(tag + i * 2, 3, "%02x", d[i]);
+    return std::string(ts) + "." + tag;
+}
+
+bool OnvifService::nonce_ok(const std::string& nonce, int64_t now_unix) const {
+    const size_t dot = nonce.find('.');
+    if (dot == std::string::npos || dot == 0) return false;
+    const std::string ts = nonce.substr(0, dot);
+    for (char c : ts) if (c < '0' || c > '9') return false;
+    if (ts.size() > 18) return false;
+    const int64_t issued = (int64_t)strtoll(ts.c_str(), nullptr, 10);
+    const int64_t skew = issued > now_unix ? issued - now_unix : now_unix - issued;
+    if (skew > CLOCK_SKEW_S) return false;
+    // Recompute rather than compare against anything stored.
+    return make_nonce(issued) == nonce;
+}
+
+std::string OnvifService::challenge(int64_t now_unix) const {
+    if (unsafe_) return "";
+    std::string out;
+    // Digest needs the cleartext to build HA1, so it is offered only when
+    // there is one - the same reason PasswordDigest is Unverifiable without it.
+    if (!cfg_.password.empty()) {
+        out += "WWW-Authenticate: Digest realm=\"" + std::string(DIGEST_REALM) +
+               "\", nonce=\"" + make_nonce(now_unix) + "\", qop=\"auth\"\r\n";
+    }
+    out += "WWW-Authenticate: Basic realm=\"" + std::string(DIGEST_REALM) + "\"\r\n";
+    return out;
+}
+
 AuthResult OnvifService::authenticate(const std::string& xml, const std::string& authorization,
-                                      int64_t now_unix) {
+                                      int64_t now_unix, const std::string& method,
+                                      const std::string& path) {
     // system.unsafe turns authentication off everywhere, unclaimed included.
     if (unsafe_) return AuthResult::Ok;
     // An unclaimed camera authorises nothing at all - there is no credential
@@ -128,6 +175,46 @@ AuthResult OnvifService::authenticate(const std::string& xml, const std::string&
         if (password_digest(nonce_raw, tok.created, cfg_.password) != tok.password)
             return AuthResult::Bad;
         if (seen_nonce(tok.nonce_b64, now_unix)) return AuthResult::Stale;
+        return AuthResult::Ok;
+    }
+
+    // HTTP Digest. Upstream's own hint says the cleartext password is what
+    // "unlocks WSSE PasswordDigest and HTTP Digest auth so legacy clients
+    // (ODM v2.2.x) and digest-only ones (tinyCam Monitor) work" - this is the
+    // second half of that. The hashing is RtspAuth's, which is already
+    // host-tested, rather than a second implementation that can drift.
+    if (authorization.compare(0, 7, "Digest ") == 0) {
+        if (!have_cleartext) return AuthResult::Unverifiable;
+        const std::string user  = RtspAuth::auth_param(authorization, "username");
+        const std::string realm = RtspAuth::auth_param(authorization, "realm");
+        const std::string nonce = RtspAuth::auth_param(authorization, "nonce");
+        const std::string uri   = RtspAuth::auth_param(authorization, "uri");
+        const std::string resp  = RtspAuth::auth_param(authorization, "response");
+        const std::string qop   = RtspAuth::auth_param(authorization, "qop");
+        const std::string nc    = RtspAuth::auth_param(authorization, "nc");
+        const std::string cnonce = RtspAuth::auth_param(authorization, "cnonce");
+        if (user != cfg_.username) return AuthResult::Bad;
+        if (realm != DIGEST_REALM) return AuthResult::Bad;
+        if (resp.empty() || uri.empty()) return AuthResult::Bad;
+        // The uri is part of the hash but it is the CLIENT that states it, so a
+        // digest computed for one resource would otherwise authorise another.
+        // Accept the bare path or an absolute URL ending in it - some clients
+        // send each - but not an unrelated one. Skipped when the caller did
+        // not supply a path, so direct callers keep working.
+        if (!path.empty() && uri != path &&
+            !(uri.size() > path.size() && uri.compare(uri.size() - path.size(), path.size(), path) == 0))
+            return AuthResult::Bad;
+        // An unrecognised or expired nonce is Stale, not Bad: the client is
+        // told to retry with the fresh one in the challenge rather than being
+        // sent away as if its password were wrong.
+        if (!nonce_ok(nonce, now_unix)) return AuthResult::Stale;
+        if (RtspAuth::digest_response(user, cfg_.password, realm, nonce,
+                                      method, uri, nc, cnonce, qop) != resp)
+            return AuthResult::Bad;
+        // Replay: the same nonce may be reused with an increasing nc, so the
+        // pair is what must be unique. Recorded only after the response
+        // verified, for the same reason as the WSSE path.
+        if (seen_nonce("d:" + nonce + ":" + nc, now_unix)) return AuthResult::Stale;
         return AuthResult::Ok;
     }
 
@@ -336,7 +423,7 @@ OnvifService::Response OnvifService::handle(const Request& req, int64_t now_unix
     // client needs the camera's clock before it can build a PasswordDigest
     // whose Created will pass the freshness check.
     if (action != "GetSystemDateAndTime") {
-        const AuthResult a = authenticate(req.body, req.authorization, now_unix);
+        const AuthResult a = authenticate(req.body, req.authorization, now_unix, req.method, req.path);
         if (a != AuthResult::Ok) {
             r.status = 401;
             const char* why =
@@ -346,6 +433,9 @@ OnvifService::Response OnvifService::handle(const Request& req, int64_t now_unix
               : a == AuthResult::Missing      ? "no credential was offered"
                                               : "the credential was not accepted";
             r.body = fault("s:Sender", "ter:NotAuthorized", why);
+            // Offer the challenge so a digest-only client can retry; without
+            // it, such a client never sends a credential at all.
+            r.extra_headers = challenge(now_unix);
             return r;
         }
     }
