@@ -76,7 +76,20 @@ struct SnapshotConfig {
 // only the switch and which wire scheme is offered. See app/rtsp/rtsp_auth.hpp
 // for why Digest needs a stored secret while Basic works with /etc/shadow.
 struct RtspAuthConfig {
-    bool        enabled = false;          // AP3 ships prepared-but-off; system.unsafe will drive it
+    // AP7: ON by default, because that is what the stock WebUI tells the user
+    // is happening. stream-urls.cgi carries two mutually exclusive notes and
+    // main.js picks between them on ONE key:
+    //
+    //   const unsafe = mjGet(cfg, 'system.unsafe');
+    //   const note = $(unsafe === true || unsafe === 'true' ? '#ep-unsafe' : '#ep-auth');
+    //
+    // so upstream has no rtsp.auth key at all: RTSP authenticates unless
+    // system.unsafe is set, full stop. Shipping this false meant the page said
+    // "These endpoints authenticate as user root" while the camera streamed to
+    // anyone who asked - a silent, invisible drop-in deviation.
+    //
+    // `system.unsafe` still outranks this, as it outranks everything.
+    bool        enabled = true;
     bool        offer_basic = true;       // the only scheme /etc/shadow can serve
     bool        offer_digest = false;     // needs an HA1 provider (a stored secret)
     std::string realm = "Machino";

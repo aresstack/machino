@@ -47,7 +47,8 @@ void run_rtsp_auth_tests() {
     // disabled: every request passes untouched and the credential source is
     // never consulted (previous behaviour, unchanged)
     {
-        Creds cr; RtspAuthConfig cfg; RtspAuth a(cfg, std::ref(cr)); RtspAuth::Ctx ctx;
+        Creds cr; RtspAuthConfig cfg; cfg.enabled = false;   // AP7: no longer the default
+        RtspAuth a(cfg, std::ref(cr)); RtspAuth::Ctx ctx;
         RCHECK(!a.required());
         RCHECK(a.check(ctx, "DESCRIBE", "/ch0", "", T0) == RtspAuth::Verdict::Ok);
         RCHECK(a.check(ctx, "PLAY", "/ch0", "garbage", T0) == RtspAuth::Verdict::Ok);

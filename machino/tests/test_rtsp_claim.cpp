@@ -21,7 +21,7 @@ void run_rtsp_claim_tests() {
     // rtsp.auth off + claimed: unchanged, no challenge at all. This is the
     // configuration every camera runs today, so it must be byte-identical.
     {
-        RtspAuthConfig c;                                    // enabled = false
+        RtspAuthConfig c; c.enabled = false;                 // AP7: explicit; the default is now ON
         RtspAuth a(c, good_cred, nullptr, [] { return true; }, false);
         CCHECK(!a.required());
         CCHECK(a.claimed());
@@ -95,12 +95,57 @@ void run_rtsp_claim_tests() {
     // makes the SSH door and the web door agree immediately
     {
         bool claimed = false;
-        RtspAuthConfig c;
+        RtspAuthConfig c; c.enabled = false;                 // AP7: explicit; the default is now ON
         RtspAuth a(c, good_cred, nullptr, [&claimed] { return claimed; }, false);
         RtspAuth::Ctx ctx;
         CCHECK(a.check(ctx, "DESCRIBE", "rtsp://cam/ch0", BASIC, 1000) == RtspAuth::Verdict::Bad);
         claimed = true;
         CCHECK(!a.required());
         CCHECK(a.check(ctx, "DESCRIBE", "rtsp://cam/ch0", "", 1000) == RtspAuth::Verdict::Ok);
+    }
+}
+
+// AP7: the DEFAULT. The stock WebUI has no rtsp.auth key at all - stream-urls.cgi
+// carries two mutually exclusive notes and main.js picks between them on
+// system.unsafe alone:
+//
+//   const note = $(unsafe === true || unsafe === 'true' ? '#ep-unsafe' : '#ep-auth');
+//
+// So "authenticates as root unless unsafe" IS the contract, and a default of
+// off meant the page promised authentication the camera did not perform.
+void run_rtsp_auth_default_tests() {
+    // out of the box: required, on both units
+    {
+        RtspAuthConfig c;                                   // untouched defaults
+        CCHECK(c.enabled);
+        RtspAuth a(c, good_cred, nullptr, [] { return true; }, false);
+        CCHECK(a.required());
+        RtspAuth::Ctx ctx;
+        CCHECK(a.check(ctx, "DESCRIBE", "rtsp://cam/ch0", "", 1000) != RtspAuth::Verdict::Ok);
+        RtspAuth::Ctx ctx2;
+        CCHECK(a.check(ctx2, "DESCRIBE", "rtsp://cam/ch1", "", 1000) != RtspAuth::Verdict::Ok);
+    }
+    // system.unsafe outranks it, on both units
+    {
+        RtspAuthConfig c;
+        RtspAuth a(c, good_cred, nullptr, [] { return true; }, true);   // unsafe
+        CCHECK(!a.required());
+        RtspAuth::Ctx ctx;
+        CCHECK(a.check(ctx, "DESCRIBE", "rtsp://cam/ch0", "", 1000) == RtspAuth::Verdict::Ok);
+        RtspAuth::Ctx ctx2;
+        CCHECK(a.check(ctx2, "PLAY", "rtsp://cam/ch1", "", 1000) == RtspAuth::Verdict::Ok);
+    }
+    // an explicit opt-out still works - it is a setting, not a removal
+    {
+        RtspAuthConfig c; c.enabled = false;
+        RtspAuth a(c, good_cred, nullptr, [] { return true; }, false);
+        CCHECK(!a.required());
+    }
+    // and an UNCLAIMED camera challenges whatever any of that says: there is
+    // no credential yet, so nothing could be right
+    {
+        RtspAuthConfig c; c.enabled = false;
+        RtspAuth a(c, good_cred, nullptr, [] { return false; }, false);
+        CCHECK(a.required());
     }
 }
