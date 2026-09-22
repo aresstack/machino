@@ -93,10 +93,27 @@ void run_schema_contract_tests() {
             const Json* title = f.get("title");
             SCHECK(title && title->is_string() && !title->as_string().empty());
 
-            // x-reload is the apply promise; only "live" may be advertised,
-            // because Machino applies every exposed field during the POST
+            // x-reload is the apply PROMISE, and it must not be bigger than
+            // what actually happens.
+            //
+            //   "live"      the POST carried it - true for everything Machino
+            //               applies inside the request
+            //   "pipeline"  saved, and a reload is still owed. mj-settings.js
+            //               changeCost() maps any value that is not none/live
+            //               and carries no service:/channel: prefix to
+            //               'pipeline', and then tells the operator "After
+            //               Save, a reload restarts the video streams".
+            //
+            // video1 is the second case: the sub-stream unit is rebuilt from
+            // the reloaded config, which is what the Apply button's SIGHUP
+            // delivers. Advertising it as "live" would report a change as
+            // applied when nothing had happened.
             if (const Json* xr = f.get("x-reload")) {
-                SCHECK(xr->is_string() && xr->as_string() == "live");
+                const bool known = xr->is_string() &&
+                                   (xr->as_string() == "live" || xr->as_string() == "pipeline");
+                SCHECK(known);
+                if (xr->is_string() && xr->as_string() == "pipeline")
+                    SCHECK(sid == "video1");        // nothing else may claim it yet
             }
 
             // an enum must be a non-empty array of strings, and the default

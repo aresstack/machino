@@ -330,13 +330,29 @@ void run_substream_schema_tests() {
     const Json* props = schema.get("properties");
     CCHECK(props);
     if (props) {
-        CCHECK(props->get("video0"));                   // the main stream IS exposed
-        // ... and the substream is NOT, on purpose. video.1.* is
-        // daemon_restart class - the substream is built at daemon start - and
-        // this file refuses to expose that class at all, because the stock
-        // Apply is `killall -HUP majestic` and cannot deliver it. A field the
-        // page can set but not make true is worse than one it does not offer.
-        CCHECK(!props->get("video1"));
+        CCHECK(props->get("video0"));
+        // mj-settings.js names exactly four sections - image, sensor, video0,
+        // video1 - so the substream belongs here; omitting it is the deviation.
+        const Json* v1 = props->get("video1");
+        CCHECK(v1);
+        const Json* f = v1 ? v1->get("properties") : nullptr;
+        CCHECK(f && f->get("fps"));
+        CCHECK(f && f->get("bitrate_kbps"));
+        CCHECK(f && f->get("gop"));
+        // ... but as "pipeline", NOT "live". A sub-stream change is not carried
+        // by the POST: the unit is rebuilt from the reloaded config, which is
+        // what the Apply the page then offers actually delivers. Claiming
+        // "live" here would report a change as applied when nothing happened.
+        for (const char* k : {"fps", "bitrate_kbps", "gop"}) {
+            const Json* fld = f ? f->get(k) : nullptr;
+            const Json* xr = fld ? fld->get("x-reload") : nullptr;
+            CCHECK(xr && xr->is_string() && xr->as_string() == "pipeline");
+        }
+        // the main stream stays "live" - its POST really does carry it
+        const Json* v0f = props->get("video0") ? props->get("video0")->get("properties") : nullptr;
+        const Json* v0b = v0f ? v0f->get("bitrate_kbps") : nullptr;
+        CCHECK(v0b && v0b->get("x-reload") && v0b->get("x-reload")->as_string() == "live");
+        // and it is offered in a group, or the page never renders it
         const Json* groups = schema.get("x-groups");
         bool offered = false;
         if (groups && groups->is_array())
@@ -346,7 +362,7 @@ void run_substream_schema_tests() {
                 for (size_t k = 0; k < ss->size(); ++k)
                     if (ss->at(k).is_string() && ss->at(k).as_string() == "video1") offered = true;
             }
-        CCHECK(!offered);
+        CCHECK(offered);
     }
 
     // The translation: video0 and video1 in ONE post must both survive. They

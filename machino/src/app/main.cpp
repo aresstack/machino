@@ -591,6 +591,25 @@ int main(int argc, char** argv) {
                                 if (!load_config(conf, fresh, e2)) { LOGW(MOD, "SIGHUP: reload failed: %s", e2.c_str()); continue; }
                                 LOGI(MOD, "SIGHUP -> applying performance/stream configuration");
                                 perf.apply_config(fresh.performance, fresh.video);
+                                // AP9: the substream too. mj-settings.js lists
+                                // exactly four sections - image, sensor, video0,
+                                // video1 - so upstream EXPECTS video1 to be
+                                // settable, and the stock Apply is a SIGHUP.
+                                // Without this the page would save a sub-stream
+                                // change and the Apply it offers would not
+                                // deliver it.
+                                {
+                                    EffectiveStream ns; std::string se;
+                                    const bool want = fresh.video1.enabled &&
+                                                      effective_sub_stream(fresh.video1, stream, ns, se);
+                                    if (fresh.video1.enabled && !want)
+                                        LOGW(MOD, "SIGHUP: substream stays off: %s", se.c_str());
+                                    std::string ue;
+                                    if (want) pipeline.configure_sub(ns, sub_hub, &sub_timer);
+                                    const Result ur = pipeline.update_sub_stream(ns, want, ue);
+                                    if (!ur) LOGW(MOD, "SIGHUP: substream update failed: %s", ue.c_str());
+                                    else     LOGI(MOD, "SIGHUP: substream %s", want ? "applied" : "disabled");
+                                }
                                 detection.apply_config(fresh.ai);
                                 tuning.set_latency_profile(fresh.latency.profile);
                                 if (fresh.latency.gop) tuning.set_gop(*fresh.latency.gop);
