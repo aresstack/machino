@@ -40,6 +40,7 @@ void run_logging_tests();
 void run_osd_tests();
 void run_setup_tests();
 void run_onvif_tests();
+void run_onvif_settime_tests();
 void run_discovery_tests();
 void run_onvif_digest_tests();
 void run_random_tests();
@@ -352,6 +353,7 @@ int main() {
     run_osd_tests();
     run_setup_tests();
     run_onvif_tests();
+    run_onvif_settime_tests();
     run_discovery_tests();
     run_onvif_digest_tests();
     run_random_tests();

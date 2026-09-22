@@ -86,6 +86,29 @@ public:
     void set_claimed(bool c)  { claimed_ = c; }
     void set_unsafe(bool u)   { unsafe_ = u; }
 
+    // AP12: SetSystemDateAndTime. On a camera with no RTC and no reachable NTP
+    // server, this is the STANDARD way a clock gets set - an NVR does it on
+    // discovery. OpenIPC's own answer for a browser is the "Set from browser"
+    // button (/cgi-bin/j/time.cgi?set=), which works and stays untouched; this
+    // fills the ONVIF side, which was Get-only.
+    //
+    // The clock is applied through an injected setter so the SOAP layer stays
+    // host-testable and the syscall stays in the app layer. Returns false when
+    // the clock could not be set; not installing one refuses the operation
+    // rather than pretending it worked.
+    using SetClockFn = std::function<bool(int64_t epoch)>;
+    void set_clock_setter(SetClockFn f) { set_clock_ = std::move(f); }
+
+    // Smallest correction worth a syscall. A client that polls
+    // SetSystemDateAndTime must not step the clock on every call - stepping is
+    // what makes uptime arithmetic and log ordering meaningless.
+    static const int64_t kClockSlackSeconds = 2;
+    // Nothing before the firmware was built can be a real "now", and nothing a
+    // century out can either. fake-hwclock uses the same lower bound
+    // (TIME_STAMP in /etc/os-release) to decide a saved clock is usable.
+    static const int64_t kMinPlausibleEpoch = 1700000000;   // 2023-11-14
+    static const int64_t kMaxPlausibleEpoch = 4102444800;   // 2100-01-01
+
     static bool is_onvif_path(const std::string& path);
 
     // now_unix is injected so the digest freshness window is testable.
@@ -135,6 +158,9 @@ private:
     std::string video_sources() const;
     std::string encoder_configurations() const;
     std::string xaddr(const std::string& host, const char* service) const;
+    // Parses tt:UTCDateTime out of a SetSystemDateAndTime body. Returns false
+    // when the element is absent or the fields do not form a real date.
+    static bool parse_set_datetime(const std::string& xml, int64_t& epoch);
 
     bool seen_nonce(const std::string& nonce_b64, int64_t now_unix);
     bool digest_available() const { return !cfg_.password.empty() && !nonce_secret_.empty(); }
@@ -148,6 +174,7 @@ private:
     bool                      claimed_ = true;
     bool                      unsafe_  = false;
     std::string               nonce_secret_;
+    SetClockFn                set_clock_;
     // Replay window. Bounded: a digest is only valid for CLOCK_SKEW_S anyway,
     // so the cache never has to outlive that, and the cap stops a flood of
     // distinct nonces from growing it without limit.

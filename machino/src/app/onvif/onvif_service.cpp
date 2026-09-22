@@ -70,6 +70,58 @@ bool OnvifService::parse_utc_datetime(const std::string& s, int64_t& unix_s) {
     return true;
 }
 
+// SetSystemDateAndTime sends the time as separate elements, not as an
+// xsd:dateTime string:
+//   <tt:UTCDateTime><tt:Date><tt:Year>..</tt:Year>...</tt:Date>
+//                   <tt:Time><tt:Hour>..</tt:Hour>...</tt:Time></tt:UTCDateTime>
+// The order of Date and Time is not fixed across clients, so the fields are
+// read by name rather than by position. Anything that is not a real date is
+// refused: a misparsed clock is worse than an unset one, because every log row
+// and every recording afterwards carries it.
+bool OnvifService::parse_set_datetime(const std::string& xml, int64_t& epoch) {
+    std::string utc;
+    if (!element_text(xml, "UTCDateTime", utc)) return false;
+
+    auto num = [&](const char* name, int& out) {
+        std::string t;
+        if (!element_text(utc, name, t)) return false;
+        // element_text hands back the text as it stands; only digits are a
+        // number here, so a value like "20xx" is refused rather than truncated.
+        if (t.empty() || t.size() > 4) return false;
+        for (char c : t) if (c < '0' || c > '9') return false;
+        out = atoi(t.c_str());
+        return true;
+    };
+
+    int Y = 0, M = 0, D = 0, h = 0, m = 0, s = 0;
+    if (!num("Year", Y) || !num("Month", M) || !num("Day", D)) return false;
+    // ONVIF requires Time, but a client that omits it means midnight rather
+    // than an error - the date is the part that matters for plausibility.
+    if (!num("Hour", h)) h = 0;
+    if (!num("Minute", m)) m = 0;
+    if (!num("Second", s)) s = 0;
+
+    if (M < 1 || M > 12 || D < 1 || D > 31 || h > 23 || m > 59 || s > 60) return false;
+    // Reject a day that does not exist in that month, which the range check
+    // above lets through (31 February would otherwise roll silently).
+    static const int mdays[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (D > mdays[M - 1]) return false;
+    if (M == 2 && D == 29) {
+        const bool leap = (Y % 4 == 0 && Y % 100 != 0) || Y % 400 == 0;
+        if (!leap) return false;
+    }
+
+    int y = Y;
+    y -= M <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (unsigned)((153 * (M + (M > 2 ? -3 : 9)) + 2) / 5 + D - 1);
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    const long long days = (long long)era * 146097 + (long long)doe - 719468;
+    epoch = days * 86400 + h * 3600 + m * 60 + s;
+    return true;
+}
+
 std::string OnvifService::password_digest(const std::string& nonce_raw,
                                           const std::string& created,
                                           const std::string& password) {
@@ -451,6 +503,44 @@ OnvifService::Response OnvifService::handle(const Request& req, int64_t now_unix
     const std::string host = req.host.empty() ? std::string("0.0.0.0") : req.host;
 
     if      (action == "GetSystemDateAndTime")  r.body = envelope(system_date_and_time(now_unix));
+    else if (action == "SetSystemDateAndTime") {
+        // AP12. The only automatic way a camera with no RTC and no reachable
+        // NTP server gets a real clock: an NVR sets it. Authenticated - the
+        // check above already ran, because only Get is exempt.
+        int64_t want = 0;
+        if (!parse_set_datetime(req.body, want)) {
+            r.status = 400;
+            r.body = fault("s:Sender", "ter:InvalidDateTime", "UTCDateTime is missing or not a real date");
+            return r;
+        }
+        if (want < kMinPlausibleEpoch || want > kMaxPlausibleEpoch) {
+            // A syntactically valid but absurd time is refused rather than
+            // applied. /cgi-bin/j/time.cgi only checks that the value is
+            // digits, and answers "success" for a value date(1) then ignores -
+            // measured on the camera. This does not repeat that.
+            r.status = 400;
+            r.body = fault("s:Sender", "ter:InvalidDateTime", "the time is outside the plausible range for this firmware");
+            return r;
+        }
+        if (!set_clock_) {
+            r.status = 500;
+            r.body = fault("s:Receiver", "ter:ActionNotSupported", "this build cannot set the system clock");
+            return r;
+        }
+        const int64_t delta = want > now_unix ? want - now_unix : now_unix - want;
+        if (delta <= kClockSlackSeconds) {
+            // Already right. Stepping anyway would break uptime arithmetic and
+            // log ordering for a correction nobody can observe.
+            r.body = envelope("<tds:SetSystemDateAndTimeResponse/>");
+            return r;
+        }
+        if (!set_clock_(want)) {
+            r.status = 500;
+            r.body = fault("s:Receiver", "ter:ActionFailed", "the system clock could not be set");
+            return r;
+        }
+        r.body = envelope("<tds:SetSystemDateAndTimeResponse/>");
+    }
     else if (action == "GetDeviceInformation")  r.body = envelope(device_information());
     else if (action == "GetCapabilities")       r.body = envelope(capabilities(host));
     else if (action == "GetServices")           r.body = envelope(services(host));

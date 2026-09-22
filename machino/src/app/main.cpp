@@ -48,6 +48,7 @@
 #include <sys/timerfd.h>
 #include <sys/wait.h>
 #include <cerrno>
+#include <ctime>
 #include <unistd.h>
 
 using namespace machino;
@@ -454,6 +455,30 @@ int main(int argc, char** argv) {
             }
             onvif_service.set_profiles(mp);
             onvif_service.set_ports(cfg.api.port, cfg.rtsp.port);
+            // AP12: this camera has no RTC, and without a default route ntpd
+            // never reaches a peer - the clock then keeps whatever
+            // fake-hwclock restored, which is the time of the last orderly
+            // shutdown. SetSystemDateAndTime is the standard way an NVR fixes
+            // that; OpenIPC's own answer for a browser is the "Set from
+            // browser" button, which is untouched.
+            //
+            // Plausibility and the no-op-when-already-right rule live in the
+            // service; this only performs the step and logs it, because a
+            // stepped clock makes every uptime figure before it meaningless
+            // and the log must say when that happened.
+            onvif_service.set_clock_setter([](int64_t epoch) {
+                struct timespec ts;
+                ts.tv_sec  = (time_t)epoch;
+                ts.tv_nsec = 0;
+                const int64_t before = (int64_t)time(nullptr);
+                if (clock_settime(CLOCK_REALTIME, &ts) != 0) {
+                    LOGW(MOD, "onvif: clock_settime failed (%s)", strerror(errno));
+                    return false;
+                }
+                LOGI(MOD, "onvif: system clock stepped by %lld s (was %lld, now %lld)",
+                     (long long)(epoch - before), (long long)before, (long long)epoch);
+                return true;
+            });
         }
         std::unique_ptr<onvif::DiscoveryServer> wsd;
         if (cfg.onvif.enabled) {

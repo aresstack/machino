@@ -390,3 +390,155 @@ void run_onvif_tests() {
         LCHECK(cfg.onvif.enabled && cfg.onvif.username == "cam" && cfg.onvif.password == "pw");
     }
 }
+
+// AP12: SetSystemDateAndTime. On a camera with no RTC and no reachable NTP
+// server this is the only STANDARD way the clock ever becomes right without a
+// human - an NVR sets it on discovery. The risk is not the happy path: a
+// misparsed or absurd time is worse than no time at all, because every log row
+// and every recording afterwards carries it.
+void run_onvif_settime_tests() {
+    auto utc = [](int Y, int M, int D, int h, int m, int s) {
+        char b[512];
+        snprintf(b, sizeof b,
+                 "<UTCDateTime><Date><Year>%d</Year><Month>%d</Month><Day>%d</Day></Date>"
+                 "<Time><Hour>%d</Hour><Minute>%d</Minute><Second>%d</Second></Time></UTCDateTime>",
+                 Y, M, D, h, m, s);
+        return std::string(b);
+    };
+    // A SetSystemDateAndTime carrying a valid WS-Security header.
+    auto authed = [&](const std::string& inner, int64_t now) {
+        const std::string hdr = wsse("root", "shadowpass", "bm9uY2U=",
+                                     OnvifService::utc_datetime(now), false);
+        return std::string("<?xml version=\"1.0\"?>"
+               "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\">"
+               "<s:Header>") + hdr + "</s:Header><s:Body>"
+               "<SetSystemDateAndTime xmlns=\"http://www.onvif.org/ver10/device/wsdl\">"
+               "<DateTimeType>Manual</DateTimeType>" + inner +
+               "</SetSystemDateAndTime></s:Body></s:Envelope>";
+    };
+
+    const int64_t NOW12 = 1790000000;                      // 2026-09-21T14:13:20Z
+
+    // --- the operation is AUTHENTICATED: only Get is exempt by spec ---------
+    {
+        OnvifService s = make(on_cfg());
+        OnvifService::Response resp = s.handle(rq(env_body(
+            "<SetSystemDateAndTime xmlns=\"http://www.onvif.org/ver10/device/wsdl\">" +
+            utc(2026, 9, 22, 18, 0, 0) + "</SetSystemDateAndTime>")), NOW12);
+        LCHECK(resp.status == 401);
+        LCHECK(resp.body.find("ter:NotAuthorized") != std::string::npos);
+    }
+
+    // --- happy path: the clock is set, exactly once, with the right value ---
+    {
+        OnvifService s = make(on_cfg());
+        int64_t got = 0; int calls = 0;
+        s.set_clock_setter([&](int64_t e) { got = e; ++calls; return true; });
+        OnvifService::Response resp = s.handle(rq(authed(utc(2026, 9, 22, 18, 0, 0), NOW12)), NOW12);
+        LCHECK(resp.status == 200);
+        LCHECK(resp.body.find("SetSystemDateAndTimeResponse") != std::string::npos);
+        LCHECK(calls == 1);
+        LCHECK(got == 1790100000);                          // 2026-09-22T18:00:00Z
+    }
+
+    // --- already right: no syscall. Stepping a correct clock for a delta
+    //     nobody can observe is how uptime arithmetic and log order get ruined.
+    {
+        OnvifService s = make(on_cfg());
+        int calls = 0;
+        s.set_clock_setter([&](int64_t) { ++calls; return true; });
+        OnvifService::Response resp = s.handle(rq(authed(utc(2026, 9, 21, 14, 13, 20), NOW12)), NOW12);
+        LCHECK(resp.status == 200);
+        LCHECK(calls == 0);                                 // inside the slack
+    }
+    {   // one second out is still inside the slack, five seconds is not
+        OnvifService s = make(on_cfg());
+        int calls = 0;
+        s.set_clock_setter([&](int64_t) { ++calls; return true; });
+        s.handle(rq(authed(utc(2026, 9, 21, 14, 13, 21), NOW12)), NOW12);
+        LCHECK(calls == 0);
+        s.handle(rq(authed(utc(2026, 9, 21, 14, 13, 25), NOW12)), NOW12);
+        LCHECK(calls == 1);
+    }
+
+    // --- implausible values are refused, not applied ------------------------
+    // /cgi-bin/j/time.cgi checks only that the value is digits and answered
+    // "success" for an absurd epoch that date(1) then ignored - measured on the
+    // camera. This does not repeat that.
+    {
+        OnvifService s = make(on_cfg());
+        int calls = 0;
+        s.set_clock_setter([&](int64_t) { ++calls; return true; });
+        OnvifService::Response a = s.handle(rq(authed(utc(1999, 1, 1, 0, 0, 0), NOW12)), NOW12);
+        LCHECK(a.status == 400);
+        LCHECK(a.body.find("ter:InvalidDateTime") != std::string::npos);
+        OnvifService::Response b = s.handle(rq(authed(utc(2199, 1, 1, 0, 0, 0), NOW12)), NOW12);
+        LCHECK(b.status == 400);
+        LCHECK(calls == 0);                                 // neither touched the clock
+    }
+
+    // --- malformed dates are refused rather than rolled --------------------
+    {
+        OnvifService s = make(on_cfg());
+        int calls = 0;
+        s.set_clock_setter([&](int64_t) { ++calls; return true; });
+        const char* bad[] = {
+            "<UTCDateTime><Date><Year>2026</Year><Month>2</Month><Day>31</Day></Date></UTCDateTime>",
+            "<UTCDateTime><Date><Year>2026</Year><Month>13</Month><Day>1</Day></Date></UTCDateTime>",
+            "<UTCDateTime><Date><Year>2026</Year><Month>9</Month></Date></UTCDateTime>",
+            "<UTCDateTime><Date><Year>20x6</Year><Month>9</Month><Day>1</Day></Date></UTCDateTime>",
+            "",
+        };
+        for (const char* b : bad) {
+            OnvifService::Response resp = s.handle(rq(authed(b, NOW12)), NOW12);
+            LCHECK(resp.status == 400);
+            LCHECK(resp.body.find("ter:InvalidDateTime") != std::string::npos);
+        }
+        LCHECK(calls == 0);
+    }
+    {   // 29 February: valid in a leap year, refused otherwise
+        OnvifService s = make(on_cfg());
+        int calls = 0;
+        s.set_clock_setter([&](int64_t) { ++calls; return true; });
+        LCHECK(s.handle(rq(authed(utc(2028, 2, 29, 0, 0, 0), NOW12)), NOW12).status == 200);
+        LCHECK(s.handle(rq(authed(utc(2027, 2, 29, 0, 0, 0), NOW12)), NOW12).status == 400);
+        LCHECK(calls == 1);
+    }
+    {   // Time is optional: a date alone means midnight, not an error
+        OnvifService s = make(on_cfg());
+        int64_t got = 0;
+        s.set_clock_setter([&](int64_t e) { got = e; return true; });
+        OnvifService::Response resp = s.handle(rq(authed(
+            "<UTCDateTime><Date><Year>2026</Year><Month>9</Month><Day>22</Day></Date></UTCDateTime>",
+            NOW12)), NOW12);
+        LCHECK(resp.status == 200);
+        LCHECK(got == 1790035200);                          // 2026-09-22T00:00:00Z
+    }
+
+    // --- no setter installed: refuse, never pretend it worked --------------
+    {
+        OnvifService s = make(on_cfg());
+        OnvifService::Response resp = s.handle(rq(authed(utc(2026, 9, 22, 18, 0, 0), NOW12)), NOW12);
+        LCHECK(resp.status == 500);
+        LCHECK(resp.body.find("ter:ActionNotSupported") != std::string::npos);
+    }
+    // --- the setter failing is reported, not swallowed ---------------------
+    {
+        OnvifService s = make(on_cfg());
+        s.set_clock_setter([](int64_t) { return false; });
+        OnvifService::Response resp = s.handle(rq(authed(utc(2026, 9, 22, 18, 0, 0), NOW12)), NOW12);
+        LCHECK(resp.status == 500);
+        LCHECK(resp.body.find("ter:ActionFailed") != std::string::npos);
+    }
+
+    // --- Get still answers unauthenticated, and the two agree on the format -
+    {
+        OnvifService s = make(on_cfg());
+        OnvifService::Response g = s.handle(rq(env_body(
+            "<GetSystemDateAndTime xmlns=\"http://www.onvif.org/ver10/device/wsdl\"/>")), NOW12);
+        LCHECK(g.status == 200);
+        int64_t back = 0;
+        LCHECK(OnvifService::parse_utc_datetime(OnvifService::utc_datetime(NOW12), back));
+        LCHECK(back == NOW12);
+    }
+}
