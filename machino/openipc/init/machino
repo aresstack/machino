@@ -32,6 +32,10 @@ start() {
 	if running; then echo "OK (already running)"; return 0; fi
 	if [ ! -x "$DAEMON_PATH" ]; then echo "FAIL (no $DAEMON_PATH)"; return 1; fi
 	if [ ! -r "$CONF" ]; then echo "FAIL (no $CONF)"; return 1; fi
+	# busybox start-stop-daemon -b redirects the daemon's stdio to /dev/null,
+	# so the shell redirect below never reaches it; machino's own file sink
+	# (MACHINO_LOGFILE) is what actually captures the log.
+	export MACHINO_LOGFILE="$LOGFILE"
 	(
 		trap '' HUP
 		start-stop-daemon -b -S -q -x "$DAEMON_PATH" -- -c "$CONF" \
