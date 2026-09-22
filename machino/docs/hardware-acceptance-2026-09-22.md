@@ -483,3 +483,40 @@ abgegriffenen Bytes.
 
 Gefunden wurde das, weil nach dem Install als erstes eine Zwei-Request-Probe
 gegen einen statischen **und** einen CGI-Pfad lief - nicht ein Browser.
+
+---
+
+## AP0 — Baseline / Testzustand bereinigt, 2026-09-22
+
+Vor dem Cold Power-Cycle erledigt:
+
+| Punkt | Ergebnis |
+|---|---|
+| AP0.7 Diagnose-Reste | keine laufenden Testprozesse; `/tmp/soak*`, `/tmp/peak*` und die Install-Tarballs entfernt; `/overlay/flash-test-DELETE-ME.bin` geloescht; genau ein Kind (`logread`), 0 Zombies |
+| AP0.1 Config | aus `machino.conf.prebatch` wiederhergestellt, **md5 identisch** (`a290cd9a…`); `video.1.*`, `rtsp.auth` und `onvif.enabled` sind wieder Default; `sync` |
+| AP0.3 keine Warmlast | eingehalten - seit dem Restore kein Browser, kein RTSP, keine Last |
+
+### Abweichung von AP0.2, bewusst und dokumentiert
+
+Das Arbeitspaket nennt `c1edd92` als Baseline-Binary. Installiert ist
+**`d094fbc`** (SHA256 `b838f9b9…`), weil AP12 danach fertig wurde. Das ist eine
+**Obermenge**: alle sieben in AP0.2 gelisteten Fixes sind enthalten, dazu ONVIF
+`SetSystemDateAndTime` und eine praezisere SDP-Ablehnungsmeldung.
+
+Beide Ergaenzungen sind in der Baseline wirkungslos: `SetSystemDateAndTime` ist
+nur bei aktivem ONVIF erreichbar, und AP0.1 hat ONVIF gerade abgeschaltet; die
+SDP-Aenderung betrifft ausschliesslich den Meldungstext bei identischem
+Annahme- und Ablehnungsverhalten. Ein Rueckbau auf `c1edd92` wuerde Arbeit
+entfernen, nicht Risiko.
+
+### Diagnose-Einstellung
+
+`printk` steht wieder auf `0 0 0 0` - es hat den letzten Power-Cycle nicht
+ueberlebt, wie vorgesehen. Soll es fuer die weitere Hardlock-Beobachtung aktiv
+sein, muss es nach **jedem** Boot neu gesetzt werden; ob das zur Baseline
+gehoert, ist offen.
+
+### Offen bis zum Cold Power-Cycle
+
+AP0.4 (Boot-Baseline), AP0.5 (ein einzelner MAIN-Zyklus), AP0.6
+(Relay-Smoke via `tools/relay-gate.ps1`) und AP0.8 (Messwerte eintragen).
