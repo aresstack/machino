@@ -301,6 +301,14 @@ Json ApiService::config_json() {
         video.set("1", v1);
     }
     j.set("video", video);
+    // AP14: the snapshot gate. dashboard.js reads jpeg.enabled from the config
+    // and does not poll /image.jpg at all when it is not true - so this has to
+    // be reported, and reported truthfully. It is false by default because the
+    // T40NN JPEG encoder wedges the whole daemon.
+    Json jcfg = Json::object();
+    jcfg.set("enabled", Json::boolean(cfg_.jpeg.enabled));
+    jcfg.set("quality", Json::integer(cfg_.jpeg.quality));
+    j.set("jpeg", jcfg);
     Json lat = Json::object(); lat.set("profile", Json::string(media::latency_profile_name(tune.requested_latency.profile)));
     lat.set("gop", tune.requested_latency.gop ? Json::integer(*tune.requested_latency.gop) : Json::null());
     lat.set("framesource_buffers", tune.requested_latency.framesource_buffers ? Json::integer(*tune.requested_latency.framesource_buffers) : Json::null());

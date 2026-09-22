@@ -269,6 +269,32 @@ Json majestic_config(const Json& native_config, const Json& state) {
     copy_if(native_config, out, "rtsp");
     copy_if(native_config, out, "ai");
 
+    // AP14: the snapshot gate, said out loud.
+    //
+    // dashboard.js polls /image.jpg every 5 s, but ONLY after checking the
+    // config first:
+    //
+    //   // /image.jpg is the independent JPEG channel - jpeg.enabled is the
+    //   // only gate. A camera streaming sub-only still has its snapshot.
+    //   if (mjGet(cfg, 'jpeg.enabled') !== true) {
+    //       off.textContent = 'Snapshots are disabled - open Live for video';
+    //       return;
+    //   }
+    //
+    // With no jpeg section at all the tile behaved correctly by ACCIDENT -
+    // undefined is not true - but the gate was invisible, and a camera that
+    // later enabled JPEG would still never be polled. Reporting the real value
+    // makes the page's own message the honest one, and keeps the tile from
+    // requesting a path this camera must not be asked for: the T40NN JPEG
+    // encoder wedges the whole daemon (machino-t40nn-jpeg-wedge), which is why
+    // jpeg.enabled defaults to false here.
+    if (const Json* j = native_config.get("jpeg"); j && j->is_object()) out.set("jpeg", *j);
+    else {
+        Json jp = Json::object();
+        jp.set("enabled", Json::boolean(false));
+        out.set("jpeg", jp);
+    }
+
     // majestic-webui's Dashboard/Streams read video0/video1 with the field
     // names size ("WxH"), codec, bitrate (kbit/s) and enabled, so alias the
     // native width/height/bitrate_kbps into those on top of the native fields.

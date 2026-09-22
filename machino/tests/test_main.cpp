@@ -39,6 +39,7 @@ void run_multistream_tests();
 void run_detection_tests();
 void run_compat_tests();
 void run_substream_schema_tests();
+void run_snapshot_gate_tests();
 void run_schema_contract_tests();
 void run_logging_tests();
 void run_osd_tests();
@@ -357,6 +358,7 @@ int main() {
     run_detection_tests();
     run_compat_tests();
     run_substream_schema_tests();
+    run_snapshot_gate_tests();
     run_schema_contract_tests();
     run_logging_tests();
     run_osd_tests();

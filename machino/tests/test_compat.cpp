@@ -405,3 +405,42 @@ void run_substream_schema_tests() {
         CCHECK(t.path == "video1");
     }
 }
+
+// AP14: the snapshot gate must be VISIBLE in the majestic-shaped config.
+// dashboard.js:
+//   if (mjGet(cfg, 'jpeg.enabled') !== true) {
+//       off.textContent = 'Snapshots are disabled - open Live for video';
+//       return;
+//   }
+// With no jpeg section the tile behaved correctly by accident - undefined is
+// not true - but the gate was invisible, and a camera that later enabled JPEG
+// would still never have been polled.
+void run_snapshot_gate_tests() {
+    // off: the page must be able to READ that it is off
+    {
+        Json native = Json::object();
+        Json jp = Json::object(); jp.set("enabled", Json::boolean(false)); jp.set("quality", Json::integer(80));
+        native.set("jpeg", jp);
+        Json cfg = majestic_config(native, Json::object());
+        const Json* j = cfg.get("jpeg");
+        CCHECK(j && j->is_object());
+        CCHECK(j && j->get("enabled") && j->get("enabled")->is_bool() && !j->get("enabled")->as_bool());
+    }
+    // on: the same key carries true, so the tile polls exactly when it should
+    {
+        Json native = Json::object();
+        Json jp = Json::object(); jp.set("enabled", Json::boolean(true));
+        native.set("jpeg", jp);
+        Json cfg = majestic_config(native, Json::object());
+        const Json* j = cfg.get("jpeg");
+        CCHECK(j && j->get("enabled") && j->get("enabled")->as_bool());
+    }
+    // a native config with no jpeg section at all still yields an explicit
+    // false rather than an absent key - the gate is never left to chance
+    {
+        Json cfg = majestic_config(Json::object(), Json::object());
+        const Json* j = cfg.get("jpeg");
+        CCHECK(j && j->is_object());
+        CCHECK(j && j->get("enabled") && j->get("enabled")->is_bool() && !j->get("enabled")->as_bool());
+    }
+}
