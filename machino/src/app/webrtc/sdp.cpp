@@ -96,8 +96,10 @@ Offer parse_offer(const std::string& sdp, const std::string& prefer_profile) {
         // decoder ignores the label.
         //
         // An exact profile match with what the encoder really emits wins over
-        // preference when the offer contains one (Safari offers High): then
-        // the answer names the stream instead of approximating it.
+        // preference when the offer contains one: then the answer NAMES the
+        // stream instead of approximating it. Which peers offer this camera's
+        // High profile was not measured - the rule stands because it is right,
+        // not because a particular browser triggers it today.
         if (idx < 0 || (size_t)idx >= o.media.size() || o.media[idx].kind != "video") return;
         int first_pt = -1; std::string first_profile;
         for (int pt : o.media[idx].pts) {

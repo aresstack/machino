@@ -103,8 +103,11 @@ $ probe edge.sdp
    Präferenz — das ist ohnehin der richtige Standardfall.
 
    Für diese Kamera (`640033`) ändert das heute nichts: Chrome bietet High
-   überhaupt nicht an, also bleibt es bei 102. Für Safari, das High anbietet,
-   greift es.
+   überhaupt nicht an, also bleibt es bei 102. Der Zweig greift erst bei einer
+   Gegenstelle, die das Profil der Kamera anbietet — **welche das sind, habe
+   ich nicht gemessen** (nur Chrome 153 und Edge 153 waren verfügbar). Die
+   Regel steht, weil sie richtig ist, nicht weil ein bestimmter Browser sie
+   heute auslöst; der Hosttest deckt sie mit `4d001f` und `4d0033` ab.
 
 3. **Zwei stille Strengheiten entfernt** — „keine unnötige Ablehnung eines
    kompatiblen H.264-Angebots" ist eine ausdrückliche AP16-Forderung:

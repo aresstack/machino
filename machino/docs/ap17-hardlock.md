@@ -138,6 +138,11 @@ echo "3 3 1 3" > /proc/sys/kernel/printk
 Ein kleiner jffs2-Schreibvorgang, vollständig umkehrbar, kein Kernel-, Flash-
 oder Partitionseingriff. Live steht der Wert bereits.
 
+Nachgemessen: der Wert stand **40 Minuten später unverändert** auf `3 3 1 3`.
+Wer immer ihn beim Booten zudrückt, tut es **einmalig beim Start** und nicht
+periodisch — rc.local am Ende des Bootlaufs ist damit die richtige Stelle. Der
+Beweis über einen echten Reboot steht aber weiterhin aus.
+
 **Damit ist der UART ab jetzt ein Messgerät und nicht mehr eine Leitung, an der
 man nichts sieht.**
 
@@ -202,7 +207,8 @@ offen. Das nächste Feldereignis ist damit zum ersten Mal eines, bei dem Netz
 ### Offen, `PENDING_PHYSICAL`
 
 * `printk = 3 3 1 3` über einen echten Reboot bestätigen (rc.local greift erst
-  beim nächsten Start).
+  beim nächsten Start). Dass der Rücksetzer nicht periodisch arbeitet, ist
+  gemessen; dass rc.local nach ihm läuft, ist begründet, nicht bewiesen.
 * Den AP4-Watchdog scharf sehen (`watchdog_available: true` in der Telemetrie)
   — braucht die Ablösung auf `341a8d4`.
 * Beim nächsten Hardlock: UART-Ausgabe lesen, **bevor** die Box vom Strom geht.

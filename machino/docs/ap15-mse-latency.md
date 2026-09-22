@@ -159,6 +159,14 @@ Jetzt wird sie geschickt, aber **nur wenn die Kamera die Uhrzeit kennt**
 sonst eine erfundene Latenz melden. Ohne RTC ist das kein Randfall
 (`t40nn-uhr-ohne-rtc`).
 
+Nachgeprüft im Review, wo die Zahl landet: `preview-stats.js` rendert daraus
+„capture→arrival p50 … · p95 … (n frames)" — und korrigiert sie sogar um einen
+bekannten Uhrenversatz („clock-corrected p50"). Es gibt im MSE-Pfad keine
+zweite Quelle dafür; ohne `prft` war diese Zeile schlicht tot. Die
+Uhr-Korrektur entschärft zusätzlich den Fall einer schief stehenden
+Kamerauhr — die Plausibilitätsgrenze bleibt trotzdem, weil sie billiger ist
+als eine falsche Zahl.
+
 Der Test liest die Box exakt so zurück, wie Upstream sie liest — über absolute
 Offsets, nicht durch Boxwalking, denn das ist der Leser, der zählt.
 
