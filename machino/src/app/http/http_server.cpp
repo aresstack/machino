@@ -193,9 +193,9 @@ void HttpServer::stop() {
     if (thread_.joinable()) thread_.join();
     for (auto& c : clients_) {
         if (c->sub) bus_.unsubscribe(c->sub);
-        if (c->ws_video) RuntimeStats::dec(RuntimeStats::get().ws_video_clients);
-        if (c->ws_logs)  RuntimeStats::dec(RuntimeStats::get().ws_logs_clients);
-        if (c->rtc)      RuntimeStats::dec(RuntimeStats::get().webrtc_sessions);
+        if (c->ws_video) RuntimeStats::get().dec(&RuntimeCounters::ws_video_clients);
+        if (c->ws_logs)  RuntimeStats::get().dec(&RuntimeCounters::ws_logs_clients);
+        if (c->rtc)      RuntimeStats::get().dec(&RuntimeCounters::webrtc_sessions);
         if (c->ws_sink) { StreamHub* h = c->ws_hub ? c->ws_hub : hub_; if (h) { c->ws_sink->close(); h->unsubscribe(c->ws_sink); } }
         if (c->rtc_sink) { StreamHub* h = c->rtc_hub ? c->rtc_hub : hub_; if (h) { c->rtc_sink->close(); h->unsubscribe(c->rtc_sink); } }
         if (c->relay_fd >= 0) close(c->relay_fd);
@@ -385,7 +385,7 @@ bool HttpServer::handle_request(Client& c) {
             else {
                 queue(c, ws::handshake_response(wskey));
                 c.ws_video = true;
-                RuntimeStats::inc(RuntimeStats::get().ws_video_clients);
+                RuntimeStats::get().inc(&RuntimeCounters::ws_video_clients);
                 c.ws_unit = unit;
                 c.ws_hub = h;
                 c.ws_demand = std::move(d);
@@ -761,7 +761,7 @@ bool HttpServer::rtc_ws_input(Client& c) {
         lifecycle::DemandHandle d = pipeline_->acquire_unit(c.rtc_unit, lifecycle::ConsumerType::HttpStream, &dr);
         if (!d.active()) { if (!reply("error", "pipeline start failed")) return false; continue; }
         c.rtc = std::move(sess);
-        RuntimeStats::inc(RuntimeStats::get().webrtc_sessions);
+        RuntimeStats::get().inc(&RuntimeCounters::webrtc_sessions);
         c.rtc_demand = std::move(d);
         c.rtc_hub = h;
         c.rtc_sink = h->subscribe();
@@ -934,9 +934,9 @@ void HttpServer::loop() {
             if (!ok) {
                 // Close now, erase after the iteration: refs holds pointers
                 // into clients_, so the vector must not shift under it.
-                if (c.ws_video) RuntimeStats::dec(RuntimeStats::get().ws_video_clients);
-                if (c.ws_logs)  RuntimeStats::dec(RuntimeStats::get().ws_logs_clients);
-                if (c.rtc)      RuntimeStats::dec(RuntimeStats::get().webrtc_sessions);
+                if (c.ws_video) RuntimeStats::get().dec(&RuntimeCounters::ws_video_clients);
+                if (c.ws_logs)  RuntimeStats::get().dec(&RuntimeCounters::ws_logs_clients);
+                if (c.rtc)      RuntimeStats::get().dec(&RuntimeCounters::webrtc_sessions);
                 if (c.sub) bus_.unsubscribe(c.sub);
                 if (c.ws_sink) { StreamHub* h = c.ws_hub ? c.ws_hub : hub_; if (h) { c.ws_sink->close(); h->unsubscribe(c.ws_sink); } }
                 if (c.rtc_sink) { StreamHub* h = c.rtc_hub ? c.rtc_hub : hub_; if (h) { c.rtc_sink->close(); h->unsubscribe(c.rtc_sink); } }

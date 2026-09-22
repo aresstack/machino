@@ -5,6 +5,13 @@
 set -e
 FILES="src/app/http/http_server.cpp src/app/rtsp/rtsp_server.cpp src/app/rtsp/rtsp_auth.cpp src/app/webrtc/peer.cpp src/app/main.cpp"
 bad=0
+
+# 0. 64-bit atomics anywhere in the tree: MIPS32 has no lock-free 64-bit
+#    atomics, so these need libatomic and fail the cross link. Hit twice.
+if grep -rn --include=*.hpp --include=*.cpp -E "atomic<[[:space:]]*(u?int64_t|unsigned long long|long long|size_t)[[:space:]]*>" src/ tests/ 2>/dev/null | grep -v "://" | grep -v ": *//"; then
+    echo "  ^ 64-bit std::atomic does not link on MIPS32 (no lock-free 8-byte ops)"
+    bad=1
+fi
 for f in $FILES; do
     [ -f "$f" ] || continue
 

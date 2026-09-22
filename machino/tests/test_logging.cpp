@@ -91,24 +91,29 @@ void run_logging_tests() {
 
     cleanup();
 
-    // runtime counters: gauges go up and down, counters only up. The
-    // diagnostics must never be the reason a number looks wrong.
+    // runtime counters: gauges go up and down, counters only up, and a gauge
+    // never goes negative. The diagnostics must never be why a number is wrong.
     RuntimeStats& rs = RuntimeStats::get();
-    const int rtsp0 = rs.rtsp_sessions.load();
-    RuntimeStats::inc(rs.rtsp_sessions);
-    RuntimeStats::inc(rs.rtsp_sessions);
-    LCHECK(rs.rtsp_sessions.load() == rtsp0 + 2);
-    RuntimeStats::dec(rs.rtsp_sessions);
-    LCHECK(rs.rtsp_sessions.load() == rtsp0 + 1);
-    RuntimeStats::dec(rs.rtsp_sessions);
-    LCHECK(rs.rtsp_sessions.load() == rtsp0);
+    const RuntimeCounters base = rs.snapshot();
+    rs.inc(&RuntimeCounters::rtsp_sessions);
+    rs.inc(&RuntimeCounters::rtsp_sessions);
+    LCHECK(rs.snapshot().rtsp_sessions == base.rtsp_sessions + 2);
+    rs.dec(&RuntimeCounters::rtsp_sessions);
+    LCHECK(rs.snapshot().rtsp_sessions == base.rtsp_sessions + 1);
+    rs.dec(&RuntimeCounters::rtsp_sessions);
+    LCHECK(rs.snapshot().rtsp_sessions == base.rtsp_sessions);
+    for (int i = 0; i < 5; ++i) rs.dec(&RuntimeCounters::rtsp_sessions);
+    LCHECK(rs.snapshot().rtsp_sessions == 0);          // clamped, never negative
 
-    const uint64_t pkts0 = rs.webrtc_rtp_packets.load();
-    RuntimeStats::inc(rs.webrtc_rtp_packets);
-    RuntimeStats::inc(rs.webrtc_rtp_bytes, 1400);
-    LCHECK(rs.webrtc_rtp_packets.load() == pkts0 + 1);
-    LCHECK(rs.webrtc_rtp_bytes.load() >= 1400);
+    rs.inc(&RuntimeCounters::webrtc_rtp_packets);
+    rs.inc(&RuntimeCounters::webrtc_rtp_bytes, 1400);
+    LCHECK(rs.snapshot().webrtc_rtp_packets == base.webrtc_rtp_packets + 1);
+    LCHECK(rs.snapshot().webrtc_rtp_bytes >= 1400);
 
-    // the singleton really is one instance
-    LCHECK(&RuntimeStats::get() == &rs);
+    // a 64-bit counter must really be 64-bit: this is the field that would
+    // wrap in hours if it were narrowed to dodge the MIPS atomics problem
+    rs.inc(&RuntimeCounters::webrtc_rtp_bytes, 5ull * 1000 * 1000 * 1000);
+    LCHECK(rs.snapshot().webrtc_rtp_bytes > 4ull * 1000 * 1000 * 1000);
+
+    LCHECK(&RuntimeStats::get() == &rs);               // really one instance
 }

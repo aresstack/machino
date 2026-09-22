@@ -338,18 +338,18 @@ Json ApiService::telemetry_json() {
     // pipeline starts/stops come from lifecycle stats, per-unit media numbers
     // from the measurement block. These are the network-side facts.
     {
-        RuntimeStats& rs = RuntimeStats::get();
+        const RuntimeCounters rs = RuntimeStats::get().snapshot();
         Json s = Json::object();
-        s.set("rtsp_sessions", Json::integer(rs.rtsp_sessions.load()));
-        s.set("webrtc_sessions", Json::integer(rs.webrtc_sessions.load()));
-        s.set("ws_video_clients", Json::integer(rs.ws_video_clients.load()));
-        s.set("ws_logs_clients", Json::integer(rs.ws_logs_clients.load()));
-        s.set("webrtc_dtls_failures", Json::integer((long long)rs.webrtc_dtls_failures.load()));
-        s.set("webrtc_srtp_failures", Json::integer((long long)rs.webrtc_srtp_failures.load()));
-        s.set("webrtc_rtp_packets", Json::integer((long long)rs.webrtc_rtp_packets.load()));
-        s.set("webrtc_rtp_bytes", Json::integer((long long)rs.webrtc_rtp_bytes.load()));
-        s.set("webrtc_send_errors", Json::integer((long long)rs.webrtc_send_errors.load()));
-        s.set("webrtc_pli", Json::integer((long long)rs.webrtc_pli.load()));
+        s.set("rtsp_sessions", Json::integer(rs.rtsp_sessions));
+        s.set("webrtc_sessions", Json::integer(rs.webrtc_sessions));
+        s.set("ws_video_clients", Json::integer(rs.ws_video_clients));
+        s.set("ws_logs_clients", Json::integer(rs.ws_logs_clients));
+        s.set("webrtc_dtls_failures", Json::integer((long long)rs.webrtc_dtls_failures));
+        s.set("webrtc_srtp_failures", Json::integer((long long)rs.webrtc_srtp_failures));
+        s.set("webrtc_rtp_packets", Json::integer((long long)rs.webrtc_rtp_packets));
+        s.set("webrtc_rtp_bytes", Json::integer((long long)rs.webrtc_rtp_bytes));
+        s.set("webrtc_send_errors", Json::integer((long long)rs.webrtc_send_errors));
+        s.set("webrtc_pli", Json::integer((long long)rs.webrtc_pli));
         j.set("sessions", s);
     }
     Json pr = Json::object(); pr.set("cpu_percent", opt(t.cpu_percent)); pr.set("rss_kb", opt(t.rss_kb)); pr.set("threads", opt(t.threads)); j.set("process", pr);
