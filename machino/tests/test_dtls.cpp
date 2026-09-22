@@ -76,6 +76,11 @@ struct Client {
         mbedtls_ssl_set_export_keys_cb(&ssl, keys_cb, this);
         mbedtls_ssl_set_timer_cb(&ssl, &timer, mbedtls_timing_set_delay, mbedtls_timing_get_delay);
         mbedtls_ssl_set_bio(&ssl, this, send_cb, recv_cb, nullptr);
+        // Force the client to FRAGMENT its handshake flights: a real browser
+        // ClientHello is ~1.4 KB and fragments on the wire, and mbedTLS
+        // servers before 3.6.6 could not re-assemble it (mbedtls#7549) - the
+        // exact hardware failure this suite must never regress on.
+        mbedtls_ssl_set_mtu(&ssl, 512);
         return true;
     }
     void free_all() {

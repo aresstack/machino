@@ -7,6 +7,7 @@
 #include "app/webrtc/sdp.hpp"
 #include "app/webrtc/srtp.hpp"
 #include "app/webrtc/stun.hpp"
+#include "core/json.hpp"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -113,6 +114,24 @@ void run_webrtc_tests() {
     WCHECK(has_line(ans, "a=rtcp-fb:102 nack pli"));
     WCHECK(has_line(ans, "a=candidate:1 1 udp 2130706431 192.168.1.10 51000 typ host"));
     WCHECK(has_line(ans, "a=fingerprint:sha-256 AA:BB:CC:DD"));
+
+    // --- signalling JSON limits: a real Chrome offer is ~7.5 KB in ONE JSON
+    // string; the default JsonLimits reject it (the hardware bug), the raised
+    // signalling limits must accept it ---
+    {
+        std::string big_sdp = CHROME_OFFER;
+        while (big_sdp.size() < 8000) big_sdp += "a=extmap:9 urn:example:padding-attribute-for-size\r\n";
+        machino::Json esc = machino::Json::string(big_sdp);
+        const std::string wire = "{\"req\":\"offer\",\"data\":" + esc.dump() + "}";
+        machino::Json out; std::string jerr;
+        WCHECK(!machino::Json::parse(wire, out, jerr));            // defaults: too small (the regression)
+        const machino::JsonLimits sig{16, 32768, 65536};
+        WCHECK(machino::Json::parse(wire, out, jerr, sig));        // signalling limits: accepted
+        const machino::Json* d = out.get("data");
+        WCHECK(d && d->is_string() && d->as_string() == big_sdp);
+        webrtc::Offer big = webrtc::parse_offer(d->as_string());
+        WCHECK(big.ok && big.media[(size_t)big.video_index].h264_pt == 102);
+    }
 
     // --- SDP refusals ---
     WCHECK(!webrtc::parse_offer("v=0\r\nm=video 9 RTP/AVP 96\r\na=rtpmap:96 VP8/90000\r\n").ok);
