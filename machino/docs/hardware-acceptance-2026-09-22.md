@@ -243,3 +243,62 @@ The overlay sitting at ~32 % is **not** implicated: AP8 measured 6.0 MB free of
   of warm restarts down: 3.3/3.4/4.2 (substream), 4.4–4.6 (`rtsp.auth=true`),
   9.2–9.8 (ONVIF).
 - 6.6 (log rotation) needs a long run; 10.4/10.6 need sustained load.
+
+## Round 4 — Fix B (`065da41`), cold power-cycle, 2026-09-22
+
+Deployed after the CI/MIPS build, installed cold, power-cycled by the user,
+nothing tested warm. Running binary `machino 065da41`, uptime 0 min at the
+start of the run.
+
+| Row | Result | Evidence |
+|---|---|---|
+| 1.1 | **PASS** | one process, argv0 `{majestic} /usr/bin/machino`; busybox httpd separate on :85 |
+| 1.2 | **PASS** | `:80` + `:554` owned by machino (991), `127.0.0.1:85` by httpd (980) — matches the baseline |
+| 1.3 | **PASS** | 2 228 bytes, `machino 065da41 starting`, board/sensor/GPIO lines. Fix A's line is there verbatim: `logread -f started once at boot (pid 994); /ws/logs will never fork again` |
+| 1.4 | **PASS** | PID 991 stable, no crash loop |
+| 10.1 | **PASS** | two full cycles: `COLD_IDLE -> STARTING -> ACTIVE -> GRACE_IDLE -> STOPPING -> COLD_IDLE`, `pipeline_generation` 2 |
+| 10.3 | **PASS** | idle `VmRSS 2 996 kB`, `MemFree 21 856 kB` — no accumulation across the run |
+| 10.5 | **PASS** | zero zombies (checked via `State:` in `/proc`, not a `ps | grep`), zero CLOSE_WAIT, machino has exactly one child: `logread`, state `S` |
+
+### The regression that mattered
+
+The sequence that returned **503** before Fix A — RTSP to PLAY, `/ws/logs`
+opened *while the pipeline is ACTIVE*, both closed, grace expired, RTSP
+started again — was re-run against Fix B:
+
+| | |
+|---|---|
+| RTSP-1 (with `/ws/logs` open during ACTIVE) | 3 396 901 bytes |
+| `/ws/logs` | `HTTP/1.1 101 Switching Protocols`, lines delivered |
+| RTSP-2, the start that used to fail | **1 333 796 bytes** |
+| `503` in the log | **0** |
+| `IMP_System_Init failed` / `bring-up failed` / `refusing bring-up` | **none** |
+| `logread -f started` | exactly 1, for the whole run |
+| `/ws/logs subscribed` | 1 |
+| Telemetry | `init_failures 0`, `init_retries 0`, `last_init_rc 0`, `last_init_stage ""` |
+
+All counts were read from the camera's own log and `/api/v1/telemetry`, not
+from the test driver: two earlier PowerShell runs died silently, and in this
+one the driver swallowed its own RTSP status lines into a return value, so the
+byte counts and the log are what carry the result.
+
+`init_retries 0` is the one that matters for Fix B: the counter exists so a
+returning retry loop would be visible, and it stayed at zero through a full
+start/stop/start cycle.
+
+**Caveat, unchanged:** no bring-up actually failed in this run, so the new
+stage telemetry (`last_init_stage`) and the sticky-FAILED path were NOT
+exercised on hardware — only on the host, where they are pinned by tests. This
+run shows the fix does no harm and the Fix A result holds; it cannot show the
+fix working, because reproducing a failed init would mean provoking the very
+condition we removed the trigger for.
+
+### Still owed
+
+- **10.4** — the row that failed in round 2 with the OOM. Needs a browser and
+  several parallel live clients; that is the real test of Fix A + Fix B
+  together and it is the user's to drive.
+- **Rows needing a daemon restart** (3.3/3.4/4.2 substream, 4.4–4.6
+  `rtsp.auth`, 9.2–9.8 ONVIF) are still batched and still deliberately not
+  attempted: a warm restart is the documented lockup hazard, so that batch
+  wants its own power-cycle window rather than being slipped into this run.
