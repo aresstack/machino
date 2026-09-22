@@ -306,3 +306,88 @@ void run_compat_tests() {
     test_webui_config_and_sources();
     test_webui_post_strings_and_reset();
 }
+
+// AP6: the substream must be addressable through the same surfaces the main
+// stream is. It was already REPORTED in the Dashboard's stream list but could
+// not be CHANGED anywhere except machino.conf over SSH, which is not a drop-in.
+void run_substream_schema_tests() {
+    Json caps = Json::object();
+    {
+        Json c = Json::object();
+        auto rng = [](int lo, int hi) {
+            Json r = Json::object();
+            r.set("status", Json::string("supported"));
+            r.set("min", Json::integer(lo)); r.set("max", Json::integer(hi));
+            r.set("apply", Json::string("live"));
+            return r;
+        };
+        c.set("stream_fps", rng(1, 60));
+        c.set("bitrate", rng(64, 20000));
+        c.set("gop", rng(1, 1000));
+        caps.set("controls", c);
+    }
+    Json schema = majestic_schema(caps);
+    const Json* props = schema.get("properties");
+    CCHECK(props);
+    if (props) {
+        const Json* v1 = props->get("video1");
+        CCHECK(v1);                                     // the section exists at all
+        const Json* f = v1 ? v1->get("properties") : nullptr;
+        CCHECK(f && f->get("fps"));
+        CCHECK(f && f->get("bitrate_kbps"));
+        CCHECK(f && f->get("gop"));
+        // and it is offered in the same group as the main stream, so the page
+        // renders it rather than hiding it behind a group nobody opens
+        const Json* groups = schema.get("x-groups");
+        bool found = false;
+        if (groups && groups->is_array())
+            for (size_t i = 0; i < groups->size(); ++i) {
+                const Json& g = groups->at(i);
+                const Json* ss = g.get("sections");
+                if (!ss || !ss->is_array()) continue;
+                for (size_t k = 0; k < ss->size(); ++k)
+                    if (ss->at(k).is_string() && ss->at(k).as_string() == "video1") found = true;
+            }
+        CCHECK(found);
+    }
+
+    // The translation: video0 and video1 in ONE post must both survive. They
+    // land under the same "video" object, so a naive implementation has the
+    // second overwrite the first and silently drops half the form.
+    {
+        Json body = Json::object();
+        Json a = Json::object(); a.set("bitrate_kbps", Json::integer(3000));
+        Json b = Json::object(); b.set("bitrate_kbps", Json::integer(512));
+        body.set("video0", a);
+        body.set("video1", b);
+        MajesticTranslation t = majestic_post_to_native(body.dump());
+        CCHECK(t.ok);
+        const Json* v = t.patch.get("video");
+        CCHECK(v && v->is_object());
+        CCHECK(v && v->get("0") && v->get("0")->get("bitrate_kbps"));
+        CCHECK(v && v->get("1") && v->get("1")->get("bitrate_kbps"));
+        if (v && v->get("0") && v->get("1")) {
+            CCHECK(v->get("0")->get("bitrate_kbps")->as_int() == 3000);
+            CCHECK(v->get("1")->get("bitrate_kbps")->as_int() == 512);
+        }
+    }
+    // the other order, because "works one way round" is not the contract
+    {
+        Json body = Json::object();
+        Json b = Json::object(); b.set("gop", Json::integer(40));
+        Json a = Json::object(); a.set("gop", Json::integer(20));
+        body.set("video1", b);
+        body.set("video0", a);
+        MajesticTranslation t = majestic_post_to_native(body.dump());
+        const Json* v = t.patch.get("video");
+        CCHECK(v && v->get("0") && v->get("1"));
+    }
+    // a non-object section is still refused, and names the right path
+    {
+        Json body = Json::object();
+        body.set("video1", Json::integer(7));
+        MajesticTranslation t = majestic_post_to_native(body.dump());
+        CCHECK(!t.ok);
+        CCHECK(t.path == "video1");
+    }
+}

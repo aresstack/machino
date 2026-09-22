@@ -285,7 +285,22 @@ Json ApiService::config_json() {
     Json sen = Json::object(); sen.set("fps", Json::integer(e.sensor_fps_requested)); j.set("sensor", sen);
     Json v0 = Json::object(); v0.set("fps", Json::integer(s.fps)); v0.set("bitrate_kbps", Json::integer(s.bitrate_kbps));
     v0.set("width", Json::integer(s.width)); v0.set("height", Json::integer(s.height)); v0.set("gop", Json::integer(s.gop));
-    Json video = Json::object(); video.set("0", v0); j.set("video", video);
+    Json video = Json::object(); video.set("0", v0);
+    // AP6: the substream. Reported whenever the platform HAS a second unit, so
+    // a client can see that it exists and that it is off - a section that only
+    // appears once enabled cannot be used to enable it.
+    {
+        const EffectiveStream ss = pipeline_.stream_unit(lifecycle::UNIT_SUB);
+        Json v1 = Json::object();
+        v1.set("enabled", Json::boolean(pipeline_.unit_configured(lifecycle::UNIT_SUB)));
+        v1.set("fps", Json::integer(ss.fps));
+        v1.set("bitrate_kbps", Json::integer(ss.bitrate_kbps));
+        v1.set("width", Json::integer(ss.width));
+        v1.set("height", Json::integer(ss.height));
+        v1.set("gop", Json::integer(ss.gop));
+        video.set("1", v1);
+    }
+    j.set("video", video);
     Json lat = Json::object(); lat.set("profile", Json::string(media::latency_profile_name(tune.requested_latency.profile)));
     lat.set("gop", tune.requested_latency.gop ? Json::integer(*tune.requested_latency.gop) : Json::null());
     lat.set("framesource_buffers", tune.requested_latency.framesource_buffers ? Json::integer(*tune.requested_latency.framesource_buffers) : Json::null());
@@ -595,6 +610,27 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     if (f.first == "fps") { if (!get_int(f.second, n) || n <= 0 || n > 240) return bad(422, "invalid_value", d.path, "fps must be an integer in 1..240"); d.key = "video.fps"; d.value = std::to_string(n); }
                     else if (f.first == "bitrate_kbps") { if (!get_int(f.second, n) || n <= 0 || n > 200000) return bad(422, "invalid_value", d.path, "bitrate_kbps must be an integer in 1..200000"); d.key = "video.bitrate"; d.value = std::to_string(n); }
                     else if (f.first == "gop") { if (!get_int(f.second, n) || n < 1 || n > 1000) return bad(422, "invalid_value", d.path, "gop must be an integer in 1..1000"); d.key = "latency.gop"; d.value = std::to_string(n); }
+                    else return bad(400, "unknown_field", d.path, "unknown field");
+                    changes.push_back(d);
+                }
+                continue;
+            } else if (s == "video" && kv.first == "1") {
+                // AP6: the substream, addressable the same way the main stream
+                // is. Geometry is NOT defaulted anywhere - M8's rule is that
+                // enabling a substream requires an explicit size, because
+                // guessing one produces a stream nobody asked for.
+                if (!val.is_object()) return bad(400, "unknown_field", path, "video.1 must be an object");
+                for (const auto& f : val.members()) {
+                    Change d; d.path = path + "." + f.first; d.requested = f.second; long long n;
+                    if (f.first == "enabled") {
+                        if (!f.second.is_bool()) return bad(422, "invalid_value", d.path, "enabled must be a boolean");
+                        d.key = "video.1.enabled"; d.value = f.second.as_bool() ? "true" : "false";
+                    }
+                    else if (f.first == "fps")    { if (!get_int(f.second, n) || n <= 0 || n > 240) return bad(422, "invalid_value", d.path, "fps must be an integer in 1..240"); d.key = "video.1.fps"; d.value = std::to_string(n); }
+                    else if (f.first == "width")  { if (!get_int(f.second, n) || n < 16 || n > 8192) return bad(422, "invalid_value", d.path, "width must be an integer in 16..8192"); d.key = "video.1.width"; d.value = std::to_string(n); }
+                    else if (f.first == "height") { if (!get_int(f.second, n) || n < 16 || n > 8192) return bad(422, "invalid_value", d.path, "height must be an integer in 16..8192"); d.key = "video.1.height"; d.value = std::to_string(n); }
+                    else if (f.first == "bitrate_kbps") { if (!get_int(f.second, n) || n <= 0 || n > 200000) return bad(422, "invalid_value", d.path, "bitrate_kbps must be an integer in 1..200000"); d.key = "video.1.bitrate"; d.value = std::to_string(n); }
+                    else if (f.first == "gop")    { if (!get_int(f.second, n) || n < 1 || n > 1000) return bad(422, "invalid_value", d.path, "gop must be an integer in 1..1000"); d.key = "video.1.gop"; d.value = std::to_string(n); }
                     else return bad(400, "unknown_field", d.path, "unknown field");
                     changes.push_back(d);
                 }

@@ -132,6 +132,16 @@ Json majestic_schema(const Json& capabilities) {
     set_default(video0, "video0", "gop");
     add_section(properties, "video0", video0);
 
+    // AP6: the substream. Same controls as the main stream - the page renders
+    // a second section and the user can turn it on from there. It was already
+    // reported in the Dashboard's stream list but could not be CHANGED, which
+    // made it addressable only by editing machino.conf over SSH.
+    Json video1 = Json::object();
+    add_range(video1, "fps", "Sub-stream frame rate", controls ? controls->get("stream_fps") : nullptr);
+    add_range(video1, "bitrate_kbps", "Sub-stream bitrate (kbit/s)", controls ? controls->get("bitrate") : nullptr);
+    add_range(video1, "gop", "Sub-stream keyframe interval (frames)", controls ? controls->get("gop") : nullptr);
+    add_section(properties, "video1", video1);
+
     Json sensor = Json::object();
     add_range(sensor, "fps", "Sensor frame rate", controls ? controls->get("sensor_fps") : nullptr);
     add_section(properties, "sensor", sensor);
@@ -216,10 +226,10 @@ Json majestic_schema(const Json& capabilities) {
     schema.set("properties", properties);
 
     Json groups = Json::array();
-    const char* media_sections[] = {"video0", "sensor", "latency"};
+    const char* media_sections[] = {"video0", "video1", "sensor", "latency"};
     const char* image_sections[] = {"image"};
     const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai"};
-    Json media = group("media", "Media", properties, media_sections, 3);
+    Json media = group("media", "Media", properties, media_sections, 4);
     Json image = group("image", "Image", properties, image_sections, 1);
     Json runtime = group("runtime", "Runtime", properties, runtime_sections, 4);
     if (media.get("sections")->size()) groups.push(media);
@@ -370,12 +380,17 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
             patch.set(name, value);
             continue;
         }
-        if (name == "video0") {
+        if (name == "video0" || name == "video1") {
             if (!value.is_object()) {
-                r.code = "unknown_field"; r.path = "video0"; r.message = "section must be an object"; return r;
+                r.code = "unknown_field"; r.path = name; r.message = "section must be an object"; return r;
             }
-            Json video = Json::object();
-            video.set("0", value);
+            // Both units land under the same "video" object, so a page that
+            // sends video0 AND video1 in one POST must not have the second
+            // overwrite the first.
+            Json video;
+            if (const Json* existing = patch.get("video"); existing && existing->is_object()) video = *existing;
+            else video = Json::object();
+            video.set(name == "video0" ? "0" : "1", value);
             patch.set("video", video);
             continue;
         }
