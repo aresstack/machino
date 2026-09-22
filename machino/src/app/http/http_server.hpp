@@ -9,6 +9,7 @@
 #include "app/api/api_service.hpp"
 #include "app/http/session.hpp"
 #include "app/http/setup.hpp"
+#include "app/onvif/onvif_service.hpp"
 #include "app/osd/osd_service.hpp"
 #include "core/events.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
@@ -81,6 +82,10 @@ public:
     // concept and behaves exactly as before.
     void set_setup(SetupGate* s) { setup_ = s; }
 
+    // AP11: the ONVIF surface under /onvif/. Null = the paths are not native
+    // and fall through to the relay, exactly as before.
+    void set_onvif(onvif::OnvifService* o) { onvif_ = o; }
+
     Result start();
     void   stop();
     int    port() const { return cfg_.port; }
@@ -89,6 +94,7 @@ private:
     struct Client;
     osd::OsdService* osd_ = nullptr;
     SetupGate*       setup_ = nullptr;
+    onvif::OnvifService* onvif_ = nullptr;
     void loop();
     void accept_client();
     bool handle_request(Client& c);

@@ -42,6 +42,11 @@ static size_t input_cap(const std::string& in) {
     static const char OSD_POST[] = "POST /api/v1/osd/image";
     if (in.compare(0, sizeof(OSD_POST) - 1, OSD_POST) == 0)
         return osd::OsdService::MAX_IMAGE_BYTES + 4096;
+    // An ONVIF request is a SOAP document; the scanner's own bound is what
+    // decides how big one may be, and it refuses anything past it.
+    static const char ONVIF_POST[] = "POST /onvif/";
+    if (in.compare(0, sizeof(ONVIF_POST) - 1, ONVIF_POST) == 0)
+        return onvif::MAX_REQUEST + 4096;
     return MAX_IN;
 }
 
@@ -278,6 +283,38 @@ bool HttpServer::handle_request(Client& c) {
     const std::string& path = req.path; const std::string& m = req.method;
     api::Response r;
     if (m == "OPTIONS") { queue(c, response(204, "text/plain", "", req.keep_alive, "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, If-Match\r\n")); if (!req.keep_alive) c.close_after_flush = true; return true; }
+
+    // AP11: ONVIF. Handled before BOTH gates because it carries its own
+    // authentication (WS-Security, or HTTP Basic) and answers in SOAP: a
+    // session redirect or a JSON 401 would be unintelligible to an ONVIF
+    // client. The service is told the claim state and the unsafe flag and
+    // applies them itself, so the policy is the same one, expressed in the
+    // protocol the caller speaks.
+    if (onvif_ && onvif::OnvifService::is_onvif_path(path)) {
+        if (m != "POST") {
+            bool ok = queue(c, response(405, "text/plain", "ONVIF expects POST\n", false));
+            c.close_after_flush = true;
+            return ok;
+        }
+        onvif::OnvifService::Request oreq;
+        oreq.path = path;
+        oreq.body = req.body;
+        oreq.authorization = req.header("authorization");
+        // The host the client used, so the XAddr and RTSP URLs it gets back
+        // are reachable from where it is standing. Port stripped: the service
+        // appends the ports it knows.
+        oreq.host = req.header("host");
+        if (const size_t colon = oreq.host.rfind(':'); colon != std::string::npos &&
+            oreq.host.find(']') == std::string::npos)
+            oreq.host.erase(colon);
+        onvif_->set_unsafe(cfg_.unsafe);
+        if (setup_) onvif_->set_claimed(!setup_->unclaimed());
+        onvif::OnvifService::Response ores = onvif_->handle(oreq, (int64_t)::time(nullptr));
+        LOGD(MOD, "%s: onvif %s -> %d", c.peer.c_str(), path.c_str(), ores.status);
+        bool ok = queue(c, response(ores.status, ores.content_type.c_str(), ores.body, false));
+        c.close_after_flush = true;
+        return ok;
+    }
 
     // AP10: unclaimed / first-run. Runs BEFORE the session gate, because on an
     // unclaimed camera there is no credential that could satisfy it. Upstream:

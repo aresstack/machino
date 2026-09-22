@@ -138,6 +138,10 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("video.1.profile",    c.video1.profile, 0, 2)
     INT   ("video.1.buffers",    c.video1.buffers, 1, 8)
     INT   ("video.1.encoder_buffers", c.video1.encoder_buffers, 0, 8)
+    BOOL  ("onvif.enabled",      c.onvif.enabled)
+    STR   ("onvif.username",     c.onvif.username)
+    STR   ("onvif.password",     c.onvif.password)
+
     // AP10: majestic system section. `unsafe` disables authentication
     // everywhere, unclaimed cameras included - see SystemConfig.
     BOOL  ("system.unsafe",      c.system.unsafe)

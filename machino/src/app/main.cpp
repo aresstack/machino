@@ -11,6 +11,7 @@
 #include "app/api/api_service.hpp"
 #include "app/compat/majestic_migrate.hpp"
 #include "app/http/http_server.hpp"
+#include "app/onvif/onvif_service.hpp"
 #include "app/osd/osd_service.hpp"
 #include "app/linux_grace_timer.hpp"
 #include "app/linux_system_stats.hpp"
@@ -403,6 +404,35 @@ int main(int argc, char** argv) {
         // rather than silently dropped.
         http::SetupGate setup_gate(claim_state, set_root_password, shadow_check, eula_present);
         httpd.set_setup(&setup_gate);
+
+        // AP11 ONVIF. Off by default until it has met a real client; the
+        // profiles it advertises are the ones the pipeline actually has, so
+        // a client is never handed a stream that does not exist.
+        onvif::OnvifService onvif_service(cfg.onvif, shadow_check);
+        {
+            onvif::DeviceInfo di;
+            di.firmware = MACHINO_VERSION;
+            di.model = hwr.platform.model.empty() ? std::string("Machino") : hwr.platform.model;
+            di.hardware_id = hwr.board_id;
+            onvif_service.set_device(di);
+            std::vector<onvif::MediaProfile> mp;
+            onvif::MediaProfile main;
+            main.token = "main"; main.name = "Main stream";
+            main.width = stream.width; main.height = stream.height; main.fps = stream.fps;
+            main.bitrate_kbps = stream.bitrate_kbps; main.rtsp_path = cfg.rtsp.path;
+            mp.push_back(main);
+            if (sub_ok) {
+                onvif::MediaProfile sub;
+                sub.token = "sub"; sub.name = "Sub stream";
+                sub.width = sub_stream.width; sub.height = sub_stream.height; sub.fps = sub_stream.fps;
+                sub.bitrate_kbps = sub_stream.bitrate_kbps; sub.rtsp_path = cfg.rtsp.sub_path;
+                mp.push_back(sub);
+            }
+            onvif_service.set_profiles(mp);
+            onvif_service.set_ports(cfg.api.port, cfg.rtsp.port);
+        }
+        if (cfg.onvif.enabled) httpd.set_onvif(&onvif_service);
+        LOGI(MOD, "onvif: %s", cfg.onvif.enabled ? "on" : "off");
         LOGI(MOD, "claim state: %s", setup_gate.unclaimed() ? "UNCLAIMED (serving only the setup flow)" : "claimed");
         int tfd = -1;
         if (cfg.telemetry.log_interval_s > 0) {

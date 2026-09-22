@@ -170,6 +170,21 @@ struct ApiConfig {
 // blank password, is how a deliberately-open camera is configured". So it
 // turns off the session gate AND the unclaimed redirect, and no other meaning
 // is invented for it here.
+// AP11 ONVIF. Field names and meanings from the section the stock settings
+// page renders. `password` is CLEARTEXT and opt-in, exactly as upstream says:
+// it is what unlocks WSSE PasswordDigest, because /etc/shadow cannot produce
+// the cleartext a digest has to be recomputed from.
+//
+// Default DIFFERS from upstream, which defaults enabled=true: this stack has
+// never run against a real ONVIF client, and a half-answering camera on the
+// network is worse than a silent one. It goes to true when it is
+// hardware-accepted.
+struct OnvifConfig {
+    bool        enabled  = false;
+    std::string username = "root";
+    std::string password;          // cleartext; empty = /etc/shadow only
+};
+
 struct SystemConfig {
     bool unsafe = false;
 };
@@ -194,6 +209,7 @@ struct AppConfig {
     AiConfig          ai;
     OsdConfig         osd;
     SystemConfig      system;
+    OnvifConfig       onvif;
     TelemetryConfig   telemetry;
     ApiConfig         api;
     LogConfig         log;
