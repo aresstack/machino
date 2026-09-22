@@ -520,3 +520,34 @@ gehoert, ist offen.
 
 AP0.4 (Boot-Baseline), AP0.5 (ein einzelner MAIN-Zyklus), AP0.6
 (Relay-Smoke via `tools/relay-gate.ps1`) und AP0.8 (Messwerte eintragen).
+
+---
+
+## Rows 6.1-6.4 — geschlossen durch AP5, 2026-09-22
+
+| Zeile | Verdikt | Beleg |
+|---|---|---|
+| 6.1 | **PASS** | `101 Switching Protocols`, eine per `logger` erzeugte Nonce kam im WebSocket an |
+| 6.2 | **PASS** | zwei Clients, **dieselbe** Nonce, **ein** `logread` |
+| 6.3 | **PASS** | Client A geschlossen, B empfaengt weiter, `logread` PID unveraendert |
+| 6.4 | **PASS** | beide geschlossen, **0 Zombies**, Reader bleibt bestehen - siehe unten |
+
+**Zu 6.4:** die Zeile fragte urspruenglich "child gone, no zombie". Der Vertrag
+hat sich mit Fix A geaendert - der Reader ist **absichtlich** persistent und
+stirbt erst mit dem Daemon. "Child gone" waere heute ein Fehler. Abgenommen
+wurde gegen den heutigen Vertrag.
+
+### ZURUECKGEZOGEN: die Aussage zu `ws_logs_clients` in Runde 5
+
+In Runde 5 stand hier, `ws_logs_clients` habe am Ende auf 0 gestanden "obwohl
+die Logs-Seite offen sein sollte", und daraus wurde geschlossen, der Tab sei
+geschlossen gewesen oder die Verbindung abgerissen.
+
+**Der Zaehler konnte gar nichts anderes sagen.** AP5 hat gefunden, dass er an
+zwei Stellen dekrementiert und **nirgends** inkrementiert wurde; da `dec()` bei
+null klemmt, stand er fuer die gesamte Prozesslaufzeit auf 0. Behoben in
+`13f998f`.
+
+Die Schlussfolgerung ist damit unbegruendet und wird zurueckgezogen. Was der
+Nutzer beobachtet hat - "Alle Streams und Log laufen noch" - war vermutlich
+korrekt, und meine Messung war es nicht.
