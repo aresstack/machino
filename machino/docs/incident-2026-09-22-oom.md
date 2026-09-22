@@ -10,7 +10,8 @@ a power-cycle would have destroyed the log.
 Reconstructed from `machino.log`, `dmesg` and the OOM killer's own output.
 
 ```
-05:49:35  boot (see "an earlier reboot" below)
+05:49:38  boot - the operator cold power-cycle after the deploy (see the
+          clock-step note below; there was only ever this one boot)
 05:49:47  machino e611220 starts, pid 990
 05:50-05:52  Live testing: WebRTC MAIN carries 38 MB of RTP, send_err=0,
              MSE and two windows all fine
