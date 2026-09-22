@@ -166,6 +166,11 @@ private:
         std::unique_ptr<IFrameSource> fs;
         std::unique_ptr<IEncoder>     enc;
         bool            bound = false;
+        // What has actually been acquired, so the unwind releases exactly that
+        // and nothing else (AP2.6). Without these, a unit that failed early
+        // called disable()/stop() on resources it never enabled or started.
+        bool            fs_enabled = false;
+        bool            enc_started = false;
         bool            running = false;
         std::thread     thread;
         std::atomic<bool> quit{false};

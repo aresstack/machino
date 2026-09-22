@@ -16,6 +16,7 @@ using namespace machino;
 static int g_fail = 0, g_pass = 0;
 int g_fail_ext = 0, g_pass_ext = 0;     // shared with test_lifecycle.cpp
 void run_lifecycle_tests();
+void run_lifecycle_fault_matrix_tests();
 void run_power_tests();
 void run_json_tests();
 void run_event_tests();
@@ -330,6 +331,7 @@ int main() {
     test_ingenic_conversion();
     test_config_keys();
     run_lifecycle_tests();
+    run_lifecycle_fault_matrix_tests();
     run_power_tests();
     run_json_tests();
     run_event_tests();

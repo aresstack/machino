@@ -273,3 +273,138 @@ void run_lifecycle_tests() {
     test_timer_fires_while_demand_arrives();
     test_shutdown_with_outstanding_demand();
 }
+
+// AP2.11: fault injection at EVERY controllable bring-up stage.
+//
+// The contract each case pins is the same one:
+//
+//     stage N fails
+//       -> every stage below N is torn down, in reverse order
+//       -> no stage above N ever ran
+//       -> the platform is down
+//       -> the state is FAILED, and FAILED is sticky
+//
+// Before this, only Bind, BringUp, Encoder, EncoderStart and Jpeg had any
+// coverage at all, FrameSource had none, and nothing asserted the ORDER of the
+// unwind or that a later stage was never reached. A cleanup applied to a
+// resource that was never acquired, or a resource acquired and then forgotten,
+// both look like a passing test without those two assertions.
+void run_lifecycle_fault_matrix_tests() {
+    // Bring-up order, as pinned by test_first_acquire_starts_once:
+    //   platform.bring_up, fs.create, enc.create, bind, fs.enable, enc.start
+    struct Case {
+        const char*               name;
+        FakePlatform::FailAt      fail;
+        std::vector<std::string>  expect_up;      // stages that must appear, in order
+        std::vector<std::string>  forbid;         // stages that must NEVER appear
+        std::vector<std::string>  expect_down;    // teardown, in the order it must happen
+    };
+    const std::vector<Case> cases = {
+        { "BringUp", FakePlatform::FailAt::BringUp,
+          {"platform.bring_up"},
+          {"fs.create", "enc.create", "bind", "fs.enable", "enc.start"},
+          {} },                                   // nothing was acquired, nothing to release
+        { "FrameSource", FakePlatform::FailAt::FrameSource,
+          {"platform.bring_up"},
+          {"fs.create", "enc.create", "bind", "fs.enable", "enc.start"},
+          {"platform.tear_down"} },
+        { "Encoder", FakePlatform::FailAt::Encoder,
+          {"platform.bring_up", "fs.create"},
+          {"enc.create", "bind", "fs.enable", "enc.start"},
+          {"fs.destroy", "platform.tear_down"} },
+        { "Bind", FakePlatform::FailAt::Bind,
+          {"platform.bring_up", "fs.create", "enc.create", "bind"},
+          {"fs.enable", "enc.start"},
+          {"enc.destroy", "fs.destroy", "platform.tear_down"} },
+        { "EncoderStart", FakePlatform::FailAt::EncoderStart,
+          {"platform.bring_up", "fs.create", "enc.create", "bind", "fs.enable", "enc.start"},
+          {},
+          {"fs.disable", "unbind", "enc.destroy", "fs.destroy", "platform.tear_down"} },
+    };
+
+    for (const Case& c : cases) {
+        Rig r;
+        r.platform.fail_at = c.fail;
+        r.platform.fail_times = 1;                 // a later attempt WOULD succeed
+        Result res;
+        DemandHandle d = r.mgr.acquire(ConsumerType::Rtsp, &res);
+
+        LCHECK(!d.active());
+        LCHECK(!res);
+        LCHECK(r.mgr.state() == State::Failed);
+        LCHECK(!r.platform.is_up());               // never left half up
+        LCHECK(r.mgr.stats().total_demand == 0);
+        LCHECK(r.mgr.stats().failed_count == 1);
+        LCHECK(r.mgr.stats().generation == 0);     // a failed start is not a generation
+
+        const std::vector<std::string> log = r.log.snapshot();
+        auto index_of = [&](const std::string& what) -> int {
+            for (size_t i = 0; i < log.size(); ++i) if (log[i] == what) return (int)i;
+            return -1;
+        };
+
+        // every stage up to and including the failing one ran, in order
+        int prev = -1;
+        for (const std::string& want : c.expect_up) {
+            const int at = index_of(want);
+            LCHECK(at > prev);                     // present AND after the previous
+            if (at <= prev) fprintf(stderr, "  (%s: missing or out of order: %s)\n", c.name, want.c_str());
+            prev = at;
+        }
+        // nothing above the failing stage was ever attempted
+        for (const std::string& never : c.forbid) {
+            LCHECK(index_of(never) < 0);
+            if (index_of(never) >= 0) fprintf(stderr, "  (%s: stage above the failure ran: %s)\n", c.name, never.c_str());
+        }
+        // the unwind released what was acquired, in reverse order
+        prev = -1;
+        for (const std::string& want : c.expect_down) {
+            const int at = index_of(want);
+            LCHECK(at > prev);
+            if (at <= prev) fprintf(stderr, "  (%s: teardown missing or out of order: %s)\n", c.name, want.c_str());
+            prev = at;
+        }
+        // a cleanup for something never acquired would show up here
+        if (c.fail == FakePlatform::FailAt::BringUp) {
+            LCHECK(index_of("platform.tear_down") < 0);   // bring_up never succeeded
+            LCHECK(index_of("fs.destroy") < 0);
+            LCHECK(index_of("enc.destroy") < 0);
+            LCHECK(index_of("unbind") < 0);
+        }
+        if (c.fail == FakePlatform::FailAt::FrameSource) {
+            LCHECK(index_of("fs.destroy") < 0);           // never created
+            LCHECK(index_of("fs.disable") < 0);           // never enabled
+            LCHECK(index_of("unbind") < 0);               // never bound
+        }
+        if (c.fail == FakePlatform::FailAt::Encoder) {
+            LCHECK(index_of("unbind") < 0);               // never bound
+            LCHECK(index_of("enc.destroy") < 0);          // never created
+            LCHECK(index_of("enc.stop") < 0);             // never started
+            LCHECK(index_of("fs.disable") < 0);           // never enabled
+        }
+        if (c.fail == FakePlatform::FailAt::Bind) {
+            LCHECK(index_of("fs.disable") < 0);           // bind failed BEFORE enable
+            LCHECK(index_of("enc.stop") < 0);             // never started
+            LCHECK(index_of("unbind") < 0);               // the bind never took
+        }
+        if (c.fail == FakePlatform::FailAt::EncoderStart) {
+            // start() was CALLED and refused, so the encoder is not running:
+            // stop() must not be issued for it.
+            LCHECK(index_of("enc.stop") < 0);
+            LCHECK(index_of("fs.disable") >= 0);          // enable DID succeed, so this must run
+            LCHECK(index_of("unbind") >= 0);              // and the bind DID take
+        }
+
+        // AP2.5: and it stays FAILED, even though the next attempt would work
+        const int before = r.log.count("platform.bring_up");
+        Result again;
+        LCHECK(!r.mgr.acquire(ConsumerType::Rtsp, &again).active());
+        LCHECK(!again);
+        LCHECK(!r.mgr.acquire_base(ConsumerType::Ai, &again).active());
+        std::vector<uint8_t> jpg; std::string err;
+        LCHECK(!r.mgr.snapshot(jpg, err));
+        LCHECK(r.mgr.state() == State::Failed);
+        LCHECK(r.log.count("platform.bring_up") == before);
+        LCHECK(r.mgr.stats().failed_count == 1);   // still ONE failure, not four
+    }
+}

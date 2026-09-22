@@ -540,8 +540,10 @@ bool PipelineManager::start_unit_locked(int unit) {
     u.bound = true;
     r = u.fs->enable();
     if (!r) return fail("framesource enable", r.code);
+    u.fs_enabled = true;
     r = u.enc->start();
     if (!r) return fail("encoder start", r.code);
+    u.enc_started = true;
 
     u.quit = false; u.frames = 0; u.dropped = 0;
     {
@@ -558,9 +560,17 @@ void PipelineManager::stop_unit_locked(int unit) {
     Unit& u = units_[unit];
     u.quit = true;
     if (u.thread.joinable()) u.thread.join();
-    if (u.enc) u.enc->stop();
-    if (u.fs)  u.fs->disable();
+    // Release only what was actually acquired. `bound` was already tracked;
+    // `enable` and `start` were not, so a unit that failed at encoder-create
+    // used to call disable() on a framesource that had never been enabled.
+    // The Ingenic adapter happens to guard that internally, but the lifecycle
+    // must not depend on an adapter being forgiving - and an unwind that logs
+    // steps it never performed is unreadable exactly when it matters.
+    if (u.enc && u.enc_started) u.enc->stop();
+    if (u.fs  && u.fs_enabled)  u.fs->disable();
     if (u.bound && u.fs && u.enc) platform_.unbind(*u.fs, *u.enc);
+    u.enc_started = false;
+    u.fs_enabled  = false;
     u.bound = false;
     u.enc.reset();
     u.fs.reset();
