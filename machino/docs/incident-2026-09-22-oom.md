@@ -464,3 +464,77 @@ separates "does not restart" from "does not release".
 - No fix attempted, no configuration changed, no restart, no power-cycle.
 - Rollback to the pre-deploy build remains available and verified:
   `/c/tmp/machino-rollback/`.
+
+---
+
+## Nachtrag 2026-09-22, Runde 4: Hard-Lockup nach COLD BOOT
+
+**Die bisherige Erklärung "Warm-Start + Browser-Burst" ist in dieser Form
+widerlegt.** Derselbe Hard-Lockup trat nach einem echten Cold Power-Cycle beim
+**ersten Post-Login-Seitenaufbau** im Browser auf. Warmstart kann ihn
+begünstigen, ist aber **nicht notwendige Voraussetzung**.
+
+### Ablauf
+
+```
+Cold Power-Cycle (Fix B, 065da41)
+  uptime 0 min, VmRSS 1516 kB, COLD_IDLE, 1 logread, alle Zähler 0
+CLI-Regression (RTSP + /ws/logs während ACTIVE, 2 Generationen)  -> sauber
+Baseline 09:05, Sampler ab 09:06                                 -> flach
+Browser: Login-Seite  ok
+Browser: Login        ok
+Browser: weiße Seite, lange Ladephase
+Browser: "Webseite nicht erreichbar"
+Kamera: kein Ping, kein ARP, Ports 22/80/554 tot
+```
+
+Der lokale Adapter war nachweislich intakt (`192.168.1.222` gesetzt, Gateway
+antwortet); am Adapter wurde nichts verändert. Der Ausfall liegt an der Kamera.
+
+### Was das für 10.4 heißt
+
+10.4 ist **FAIL**, und die Zeile ist **gar nicht bis zum Mehrclient-Test
+gekommen**. Der Fehler trat bei Schritt 1 auf, bevor ein zweiter Live-Client
+oder `/ws/logs` beteiligt war. In Runde 2 brauchte es den dritten/vierten
+Client, und SSH überlebte; hier stirbt die gesamte Netzwerkschicht sofort.
+
+Ob das derselbe Mechanismus ist, ist **offen**. Ein OOM-Kill mit lebendem SSH
+und ein Totalausfall der Netzwerkschicht sind zwei verschiedene Bilder.
+
+### Was Fix A und Fix B damit (nicht) leisten
+
+Sie schließen diesen Lockup **nicht**. Was sie belegbar geschlossen haben, gilt
+weiter und wurde in diesem Lauf 20 Minuten vorher noch einmal bestätigt: ein
+einziger `logread`, keine Retry-Kaskade, `init_failures 0`, `init_retries 0`,
+und die zuvor mit 503 scheiternde Sequenz liefert wieder Daten. Das war
+offenbar nicht die Ursache dieses Symptoms.
+
+### Warum die frühere Gegenprobe trog
+
+Die Gegenprobe, die "frisch gebootet ist dieselbe Last harmlos" stützte, benutzte
+**synthetische curl-Bursts**, keinen echten Browser nach dem Login. Der
+Browser-Pfad enthält mehr als paralleles GET: Session-Cookie, die von busybox
+auf `:85` durchgereichten Assets über die Front-Door, `/ws/video`, WebRTC.
+Meine CLI-Regression deckte RTSP und `/ws/logs` ab — genau diesen Delta **nicht**.
+
+### Beweislage
+
+Unvollständig, und das ist eine Lehre für sich. `/tmp/soak.csv` (die
+Sekundenkurve in den Lockup hinein) und `/var/log/machino.log` liegen auf
+**tmpfs** und sterben mit dem Power-Cycle. Ohne UART ist von diesem Lauf nichts
+zu retten.
+
+### Nächster Test: den Browser-Pfad zerlegen, nicht wiederholen
+
+```
+1. nur /login.html
+2. nur POST /login
+3. danach GET /
+4. danach Assets sequenziell
+5. danach Assets parallel
+6. erst danach MSE/WebRTC
+```
+
+Ziel ist die Frage, ob bereits der parallele Proxy-/Asset-Burst die Box umlegt,
+**bevor Video überhaupt beteiligt ist**. Erst danach der Restart-Batch
+(3.3/3.4, 4.2, 4.4-4.6, 9.2-9.8) als eigener Block mit eigenem Power-Cycle.
