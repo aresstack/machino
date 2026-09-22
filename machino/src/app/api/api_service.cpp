@@ -560,7 +560,7 @@ Response ApiService::live_image(const std::string& query) {
         // A control this platform does not have is NOT an error here: the page
         // sends every live field it rendered, and refusing the whole push
         // because one knob is unsupported would break the others with it.
-        const power::ApplyResult ar = tuning_.set_image(c, iv);
+        const power::ApplyResult ar = tuning_.set_image_live(c, iv);
         if (ar.ok) { ++ok; applied.set(name, Json::integer(ar.effective)); }
     }
 

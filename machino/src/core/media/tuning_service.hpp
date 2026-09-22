@@ -41,6 +41,25 @@ public:
     Result exposure(ExposureReadback& out);
 
     power::ApplyResult set_image(ImageControl c, int value);
+
+    // AP10: the same apply, but WITHOUT recording the value as "requested".
+    //
+    // /api/v1/config reports image settings from `requested_`, and the stock
+    // settings page reads that once, at load, as state.initial. liveDrift()
+    // then compares the sliders against it to decide whether to restore the
+    // saved values when the page is left. If a live PREVIEW push updated
+    // `requested_`, a reload after dragging without saving would show the
+    // dragged values as the saved ones, liveDrift() would see no drift, and
+    // the restore would never happen - leaving the camera holding values
+    // nobody saved until the next restart.
+    //
+    // `effective_` IS still updated: that is what the hardware is doing, and
+    // reporting it accurately is the point of the effective state.
+    power::ApplyResult set_image_live(ImageControl c, int value);
+
+private:
+    power::ApplyResult apply_image(ImageControl c, int value, bool record_requested);
+public:
     power::ApplyResult set_latency_profile(LatencyProfile p);
     power::ApplyResult set_gop(int frames);
     power::ApplyResult set_framesource_buffers(int n);

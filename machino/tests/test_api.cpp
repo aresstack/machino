@@ -641,6 +641,33 @@ void test_ap10_live_image() {
         api::Response cfg = r.api.config();
         ACHECK((int)cfg.body.get("revision")->as_int() == rev0);
     }
+    // ... and, less obviously, /api/v1/config must not REPORT the dragged
+    // value either. The settings page reads that once at load as
+    // state.initial, and liveDrift() compares the sliders against it to decide
+    // whether to restore the saved values when the page is left. If a preview
+    // push rewrote it, a reload after dragging without saving would show the
+    // dragged values as saved, liveDrift() would see no drift, and the camera
+    // would keep values nobody saved until the next restart.
+    {
+        api::Response before = r.api.config();
+        const Json* b = path(before.body, "image.brightness");
+        const long long saved = (b && !b->is_null()) ? b->as_int() : -1;
+        ACHECK(r.api.live_image("brightness=37").status == 200);
+        api::Response after = r.api.config();
+        const Json* a = path(after.body, "image.brightness");
+        const long long now = (a && !a->is_null()) ? a->as_int() : -1;
+        ACHECK(now == saved);                       // the config still says what was SAVED
+        ACHECK(now != 37 || saved == 37);
+    }
+    // the persisting path, by contrast, DOES move it - the two must not be
+    // collapsed into one call with a flag
+    {
+        api::Response p = r.api.patch_config("{\"image\":{\"brightness\":64}}", "");
+        if (p.status == 200) {
+            const Json* a = path(r.api.config().body, "image.brightness");
+            ACHECK(a && !a->is_null() && a->as_int() == 64);
+        }
+    }
 
     // the one non-numeric control, decoded exactly as the PATCH path does
     {

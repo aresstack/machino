@@ -74,13 +74,17 @@ Result TuningService::exposure(ExposureReadback& out) {
     return pipeline_.read_exposure(out);
 }
 
-ApplyResult TuningService::set_image(ImageControl c, int value) {
+ApplyResult TuningService::set_image(ImageControl c, int value) { return apply_image(c, value, true); }
+// See the header: the preview must not rewrite what the config reports.
+ApplyResult TuningService::set_image_live(ImageControl c, int value) { return apply_image(c, value, false); }
+
+ApplyResult TuningService::apply_image(ImageControl c, int value, bool record_requested) {
     const RangeCap cap = image_caps_.control[(int)c];
     if (!image_ || cap.support != Cap::Supported)
         return ApplyResult::rejected(ApplyMode::Unsupported, value, std::string(image_control_name(c)) + " is not supported");
     if (!cap.in_range(value) || (c == ImageControl::AntiFlicker && value != 0 && value != 50 && value != 60))
         return ApplyResult::rejected(cap.apply, value, std::string(image_control_name(c)) + " outside supported values");
-    {
+    if (record_requested) {
         std::lock_guard<std::mutex> lk(m_);
         requested_[(int)c] = value;
     }
