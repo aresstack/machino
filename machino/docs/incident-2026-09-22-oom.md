@@ -38,8 +38,8 @@ The lifecycle did everything right on the way down — `demand -1 … all=0`,
 `unit main stopped`, `ING_PLAT down`, `COLD_IDLE`. Ninety seconds later the
 next consumer could not start the platform.
 
-**The kernel driver disagrees with our error message.** On every failed
-attempt `dmesg` shows a *complete, successful* sensor bring-up:
+**The failure comes late in the bring-up.** On every failed attempt `dmesg`
+shows the driver getting all the way through a sensor bring-up:
 
 ```
 probe ok ------->imx307
@@ -155,9 +155,13 @@ for comparison, at the OOM      anon-rss 27 208 kB
 **Two things follow.**
 
 *The broken state does not outlive the process.* A fresh process initialised
-IMP without trouble on a kernel that had just OOM-killed its predecessor. So
-there is no global, reboot-only stuck state — which is genuinely good news, and
-it is information a power-cycle would have thrown away.
+IMP without trouble on a kernel that had just OOM-killed its predecessor.
+
+> **WITHDRAWN.** Later testing contradicts this: after Test B broke the camera,
+> neither a graceful restart nor `SIGKILL` + start produced a process that
+> could initialise IMP. See "The damage survives process replacement" below.
+> Why *this* particular restart succeeded is still unexplained. The reading was
+> premature — one successful restart is not a property.
 
 *This does not exonerate the fork hypothesis.* What the fork is suspected of
 damaging — per-process device references and VMAs — is exactly what the kernel
