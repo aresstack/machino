@@ -3,7 +3,13 @@
 //   COLD_IDLE --first demand--> STARTING --ok--> ACTIVE
 //   ACTIVE --last demand gone--> GRACE_IDLE --demand returns--> ACTIVE
 //   GRACE_IDLE --grace timeout--> STOPPING --> COLD_IDLE
-//   STARTING --failure (rolled back)--> FAILED --new demand--> STARTING
+//   STARTING --failure (rolled back)--> FAILED  (terminal: see below)
+//
+// FAILED is STICKY. It is never left again while the process lives: no new
+// demand, no returning consumer and no reconnect re-attempts the bring-up.
+// The retry a consumer connect used to trigger was unbounded in exactly the
+// way that caused the OOM of 2026-09-22, and there is no defined recovery
+// event for a half-initialised vendor stack. Recovery = restart the daemon.
 //
 // M8 splits ownership in two layers that this class still owns alone:
 //
@@ -199,7 +205,7 @@ private:
     void release(ConsumerType type, int unit);
     void transition(State to, const char* why);
     int  total_all_locked() const;
-    bool ensure_base_locked(ConsumerType type, int unit);    // ColdIdle/Failed -> Active
+    bool ensure_base_locked(ConsumerType type, int unit);    // ColdIdle -> Active; FAILED is refused
     bool start_base_locked(int first_unit);
     void stop_base_locked();
     bool start_unit_locked(int unit);
@@ -222,6 +228,7 @@ private:
     int              ai_demand_ = 0;              // base-only holders (detectors)
     std::string      last_error_;
     bool             shutdown_ = false;
+    bool             failed_refused_ = false;     // first refusal logged, the rest stay quiet
     int              sensor_fps_target_ = -1;
     StateListener    listener_;
     PostStartHook    post_start_;

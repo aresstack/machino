@@ -224,9 +224,11 @@ void test_failed_restart_deterministic() {
     PCHECK(r.mgr.state() == State::Failed && !r.platform.is_up());
     PCHECK(r.mgr.stats().total_demand == 1);                          // demand not lost
     PCHECK(r.log.count("platform.bring_up") == 2 && r.log.count("platform.tear_down") == 2);
-    // a new consumer may try again (no automatic loop happened)
-    auto e = r.mgr.acquire(ConsumerType::Rtsp);
-    PCHECK(e.active() && r.mgr.state() == State::Active && r.log.count("platform.bring_up") == 3);
+    // FAILED is sticky: a new consumer does NOT get a third bring-up, even
+    // though this platform would succeed on the next attempt (fail_times = 1).
+    Result res; auto e = r.mgr.acquire(ConsumerType::Rtsp, &res);
+    PCHECK(!e.active() && !res && r.mgr.state() == State::Failed);
+    PCHECK(r.log.count("platform.bring_up") == 2);
 }
 
 void test_requested_vs_effective() {

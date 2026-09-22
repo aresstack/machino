@@ -191,7 +191,12 @@ void test_jpeg_fail_from_cold_rolls_base_back() {
     MCHECK(!r.mgr.snapshot(jpg, err));
     MCHECK(r.mgr.state() == State::Failed);
     MCHECK(r.log.count("platform.bring_up") == r.log.count("platform.tear_down"));
-    MCHECK(r.mgr.snapshot(jpg, err));                        // Failed -> new demand recovers
+    // FAILED is sticky, and the snapshot door is no exception: a rolled-back
+    // base stays down until the daemon restarts, even though a second attempt
+    // would succeed here. Widening note: this makes a JPEG-encoder failure
+    // terminal for the whole base too, not just for snapshots.
+    MCHECK(!r.mgr.snapshot(jpg, err));
+    MCHECK(r.mgr.state() == State::Failed);
 }
 
 // ---- unconfigured units refuse cleanly --------------------------------------

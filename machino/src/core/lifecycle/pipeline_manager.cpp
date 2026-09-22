@@ -81,8 +81,28 @@ DemandHandle PipelineManager::acquire(ConsumerType type, Result* result) {
 
 bool PipelineManager::ensure_base_locked(ConsumerType type, int unit) {
     switch (state_) {
-        case State::ColdIdle:
-        case State::Failed: {
+        case State::Failed:
+            // STICKY. A failed bring-up is NOT retried - not by a new consumer,
+            // not by a returning one, not by the same one reconnecting.
+            //
+            // Removing the five-retry loop inside SystemSession only capped the
+            // burst; every consumer connect still called straight back in here,
+            // which turned "5 retries per round" into "1 retry per connect" -
+            // and a browser or RTSP client that reconnects is an unbounded
+            // source of connects. Each failed vendor init costs about 1.2 MB
+            // that is never returned, so on a 42 MB camera that is still a slow
+            // OOM. See docs/incident-2026-09-22-oom.md.
+            //
+            // The daemon has no defined recovery event for a half-initialised
+            // vendor stack, so the only way out is a restart of the daemon.
+            // That is deliberate: a camera that answers 503 and says why beats
+            // one that dies of an unbounded retry it never reported.
+            if (!failed_refused_) {
+                failed_refused_ = true;
+                LOGE(MOD, "refusing bring-up: pipeline is FAILED (%s) - it stays FAILED until the daemon restarts", last_error_.c_str());
+            }
+            return false;
+        case State::ColdIdle: {
             char why[64]; snprintf(why, sizeof why, "(consumer=%s unit=%s)", consumer_name(type), unit_name(unit));
             transition(State::Starting, why);
             if (!start_base_locked(unit)) {
