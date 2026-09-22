@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstdio>
+#include <ctime>
 #include <cstring>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -105,6 +106,7 @@ void PeerSession::on_readable() {
         const uint8_t b0 = buf[0];
         if (is_stun(buf, (size_t)n)) {
             StunRequest req = parse_binding_request(buf, (size_t)n, pwd_);
+            ++stun_reqs_;
             if (!req.ok || !req.integrity_ok) continue;         // not ours / wrong creds
             // the authenticated check IS the peer address discovery (ICE-lite)
             peer_ip_ = ntohl(from.sin_addr.s_addr);
@@ -117,23 +119,27 @@ void PeerSession::on_readable() {
             send_udp(resp.data(), resp.size());
         } else if (b0 >= 20 && b0 <= 63) {                      // DTLS
             dtls_.feed(buf, (size_t)n);
-            if (!dtls_.step()) return;                          // fatal alert: media never starts
+            if (!dtls_.step()) { LOGW(MOD, "dtls fatal (stun=%llu)", (unsigned long long)stun_reqs_); return; }
             flush_dtls();
-            if (dtls_.handshake_done() && !srtp_) {
+            if (dtls_.handshake_done() && !dtls_logged_) {
+                dtls_logged_ = true;
                 SrtpKey ours{}, theirs{};
                 if (dtls_.export_srtp(ours, theirs)) {
                     srtp_.reset(new SrtpSession(ours, theirs));
                     await_key_ = true;
                     pli_ = true;                                // start with a fresh IDR
-                    LOGI(MOD, "dtls done, srtp live");
+                    LOGI(MOD, "dtls done, srtp live (stun=%llu)", (unsigned long long)stun_reqs_);
+                } else {
+                    LOGW(MOD, "dtls done but SRTP export FAILED (use_srtp not negotiated?)");
                 }
             }
         } else if (b0 >= 128 && b0 <= 191) {                    // SRTP/SRTCP
+            ++rtcp_in_;
             if (!srtp_) continue;
             std::vector<uint8_t> pkt(buf, buf + n);
             if (is_rtcp(buf, (size_t)n) && srtp_->unprotect_rtcp(pkt)) {
                 RtcpInfo info = parse_rtcp(pkt.data(), pkt.size());
-                if (info.pli) pli_ = true;
+                if (info.pli) { pli_ = true; ++pli_in_; }
             }
         }
     }
@@ -155,17 +161,34 @@ bool PeerSession::take_pli() {
 void PeerSession::send_au(const uint8_t* p, size_t n, int64_t pts_us, bool key) {
     if (!srtp_ || !have_peer_) return;
     if (await_key_ && !key) return;
+    ++au_count_;
     const uint32_t ts = (uint32_t)((uint64_t)pts_us * 9 / 100); // us -> 90 kHz
     auto pkts = packetize_h264(p, n, ts, seq_, rtp_);
     for (auto& pkt : pkts) {
         if (!srtp_->protect_rtp(pkt)) return;
-        if (!send_udp(pkt.data(), pkt.size())) {
+        if (send_udp(pkt.data(), pkt.size())) {
+            ++rtp_count_; rtp_bytes_ += pkt.size(); ++send_ok_;
+        } else {
+            ++send_err_; last_send_errno_ = errno;
             // socket backpressure: drop the rest of this AU, resume at a key
             await_key_ = true;
             return;
         }
     }
     await_key_ = false;
+}
+
+// Compact per-session fault localisation, called ~every 2 s while a session
+// exists. Shows exactly where the H.264 stops on its way to the browser.
+void PeerSession::log_stats() {
+    const int64_t now = (int64_t)time(nullptr) * 1000;
+    if (now - last_stat_ms_ < 2000) return;
+    last_stat_ms_ = now;
+    LOGI(MOD, "media: peer=%d dtls=%d srtp=%d AUs=%llu RTP=%llu bytes=%llu send_err=%llu(errno=%d) rtcp_in=%llu pli=%llu stun=%llu",
+         have_peer_ ? 1 : 0, dtls_.handshake_done() ? 1 : 0, srtp_ ? 1 : 0,
+         (unsigned long long)au_count_, (unsigned long long)rtp_count_, (unsigned long long)rtp_bytes_,
+         (unsigned long long)send_err_, last_send_errno_,
+         (unsigned long long)rtcp_in_, (unsigned long long)pli_in_, (unsigned long long)stun_reqs_);
 }
 
 }} // namespace machino::webrtc

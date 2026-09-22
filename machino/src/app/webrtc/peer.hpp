@@ -60,6 +60,16 @@ private:
     uint32_t    peer_ip_ = 0;          // host order
     uint16_t    peer_port_ = 0;
     bool        have_peer_ = false;
+    // media-plane telemetry (logged periodically): the exact fault localisation
+    // GPT asked for - where the H.264 stops on its way to the browser.
+    bool        dtls_logged_ = false;
+    uint64_t    stun_reqs_ = 0;
+    uint64_t    au_count_ = 0, rtp_count_ = 0, rtp_bytes_ = 0;
+    uint64_t    send_ok_ = 0, send_err_ = 0;
+    int         last_send_errno_ = 0;
+    uint64_t    rtcp_in_ = 0, pli_in_ = 0;
+    int64_t     last_stat_ms_ = 0;
+    void log_stats();
 };
 
 }} // namespace machino::webrtc

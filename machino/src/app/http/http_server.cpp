@@ -729,6 +729,7 @@ bool HttpServer::rtc_ws_input(Client& c) {
 void HttpServer::pump_rtc(Client& c) {
     if (!c.rtc) return;
     c.rtc->tick();
+    c.rtc->log_stats();
     if (c.rtc->take_pli() && pipeline_) pipeline_->request_idr();
     if (!c.rtc->media_ready() || !c.rtc_sink) return;
     for (int i = 0; i < 8; ++i) {
