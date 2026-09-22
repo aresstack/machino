@@ -356,20 +356,15 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
                 std::string extra;
                 size_t at = 0;
                 while (at <= ch.size()) {                       // one header line per offered scheme
-                    const size_t nl = ch.find('
-', at);
+                    const size_t nl = ch.find('\n', at);
                     const std::string one = ch.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
-                    if (!one.empty()) extra += "WWW-Authenticate: " + one + "
-";
+                    if (!one.empty()) extra += "WWW-Authenticate: " + one + "\r\n";
                     if (nl == std::string::npos) break;
                     at = nl + 1;
                 }
                 // never log the credential, only that it was refused
                 LOGW(MOD, "%s %s %s: unauthorised", s.peer.c_str(), method.c_str(), unit_name(s.unit));
-                std::string r = "RTSP/1.0 401 Unauthorized
-CSeq: " + cseq + "
-" + extra + "
-";
+                std::string r = "RTSP/1.0 401 Unauthorized\r\nCSeq: " + cseq + "\r\n" + extra + "\r\n";
                 send_all(s.fd, r.data(), r.size(), cfg_.send_stall_ms);
                 return true;                                     // keep the connection for the retry
             }
