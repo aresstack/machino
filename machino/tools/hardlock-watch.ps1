@@ -56,9 +56,12 @@ $ringBase = Join-Path $OutDir 'ring.pcapng'
 # The filter is QUOTED: Start-Process joins -ArgumentList with spaces and does
 # not quote anything, so a bare `host 1.2.3.4` reaches dumpcap as two separate
 # arguments and it exits before writing a byte - with its window hidden, in
-# silence. Its stderr goes to a file for the same reason.
+# silence. Its stderr goes to a file for the same reason - and -q stops the
+# continuous "Packets: N" line, which would otherwise grow that file without
+# bound for as long as the watch runs (the point of this script is to run for
+# days).
 $dcErr = Join-Path $OutDir "dumpcap.err"
-$dcArgs = @("-i", "$Iface", "-f", "`"host $Cam`"", "-b", "files:$RingFiles", "-b", "filesize:$RingKB", "-w", "`"$ringBase`"")
+$dcArgs = @("-q", "-i", "$Iface", "-f", "`"host $Cam`"", "-b", "files:$RingFiles", "-b", "filesize:$RingKB", "-w", "`"$ringBase`"")
 $cap = Start-Process -FilePath $dumpcap -ArgumentList $dcArgs -PassThru -WindowStyle Hidden -RedirectStandardError $dcErr
 Start-Sleep -Seconds 2
 if ($cap.HasExited) { Note "dumpcap exited immediately: $(Get-Content $dcErr -Raw)"; throw "capture did not start" }

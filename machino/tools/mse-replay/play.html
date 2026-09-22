@@ -1,0 +1,76 @@
+<!doctype html><meta charset="utf-8"><body><pre id="o">running</pre><video id="v" muted playsinline></video>
+<script>
+// Replays what the shipping muxer produced, through the same steps upstream
+// preview.js takes: readPrft() off the front, then appendBuffer the rest.
+// If Chrome decodes real pictures out of this, the muxer is right where it
+// counts - in the decoder that actually has to accept it.
+const out = [];
+function say(s) { out.push(s); document.getElementById('o').textContent = out.join('\n'); }
+
+// preview.js readPrft(), copied verbatim in behaviour: absolute offsets, and
+// it hands back a view starting at the moof.
+const lagMs = [];
+function readPrft(u8) {
+    if (u8.length < 32 || u8[4] !== 0x70 || u8[5] !== 0x72 || u8[6] !== 0x66 || u8[7] !== 0x74) return u8;
+    const size = ((u8[0] << 24) | (u8[1] << 16) | (u8[2] << 8) | u8[3]) >>> 0;
+    if (size < 32 || size > u8.length) return u8;
+    const secs = (((u8[16] << 24) | (u8[17] << 16) | (u8[18] << 8) | u8[19]) >>> 0) - 2208988800;
+    const frac = ((u8[20] << 24) | (u8[21] << 16) | (u8[22] << 8) | u8[23]) >>> 0;
+    lagMs.push(secs * 1000 + Math.round(frac / 4294967.296));
+    return u8.subarray(size);
+}
+
+(async () => {
+  try {
+    const codec = 'video/mp4; codecs="avc1.640033"';
+    say('MediaSource.isTypeSupported: ' + MediaSource.isTypeSupported(codec));
+
+    const initBuf = new Uint8Array(await (await fetch('new-init.bin')).arrayBuffer());
+    const fragBuf = new Uint8Array(await (await fetch('new-frags.bin')).arrayBuffer());
+    const sizes = (await (await fetch('sizes.txt')).text()).trim().split('\n').map(Number);
+    say('init ' + initBuf.length + ' B, frags ' + fragBuf.length + ' B, ' + sizes.length + ' fragments');
+
+    const v = document.getElementById('v');
+    const ms = new MediaSource();
+    v.src = URL.createObjectURL(ms);
+    await new Promise(r => ms.addEventListener('sourceopen', r, { once: true }));
+    const sb = ms.addSourceBuffer(codec);
+    const append = (b) => new Promise((res, rej) => {
+        sb.addEventListener('updateend', res, { once: true });
+        sb.addEventListener('error', rej, { once: true });
+        sb.appendBuffer(b);
+    });
+
+    await append(initBuf);
+    say('init appended, buffered ranges ' + sb.buffered.length);
+
+    let off = 0, stripped = 0;
+    for (let i = 0; i < sizes.length; i++) {
+        const whole = fragBuf.subarray(off, off + sizes[i]);
+        off += sizes[i];
+        const body = readPrft(whole);
+        if (body.length !== whole.length) stripped++;
+        await append(body);
+    }
+    say('appended ' + sizes.length + ' fragments, prft stripped from ' + stripped);
+    say('buffered ranges: ' + sb.buffered.length +
+        (sb.buffered.length ? '  [' + sb.buffered.start(0).toFixed(3) + ' .. ' +
+         sb.buffered.end(sb.buffered.length - 1).toFixed(3) + ']' : ''));
+    say('prft wall clock read back: ' + (lagMs.length ? new Date(lagMs[0]).toISOString() : 'none') +
+        ' from ' + lagMs.length + ' fragments');
+
+    v.play().catch(e => say('play refused: ' + e));
+    await new Promise(r => setTimeout(r, 2500));
+    const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+    say('videoWidth x videoHeight: ' + v.videoWidth + ' x ' + v.videoHeight);
+    say('currentTime after 2.5 s: ' + v.currentTime.toFixed(3) + '   readyState ' + v.readyState);
+    if (q) say('decoded frames: ' + q.totalVideoFrames + ', dropped: ' + q.droppedVideoFrames);
+    say('error: ' + (v.error ? (v.error.code + ' ' + v.error.message) : 'none'));
+    say('VERDICT: ' + ((v.videoWidth === 1920 && q && q.totalVideoFrames > 0 && !v.error)
+        ? 'DECODED' : 'FAILED'));
+  } catch (e) {
+    say('EXCEPTION ' + (e && e.message ? e.message : e));
+    say('VERDICT: FAILED');
+  }
+})();
+</script>

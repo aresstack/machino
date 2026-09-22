@@ -213,4 +213,45 @@ die sagt, ob ein wachsender Browserpuffer hier angefangen hat oder dort.
   `c1edd92`; der neue Code ist durch Hosttests und CI gedeckt, nicht durch
   Hardware.
 
-CI grün auf `8313bf3` (Hosttests 2467/0, MIPS-Crossbuild).
+CI grün (Hosttests 2501/0, MIPS-Crossbuild).
+
+---
+
+## Nachtrag aus dem Review: die Ausgabe durch einen echten Decoder
+
+Die ehrliche Lücke blieb: `http_server.cpp` ist nicht im Hosttest-Build, die
+Kamera lässt sich nicht neu starten, also war der Muxer durch Unit-Tests und
+einen Crossbuild gedeckt — und durch nichts, das seine Ausgabe je **dekodiert**
+hätte. `tools/mse-replay/` schließt das, ohne den laufenden Daemon anzufassen:
+echte Frames vom Live-Feed, neu gemuxt durch den **ausgelieferten** Code, und
+in headless Chrome durch MSE abgespielt — auf demselben Weg wie `preview.js`,
+einschließlich dessen `readPrft()`.
+
+```
+                         durchgehend     mit 2-s-Aussetzer
+Fragmente                150             110
+prft entfernt aus        150             110
+Buffered Ranges          1               1
+buffered                 0.000 .. 7.497  0.000 .. 5.498
+videoWidth x Height      1920 x 1080     1920 x 1080
+readyState               4               4
+error                    keiner          keiner
+```
+
+150 Frames bei 20 fps sind 7,5 s, und die Range endet bei 7,497 — die
+abgeleitete Zeitachse ist **richtig skaliert**, nicht bloß monoton. Und in
+beiden Läufen **eine einzige** Buffered Range: der zweite ist der, auf den es
+ankam, denn genau dort absorbiert `Timeline` einen langen Aussetzer in den
+Skew, statt ein Loch zu lassen, in dem der Playhead stehen bliebe. Der Browser
+bestätigt, dass keins da ist.
+
+`totalVideoFrames` meldet in beiden Läufen 2. Das ist ein Headless-Artefakt —
+ohne Compositor und mit virtueller Zeit gibt es nichts zu präsentieren.
+Dekodiert **wurde** nachweislich: `videoWidth` wird erst nach einem dekodierten
+Frame gesetzt, `readyState` ist 4, `currentTime` läuft. Als Durchsatzmessung
+taugt die Zahl nicht und wird hier nicht als eine geführt.
+
+Was das **nicht** beweist: den Servierpfad der Kamera selbst — Sockets,
+Backpressure, Drop-until-Key, Demand-Handle. Das bleibt `PENDING_PHYSICAL`.
+Geklärt ist, dass die Bytes, die der Muxer erzeugt, Bytes sind, die ein Browser
+annimmt.
