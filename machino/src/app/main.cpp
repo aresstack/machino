@@ -303,12 +303,22 @@ int main(int argc, char** argv) {
     log_set_syslog(cfg.log.syslog || dropin, dropin ? "majestic" : "machino");
     LOGI(MOD, "machino %s starting (pid %d)", MACHINO_VERSION, (int)getpid());
 
-    // THE ONLY fork() in the daemon's steady-state life, and it happens HERE -
-    // before the hardware registry, before any platform adapter exists, and
-    // long before IMP can have been initialised. Forking later, while IMP is
-    // live, leaves the process permanently unable to re-initialise it after
-    // the next teardown (measured; docs/incident-2026-09-22-oom.md). /ws/logs
-    // from here on only adds and removes subscribers.
+    // The only fork() on the STREAMING path, and it happens HERE - before the
+    // hardware registry, before any platform adapter exists, and long before
+    // IMP can have been initialised. Forking later, while IMP is live, leaves
+    // the process permanently unable to re-initialise it after the next
+    // teardown (measured; docs/incident-2026-09-22-oom.md). /ws/logs from here
+    // on only adds and removes subscribers.
+    //
+    // AP27 correction: this used to say "THE ONLY fork() in the daemon's
+    // steady-state life", and that is not true - set_root_password() forks a
+    // chpasswd. What makes that one safe is a different argument, and it was
+    // nowhere written down: it can only run from the SetupGate, which only
+    // exists while the camera is UNCLAIMED, and an unclaimed camera has no
+    // consumer that could have started IMP (HTTP redirects everything to
+    // /setup, RTSP answers 401). So IMP is not live when it runs. That is a
+    // property of the claim flow, not of the fork - if /setup ever becomes
+    // reachable on a claimed camera, this stops holding.
     //
     // Failure is not fatal: the camera streams fine without a log viewer.
     LogReader log_reader;

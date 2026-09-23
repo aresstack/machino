@@ -1311,7 +1311,13 @@ void HttpServer::loop() {
                 if (c.sub) bus_.unsubscribe(c.sub);
                 if (c.ws_sink) { StreamHub* h = c.ws_hub ? c.ws_hub : hub_; if (h) { c.ws_sink->close(); h->unsubscribe(c.ws_sink); } }
                 if (c.rtc_sink) { StreamHub* h = c.rtc_hub ? c.rtc_hub : hub_; if (h) { c.rtc_sink->close(); h->unsubscribe(c.rtc_sink); } }
-                c.rtc.reset();                          // closes the UDP socket, demand releases
+                c.rtc.reset();                          // closes the UDP socket
+                // The two DemandHandles (ws_demand, rtc_demand) are NOT
+                // released here: they are Client members and their destructors
+                // do it when the erase below drops the unique_ptr. That is
+                // safe because httpd is declared after the PipelineManager in
+                // main() and therefore destroyed before it - release() calls
+                // back into the manager.
                 if (c.relay_fd >= 0) { close(c.relay_fd); c.relay_fd = -1; }
                 close(c.fd); c.fd = -1;
             }
