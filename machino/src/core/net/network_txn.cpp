@@ -7,11 +7,11 @@ namespace machino { namespace net {
 
 namespace {
 
-// A length-prefixed format, so a configuration containing newlines or an
-// equals sign cannot be mistaken for a field separator, and so a truncated
-// file is detectable rather than silently short.
+// Length-prefixed, so a configuration containing newlines cannot be mistaken
+// for a field separator and a truncated file is detectable rather than
+// silently short.
 //
-//   v1\n<token>\n<pending>\n<len>\n<confirmed><len>\n<candidate>
+//   v1\n<token>\n<len>\n<candidate>
 void append_blob(std::string& out, const std::string& s)
 {
     char hdr[32];
@@ -41,169 +41,202 @@ bool take_blob(const std::string& s, size_t& pos, std::string& out)
     return true;
 }
 
+// The confirmed record carries the same length prefix, so a half-written one
+// is recognisable instead of being read as a shorter configuration.
+const char kConfirmedTag[] = "c1\n";
+
+std::string encode_confirmed(const std::string& cfg)
+{
+    std::string out = kConfirmedTag;
+    append_blob(out, cfg);
+    return out;
+}
+
+bool decode_confirmed(const std::string& text, std::string& out)
+{
+    size_t pos = 0;
+    std::string tag;
+    if (!take_line(text, pos, tag) || tag != "c1") return false;
+    return take_blob(text, pos, out);
+}
+
 } // namespace
 
-std::string NetworkTxn::encode(const TxnRecord& r)
+std::string NetworkTxn::encode_pending(const PendingRecord& r)
 {
     char hdr[64];
-    std::snprintf(hdr, sizeof(hdr), "v1\n%llu\n%d\n", (unsigned long long)r.token, r.pending ? 1 : 0);
+    std::snprintf(hdr, sizeof(hdr), "v1\n%llu\n", (unsigned long long)r.token);
     std::string out = hdr;
-    append_blob(out, r.confirmed);
     append_blob(out, r.candidate);
     return out;
 }
 
-bool NetworkTxn::decode(const std::string& text, TxnRecord& out)
+bool NetworkTxn::decode_pending(const std::string& text, PendingRecord& out)
 {
     size_t pos = 0;
-    std::string v, tok, pend;
+    std::string v, tok;
     if (!take_line(text, pos, v) || v != "v1") return false;
-    if (!take_line(text, pos, tok)) return false;
-    if (!take_line(text, pos, pend)) return false;
-    if (tok.empty()) return false;
+    if (!take_line(text, pos, tok) || tok.empty()) return false;
     for (char c : tok) if (c < '0' || c > '9') return false;
 
-    TxnRecord r;
+    PendingRecord r;
     r.token = std::strtoull(tok.c_str(), nullptr, 10);
-    r.pending = (pend == "1");
-    if (!take_blob(text, pos, r.confirmed)) return false;
     if (!take_blob(text, pos, r.candidate)) return false;
     out = r;
     return true;
 }
 
-NetworkTxn::NetworkTxn(IStateStore& store, ApplyFn apply, std::string key)
-    : store_(store), apply_(std::move(apply)), key_(std::move(key)) {}
+NetworkTxn::NetworkTxn(IStateStore& store, ApplyFn apply,
+                       std::string confirmed_key, std::string pending_key)
+    : store_(store), apply_(std::move(apply)),
+      ck_(std::move(confirmed_key)), pk_(std::move(pending_key)) {}
 
-bool NetworkTxn::recover(std::string& err)
+bool NetworkTxn::load_confirmed(std::string& out) const
+{
+    std::string blob;
+    if (!store_.load(ck_, blob)) return false;
+    return decode_confirmed(blob, out);
+}
+
+bool NetworkTxn::seed_confirmed(const std::string& config, std::string& err)
 {
     std::lock_guard<std::mutex> g(m_);
-
-    std::string blob;
-    if (!store_.load(key_, blob)) return false;      // nothing in flight
-
-    TxnRecord r;
-    if (!decode(blob, r)) {
-        // A torn or garbage record. We cannot know what was applied, but we do
-        // know the machine came up, so the safest action is to drop it and
-        // leave whatever the boot scripts configured. Saying so matters more
-        // than pretending it never happened.
-        store_.clear(key_);
-        err = "the stored network transaction was unreadable and has been discarded";
-        return false;
-    }
-
-    // Continue the token sequence across the restart. Without this the
-    // counter starts at 1 again, and a browser still holding a token from
-    // before the crash could confirm a DIFFERENT change that happens to get
-    // the same number -- which is precisely the confirmation-of-something-
-    // -else this class is supposed to make impossible.
-    if (r.token >= next_token_) next_token_ = r.token + 1;
-
-    if (!r.pending) {
-        rec_ = r;                                     // just the confirmed baseline
-        return false;
-    }
-
-    // Applied but never confirmed, and then the process or the board went
-    // away. No timer survives a reboot, so there is nothing to wait for.
-    rec_ = r;
-    rec_.pending = false;
-    deadline_valid_ = false;
-
-    Result rc = apply_ ? apply_(r.confirmed) : Result::ok();
-    rec_.candidate.clear();
-    store_.save(key_, encode(rec_));
-    if (!rc.is_ok()) {
-        err = "could not restore the last confirmed network configuration";
-        return true;
-    }
-    err = "an unconfirmed network change was rolled back after restart";
+    std::string existing;
+    if (load_confirmed(existing)) { err = "a confirmed configuration already exists"; return false; }
+    if (!store_.save(ck_, encode_confirmed(config))) { err = "could not write the confirmed configuration"; return false; }
     return true;
 }
 
-bool NetworkTxn::begin(const std::string& confirmed, const std::string& candidate,
-                       uint32_t now_ms, uint32_t window_ms,
+RecoverOutcome NetworkTxn::recover(std::string& err)
+{
+    std::lock_guard<std::mutex> g(m_);
+
+    std::string pending_blob;
+    const bool had_pending = store_.load(pk_, pending_blob);
+
+    PendingRecord pr;
+    const bool pending_readable = had_pending && decode_pending(pending_blob, pr);
+    if (pending_readable && pr.token >= next_token_) next_token_ = pr.token + 1;
+
+    if (!had_pending) return RecoverOutcome::Nothing;
+
+    // Something was in flight. Whether we can READ it does not change that --
+    // an unreadable pending record still means a change was applied and never
+    // confirmed, so the known-good configuration goes back on either way.
+    std::string good;
+    if (!load_confirmed(good)) {
+        // Fail closed. We will not invent a network configuration; the camera
+        // stays on whatever the boot scripts set and the operator is told.
+        err = "an unconfirmed network change was found, but the last confirmed "
+              "configuration is missing or unreadable -- nothing was applied";
+        return RecoverOutcome::ConfirmedUnusable;
+    }
+
+    pending_ = false;
+    deadline_valid_ = false;
+    store_.clear(pk_);
+
+    Result rc = apply_ ? apply_(good) : Result::ok();
+    if (!rc.is_ok()) {
+        err = "could not restore the last confirmed network configuration";
+        return RecoverOutcome::RolledBack;
+    }
+    err = pending_readable
+        ? "an unconfirmed network change was rolled back after restart"
+        : "an unreadable pending change was found; the last confirmed configuration was restored";
+    return RecoverOutcome::RolledBack;
+}
+
+bool NetworkTxn::begin(const std::string& candidate, uint32_t now_ms, uint32_t window_ms,
                        uint64_t& token_out, std::string& err)
 {
     if (window_ms == 0) { err = "a confirmation window of zero would roll back instantly"; return false; }
 
     std::lock_guard<std::mutex> g(m_);
-    if (rec_.pending) { err = "another change is still waiting for confirmation"; return false; }
+    if (pending_) { err = "another change is still waiting for confirmation"; return false; }
 
-    TxnRecord r;
-    r.token = next_token_++;
-    r.confirmed = confirmed;
-    r.candidate = candidate;
-    r.pending = true;
+    std::string good;
+    if (!load_confirmed(good)) {
+        // Without a known-good configuration there is nothing to fall back to,
+        // so applying a candidate would be a one-way door.
+        err = "there is no confirmed configuration to fall back to";
+        return false;
+    }
+
+    PendingRecord pr;
+    pr.token = next_token_++;
+    pr.candidate = candidate;
 
     // Written BEFORE applying. A crash between this line and the next leaves a
-    // pending record, and recover() puts the confirmed configuration back --
-    // which is the whole reason this class exists.
-    if (!store_.save(key_, encode(r))) {
+    // pending record, and recover() puts the confirmed configuration back.
+    if (!store_.save(pk_, encode_pending(pr))) {
         err = "could not record the pending change; refusing to apply it";
         return false;
     }
 
     Result rc = apply_ ? apply_(candidate) : Result::ok();
     if (!rc.is_ok()) {
-        // Put the known-good one back and forget the attempt.
-        if (apply_) apply_(confirmed);
-        TxnRecord base;
-        base.token = r.token;
-        base.confirmed = confirmed;
-        base.pending = false;
-        rec_ = base;
-        store_.save(key_, encode(base));
+        store_.clear(pk_);
+        if (apply_) apply_(good);        // put the known-good one back
         err = "the change could not be applied";
         return false;
     }
 
-    rec_ = r;
+    pending_ = true;
+    token_ = pr.token;
     deadline_ms_ = now_ms + window_ms;
     deadline_valid_ = true;
-    token_out = r.token;
+    token_out = pr.token;
     return true;
 }
 
 bool NetworkTxn::confirm(uint64_t token, std::string& err)
 {
     std::lock_guard<std::mutex> g(m_);
-    if (!rec_.pending)     { err = "nothing is waiting for confirmation"; return false; }
-    if (token != rec_.token) { err = "that confirmation belongs to a different change"; return false; }
+    if (!pending_)        { err = "nothing is waiting for confirmation"; return false; }
+    if (token != token_)  { err = "that confirmation belongs to a different change"; return false; }
 
-    TxnRecord r;
-    r.token = rec_.token;
-    r.confirmed = rec_.candidate;     // the candidate is now the known-good one
-    r.pending = false;
-    if (!store_.save(key_, encode(r))) { err = "could not record the confirmation"; return false; }
+    std::string blob;
+    PendingRecord pr;
+    if (!store_.load(pk_, blob) || !decode_pending(blob, pr) || pr.token != token) {
+        err = "the pending change is no longer on record";
+        return false;
+    }
 
-    rec_ = r;
+    // Confirmed first, pending second. Crashing between the two leaves a
+    // pending record next to an already-correct confirmed one, and recovery
+    // then re-applies what is already in place -- harmless. The other order
+    // would lose the new configuration.
+    if (!store_.save(ck_, encode_confirmed(pr.candidate))) {
+        err = "could not record the confirmation";
+        return false;
+    }
+    store_.clear(pk_);
+
+    pending_ = false;
     deadline_valid_ = false;
     return true;
 }
 
 bool NetworkTxn::rollback_locked(std::string& err)
 {
-    const std::string good = rec_.confirmed;
-    TxnRecord base;
-    base.token = rec_.token;
-    base.confirmed = good;
-    base.pending = false;
+    std::string good;
+    const bool have = load_confirmed(good);
 
-    rec_ = base;
+    pending_ = false;
     deadline_valid_ = false;
-    store_.save(key_, encode(base));
+    store_.clear(pk_);
 
+    if (!have) { err = "no confirmed configuration to restore"; return true; }
     Result rc = apply_ ? apply_(good) : Result::ok();
-    if (!rc.is_ok()) { err = "could not restore the last confirmed network configuration"; return true; }
+    if (!rc.is_ok()) err = "could not restore the last confirmed network configuration";
     return true;
 }
 
 bool NetworkTxn::tick(uint32_t now_ms)
 {
     std::lock_guard<std::mutex> g(m_);
-    if (!rec_.pending || !deadline_valid_) return false;
+    if (!pending_ || !deadline_valid_) return false;
     if ((int32_t)(now_ms - deadline_ms_) < 0) return false;
     std::string ignored;
     return rollback_locked(ignored);
@@ -212,27 +245,27 @@ bool NetworkTxn::tick(uint32_t now_ms)
 bool NetworkTxn::pending() const
 {
     std::lock_guard<std::mutex> g(m_);
-    return rec_.pending;
+    return pending_;
 }
 
 uint64_t NetworkTxn::token() const
 {
     std::lock_guard<std::mutex> g(m_);
-    return rec_.token;
+    return token_;
 }
 
 uint32_t NetworkTxn::remaining_ms(uint32_t now_ms) const
 {
     std::lock_guard<std::mutex> g(m_);
-    if (!rec_.pending || !deadline_valid_) return 0;
+    if (!pending_ || !deadline_valid_) return 0;
     int32_t d = (int32_t)(deadline_ms_ - now_ms);
     return d > 0 ? (uint32_t)d : 0u;
 }
 
-std::string NetworkTxn::confirmed_config() const
+bool NetworkTxn::confirmed_config(std::string& out) const
 {
     std::lock_guard<std::mutex> g(m_);
-    return rec_.confirmed;
+    return load_confirmed(out);
 }
 
 }} // namespace machino::net

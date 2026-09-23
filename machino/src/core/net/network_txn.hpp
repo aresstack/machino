@@ -1,24 +1,38 @@
 // A network change that survives a crash.
 //
 // StagedChange (connectivity.hpp) protects against "the browser went away":
-// it holds the undo in RAM and runs it when the confirmation window passes.
-// That is not enough for the failure this actually has to withstand. If the
-// camera loses power, or the watchdog reboots it, or the daemon crashes
-// between applying a WiFi change and confirming it, the undo is gone and the
-// camera comes back on a configuration nobody ever confirmed -- which is
+// it holds the undo in RAM. That is not enough for the failure this has to
+// withstand. If the camera loses power, or the watchdog reboots it, or the
+// daemon crashes between applying a WiFi change and confirming it, the undo is
+// gone and the camera comes back on a configuration nobody ever confirmed --
 // exactly the softbrick this machinery exists to prevent.
 //
-// So the transaction is written down BEFORE it is applied:
+// TWO records, deliberately separate
+// ---------------------------------
+// An earlier version kept the confirmed configuration inside the same blob as
+// the pending one. That looked tidy and was wrong: a torn write took the
+// known-good configuration down with the attempt, and recovery then had
+// nothing to restore -- it discarded the record and left whatever the boot
+// scripts happened to do. So:
 //
-//   begin()    persist {confirmed, candidate, token, pending}  then apply
-//   confirm()  persist {confirmed = candidate}                 clear pending
-//   tick()     window passed          -> re-apply confirmed, clear
-//   recover()  found pending at start -> re-apply confirmed, clear
+//   network-confirmed   the last configuration known to work. Written only on
+//                       confirm. Never touched by a failing attempt.
+//   network-pending     token + candidate. Written before the candidate is
+//                       applied, removed on confirm, rollback or recovery.
+//
+//   begin()    write pending, then apply candidate
+//   confirm()  write confirmed = candidate, then remove pending
+//   tick()     window passed          -> apply confirmed, remove pending
+//   recover()  pending found at start -> apply confirmed, remove pending
+//
+// A corrupt or truncated PENDING record is still a rollback: we know something
+// was in flight even if we cannot read what. A corrupt CONFIRMED record is
+// fail-closed -- it is reported and nothing is applied, because inventing a
+// network configuration for a camera is worse than leaving it as it booted.
 //
 // Configurations are opaque strings. This class must not know what a WiFi or
 // an IP configuration looks like; the caller serialises and applies. That also
-// keeps secrets out of here: the caller decides what goes into the blob, and
-// nothing in this file ever logs it.
+// keeps secrets out of here: nothing in this file logs the content.
 #pragma once
 #include "core/result.hpp"
 #include "core/state_store.hpp"
@@ -29,32 +43,33 @@
 
 namespace machino { namespace net {
 
-enum class TxnState : int { Idle = 0, Pending };
+enum class RecoverOutcome : int {
+    Nothing = 0,        // no transaction was in flight
+    RolledBack,         // an unconfirmed change was undone
+    ConfirmedUnusable,  // the known-good record is gone or unreadable
+};
 
-struct TxnRecord {
+struct PendingRecord {
     uint64_t    token = 0;
-    std::string confirmed;    // the configuration known to work
-    std::string candidate;    // what we are trying
-    bool        pending = false;
+    std::string candidate;
 };
 
 class NetworkTxn {
 public:
-    // `apply` installs a serialized configuration. It is called for the
-    // candidate on begin(), and for the confirmed one on rollback/recovery.
     using ApplyFn = std::function<Result(const std::string& config)>;
 
-    NetworkTxn(IStateStore& store, ApplyFn apply, std::string key = "network-txn");
+    NetworkTxn(IStateStore& store, ApplyFn apply,
+               std::string confirmed_key = "network-confirmed",
+               std::string pending_key = "network-pending");
 
     // Called once at start-up, before anything else touches the network.
-    // Returns true when it rolled something back.
-    bool recover(std::string& err);
+    RecoverOutcome recover(std::string& err);
 
-    // Persist first, then apply. On a failed apply the record is cleared and
-    // the confirmed configuration is re-applied, so a caller that sees false
-    // knows nothing changed.
-    bool begin(const std::string& confirmed, const std::string& candidate,
-               uint32_t now_ms, uint32_t window_ms,
+    // Seeds the known-good configuration when there is none yet (first boot).
+    // Refuses to overwrite an existing one -- that is what confirm() is for.
+    bool seed_confirmed(const std::string& config, std::string& err);
+
+    bool begin(const std::string& candidate, uint32_t now_ms, uint32_t window_ms,
                uint64_t& token_out, std::string& err);
 
     bool confirm(uint64_t token, std::string& err);
@@ -65,25 +80,26 @@ public:
     bool        pending() const;
     uint64_t    token() const;
     uint32_t    remaining_ms(uint32_t now_ms) const;
-    std::string confirmed_config() const;
+    bool        confirmed_config(std::string& out) const;
 
-    // Serialisation is exposed for tests: a truncated or garbage record must
-    // be handled, not trusted.
-    static std::string encode(const TxnRecord& r);
-    static bool         decode(const std::string& text, TxnRecord& out);
+    // Exposed for tests: a truncated or garbage record must be handled.
+    static std::string encode_pending(const PendingRecord& r);
+    static bool        decode_pending(const std::string& text, PendingRecord& out);
 
 private:
+    bool load_confirmed(std::string& out) const;
     bool rollback_locked(std::string& err);
 
     IStateStore& store_;
     ApplyFn      apply_;
-    std::string  key_;
+    std::string  ck_, pk_;
 
     mutable std::mutex m_;
-    TxnRecord   rec_;
-    uint32_t    deadline_ms_ = 0;
-    bool        deadline_valid_ = false;   // false after a reboot: no timer survives
+    bool        pending_ = false;
+    uint64_t    token_ = 0;
     uint64_t    next_token_ = 1;
+    uint32_t    deadline_ms_ = 0;
+    bool        deadline_valid_ = false;   // no timer survives a reboot
 };
 
 }} // namespace machino::net
