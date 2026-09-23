@@ -1,5 +1,15 @@
 # WebUI contract matrix (AP4)
 
+> **ÜBERHOLT (AP32, 2026-09-23).** Diese Matrix stammt aus AP4 und wird als
+> Herleitung aufgehoben. Der aktuelle Stand steht in **`dropin-matrix.md`** —
+> 58 Endpunkte, gegen den laufenden Build gemessen und einzeln klassifiziert.
+>
+> Mindestens eine Zeile hier ist inzwischen falsch: `/stream.mjpeg` wird nicht
+> mehr bedient, sondern antwortet seit AP24 mit **501**, weil es vorher 200
+> meldete und nie ein Bild liefern konnte. Zwei Matrizen, die beide „jeder
+> Endpunkt" behaupten, sind genau die Quelle, aus der solche Widersprüche
+> kommen.
+
 Every HTTP endpoint, WebSocket and config contract the **unmodified**
 OpenIPC/majestic-webui actually calls, and what Machino does about it.
 Derived from the upstream clone (executed code, not docs), cross-checked

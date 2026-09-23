@@ -111,7 +111,20 @@ sagt „geprüft" und hat das Falsche geprüft.
 
 ## Ergebnis
 
-Keine Leckstelle gefunden, kein unpaariger Abbau, kein CLOSE_WAIT, kein Zombie,
-keine unbegrenzte Warteschlange. Die einzige offene Frage bleibt der seltene
-Hardlock (`ap17-hardlock.md`), und der ist kein Ressourcenbefund: er tritt bei
-25 stabilen FDs und 12 Threads auf.
+Kein unpaariger Abbau, kein CLOSE_WAIT, kein Zombie, keine unbegrenzte
+Warteschlange, keine Leckstelle **gefunden**.
+
+Die Einschränkung gehört dazu: „gefunden" ist nicht „existiert nicht". Gedeckt
+sind FDs, Threads, Kindprozesse, Sockets und die Paarungen — die statisch
+vollständig sind. Ein Leck, das nur auf einem Pfad auftritt, den der Soak nicht
+fährt (WebRTC, RTSP, ONVIF), wäre hier nicht aufgefallen.
+
+**Und beim Heap muss ich mich korrigieren.** Oben stand, die COLD_IDLE-Böden
+zeigten „keinen monotonen Anstieg". Das gilt für die Einzelwerte, die auf und
+ab gehen — über **Zyklusmittel** gerechnet steigen sie geradlinig:
+4794 → 4906 → 4953 → 5063 → 5103 kB, rund 77 kB je Zyklus. Ich hatte vier
+Zyklen vorliegen und die richtige Zahl nicht gebildet. Die Auswertung steht in
+`ap25-soak.md`; die Einstufung ist **NICHT ENTSCHIEDEN**, nicht „kein Leck".
+
+Die offene Frage bleibt der seltene Hardlock (`ap17-hardlock.md`), und der ist
+kein Ressourcenbefund: er tritt bei 25 stabilen FDs und 12 Threads auf.
