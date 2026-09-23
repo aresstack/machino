@@ -22,6 +22,14 @@ jobs:
         run: sh machino/tools/fetch-mbedtls.sh "$PWD/3p" gcc ar
       - name: "Host unit tests (board profiles, precedence, capabilities, Ingenic conversion)"
         run: make -C machino test MBEDTLS="$PWD/3p/mbedtls-3.6.7"
+      - name: "The make-free host runner must stay equivalent to `make test`"
+        run: |
+          # tools/host-test.sh exists for environments with a compiler but no
+          # make. It reads TEST_SRC out of the Makefile so it cannot carry a
+          # second file list, but nothing else stops it from rotting -- so it
+          # is run here too. Same sources, same flags, same assertions.
+          rm -rf machino/build machino/tests/machino-tests
+          sh machino/tools/host-test.sh "$PWD/3p/mbedtls-3.6.7"
       - name: "Fetch toolchain and vendor IMP libraries (T40 musl, SDK 1.3.1)"
         run: |
           chmod +x build.sh
@@ -83,6 +91,10 @@ jobs:
           cp -f machino/openipc/sbin/machino-manager   "$O/sbin/machino-manager"
           cp -f machino/openipc/init/S95streamer       "$O/init/S95streamer"
           cp -f machino/openipc/init/machino           "$O/init/machino"
+          # Shipped but NOT installed by default: install.sh --with-access-point
+          # is what puts it in place. Without it in the bundle that flag would
+          # fail with "bundle has no init/S41hostapd".
+          cp -f machino/openipc/init/S41hostapd        "$O/init/S41hostapd"
           cp -f machino/openipc/README.md              "$O/README.md"
           cp -f machino/docs/install-openipc.md        "$O/INSTALL.md"
           chmod 0755 "$O/machino" "$O/install.sh" "$O/uninstall.sh" "$O/sbin/streamerctl" "$O/sbin/machino-manager" "$O/init/"*

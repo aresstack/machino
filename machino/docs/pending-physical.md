@@ -154,3 +154,52 @@ gebaut.
 
 **G2 ist der billigste und aussagekräftigste Test** — eine USB-Maus genügt,
 und das Ergebnis halbiert den Suchraum sofort.
+
+### Stand von G nach der Messung am 2026-09-23
+
+**G1, G2, G3 sind erledigt** und damit keine offenen Punkte mehr:
+
+| Nr | Ergebnis |
+|----|----------|
+| G1 | **3,3 V am USB-VCC**, geschaltet über GPIO 50 = **PB18** (nicht PB27, das war ein aus Ingenics `shark.dts` geerbter Irrläufer). Der Schalter ist ein A1SHB-P-MOSFET, ein Transistor davor invertiert den Sinn: HIGH schaltet ein |
+| G2 | entfällt — G3 hat die Enumeration direkt gezeigt |
+| G3 | **AIC8800DC, `a69c:88dc`**, 3 Interfaces (2× Bluetooth `cls=e0`, 1× vendor `cls=ff`), 480 Mbit, 500 mA, `HPRT0 = 0x00001005` |
+
+Die Formulierung „Portspannung AN" bleibt trotzdem zu stark für alles, was
+**nicht** gemessen wurde: G4, G5 und G6 stehen unverändert offen.
+
+---
+
+## H — AP36 Konnektivität: was dieser Batch NICHT bewiesen hat
+
+Der Batch (Netz-API, Uplink-Adapter, hostapd, WebUI) ist host-getestet und
+CI-gebaut. Keiner der folgenden Punkte ist damit belegt, und keiner lässt sich
+auf dem Entwicklungsrechner belegen.
+
+### `PENDING_CI` — nie gelaufen
+
+| Nr | Was | Warum offen |
+|----|-----|-------------|
+| H1 | Cross-Compile von `main.cpp`, `http_server.cpp` und allen `adapters/linux/*` | Diese Dateien brauchen Linux-Header (`arpa/inet.h`); lokal nicht übersetzbar. Die Aufrufstellen sind per `static_assert` in `tests/test_adapter_wiring.cpp` festgenagelt — das fängt Signaturbrüche, **keine** Übersetzungsfehler |
+| H2 | `build-aic8800-t40.yml` | Workflow geschrieben, nie ausgeführt; `gh` ist in dieser Umgebung nicht authentifiziert. Beim ersten Lauf werden vermutlich Toolchain-URL oder Kernel-Config-Pfad nachzuziehen sein. Beides bricht mit einer Meldung ab, die das sagt, statt zu raten |
+| H3 | `release-machino.yml` | dito |
+
+### `PENDING_PHYSICAL` — braucht die Kamera
+
+| Nr | Was |
+|----|-----|
+| H4 | Läuft `wpa_supplicant` auf diesem Image überhaupt, und liegt sein Control-Socket unter `/var/run/wpa_supplicant/wlan0`? Der ganze Stationspfad hängt daran |
+| H5 | Bindet das AIC8800-Modul das Gerät und erscheint `wlan0`? Ein Modul kann laden und trotzdem nicht binden — das sieht aus wie ein totes Funkmodul |
+| H6 | Tatsächliches Assoziieren mit einem WPA2-Netz, inklusive DHCP-Lease |
+| H7 | Access Point: `hostapd` vorhanden, startet mit der erzeugten Konfiguration, ein Telefon assoziiert und bekommt eine Adresse |
+| H8 | Failover Ethernet → WLAN und zurück, mit laufendem RTSP/WebRTC: bricht die Session, und erholt sie sich? |
+| H9 | **Der Rollback-Pfad unter realem Verbindungsverlust.** Genau der Fall, für den `NetworkTxn` existiert: falsche WLAN-Konfiguration setzen, Verbindung verlieren, warten, und die Kamera muss von selbst zurückkommen. Host-Tests decken die Logik ab, nicht den Stromausfall mittendrin |
+| H10 | Speicher- und CPU-Wirkung des 2-s-Netz-Ticks über einen COLD_IDLE-Soak. Der Trend aus AP2x (~+11 kB/Zyklus) ist ungeklärt, und hier kommt eine neue periodische Last dazu |
+
+### `PENDING_BROWSER` — nie gerendert
+
+| Nr | Was |
+|----|-----|
+| H11 | `/machino/net` in einem Browser öffnen. Die Feldnamen sind gegen die echten JSON-Builder getestet (`tests/test_netui.cpp`), das Layout ist es nicht |
+| H12 | Der Bestätigungs-Countdown im Ernstfall: Banner sichtbar, Zähler läuft, Bestätigung kommt an, Rollback wird als solcher angezeigt |
+| H13 | Der Menüeintrag aus `install.sh --with-network-page` an einer echten `header.cgi` — die Tests benutzen einen nachgebauten Ausschnitt |
