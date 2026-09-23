@@ -244,26 +244,37 @@ bool ConnectivityManager::evaluate()
 
     INetworkUplink* chosen = select(snapshot, policy, current);
 
-    PathChangeFn notify;
+    std::vector<std::pair<uint64_t, PathChangeFn>> notify;
     std::string from, to;
     {
         std::lock_guard<std::mutex> g(m_);
-        if (chosen == active_) return false;
+        if (chosen == active_) return false;    // unchanged: nobody is told
         from = active_ ? active_->id() : std::string();
         to   = chosen  ? chosen->id()  : std::string();
         active_ = chosen;
-        notify = on_path_change_;
-    }
+        notify = subscribers_;                  // copied, so a subscriber may
+    }                                           // unsubscribe from inside its own callback
     // Outside the lock: a transport reacting to this may tear down sessions,
     // and it must not do that while holding the connectivity mutex.
-    if (notify) notify(from, to);
+    for (const auto& s : notify) s.second(from, to);
     return true;
 }
 
-void ConnectivityManager::set_on_path_change(PathChangeFn fn)
+uint64_t ConnectivityManager::subscribe_path_change(PathChangeFn fn)
+{
+    if (!fn) return 0;
+    std::lock_guard<std::mutex> g(m_);
+    const uint64_t tok = next_sub_++;
+    subscribers_.emplace_back(tok, std::move(fn));
+    return tok;
+}
+
+void ConnectivityManager::unsubscribe_path_change(uint64_t token)
 {
     std::lock_guard<std::mutex> g(m_);
-    on_path_change_ = std::move(fn);
+    for (size_t i = 0; i < subscribers_.size(); ++i) {
+        if (subscribers_[i].first == token) { subscribers_.erase(subscribers_.begin() + (long)i); return; }
+    }
 }
 
 std::string ConnectivityManager::active_id() const

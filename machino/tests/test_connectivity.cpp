@@ -222,7 +222,7 @@ void test_path_change_is_announced()
 
     std::string seen_from = "?", seen_to = "?";
     int calls = 0;
-    m.set_on_path_change([&](const std::string& f, const std::string& t) {
+    m.subscribe_path_change([&](const std::string& f, const std::string& t) {
         ++calls; seen_from = f; seen_to = t;
     });
 
@@ -239,6 +239,73 @@ void test_path_change_is_announced()
     wifi.st = LinkState::Down; wifi.inet = false;
     m.evaluate();
     TCHECK(calls == 3 && seen_to.empty());   // losing everything is a change too
+}
+
+void test_several_subscribers_and_clean_unsubscribe()
+{
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink wifi(UplinkType::Wifi, "wlan0");
+    ConnectivityManager m;
+    m.add(&eth); m.add(&wifi);
+
+    int a = 0, b = 0;
+    const uint64_t ta = m.subscribe_path_change([&](const std::string&, const std::string&) { ++a; });
+    const uint64_t tb = m.subscribe_path_change([&](const std::string&, const std::string&) { ++b; });
+    TCHECK(ta != 0 && tb != 0 && ta != tb);
+    TCHECK(m.subscribe_path_change(nullptr) == 0);   // an empty callback is not a subscription
+
+    m.evaluate();
+    TCHECK(a == 1 && b == 1);
+
+    m.unsubscribe_path_change(tb);
+    eth.st = LinkState::Down; eth.inet = false;
+    m.evaluate();
+    TCHECK(a == 2 && b == 1);                        // b heard nothing more
+
+    m.unsubscribe_path_change(9999);                 // an unknown token is harmless
+    m.unsubscribe_path_change(ta);
+    wifi.st = LinkState::Down; wifi.inet = false;
+    m.evaluate();
+    TCHECK(a == 2);
+}
+
+void test_a_subscriber_may_unsubscribe_from_inside_its_own_callback()
+{
+    // The manager copies the list before dispatching, so this cannot
+    // invalidate the iteration -- a transport tearing itself down in response
+    // to a path change is exactly the expected use.
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink wifi(UplinkType::Wifi, "wlan0");
+    ConnectivityManager m;
+    m.add(&eth); m.add(&wifi);
+
+    int calls = 0;
+    uint64_t self = 0;
+    self = m.subscribe_path_change([&](const std::string&, const std::string&) {
+        ++calls;
+        m.unsubscribe_path_change(self);
+    });
+
+    m.evaluate();
+    TCHECK(calls == 1);
+
+    eth.st = LinkState::Down; eth.inet = false;
+    m.evaluate();
+    TCHECK(calls == 1);                              // it really is gone
+}
+
+void test_no_event_when_the_path_did_not_change()
+{
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    ConnectivityManager m;
+    m.add(&eth);
+    int calls = 0;
+    m.subscribe_path_change([&](const std::string&, const std::string&) { ++calls; });
+
+    m.evaluate();
+    TCHECK(calls == 1);
+    for (int i = 0; i < 5; ++i) TCHECK(!m.evaluate());
+    TCHECK(calls == 1);
 }
 
 void test_nothing_usable_yields_no_active_uplink()
@@ -423,6 +490,9 @@ void run_connectivity_tests()
     test_an_id_selector_picks_one_of_two_same_type_uplinks();
     test_pin_accepts_an_id_as_well_as_a_type();
     test_path_change_is_announced();
+    test_several_subscribers_and_clean_unsubscribe();
+    test_a_subscriber_may_unsubscribe_from_inside_its_own_callback();
+    test_no_event_when_the_path_did_not_change();
     test_nothing_usable_yields_no_active_uplink();
     test_status_marks_exactly_one_active();
     test_staged_change_rolls_back_without_confirmation();

@@ -36,3 +36,6 @@ docs/camera-fleet.md
 # privates Sub-Repo: Kamera-Inventar, Messreihen, alles mit Raum-/Personenbezug.
 # Eigenes Git darin; siehe private/README.md
 private/
+
+# host test objects from tools/host-test.sh (the make path builds in place)
+machino/build/

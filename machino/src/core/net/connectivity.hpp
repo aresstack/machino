@@ -114,8 +114,15 @@ public:
     // path change, so live TCP, RTSP and WebRTC sessions can break. Transports
     // subscribe here and decide for themselves -- ICE restart, reconnect, or
     // nothing. The media pipeline still never learns which uplink it is on.
+    // Several transports subscribe independently -- RTSP, the MSE websocket
+    // and WebRTC each decide for themselves. subscribe() returns a token;
+    // unsubscribe() must be called before the subscriber is destroyed, and it
+    // is safe to call from inside a notification (the manager copies the list
+    // before dispatching, so removing yourself mid-callback cannot invalidate
+    // the iteration).
     using PathChangeFn = std::function<void(const std::string& from_id, const std::string& to_id)>;
-    void set_on_path_change(PathChangeFn fn);
+    uint64_t subscribe_path_change(PathChangeFn fn);
+    void     unsubscribe_path_change(uint64_t token);
 
     INetworkUplink* active() const;
     bool            active_type(UplinkType& out) const;
@@ -133,7 +140,8 @@ private:
     mutable std::mutex m_;
     std::vector<INetworkUplink*> uplinks_;
     UplinkPolicy policy_;
-    PathChangeFn on_path_change_;
+    std::vector<std::pair<uint64_t, PathChangeFn>> subscribers_;
+    uint64_t next_sub_ = 1;
     INetworkUplink* active_ = nullptr;
 };
 
