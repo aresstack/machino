@@ -173,6 +173,41 @@ jobs:
           echo "--- tree"
           find "$RUNNER_TEMP/aic8800" -maxdepth 2 | head -40
 
+      - name: "Patch the driver for kernel 4.4"
+        run: |
+          set -eu
+          # The driver targets a newer kernel, where <linux/vmalloc.h> arrives
+          # transitively through other headers. On 4.4 it does not, and the
+          # kernel builds with -Werror=implicit-function-declaration, so every
+          # file calling vmalloc/vfree fails to compile.
+          #
+          # Adding a missing declaration is the whole patch: no behaviour
+          # changes, and an implicit declaration on a 32-bit target is a real
+          # hazard rather than a style issue -- the compiler would assume the
+          # function returns int and truncate a pointer.
+          #
+          # Every patch applied is recorded so the BUILDINFO of a bundle says
+          # the source was not upstream's exactly as shipped.
+          : > "$RUNNER_TEMP/patches.txt"
+          for f in $(grep -rlE '\bv(malloc|zalloc|free)\s*\(' "$AIC_SRC" --include='*.c' --include='*.h' || true); do
+            grep -q 'linux/vmalloc.h' "$f" && continue
+            # After the first #include so it lands inside any header guard and
+            # after the file's own config header, which several of these
+            # drivers require to come first.
+            awk 'BEGIN{done=0}
+                 {print}
+                 /^#include/ && !done {print "#include <linux/vmalloc.h>"; done=1}' "$f" > "$f.patched"
+            mv "$f.patched" "$f"
+            echo "added <linux/vmalloc.h> to ${f#$AIC_SRC/}" >> "$RUNNER_TEMP/patches.txt"
+          done
+
+          if [ -s "$RUNNER_TEMP/patches.txt" ]; then
+            echo "--- patches applied"
+            cat "$RUNNER_TEMP/patches.txt"
+          else
+            echo "no patches needed"
+          fi
+
       - name: "Prepare the kernel tree (modules_prepare only, no full image)"
         run: |
           set -eu
@@ -276,6 +311,13 @@ jobs:
             echo "source:      $(git -C "$AIC_SRC" remote get-url origin) @ $(git -C "$AIC_SRC" rev-parse HEAD)"
             echo "toolchain:   $("${CROSS}gcc" --version | head -1)"
             echo "vermagic:    $WANT_VERMAGIC (verified against every .ko)"
+            echo
+            if [ -s "$RUNNER_TEMP/patches.txt" ]; then
+              echo "SOURCE WAS PATCHED -- this is not upstream exactly as shipped:"
+              sed 's/^/  /' "$RUNNER_TEMP/patches.txt"
+            else
+              echo "source: upstream unmodified"
+            fi
             echo "built:       $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}"
             echo
             echo "NOT VERIFIED HERE: that the module binds the device, that the"

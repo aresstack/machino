@@ -212,3 +212,39 @@ offen. Das nächste Feldereignis ist damit zum ersten Mal eines, bei dem Netz
 * Den AP4-Watchdog scharf sehen (`watchdog_available: true` in der Telemetrie)
   — braucht die Ablösung auf `341a8d4`.
 * Beim nächsten Hardlock: UART-Ausgabe lesen, **bevor** die Box vom Strom geht.
+
+---
+
+## Feldereignis 2026-09-23, abends — Netz weg, UART lebt
+
+Gehört **nicht** zum WLAN-/USB-Thema und wird deshalb hier geführt, nicht in
+`pending-physical.md` bei Gruppe H. Der neue Connectivity-Code lief zu diesem
+Zeitpunkt nachweislich nicht auf der Kamera: der laufende Daemon meldet sich
+per RTSP als `machino/341a8d4` (2026-09-22), also **79 Commits vor** dem
+aktuellen Stand. USB-Port und Modem waren ebenfalls unbeteiligt.
+
+Beobachtet:
+
+| | |
+|---|---|
+| ICMP auf `192.168.1.10` | keine Antwort |
+| TCP/80 über `192.168.1.1`–`.60` | kein Host |
+| ARP im Subnetz | leer |
+| UART (CH340, COM15) | **lebt**, sauberer Boot bis `t40-imx307 login:` |
+
+Also: Box läuft, Netz weg. Das ist dasselbe Muster wie in Befund B und passt
+zum bekannten Ethernet-/Link-Problem (`yt8512`, Aushandlung nur beim Boot
+setzbar), nicht zu einem Software-Ausfall im Daemon.
+
+Nach einer Strom- und Netzwerkprüfung durch den Betreiber war `192.168.1.10`
+wieder da, mit `:80`, `:554` und `:22` offen. **Die Ursache ist damit nicht
+geklärt** — „nach Wackeln wieder da" ist ein Hinweis auf die Verkabelung oder
+die Aushandlung, kein Beweis. Nächstes Mal vor dem Eingreifen über UART
+`cat /sys/class/net/eth0/carrier` und `ethtool eth0` lesen; das trennt
+„Link weg" von „IP weg".
+
+Nebenbefund, offen: das Root-Passwort für UART/WebUI ist nicht mehr
+`_hdt2021t40_` — zwei saubere Versuche wurden abgelehnt. Plausibel, weil der
+Claim-Flow (AP10) genau diesen Shadow-Eintrag setzt und WebUI-Login und
+Systemlogin dieselbe Anmeldung sind. `PENDING_PHYSICAL`; es wird nicht
+geraten.
