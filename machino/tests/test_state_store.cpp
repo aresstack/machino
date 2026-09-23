@@ -15,8 +15,12 @@
 #include <cstdio>
 #include <string>
 
-#if !defined(_WIN32)
+#include <dirent.h>
 #include <sys/stat.h>
+#if defined(_WIN32)
+#include <direct.h>
+#include <io.h>
+#else
 #include <unistd.h>
 #endif
 
@@ -29,10 +33,15 @@ namespace {
 
 const char* kDir = "tests/tmp-state-store";
 
+// No system(3) here. Besides being a fork, its return value is
+// warn_unused_result on glibc, so ignoring it is an error under -Werror --
+// which is how this file first broke the cross-build it was written to
+// protect.
 void make_dir()
 {
 #if defined(_WIN32)
-    ::system("mkdir tests\\tmp-state-store 2>NUL");
+    ::_mkdir("tests");
+    ::_mkdir(kDir);
 #else
     ::mkdir("tests", 0755);
     ::mkdir(kDir, 0755);
@@ -41,10 +50,27 @@ void make_dir()
 
 void wipe()
 {
+    // Flat directory by construction: one file per key, plus any .tmp a failed
+    // write might have left. Read it rather than listing names we think are
+    // there -- a leftover we did not expect is exactly what these tests look
+    // for, and it must not survive into the next case.
 #if defined(_WIN32)
-    ::system("rmdir /s /q tests\\tmp-state-store 2>NUL");
+    ::_chmod(kDir, 0700);
 #else
-    ::system("rm -rf tests/tmp-state-store");
+    ::chmod(kDir, 0755);            // an earlier case may have made it read-only
+#endif
+    if (DIR* d = ::opendir(kDir)) {
+        while (struct dirent* e = ::readdir(d)) {
+            const std::string n = e->d_name;
+            if (n == "." || n == "..") continue;
+            std::remove((std::string(kDir) + "/" + n).c_str());
+        }
+        ::closedir(d);
+    }
+#if defined(_WIN32)
+    ::_rmdir(kDir);
+#else
+    ::rmdir(kDir);
 #endif
 }
 
