@@ -13,6 +13,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT="${MACHINO_ROOT:-}"
 WITH_AP=0
 WITH_NETPAGE=0
+WITH_WIFI=0
 STATE_DIR="$ROOT/etc/machino"
 WWW="$ROOT/var/www"
 CGI="$WWW/cgi-bin"
@@ -27,10 +28,18 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             cat <<EOF
-usage: ./install.sh [--with-access-point] [--with-network-page]
+usage: ./install.sh [--with-wifi] [--with-access-point] [--with-network-page]
 
 The WebUI login is Machino's Majestic drop-in session login against the
 camera's root account - there is nothing to configure here.
+
+  --with-wifi           install S42wifi, which brings the USB WiFi up at boot:
+                        the AIC8800 modules, the port power on PB18, then
+                        wpa_supplicant and udhcpc. Off by default, because it
+                        needs modules built for this exact kernel in
+                        /etc/machino/modules. Everything that starts a process
+                        happens here, before machinod -- machino itself never
+                        forks while the media pipeline is live.
 
   --with-access-point   also install S41hostapd, which runs hostapd from boot
                         so the WiFi access point can be switched on from the
@@ -50,6 +59,7 @@ EOF
             exit 0 ;;
         --with-access-point) WITH_AP=1 ;;
         --with-network-page) WITH_NETPAGE=1 ;;
+        --with-wifi) WITH_WIFI=1 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -295,6 +305,26 @@ if [ -f "$INITD/S95majestic" ]; then
     say "moved $INITD/S95majestic -> $INITD/majestic (a backup is in $BACKUP)"
 fi
 put 0755 "$HERE/init/S95streamer" "$INITD/S95streamer" || die "cannot install S95streamer"
+
+# Opt-in only, and it needs the driver modules to already be in place: they
+# have to be built against this exact kernel (vermagic), which the bundle
+# cannot do for an arbitrary camera. Installing the script without them would
+# produce a boot that reports a missing module on every start.
+if [ "$WITH_WIFI" = "1" ]; then
+    if [ ! -r "$HERE/init/S42wifi" ]; then
+        die "--with-wifi given but the bundle has no init/S42wifi"
+    fi
+    put 0755 "$HERE/init/S42wifi" "$INITD/S42wifi" || die "cannot install S42wifi"
+    [ -r "$HERE/udhcpc-wlan.script" ] &&
+        { put 0755 "$HERE/udhcpc-wlan.script" "$STATE_DIR/udhcpc-wlan.script" ||
+          warn "could not install the udhcpc hook - the WiFi default route will have no metric"; }
+    if [ -f "$ROOT/etc/machino/modules/aic8800.ko" ]; then
+        say "installed S42wifi (WiFi comes up at boot)"
+    else
+        warn "installed S42wifi, but /etc/machino/modules/aic8800.ko is not there -"
+        warn "build the modules for this kernel first, or the boot will report them missing"
+    fi
+fi
 
 # Opt-in only. machino never starts hostapd itself -- fork+exec while the media
 # pipeline is live is the documented OOM trigger on this camera -- so the

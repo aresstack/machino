@@ -54,7 +54,8 @@ FAKE
     chmod +x "$B/machino"
     printf 'board = t40nn-imx307-board-a\napi.port = 8080\n' > "$B/machino.conf"
     cp "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$B/sbin/"
-    cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S41hostapd" "$B/init/"
+    cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S41hostapd" "$PKG/init/S42wifi" "$B/init/"
+    cp "$PKG/udhcpc-wlan.script" "$B/"
     cp "$PKG/install.sh" "$PKG/uninstall.sh" "$B/"
     chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/sbin/machino-manager" "$B/init/"*
 }
@@ -464,6 +465,29 @@ hasnt "access point script removed again" "$WORK/root/etc/init.d/S41hostapd"
 make_bundle; make_camera auto
 if run_install --with-acces-point; then bad "a misspelled flag was accepted"; else ok; fi
 
+# ----------- 12d) the WiFi boot script is opt-in and warns honestly ---------
+make_bundle; make_camera auto
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
+hasnt "no wifi script without the flag" "$WORK/root/etc/init.d/S42wifi"
+
+make_bundle; make_camera auto
+run_install --with-wifi || bad "--with-wifi was refused: $(cat "$WORK/out")"
+has "wifi script installed on request" "$WORK/root/etc/init.d/S42wifi"
+has "udhcpc hook installed"            "$WORK/root/etc/machino/udhcpc-wlan.script"
+# No modules in this fixture, and the installer must say so rather than
+# leaving a boot that reports a missing file on every start.
+if grep -q "aic8800.ko is not there" "$WORK/out"; then ok; else bad "the missing modules were not reported"; fi
+
+# With modules present it installs quietly.
+make_bundle; make_camera auto
+mkdir -p "$WORK/root/etc/machino/modules"
+printf 'not-a-real-module\n' > "$WORK/root/etc/machino/modules/aic8800.ko"
+run_install --with-wifi
+if grep -q "WiFi comes up at boot" "$WORK/out"; then ok; else bad "the ready case was not reported"; fi
+
+run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
+hasnt "wifi script removed again" "$WORK/root/etc/init.d/S42wifi"
+
 # ------- 12c) the menu entry is opt-in and header.cgi stays byte-identical --
 # The installer must not edit p/header.cgi behind the user's back: a later
 # upgrade of the stock WebUI would then either revert the change or conflict
@@ -504,7 +528,7 @@ else ok; fi
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
 # check keeps the next such regression out.
-for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S41hostapd"; do
+for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S41hostapd" "$PKG/init/S42wifi" "$PKG/udhcpc-wlan.script"; do
     if grep -nE '(^|[^-a-z_])install +-[dm]' "$f"; then bad "$(basename "$f") uses install(1), which BusyBox does not have"; else ok; fi
     if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
     if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi

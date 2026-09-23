@@ -95,6 +95,8 @@ jobs:
           # is what puts it in place. Without it in the bundle that flag would
           # fail with "bundle has no init/S41hostapd".
           cp -f machino/openipc/init/S41hostapd        "$O/init/S41hostapd"
+          cp -f machino/openipc/init/S42wifi           "$O/init/S42wifi"
+          cp -f machino/openipc/udhcpc-wlan.script     "$O/udhcpc-wlan.script"
           cp -f machino/openipc/README.md              "$O/README.md"
           cp -f machino/docs/install-openipc.md        "$O/INSTALL.md"
           chmod 0755 "$O/machino" "$O/install.sh" "$O/uninstall.sh" "$O/sbin/streamerctl" "$O/sbin/machino-manager" "$O/init/"*

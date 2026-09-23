@@ -64,6 +64,15 @@ rm -f "$INITD/S95streamer"
 # The access point script, if --with-access-point installed one. Stopped first:
 # leaving hostapd running against a config we are about to remove would put an
 # access point on the air that nothing manages any more.
+# The WiFi boot script, if --with-wifi installed one. Stopped first so no
+# supplicant or DHCP client is left running against a machino that is going
+# away. The MODULES stay: they are not ours to remove, someone may have put
+# them there deliberately, and a loaded driver is harmless on its own.
+if [ -f "$INITD/S42wifi" ]; then
+    "$INITD/S42wifi" stop >/dev/null 2>&1
+    rm -f "$INITD/S42wifi" "$STATE_DIR/udhcpc-wlan.script"
+fi
+
 if [ -f "$INITD/S41hostapd" ]; then
     "$INITD/S41hostapd" stop >/dev/null 2>&1
     rm -f "$INITD/S41hostapd"
