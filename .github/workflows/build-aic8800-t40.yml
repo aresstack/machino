@@ -234,12 +234,29 @@ jobs:
       - name: "Gate: vermagic must be the camera's, exactly"
         run: |
           set -eu
+          # Compared with trailing whitespace trimmed on BOTH sides.
+          #
+          # The kernel assembles vermagic from feature tokens that each carry a
+          # trailing blank, so the real string ends with one. WANT_VERMAGIC was
+          # transcribed from a document where it had been trimmed, and the
+          # first run of this gate rejected a module whose vermagic was
+          # otherwise character-for-character correct.
+          #
+          # This does not weaken the check: every part that decides whether
+          # insmod accepts the module -- the version, SMP, preempt, mod_unload,
+          # the ISA and the word size -- is still compared exactly. Only
+          # trailing space is normalised, and it is normalised on both sides so
+          # a real difference cannot hide in it.
+          trim() { printf '%s' "$1" | sed 's/[[:space:]]*$//'; }
+          want=$(trim "$WANT_VERMAGIC")
+
           fail=0
           for ko in $(find "$AIC_SRC" -name '*.ko'); do
-            got=$(modinfo -F vermagic "$ko")
-            echo "$(basename "$ko"): $got"
-            if [ "$got" != "$WANT_VERMAGIC" ]; then
-              echo "::error::$(basename "$ko") vermagic is '$got', the camera wants '$WANT_VERMAGIC'"
+            raw=$(modinfo -F vermagic "$ko")
+            got=$(trim "$raw")
+            echo "$(basename "$ko"): [$raw]"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$(basename "$ko") vermagic is '$got', the camera wants '$want'"
               echo "::error::insmod would refuse this module with 'Invalid module format'"
               fail=1
             fi
