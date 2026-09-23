@@ -529,26 +529,63 @@ erst, wenn das Gate dem Pegel folgt.
 
 ### Der Test, der es entscheidet
 
-Rein lesend zuerst (Port B = `0x10010100`, Bit 27 = `0x08000000`; Offsets aus
-`drivers/pinctrl/pinctrl-ingenic.h`: `PxPIN 0x00`, `PxPAT1 0x30`, `PxPAT0 0x40`,
-`PxPAT0S 0x44`, `PxPAT0C 0x48`):
+> **KORREKTUR: die Portadresse.** Eine frühere Fassung dieses Abschnitts nannte
+> Port B bei `0x10010100`, abgeleitet aus `ingenic,regs-offset = <0x100>` im
+> DTS. **Das ist falsch.** Der Treiber liest diese Property überhaupt nicht —
+> `git grep regs-offset drivers/pinctrl/` ist leer. Maßgeblich ist allein
+> `pinctrl-ingenic.h`:
+>
+> ```c
+> #define PxOFFSET 0x1000
+> readl(pctl->io_base + (chip->idx * PxOFFSET) + offset);
+> ```
+>
+> Der Portabstand ist **0x1000**. Dass das DTS nur `reg = <0x10010000 0x1000>`
+> angibt, begrenzt nichts: auf MIPS liefert `ioremap` für niedrige physische
+> Adressen direkt KSEG1 ohne Seitentabellen, die Größe wird nicht erzwungen.
+>
+> Mit der falschen Adresse wurde am Gerät auf **PA27** geschrieben statt PB27.
+> PA27 ist im Device-Tree niemandem zugewiesen (Pin 27 existiert nur als
+> `gpb 27` = drvvbus und `gpd 27` = Backlight), der Zugriff blieb also folgenlos
+> — sein ursprünglicher PAT0-Wert ist aber nicht mehr bekannt und stellt sich
+> erst beim nächsten Boot wieder her.
 
-```sh
-devmem 0x10010100 32     # PIN   - tatsaechlicher Pegel
-devmem 0x10010140 32     # PAT0  - Ausgangspegel
-devmem 0x10010130 32     # PAT1  - 0 = Ausgang
+Portadressen (Basis `0x10010000`, Abstand `0x1000`):
+
+```
+GPA  0x10010000     GPB  0x10011000     GPC  0x10012000     GPD  0x10013000
 ```
 
-Dann das Gate nach low, **und dabei Drain messen**:
+Register-Offsets aus `pinctrl-ingenic.h`: `PxPIN 0x00`, `PxINT 0x10`,
+`PxMSK 0x20`, `PxPAT1 0x30`, `PxPAT0 0x40`, `PxPAT0S 0x44`, `PxPAT0C 0x48`.
+Bit 27 = `0x08000000`.
+
+Rein lesend zuerst — das ist zugleich die **Gegenprobe auf die Adresse**:
 
 ```sh
-devmem 0x10010148 32 0x08000000    # PAT0C: PB27 -> low
+devmem 0x10011000 32     # PIN
+devmem 0x10011010 32     # INT
+devmem 0x10011020 32     # MSK
+devmem 0x10011030 32     # PAT1
+devmem 0x10011040 32     # PAT0
+```
+
+Erwartet, wenn die Adresse stimmt und `gpio-59` wirklich „out hi" ist:
+`INT bit27 = 0`, `MSK bit27 = 1`, `PAT1 bit27 = 0`, `PAT0 bit27 = 1`.
+Stimmt das nicht, ist die Adresse immer noch falsch — dann **nicht schreiben**.
+
+Dann das Gate nach low, **und dabei Gate und Drain messen**:
+
+```sh
+devmem 0x10011048 32 0x08000000    # PAT0C: PB27 -> low
+devmem 0x10011040 32               # Kontrolle: PAT0 bit27 jetzt 0
+devmem 0x10011000 32               # Kontrolle: PIN  bit27 jetzt 0
 ```
 
 Zurück:
 
 ```sh
-devmem 0x10010144 32 0x08000000    # PAT0S: PB27 -> high
+devmem 0x10011044 32 0x08000000    # PAT0S: PB27 -> high
 ```
 
 Das ist bewusst derselbe Schreibzugriff, den der Treiber bei
