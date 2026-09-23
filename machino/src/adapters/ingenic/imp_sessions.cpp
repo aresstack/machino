@@ -1,9 +1,46 @@
 #include "adapters/ingenic/imp_sessions.hpp"
 #include "core/log.hpp"
+#include <cstddef>
 #include <cstring>
 #include <unistd.h>
 
 namespace machino { namespace ingenic { namespace imp {
+
+// AP22: a compile-time gate on the one vendor struct this file reads through a
+// raw pointer.
+//
+// IMP_Encoder_GetStream fills an IMPEncoderStream, and fetch() below walks
+// st.pack[0..packCount) using st.virAddr as the base. Every one of those is an
+// offset into a struct whose layout comes from a header that is NOT versioned
+// with the library it talks to: Machino links libimp 1.3.1 statically while the
+// camera carries 1.2.0 in /usr/lib, and the headers are a separate submodule
+// that can be repointed on its own. If the two ever disagree about this layout
+// the failure is not a compile error - it is reading a length and a pointer
+// from the wrong words and walking off into memory.
+//
+// So the layout is asserted here rather than trusted. These are not arbitrary
+// numbers to keep green: if a new SDK genuinely changes the struct, this must
+// FAIL, be read, and the reader below adjusted deliberately - that is the whole
+// point. The values are the T40 1.3.1 header, 32-bit MIPS o32.
+
+// The premise the sizes below rest on. Only the cross build compiles this file
+// and it is 32-bit o32 - spelling that out here means a future 64-bit target
+// fails on THIS line, where the reason is written down, instead of on a size
+// that would look arbitrary.
+static_assert(sizeof(void*) == 4, "these layouts assume 32-bit pointers (T40 o32)");
+
+// Pack is 32, not 28: frameEnd is a bool at offset 16, the two enums follow at
+// 20 and 24, and the int64_t timestamp gives the struct 8-byte alignment, so it
+// is padded out. Computed with the real header rather than counted by hand -
+// the hand count said 24 and was wrong.
+static_assert(sizeof(IMPEncoderPack) == 32, "IMPEncoderPack layout changed - re-read fetch()");
+static_assert(offsetof(IMPEncoderPack, offset) == 0, "IMPEncoderPack::offset moved");
+static_assert(offsetof(IMPEncoderPack, length) == 4, "IMPEncoderPack::length moved");
+static_assert(offsetof(IMPEncoderPack, timestamp) == 8, "IMPEncoderPack::timestamp moved");
+static_assert(sizeof(IMPEncoderStream) == 28, "IMPEncoderStream layout changed - re-read fetch()");
+static_assert(offsetof(IMPEncoderStream, virAddr) == 4, "IMPEncoderStream::virAddr moved");
+static_assert(offsetof(IMPEncoderStream, pack) == 12, "IMPEncoderStream::pack moved");
+static_assert(offsetof(IMPEncoderStream, packCount) == 16, "IMPEncoderStream::packCount moved");
 
 static const char* MOD = "IMP";
 
