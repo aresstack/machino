@@ -1,3 +1,33 @@
+> ## KORREKTUR 2026-09-23 — der Blocker ist aufgehoben
+>
+> **WeirdIKE existiert und ist erreichbar.** Gefunden bei der AP35-Arbeit: es
+> liegt in `Miguel0888/WeirdIKE` (privat, GPL-2.0) und zusaetzlich vendored in
+> `Miguel0888/quectel-ec200a-eu` unter `esp32-modem-host/src/weirdike/`. Beide
+> Repos sind ueber den vorhandenen Git-Credential-Helper klonbar.
+>
+> ```
+> Upstream    146 Dateien, 14 274 C-Zeilen, CMake + Makefile, CI (ci.yml, cmake.yml)
+> Umfang      IKEv2-Kern, ESP, NAT-T-Demux, Rekeying, EAP-MSCHAPv2, X.509-Trust,
+>             mbedTLS-Crypto-Backend, D-H-Agilitaet, COOKIE, DPD
+> Interop     CI-Gates gegen strongSwan; laut PINNED_COMMIT wurde gegen eine
+>             FRITZ!Box 6860 CHILD_SA_ESTABLISHED ueber NAT-T/UDP-4500 erreicht
+> ```
+>
+> Warum meine Suche es nicht fand: beide Repos sind **privat**, und `gh` war zu
+> dem Zeitpunkt nicht angemeldet. Die oeffentliche API antwortet auf ein
+> privates Repo mit 404 — ununterscheidbar von "existiert nicht". Ich habe
+> daraus geschlossen, es existiere nicht. Das war die falsche Schlussfolgerung
+> aus einem richtigen Messwert; korrekt waere gewesen: "unauthentifiziert nicht
+> erreichbar, Existenz unbestimmt".
+>
+> **Was unveraendert gilt:** alle Plattformbefunde unten (TUN, kein XFRM,
+> devtmpfs, Flashbudget, S35modules) sind am Geraet gemessen und weiterhin
+> gueltig. Auch die beiden Konflikte weiter unten bleiben bestehen — sie haengen
+> nicht an der Quelle.
+>
+> **AP34 ist damit fortsetzbar** und braucht nur noch die Entscheidung, ob der
+> Kernelmodul-Ladevorgang (`tun`) am Geraet gefahren wird.
+
 # AP34 — IKEv2/IPsec für OpenIPC T40: Machbarkeit und Blocker
 
 2026-09-23. **Nicht umgesetzt.** Der Grund ist eine fehlende Voraussetzung, kein
