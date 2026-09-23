@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MOD "WIFIAP"
@@ -62,8 +63,10 @@ void HostapdAp::describe(net::WifiCapabilities& caps) const
 
     if (!caps.present)                    caps.ap_unavailable_reason = "no WiFi radio is bound on " + ifname_;
     else if (!caps.hostapd_available)     caps.ap_unavailable_reason = "hostapd is not in this image";
-    else if (!running())                  caps.ap_unavailable_reason =
-        "hostapd is installed but not running; it is started by the init script, not by machino";
+    // Deliberately NOT "hostapd is not running". Under the role supervisor it
+    // only runs while the AP role is active, so its absence is the normal
+    // state of a camera in station mode -- reporting that as a reason the AP
+    // is unavailable would grey out the control that turns it on.
     else if (!caps.dhcp_server_available) caps.ap_unavailable_reason =
         "no DHCP server in this image; clients would associate and get no address";
     else if (!caps.driver_ap_known)       caps.ap_unavailable_reason =
@@ -119,33 +122,15 @@ bool HostapdAp::running_ssid(std::string& out) const
     return net::wpa_status_field(reply, "ssid", out);
 }
 
-bool HostapdAp::signal_hup() const
-{
-    // The pid file is written by the init script that started hostapd. No
-    // fork, no exec -- kill(2) on a pid we did not create.
-    FILE* f = ::fopen(paths_.pid_path.c_str(), "r");
-    if (!f) return false;
-    long pid = 0;
-    const int n = std::fscanf(f, "%ld", &pid);
-    ::fclose(f);
-    if (n != 1 || pid <= 1) return false;
-    return ::kill((pid_t)pid, SIGHUP) == 0;
-}
-
-bool HostapdAp::reload_config()
-{
-    // RELOAD_CONFIG first: it is the explicit "re-read the file" command and
-    // it tells us whether it worked. Older builds answer UNKNOWN COMMAND.
-    if (ctrl_.ok_request("RELOAD_CONFIG", 5000)) return true;
-    return signal_hup();
-}
-
 Result HostapdAp::start(const net::WifiApConfig& cfg, std::string& err)
 {
     std::lock_guard<std::mutex> g(m_);
 
-    if (!ctrl_.available()) {
-        err = "hostapd is not running; it is started by the init script, not by machino";
+    // NOT "is hostapd running" -- with the role supervisor it only runs while
+    // the AP role is active, so requiring it here would make it impossible to
+    // ever switch INTO that role. What has to exist is the binary.
+    if (!have_binary("hostapd")) {
+        err = "hostapd is not in this image";
         return Result::unsupported();
     }
 
@@ -158,26 +143,35 @@ Result HostapdAp::start(const net::WifiApConfig& cfg, std::string& err)
     if (!write_file(paths_.conf_path, conf, err)) return Result::error();
     if (cfg.dhcp_server && !write_file(paths_.dhcp_conf_path, dhcp, err)) return Result::error();
 
-    // Making hostapd re-read the FILE is a separate operation from enabling
-    // the BSS, and an earlier version of this code got that wrong: ENABLE maps
-    // to hostapd_enable_iface(), which brings up the configuration hostapd
-    // already has in memory. DISABLE+ENABLE would therefore have re-raised the
-    // OLD access point -- on a fresh camera, the placeholder SSID from the
-    // init script -- while reporting success.
+    // Hand the ROLE to the supervisor rather than reconfiguring a running
+    // hostapd. Two reasons, and the second one is why this was rewritten:
     //
-    // Re-reading the file is RELOAD_CONFIG (hostapd_reload_config), with
-    // SIGHUP as the fallback for builds whose control interface does not carry
-    // it. kill(2) is a signal, not a fork, so it stays within the rule that
-    // keeps this daemon from spawning processes while IMP is live.
-    if (!reload_config()) {
-        err = "hostapd would not re-read its configuration (no RELOAD_CONFIG and no pid to signal)";
+    //   * Station and AP are mutually exclusive on this radio. Only one owner
+    //     of wlan0 can be right, and the supervisor is it -- it stops the
+    //     supplicant, waits for its socket to go, then starts hostapd.
+    //
+    //   * hostapd's ENABLE brings up the configuration it already holds in
+    //     memory; it does NOT re-read the file. An earlier version here did
+    //     DISABLE+ENABLE and would have re-raised the OLD access point -- on a
+    //     fresh camera the placeholder SSID from the init script -- while
+    //     reporting success. A fresh start always reads the file.
+    //
+    // Writing a file is not a fork, so this stays inside the rule that keeps
+    // this daemon from spawning processes while IMP is live.
+    if (!write_file(paths_.role_path, "ap\n", err)) return Result::error();
+
+    // Wait for the supervisor to have hostapd up. It polls, so this is not
+    // instant; without the wait the verification below would race it and
+    // report a failure that is only earliness.
+    for (int i = 0; i < 60 && !ctrl_.available(); ++i) {
+        struct timespec ts; ts.tv_sec = 0; ts.tv_nsec = 250L * 1000 * 1000;
+        ::nanosleep(&ts, nullptr);
+    }
+    if (!ctrl_.available()) {
+        err = "hostapd did not come up within 15 s - check that it is installed "
+              "and that the wifi role supervisor is running";
         return Result::error();
     }
-
-    // Now bring the BSS up. It may already be enabled, in which case hostapd
-    // answers FAIL and that is not an error -- which is why the result is not
-    // checked here and the verification below is what decides.
-    ctrl_.ok_request("ENABLE", 5000);
 
     // VERIFY, do not assume. This is the whole reason the sequence above is
     // not simply fired and reported as done: read back what hostapd is really
@@ -212,8 +206,13 @@ Result HostapdAp::start(const net::WifiApConfig& cfg, std::string& err)
 Result HostapdAp::stop()
 {
     std::lock_guard<std::mutex> g(m_);
-    if (!ctrl_.available()) return Result::unsupported();
-    ctrl_.ok_request("DISABLE", 5000);
+    // Back to station, not merely "AP off". Disabling the BSS would leave the
+    // radio owned by a hostapd with nothing on the air -- no access point and
+    // no station either, which from the outside is indistinguishable from a
+    // dead WiFi. Handing the role back makes the supervisor stop hostapd and
+    // start the supplicant, so the camera returns to something usable.
+    std::string err;
+    if (!write_file(paths_.role_path, "station\n", err)) return Result::error();
     return Result::ok();
 }
 

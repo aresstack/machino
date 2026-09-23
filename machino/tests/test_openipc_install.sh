@@ -54,7 +54,10 @@ FAKE
     chmod +x "$B/machino"
     printf 'board = t40nn-imx307-board-a\napi.port = 8080\n' > "$B/machino.conf"
     cp "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$B/sbin/"
-    cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S41hostapd" "$PKG/init/S42wifi" "$B/init/"
+    cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42wifi" "$B/init/"
+    mkdir -p "$B/sbin"; cp "$PKG/sbin/machino-wifi-role" "$B/sbin/"
+    printf "fake-hostapd
+" > "$B/hostapd"
     cp "$PKG/udhcpc-wlan.script" "$B/"
     cp "$PKG/install.sh" "$PKG/uninstall.sh" "$B/"
     chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/sbin/machino-manager" "$B/init/"*
@@ -448,17 +451,25 @@ has "installed on a t40" "$WORK/root/usr/bin/machino"
 # of them will never serve their own WLAN.
 make_bundle; make_camera auto
 run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
-hasnt "no access point script without the flag" "$WORK/root/etc/init.d/S41hostapd"
+hasnt "no hostapd without the flag" "$WORK/root/usr/sbin/hostapd"
 
+# What this image lacks is the BINARY, not an init script: the AP is a role of
+# the wifi supervisor, so a second boot script wanting wlan0 would be the very
+# conflict the supervisor exists to prevent.
 make_bundle; make_camera auto
-run_install --with-access-point || bad "--with-access-point was refused: $(cat "$WORK/out")"
-has "access point script installed on request" "$WORK/root/etc/init.d/S41hostapd"
-# The image here has no hostapd, and the installer has to say so rather than
-# leaving the user to wonder why the web page still greys the AP out.
-if grep -q "no /usr/sbin/hostapd" "$WORK/out"; then ok; else bad "the missing hostapd was not reported"; fi
+run_install --with-wifi --with-access-point || bad "--with-access-point was refused: $(cat "$WORK/out")"
+has "hostapd installed on request"  "$WORK/root/usr/sbin/hostapd"
+has "role supervisor installed"     "$WORK/root/usr/sbin/machino-wifi-role"
+hasnt "no separate AP boot script"  "$WORK/root/etc/init.d/S41hostapd"
+
+# hostapd without anything to bring wlan0 up is useless, and the installer has
+# to say so rather than leaving a silently dead feature.
+make_bundle; make_camera auto
+run_install --with-access-point
+if grep -q "without --with-wifi" "$WORK/out"; then ok; else bad "the missing --with-wifi was not reported"; fi
 
 run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
-hasnt "access point script removed again" "$WORK/root/etc/init.d/S41hostapd"
+hasnt "hostapd removed again" "$WORK/root/usr/sbin/hostapd"
 
 # An unknown flag must still be an error -- adding one option is not a licence
 # to accept anything.
@@ -528,7 +539,7 @@ else ok; fi
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
 # check keeps the next such regression out.
-for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S41hostapd" "$PKG/init/S42wifi" "$PKG/udhcpc-wlan.script"; do
+for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42wifi" "$PKG/sbin/machino-wifi-role" "$PKG/udhcpc-wlan.script"; do
     if grep -nE '(^|[^-a-z_])install +-[dm]' "$f"; then bad "$(basename "$f") uses install(1), which BusyBox does not have"; else ok; fi
     if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
     if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi

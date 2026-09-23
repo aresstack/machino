@@ -1,0 +1,84 @@
+#!/bin/sh
+# Machino daemon control. Deliberately NOT named S??* : rcS would then start it
+# unconditionally and the camera would have two media owners whenever Majestic
+# is the selected one. /etc/init.d/S95streamer decides who runs; this script
+# only knows how to start and stop Machino.
+[ -r /etc/TZ ] && export TZ=$(cat /etc/TZ)
+
+DAEMON="machino"
+DAEMON_PATH="/usr/bin/$DAEMON"
+CONF="/etc/machino/machino.conf"
+LOGFILE="/var/log/machino.log"
+PIDFILE="/var/run/$DAEMON.pid"
+
+# Front-door mode: when Machino is the active owner it binds the public WebUI
+# port and relays every request that is not a native Majestic route to the
+# internal OpenIPC WebUI (busybox httpd, started by streamerctl on :85). These
+# override the config file so an older machino.conf still lands on :80.
+API_PORT="${MACHINO_API_PORT:-80}"
+UPSTREAM_PORT="${MACHINO_UPSTREAM_PORT:-85}"
+
+# Match the daemon by its binary path in the cmdline. On this busybox pgrep -x
+# matches argv0 as a whole ("/usr/bin/machino"), so "pgrep -x machino" never
+# matched the daemon; pgrep -f "$DAEMON_PATH" does, and does not match this init
+# script ("/bin/sh /etc/init.d/machino start") or streamerctl. Verified on the
+# T40NN: with this, /etc/init.d/machino start actually starts it.
+running() {
+	pgrep -f "$DAEMON_PATH" >/dev/null 2>&1
+}
+
+start() {
+	echo -n "Starting $DAEMON: "
+	if running; then echo "OK (already running)"; return 0; fi
+	if [ ! -x "$DAEMON_PATH" ]; then echo "FAIL (no $DAEMON_PATH)"; return 1; fi
+	if [ ! -r "$CONF" ]; then echo "FAIL (no $CONF)"; return 1; fi
+	# busybox start-stop-daemon -b redirects the daemon's stdio to /dev/null,
+	# so the shell redirect below never reaches it; machino's own file sink
+	# (MACHINO_LOGFILE) is what actually captures the log.
+	export MACHINO_LOGFILE="$LOGFILE"
+	(
+		trap '' HUP
+		start-stop-daemon -b -S -q -x "$DAEMON_PATH" -- -c "$CONF" \
+			--api-port "$API_PORT" --api-upstream-port "$UPSTREAM_PORT" >>"$LOGFILE" 2>&1
+	)
+	case $? in
+		0|1) echo "OK" ;;
+		*)   echo "FAIL"; return 1 ;;
+	esac
+}
+
+stop() {
+	echo -n "Stopping $DAEMON: "
+	# SIGTERM: Machino tears the pipeline down in order, so the ISP is released
+	# before anything else may claim it.
+	start-stop-daemon -K -q -x "$DAEMON_PATH" 2>/dev/null || kill "$(pgrep -f "$DAEMON_PATH")" 2>/dev/null
+	i=0
+	while running && [ $i -lt 15 ]; do
+		i=$((i + 1))
+		sleep 1
+	done
+	if running; then
+		echo "FAIL (still running)"
+		return 1
+	fi
+	rm -f "$PIDFILE"
+	echo "OK"
+}
+
+case "$1" in
+	start|stop)
+		$1
+		;;
+	restart)
+		stop || exit 1
+		sleep 2
+		start
+		;;
+	status)
+		if running; then echo "$DAEMON is running"; else echo "$DAEMON is not running"; exit 1; fi
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|status}"
+		exit 1
+		;;
+esac

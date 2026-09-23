@@ -346,30 +346,6 @@ if [ "$WITH_AP" = "1" ]; then
     fi
 fi
 
-# ------------------------------------------------------- initial selection ---
-# Keep streaming whatever streams right now. Installing must not switch.
-if [ ! -f "$STATE_DIR/streamer" ]; then
-    if pgrep -x majestic >/dev/null 2>&1; then sel=majestic
-    elif [ "$(cat "$STATE_DIR/streamer.preinstall")" = "majestic-auto" ]; then sel=majestic
-    else sel=none
-    fi
-    printf '%s\n' "$sel" > "$STATE_DIR/streamer"
-    say "initial selection: $sel (unchanged - nothing was started or stopped)"
-fi
-
-# ----------------------------------------------- clean up legacy WebUI bits ---
-# Earlier bundles shipped a standalone /cgi-bin/machino.cgi page and injected a
-# "Media service" entry (with CSS :has() tricks) into p/header.cgi. That approach
-# is gone; remove any leftovers so upgrading from such a build restores the stock
-# WebUI. The proper Machino WebUI adaptation replaces this, not a single page.
-rm -f "$CGI/machino.cgi"
-legacy_header="$CGI/p/header.cgi"
-if [ -f "$legacy_header" ] && grep -q 'machino:begin' "$legacy_header" 2>/dev/null; then
-    sed '/machino:begin/,/machino:end/d' "$legacy_header" > "$legacy_header.machino.tmp" &&
-        mv "$legacy_header.machino.tmp" "$legacy_header" && say "removed the legacy WebUI menu entry" ||
-        { rm -f "$legacy_header.machino.tmp"; warn "could not remove the legacy menu entry from $legacy_header"; }
-fi
-
 # ------------------------------------------ the network page's menu entry ---
 # Opt-in, marked, and removed by exactly the same markers on uninstall.
 #

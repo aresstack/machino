@@ -69,22 +69,25 @@ jobs:
           tar xzf hostapd.tar.gz
           cd "hostapd-$HOSTAP_VER/hostapd"
 
-          # Only what this camera needs. Every line left out is code that does
-          # not have to run on a 42 MB box.
+          # Only what this camera needs.
+          #
+          # ABWESENHEIT schaltet ab, nicht "=n". hostapds Makefile prueft mit
+          # ifdef, also AKTIVIERT CONFIG_WPS=n das WPS -- und CONFIG_SAE=n das
+          # SAE. Der erste Anlauf hier hatte genau das, und der Link scheiterte
+          # dann an crypto_bignum_*/crypto_ec_*, weil SAE eben doch gebaut
+          # wurde. Was nicht drin sein soll, steht gar nicht erst da:
+          #
+          #   kein WPS, kein EAP, kein SAE/WPA3
+          #
+          # SAE braucht die EC-Schicht, die CONFIG_TLS=internal nicht hat. Mit
+          # OpenSSL ginge es, aber das ist auf einem 8-MB-Overlay ein hoher
+          # Preis fuer einen Kamera-Hotspot, den Telefone per WPA2 erreichen.
           cat > .config <<'CFG'
           CONFIG_DRIVER_NL80211=y
           CONFIG_LIBNL32=y
           CONFIG_IEEE80211N=y
-          CONFIG_WPS=n
-          CONFIG_EAP=n
           CONFIG_TLS=internal
           CONFIG_INTERNAL_LIBTOMMATH=y
-          # SAE (WPA3) ist NICHT drin, und das ist kein Versehen: es braucht die
-          # EC-/Bignum-Schicht, die CONFIG_TLS=internal nicht hat -- der Link
-          # scheitert an crypto_bignum_* und crypto_ec_*. Mit OpenSSL waere es
-          # moeglich, aber das ist auf einem 8-MB-Overlay ein hoher Preis fuer
-          # einen Kamera-Hotspot, den Telefone ohnehin per WPA2 ansprechen.
-          CONFIG_SAE=n
           CONFIG_IEEE80211W=y
           CONFIG_CTRL_IFACE=y
           CONFIG_NO_RADIUS=y

@@ -27,6 +27,9 @@ struct HostapdPaths {
     std::string ctrl_dir  = "/var/run/hostapd";
     std::string conf_path = "/etc/machino/hostapd.conf";
     std::string pid_path  = "/var/run/hostapd.pid";
+    // Die Rolle, die der Supervisor liest. machino schreibt hier hinein statt
+    // selbst Daemons zu starten -- siehe openipc/sbin/machino-wifi-role.
+    std::string role_path = "/etc/machino/wifi-role";
     std::string dhcp_conf_path = "/etc/machino/udhcpd.conf";
     std::string sys_root  = "/sys";
     std::vector<std::string> bin_dirs{"/usr/sbin", "/sbin", "/usr/bin", "/bin"};
@@ -66,10 +69,6 @@ public:
 private:
     bool write_file(const std::string& path, const std::string& text, std::string& err) const;
     bool have_binary(const char* name) const;
-    // Makes hostapd re-read its configuration file. Returns false when neither
-    // mechanism is available.
-    bool reload_config();
-    bool signal_hup() const;
 
     std::string  ifname_;
     HostapdPaths paths_;

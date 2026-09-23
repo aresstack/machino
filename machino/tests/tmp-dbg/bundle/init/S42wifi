@@ -9,9 +9,8 @@
 # passiert alles Prozess-Startende VOR machinod -- S42 liegt hinter S41yt8512
 # (Ethernet) und weit vor S95streamer.
 #
-# Praeziser gesagt: hier wird sehr wohl geforkt, das ist der Zweck. Der Punkt
-# ist, dass der Prozess mit der grossen IMP-Pipeline es nicht tut. machino
-# steuert danach nur noch ueber Sockets und eine Rollendatei.
+# machino uebernimmt danach die Steuerung ueber Sockets: wpa_supplicant ueber
+# sein Control-Interface, hostapd ueber seins. Kein Fork zur Laufzeit.
 #
 # REIHENFOLGE
 #
@@ -106,11 +105,7 @@ stop() {
 	rm -f /var/run/udhcpc.$IFACE.pid
 	[ -f /var/run/udhcpd.pid ] && kill "$(cat /var/run/udhcpd.pid)" 2>/dev/null
 	rm -f /var/run/udhcpd.pid
-	# Der Supervisor raeumt seine eigenen Prozesse per PID-Datei ab; hier nur
-	# die Faelle, in denen er selbst nicht mehr laeuft.
-	for p in /var/run/wpa_supplicant.wlan0.pid /var/run/hostapd.pid; do
-		[ -f "$p" ] && { kill "$(cat "$p")" 2>/dev/null; rm -f "$p"; }
-	done
+	killall wpa_supplicant hostapd 2>/dev/null
 	ip link set $IFACE down 2>/dev/null
 	# Portstrom bleibt AN. Ihn abzuschalten wuerde das Geraet abmelden,
 	# waehrend machino unter Umstaenden noch laeuft und es abfragt.

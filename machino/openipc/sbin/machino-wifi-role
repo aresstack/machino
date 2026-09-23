@@ -1,0 +1,160 @@
+#!/bin/sh
+# Wer besitzt wlan0: der Supplicant oder hostapd.
+#
+# WARUM ES DAS GIBT
+#
+# Auf diesem Radio sind Station und Access Point GEGENSEITIGE Rollen --
+# driver_concurrent_sta_ap ist false, und das ist keine Vorsicht, sondern der
+# Stand des Wissens. Zwei Daemons gleichzeitig auf wlan0 loszulassen erzeugt
+# einen Access Point, der hochkommt und Sekunden spaeter wieder wegbricht,
+# weil der Supplicant weiterscannt.
+#
+# Und machino darf beide nicht selbst starten: fork+exec bei laufender
+# IMP-Pipeline ist der dokumentierte OOM-Ausloeser dieser Kamera.
+#
+# Also besitzt DIESER Prozess das Interface. Er wird einmal beim Boot
+# gestartet -- vor machinod, also bevor IMP existiert -- und liest danach nur
+# noch eine Datei. machino schreibt die Absicht hinein.
+#
+# Hier wird durchaus geforkt: ein Rollenwechsel startet Prozesse, das ist seine
+# Aufgabe. Der Punkt der Trennung ist ein anderer und praeziser: der Prozess
+# mit der grossen IMP-Pipeline forkt nicht. Dieser kleine Supervisor hat ein
+# paar hundert Kilobyte RSS, und ein fork() aus ihm heraus ist harmlos, waehrend
+# dasselbe aus machino heraus die Box umbringt.
+#
+# Zweiter Zweck: es gibt genau EINEN Besitzer von wlan0. Zwei Daemons darauf
+# ergeben einen Access Point, der hochkommt und Sekunden spaeter wegbricht.
+#
+#   /etc/machino/wifi-role      station | ap | off
+#
+# Der Rollenwechsel startet hostapd FRISCH statt es neu zu konfigurieren. Das
+# ist der Unterschied, an dem die erste Fassung gescheitert waere: hostapds
+# ENABLE bringt die Konfiguration hoch, die es bereits im Speicher hat, und
+# liest die Datei nicht neu -- ein frischer Start tut es immer.
+
+ROLE_FILE=/etc/machino/wifi-role
+IFACE=wlan0
+WPACONF=/etc/machino/wpa-supplicant.conf
+APCONF=/etc/machino/hostapd.conf
+DHCPDCONF=/etc/machino/udhcpd.conf
+DHCPSCRIPT=/etc/machino/udhcpc-wlan.script
+WPACTRL=/var/run/wpa_supplicant
+APCTRL=/var/run/hostapd
+WPAPID=/var/run/wpa_supplicant.wlan0.pid
+APPID=/var/run/hostapd.pid
+POLL=2
+
+log() { echo "wifi-role: $*"; }
+
+# Nur die EIGENEN Prozesse beenden, nie per killall. Eine spaetere Kamera kann
+# einen zweiten Supplicant auf einer anderen Schnittstelle fahren -- ein
+# pauschales "killall wpa_supplicant" wuerde den mit abraeumen, und das faellt
+# dann an einer ganz anderen Stelle auf.
+kill_pidfile() {
+	[ -f "$1" ] || return 0
+	pid=$(cat "$1" 2>/dev/null)
+	[ -n "$pid" ] && kill "$pid" 2>/dev/null
+	rm -f "$1"
+}
+
+stop_station() {
+	kill_pidfile /var/run/udhcpc.$IFACE.pid
+	kill_pidfile "$WPAPID"
+	# Warten, bis der Socket wirklich weg ist. Sonst uebernimmt hostapd ein
+	# Interface, das der Supplicant noch haelt, und scheitert unspezifisch.
+	n=0
+	while [ -e "$WPACTRL/$IFACE" ] && [ $n -lt 20 ]; do n=$((n+1)); sleep 1; done
+	rm -f "$WPACTRL/$IFACE"
+	# Die per DHCP bezogene Adresse muss weg. Bleibt sie stehen, traegt das
+	# Interface in der AP-Rolle zwei Adressen -- die alte aus dem Hotspot-Netz
+	# und die des Access Points -- und Clients bekommen Antworten von der
+	# falschen.
+	ip addr flush dev $IFACE 2>/dev/null
+}
+
+stop_ap() {
+	kill_pidfile /var/run/udhcpd.pid
+	kill_pidfile "$APPID"
+	n=0
+	while [ -e "$APCTRL/$IFACE" ] && [ $n -lt 20 ]; do n=$((n+1)); sleep 1; done
+	rm -f "$APCTRL/$IFACE"
+	# Umgekehrt genauso: die AP-Adresse darf nicht in die Station-Rolle
+	# hineinreichen.
+	ip addr flush dev $IFACE 2>/dev/null
+}
+
+start_station() {
+	[ -x /usr/sbin/wpa_supplicant ] || { log "kein wpa_supplicant im Image"; return 1; }
+	mkdir -p "$WPACTRL"
+	if [ ! -f "$WPACONF" ]; then
+		umask 077
+		printf 'ctrl_interface=%s\nupdate_config=1\n' "$WPACTRL" > "$WPACONF"
+		chmod 600 "$WPACONF"
+	fi
+	ip link set $IFACE up
+	wpa_supplicant -B -P "$WPAPID" -i $IFACE -c "$WPACONF" -D nl80211 >/dev/null 2>&1 || {
+		log "wpa_supplicant startete nicht"; return 1; }
+	# DHCP als Daemon: nach einem Rollback assoziiert der Supplicant von
+	# selbst neu, und ohne laufenden Client bliebe das Interface assoziiert
+	# und adresslos.
+	if command -v udhcpc >/dev/null 2>&1; then
+		if [ -x "$DHCPSCRIPT" ]; then
+			udhcpc -i $IFACE -b -t 0 -S -s "$DHCPSCRIPT" >/dev/null 2>&1
+		else
+			udhcpc -i $IFACE -b -t 0 -S >/dev/null 2>&1
+		fi
+	fi
+	log "Rolle station aktiv"
+}
+
+start_ap() {
+	[ -x /usr/sbin/hostapd ] || { log "kein hostapd im Image"; return 1; }
+	[ -f "$APCONF" ] || { log "keine $APCONF - machino schreibt sie beim Einschalten"; return 1; }
+	mkdir -p "$APCTRL"
+	ip link set $IFACE up
+	hostapd -B -P "$APPID" "$APCONF" >/dev/null 2>&1 || {
+		log "hostapd startete nicht - Konfiguration pruefen"; return 1; }
+
+	# Eigene Adresse und DHCP fuer die Clients. Ohne beides assoziieren
+	# Telefone und bekommen nichts, was wie eine kaputte Kamera aussieht.
+	ip_addr=$(sed -n 's/^option router *//p' "$DHCPDCONF" 2>/dev/null | head -1)
+	[ -n "$ip_addr" ] && ip addr add "$ip_addr/24" dev $IFACE 2>/dev/null
+	if [ -f "$DHCPDCONF" ] && command -v udhcpd >/dev/null 2>&1; then
+		[ -f /var/run/udhcpd.leases ] || : > /var/run/udhcpd.leases
+		udhcpd "$DHCPDCONF" >/dev/null 2>&1 || log "udhcpd startete nicht - Clients bekommen keine Adresse"
+	fi
+	log "Rolle ap aktiv"
+}
+
+apply_role() {
+	want=$1
+	case "$want" in
+		station) stop_ap;      start_station ;;
+		ap)      stop_station; start_ap ;;
+		off)     stop_ap;      stop_station; log "Rolle off" ;;
+		*)       log "unbekannte Rolle '$want' - ignoriert"; return 1 ;;
+	esac
+}
+
+# ---------------------------------------------------------------- main loop
+[ -f "$ROLE_FILE" ] || echo station > "$ROLE_FILE"
+current=""
+while :; do
+	want=$(cat "$ROLE_FILE" 2>/dev/null | tr -d ' \t\r\n')
+	[ -n "$want" ] || want=station
+	if [ "$want" != "$current" ]; then
+		log "Wechsel $current -> $want"
+		if apply_role "$want"; then
+			current="$want"
+		else
+			# Nicht in einer Schleife wiederholen: ein fehlendes Binary oder
+			# eine kaputte Konfiguration wird durch Nochmalversuchen nicht
+			# besser, und alle zwei Sekunden einen Daemon anzuwerfen macht die
+			# Box unbenutzbar. Der naechste Versuch kommt, wenn jemand die
+			# Datei erneut aendert.
+			current="$want"
+			log "Rolle $want liess sich nicht herstellen - warte auf die naechste Aenderung"
+		fi
+	fi
+	sleep $POLL
+done
