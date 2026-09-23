@@ -1,0 +1,139 @@
+name: build-hostapd-t40
+# hostapd fuer den T40, statisch gegen libnl gelinkt.
+#
+# Warum ueberhaupt: das OpenIPC-Image auf dieser Kamera hat KEIN hostapd. Ein
+# Init-Skript und eine Konfiguration zu liefern, ohne das Binary, ergibt einen
+# Access Point, der nie startet -- die API meldete bisher korrekt
+# "hostapd is not in this image", und das bleibt so, bis das hier existiert.
+#
+# Statisch gelinkt, weil das Image kein libnl mitbringt und eine zusaetzliche
+# Shared Library auf einem 8-MB-Overlay mehr Aerger macht als sie wert ist.
+# CONFIG_TLS=internal: ohne OpenSSL auf dem Zielsystem, und WPA2-PSK/SAE
+# brauchen kein TLS.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths: [ '.github/workflows/build-hostapd-t40.yml' ]
+
+jobs:
+  hostapd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CROSS: "mipsel-linux-"
+      HOSTAP_VER: "2.10"
+      LIBNL_VER: "3.7.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: "Dependencies"
+        run: sudo apt-get update && sudo apt-get install -y build-essential wget curl git file pkg-config
+
+      - name: "Toolchain"
+        run: |
+          set -eu
+          chmod +x build.sh
+          ./build.sh deps T40 --libc-musl
+          BIN=$(ls -d toolchain/*/*/bin 2>/dev/null | head -1)
+          test -n "$BIN" || { echo "::error::no toolchain"; exit 1; }
+          BIN="$PWD/$BIN"
+          echo "$BIN" >> "$GITHUB_PATH"
+          echo "SYSROOT=$PWD/3p/sysroot" >> "$GITHUB_ENV"
+          "$BIN/${CROSS}gcc" --version | head -1
+
+      - name: "libnl (static)"
+        run: |
+          set -eu
+          mkdir -p "$SYSROOT"
+          cd "$RUNNER_TEMP"
+          wget -q "https://github.com/thom311/libnl/releases/download/libnl$(echo $LIBNL_VER | tr . _)/libnl-$LIBNL_VER.tar.gz" -O libnl.tar.gz \
+            || { echo "::error::libnl $LIBNL_VER could not be fetched"; exit 1; }
+          tar xzf libnl.tar.gz && cd "libnl-$LIBNL_VER"
+          # --disable-pthreads keeps it off a dependency musl provides
+          # differently; nothing hostapd uses needs it.
+          ./configure --host=mipsel-linux --prefix="$SYSROOT" \
+                      --enable-static --disable-shared --disable-cli >/dev/null
+          make -j"$(nproc)" >/dev/null
+          make install >/dev/null
+          ls -l "$SYSROOT/lib/libnl-3.a" "$SYSROOT/lib/libnl-genl-3.a"
+
+      - name: "hostapd"
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          wget -q "https://w1.fi/releases/hostapd-$HOSTAP_VER.tar.gz" -O hostapd.tar.gz \
+            || { echo "::error::hostapd $HOSTAP_VER could not be fetched"; exit 1; }
+          tar xzf hostapd.tar.gz
+          cd "hostapd-$HOSTAP_VER/hostapd"
+
+          # Only what this camera needs. Every line left out is code that does
+          # not have to run on a 42 MB box.
+          cat > .config <<'CFG'
+          CONFIG_DRIVER_NL80211=y
+          CONFIG_LIBNL32=y
+          CONFIG_IEEE80211N=y
+          CONFIG_WPS=n
+          CONFIG_EAP=n
+          CONFIG_TLS=internal
+          CONFIG_INTERNAL_LIBTOMMATH=y
+          CONFIG_SAE=y
+          CONFIG_IEEE80211W=y
+          CONFIG_CTRL_IFACE=y
+          CONFIG_NO_RADIUS=y
+          CONFIG_NO_ACCOUNTING=y
+          CONFIG_NO_VLAN=y
+          CONFIG_NO_DUMP_STATE=y
+          CFG
+
+          export CC="${CROSS}gcc"
+          export CFLAGS="-Os -I$SYSROOT/include/libnl3"
+          export LDFLAGS="-L$SYSROOT/lib -static"
+          export LIBS="-lnl-genl-3 -lnl-3 -lm"
+          make -j"$(nproc)" hostapd hostapd_cli
+          "${CROSS}strip" hostapd hostapd_cli
+          file hostapd
+          ls -l hostapd hostapd_cli
+
+      - name: "Gate: it must be a 32-bit mipsel binary and not need a shared libnl"
+        run: |
+          set -eu
+          H="$RUNNER_TEMP/hostapd-$HOSTAP_VER/hostapd/hostapd"
+          file "$H" | grep -q "ELF 32-bit LSB.*MIPS" || {
+            echo "::error::not a 32-bit MIPS binary: $(file -b "$H")"; exit 1; }
+          # A dynamically linked libnl would need a library the camera does not
+          # have, and the failure would only show at run time.
+          if "${CROSS}readelf" -d "$H" 2>/dev/null | grep -q "libnl"; then
+            echo "::error::hostapd still wants a shared libnl"; exit 1
+          fi
+          echo "needed: $(${CROSS}readelf -d "$H" 2>/dev/null | grep NEEDED || echo none)"
+
+      - name: "Bundle"
+        run: |
+          set -eu
+          B=bundle/hostapd-t40; mkdir -p "$B"
+          cp "$RUNNER_TEMP/hostapd-$HOSTAP_VER/hostapd/hostapd"     "$B/"
+          cp "$RUNNER_TEMP/hostapd-$HOSTAP_VER/hostapd/hostapd_cli" "$B/"
+          {
+            echo "hostapd $HOSTAP_VER for the OpenIPC T40 (mipsel, static)"
+            echo "libnl:      $LIBNL_VER, static"
+            echo "toolchain:  $(${CROSS}gcc --version | head -1)"
+            echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}"
+            echo "binary:     $(file -b "$B/hostapd")"
+            echo
+            echo "Config: nl80211, WPA2-PSK, SAE, 802.11n, internal TLS."
+            echo "NOT built in: WPS, EAP, RADIUS, accounting, VLAN."
+            echo
+            echo "NOT VERIFIED HERE: that it starts on the camera or that the"
+            echo "AIC8800 driver accepts AP mode. Both need the hardware."
+          } > "$B/BUILDINFO"
+          (cd "$B" && sha256sum hostapd hostapd_cli BUILDINFO > SHA256SUMS)
+          cat "$B/BUILDINFO"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hostapd-t40
+          path: bundle/hostapd-t40
+          if-no-files-found: error
