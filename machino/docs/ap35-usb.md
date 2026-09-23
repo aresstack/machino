@@ -481,7 +481,88 @@ PB27 fuehrt 0 V      -> der Pin wird trotz "out hi" nicht getrieben
 Erst danach ist zu entscheiden, welcher VBUS-Init richtig ist. Bis dahin wird
 weder PB27 getoggelt noch etwas geflasht.
 
-## AP35.21 — Die Messung am Schalter: die Polarität ist invertiert
+## AP35.22 — GELÖST: der Schaltpin ist GPIO 50 (PB18), nicht PB27
+
+**Am Gerät bewiesen, 2026-09-23: nach dem Setzen von GPIO 50 liegen am
+USB-VCC 3,3 V an.** Vorher 0 V.
+
+Die Antwort stand die ganze Zeit in der gesicherten Stock-Rootfs
+(`/c/tmp/stockx/sq418`), in der Datei `appinstall`:
+
+```sh
+#power on
+	echo 50 > /sys/class/gpio/export
+	echo out > /sys/class/gpio/gpio50/direction
+	echo 1 > /sys/class/gpio/gpio50/value
+	lsusb | grep -q "0bda:[0,8]179"      # Realtek-WLAN
+	...
+	lsusb | grep -q "2c7c:0125"           # Quectel
+	echo "1286 4e3c ff" > /sys/bus/usb-serial/drivers/option1/new_id
+	ln -s /dev/ttyUSB1 /dev/at_cmd
+	ln -s /dev/ttyUSB2 /dev/modem_cmd
+```
+
+**GPIO 50 = GPB (Basis 32) + 18 = PB18.** Unter OpenIPC ist PB18 ein
+GPIO-**Eingang** und treibt nichts — daher 0 V.
+
+Ausgeführt wurde exakt die Herstellersequenz über sysfs, nicht `devmem`:
+gpiolib beansprucht den Pin damit ordentlich, und es ist reversibel.
+
+### Die Schaltung
+
+```
+PB18 (GPIO 50)  high
+      |
+      v
+kleiner Schalttransistor
+      |
+      v  zieht das Gate ueber die 1 kOhm nach unten
+A1SHB P-MOSFET  leitet
+      |
+      v
+USB-VCC  3,3 V
+```
+
+Die gemessenen 1 kΩ zwischen Gate und Source sind der Kollektorwiderstand
+dieses Transistors, nicht ein simpler Pull-up. Deshalb schaltet **high**
+ein, obwohl der P-FET selbst active-low ist.
+
+### Was damit hinfällig ist
+
+`ingenic,drvvbus-gpio = <&gpb 27 ...>` in OpenIPCs DTB ist ein **Irrläufer
+aus Ingenics Referenzboard** (`shark.dts` benutzt denselben Pin). Auf dieser
+Platine hängt an PB27 nichts. Der Hersteller hat die Property im Stock-DTB
+mit `#` deaktiviert, **weil sie für dieses Board falsch ist** — nicht, weil
+es keinen Schalter gäbe.
+
+Damit sind zwei frühere Schlussfolgerungen von mir erledigt:
+
+* „kein software-schaltbarer 5-V-VBUS" — **falsch**, es gibt einen, er hängt
+  nur an einem anderen Pin.
+* „die Polarität von `drvvbus` ist invertiert" — **gegenstandslos**, der Pin
+  ist schlicht nicht angeschlossen. Der Test hat das sauber gezeigt: PB27 auf
+  low ändert am Drain nichts.
+
+### Spannung: 3,3 V, und das ist Absicht
+
+Der Port führt **3,3 V, nicht 5 V**. Das EC200A enumeriert daran **nicht**
+(gemessen: `PRTCONNSTS` bleibt 0, nichts in dmesg) — es braucht 5 V und
+1–2 A Bursts.
+
+Das ist kein Defekt. Stocks `appinstall` prüft nach dem Einschalten auf
+Realtek-WLAN-Sticks und auf `2c7c:0125` (Quectel EC25). Module dieser
+Familie sind LCC-/mini-PCIe-Bausteine mit **eigener** VBAT-Versorgung, bei
+denen USB nur Daten führt. Der Anschluss ist also für die Zusatzplatinen des
+Herstellers ausgelegt, nicht für einen USB-Dongle mit 5-V-Bedarf.
+
+### Offen
+
+* WLAN-Zusatzplatine anstecken → `PRTCONNSTS = 1`, VID:PID. Steht aus, weil
+  dafür das UART-Kabel getauscht werden muss.
+* GPIO 50 dauerhaft setzen (Initskript oder `rc.local`). Bisher nur zur
+  Laufzeit gesetzt, ein Reboot verliert es.
+
+## AP35.21 — Die Messung am Schalter: die Polarität ist invertiert (überholt)
 
 Messung an der Platine (2026-09-23), SOT-23 im VBUS-Pfad:
 
