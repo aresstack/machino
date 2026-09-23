@@ -192,6 +192,12 @@ cmd_install() {
                 if [ -x "$INITD/machino" ]; then
                     MACHINO_ROOT="$ROOT" "$INITD/machino" start >/dev/null 2>&1
                 fi
+                # The manifest was written a few lines up with the version of
+                # the binary that just failed. Leaving it would make the
+                # manifest claim a build that is no longer on disk - the exact
+                # silent lie this file exists to avoid - so it is rewritten
+                # from the daemon that is actually installed now.
+                write_manifest "$owner" "$platform"
                 state=$(compute_state)
                 if [ "$state" = "ON" ]; then
                     warn "rolled back: the previous daemon is running again. The new bundle was NOT kept."

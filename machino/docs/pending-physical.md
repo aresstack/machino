@@ -67,8 +67,8 @@ ist isoliert.
 
 ## D — `NEEDS_HUMAN` (Fehlschlag kostet die Erreichbarkeit)
 
-| Nr | Prüfung | Warum |
-|---|---|---|
+| Nr | Prüfung | Warum | Woher |
+|---|---|---|---|
 | D1 | Factory-/Unclaimed-Test | leert den root-Hash in `/etc/shadow` und beendet damit SSH | AP11 |
 | D2 | `nmem=` in die U-Boot-Umgebung für die NNA | Schreibvorgang in `mtd1 (env)`; eine kaputte Boot-Umgebung braucht UART und einen Menschen | AP23 |
 | D3 | Modultausch `tx-isp` / Sensor / `avpu` | `CONFIG_MODVERSIONS=n`: der Kernel lädt auch ein inkompatibles Modul klaglos und stürzt später ab | AP22 |

@@ -317,6 +317,32 @@ S=$(mgr_status "$WORK/bundle/sbin/machino-manager")
 case "$S" in *'"state":"OFF"'*) ok ;; *) bad "manager status not OFF after uninstall: $S" ;; esac
 rm -rf "$MSTUB"
 
+# ---- 15f) AP21: the rollback, and the manifest it must not leave lying ------
+#
+# A build that installs cleanly and then will not run. The manager has to put
+# the previous daemon back AND rewrite the manifest, because the manifest was
+# already written with the version of the binary that just failed - leaving it
+# would have the camera claim a build that is no longer on disk.
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1
+# now a "new" bundle whose daemon reports a different version and cannot be
+# selected, so post-install verification fails
+make_bundle
+cat > "$WORK/bundle/machino" <<'BROKEN'
+#!/bin/sh
+case "${1:-}" in --version|-V) echo "machino 9.9.9-broken" ;; *) echo "broken" ;; esac
+BROKEN
+chmod +x "$WORK/bundle/machino"
+before=$(cat "$R/usr/bin/machino")
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1
+# Without NO_ACTIVATE and without a real streamerctl target the state cannot be
+# ON, so the rollback path is the one under test.
+if grep -q "rolling back" "$WORK/out"; then ok; else bad "no rollback attempted: $(cat "$WORK/out")"; fi
+if [ "$(cat "$R/usr/bin/machino")" = "$before" ]; then ok; else bad "the previous daemon was not restored"; fi
+if grep -q '"version": "9.9.9-broken"' "$R/etc/machino/install-state.json"; then
+    bad "the manifest still claims the failed build"
+else ok; fi
+
 # ---- 16) AP21: the checks that run BEFORE anything is written ---------------
 #
 # These are the only cases that leave MACHINO_INSTALL_SKIP_FORMAT off, so they
