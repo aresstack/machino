@@ -238,6 +238,60 @@ void test_concurrent_patches() {
     ACHECK(r.store.get("video.bitrate") == std::to_string(r.mgr.stream().bitrate_kbps));   // last commit == live value
 }
 
+// AP26: an upgrade must not destroy what it does not understand.
+//
+// A camera that has been in the field carries keys this build has never heard
+// of - a newer Machino's setting after a downgrade, a hand-edited experiment,
+// a key from a fork. Rewriting the file must leave every one of them exactly
+// where it was. The existing coverage below proves KNOWN keys survive; this
+// proves the unknown ones do, which is the property an upgrade rests on.
+void test_config_store_preserves_foreign() {
+    const std::string text =
+        "# a header the owner wrote\n"
+        "board = board-x\n"
+        "\n"
+        "# something this build has never heard of\n"
+        "experimental.hdr_mode = aggressive\n"
+        "video.bitrate = 3000\n"
+        "some.future.key = 42\n"
+        "   indented.oddity   =   spaced out   \n"
+        "# trailing comment\n";
+
+    const std::string out = rewrite_config_text(text, {{"video.bitrate", "1500"}}, 7);
+
+    // every foreign line survives, byte for byte
+    ACHECK(out.find("# a header the owner wrote\n") == 0);
+    ACHECK(out.find("experimental.hdr_mode = aggressive\n") != std::string::npos);
+    ACHECK(out.find("some.future.key = 42\n") != std::string::npos);
+    ACHECK(out.find("   indented.oddity   =   spaced out   \n") != std::string::npos);
+    ACHECK(out.find("# something this build has never heard of\n") != std::string::npos);
+    ACHECK(out.find("# trailing comment\n") != std::string::npos);
+    // the managed key moved, and the revision with it
+    ACHECK(out.find("video.bitrate = 1500\n") != std::string::npos);
+    ACHECK(out.find("video.bitrate = 3000") == std::string::npos);
+    ACHECK(out.find("config.revision = 7\n") != std::string::npos);
+
+    // and a second pass changes nothing else: an upgrade that runs twice must
+    // not erode the file one line per run.
+    const std::string out2 = rewrite_config_text(out, {{"video.bitrate", "1500"}}, 8);
+    ACHECK(out2.find("experimental.hdr_mode = aggressive\n") != std::string::npos);
+    ACHECK(out2.find("some.future.key = 42\n") != std::string::npos);
+    ACHECK(out2.find("   indented.oddity   =   spaced out   \n") != std::string::npos);
+    // identical but for the revision line
+    std::string a = out, b = out2;
+    const size_t ra = a.find("config.revision = 7\n"), rb = b.find("config.revision = 8\n");
+    ACHECK(ra != std::string::npos && rb != std::string::npos);
+    a.erase(ra, std::string("config.revision = 7\n").size());
+    b.erase(rb, std::string("config.revision = 8\n").size());
+    ACHECK(a == b);
+
+    // removing a key leaves the foreign ones alone too
+    const std::string out3 = remove_config_keys_text(out, {"video.bitrate"}, 9);
+    ACHECK(out3.find("video.bitrate") == std::string::npos);
+    ACHECK(out3.find("experimental.hdr_mode = aggressive\n") != std::string::npos);
+    ACHECK(out3.find("some.future.key = 42\n") != std::string::npos);
+}
+
 void test_config_store_text() {
     std::string text = "# hdr\nboard = b\nvideo.bitrate = 3000   # kbps\nvideo.bitrate = 999\nlog.level = 2\n";
     std::string out = rewrite_config_text(text, {{"video.bitrate", "1500"}, {"sensor.fps", "15"}}, 5);
@@ -746,6 +800,7 @@ void run_api_tests() {
     test_failed_restart_structured();
     test_concurrent_patches();
     test_config_store_text();
+    test_config_store_preserves_foreign();
     test_m7_image_latency_api();
     test_majestic_webui_compat();
     test_rtsp_client_limit_api();

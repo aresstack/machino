@@ -19,7 +19,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $Out) { $Out = "C:\tmp\dropin-matrix-$(Get-Date -Format yyyyMMdd-HHmmss).txt" }
+if (-not $Out) { $Out = Join-Path $env:TEMP "dropin-matrix-$(Get-Date -Format yyyyMMdd-HHmmss).txt" }
 function Note($s) { [Console]::WriteLine($s); Add-Content -Path $Out -Value $s -Encoding utf8 }
 
 function Get-Cookie {

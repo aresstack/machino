@@ -32,13 +32,15 @@ param(
     [int]$RingFiles     = 12,         # bounded: RingFiles * RingKB is the hard ceiling
     [int]$RingKB        = 20480,      # 12 x 20 MB = 240 MB, and it never grows past that
     [int]$Port          = 80,
+    [string]$Dumpcap    = '',         # default: Wireshark's dumpcap under $env:ProgramFiles
     [string]$OutDir     = ''
 )
 
 $ErrorActionPreference = 'Stop'
-$dumpcap = 'C:\Program Files\Wireshark\dumpcap.exe'
-if (-not (Test-Path $dumpcap)) { throw "dumpcap not found at $dumpcap" }
-if (-not $OutDir) { $OutDir = "C:\tmp\hardlock-$(Get-Date -Format yyyyMMdd-HHmmss)" }
+if (-not $Dumpcap) { $Dumpcap = Join-Path $env:ProgramFiles 'Wireshark\dumpcap.exe' }
+$dumpcap = $Dumpcap
+if (-not (Test-Path $dumpcap)) { throw "dumpcap not found at $dumpcap (pass -Dumpcap)" }
+if (-not $OutDir) { $OutDir = Join-Path $env:TEMP "hardlock-$(Get-Date -Format yyyyMMdd-HHmmss)" }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $log = Join-Path $OutDir 'watch.log'
 function Note($s) {
