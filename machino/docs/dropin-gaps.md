@@ -1,5 +1,21 @@
 # Machino as a drop-in for Majestic — what is still missing
 
+> **VERALTET (AP28, 2026-09-23).** Dieses Dokument beschreibt den Stand vor
+> AP10–AP24 und wird als Analyse aufgehoben, nicht als Lagebericht.
+>
+> Was sich geändert hat:
+>
+> * **`/api/v1/image` ist implementiert** (AP10). Unten steht noch, es sei „the
+>   only gap that today's Machino configuration actively walks into" — das gilt
+>   nicht mehr. Auf der Kamera ist es noch nicht aktiv, weil der laufende
+>   Prozess älter ist; siehe `pending-physical.md`.
+> * `video1` wird seit AP9 im Schema geführt (`x-reload: "pipeline"`).
+> * `nightMode`, `audio` und `jpeg` werden inzwischen ausdrücklich gemeldet
+>   und beim Schreiben mit **403 und Begründung** abgelehnt statt verschwiegen.
+>
+> **Der aktuelle Stand steht in `dropin-matrix.md`** — 58 Endpunkte, jeder
+> klassifiziert.
+
 Final verification, no implementation. The question is narrow: with the
 **unmodified** OpenIPC/majestic-webui installed, what does it ask for that
 Machino does not answer?
