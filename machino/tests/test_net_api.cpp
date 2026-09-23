@@ -242,6 +242,44 @@ void test_usb_patch_that_cannot_be_persisted_is_an_error_not_a_silent_apply()
     TCHECK(contains(dumped(c.r), "read-only"));
 }
 
+void test_a_usb_apply_that_fails_does_not_leave_the_setting_persisted()
+{
+    // The config is written before it is applied, so a failing apply has to
+    // put the old one back: a 500 that nevertheless changes what the port does
+    // at the next boot is the worst of both answers.
+    Rig rig;
+    rig.backend.refuse = true;
+    NetApiService::Deps d = rig.deps();
+    usb::UsbConfig saved;
+    int saves = 0;
+    d.save_usb = [&](const usb::UsbConfig& c, std::string&) { saved = c; ++saves; return true; };
+    NetApiService api(d);
+
+    Call c = call(api, "PATCH", "/api/v1/usb", "{\"enabled\":true}");
+    TCHECK(c.routed && c.r.status == 500);
+    TCHECK(saves == 2);              // written, then put back
+    TCHECK(!saved.enabled);          // and what is on disk is the old setting
+}
+
+void test_when_the_rollback_of_the_stored_setting_also_fails_it_is_said_so()
+{
+    Rig rig;
+    rig.backend.refuse = true;
+    NetApiService::Deps d = rig.deps();
+    int saves = 0;
+    d.save_usb = [&](const usb::UsbConfig&, std::string& e) {
+        if (++saves == 1) return true;
+        e = "read-only filesystem";
+        return false;
+    };
+    NetApiService api(d);
+
+    Call c = call(api, "PATCH", "/api/v1/usb", "{\"enabled\":true}");
+    TCHECK(c.routed && c.r.status == 500);
+    // No reassuring message: the stored configuration really is the bad one.
+    TCHECK(contains(dumped(c.r), "could also not be restored"));
+}
+
 void test_usb_patch_rejects_an_unknown_field()
 {
     Rig rig; NetApiService api(rig.deps());
@@ -527,6 +565,8 @@ void run_net_api_tests()
     test_usb_get_reports_status_and_config();
     test_usb_patch_applies_and_persists();
     test_usb_patch_that_cannot_be_persisted_is_an_error_not_a_silent_apply();
+    test_a_usb_apply_that_fails_does_not_leave_the_setting_persisted();
+    test_when_the_rollback_of_the_stored_setting_also_fails_it_is_said_so();
     test_usb_patch_rejects_an_unknown_field();
     test_usb_patch_rejects_malformed_json();
     test_wrong_methods_are_405_and_say_what_is_allowed();

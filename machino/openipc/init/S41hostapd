@@ -23,6 +23,7 @@
 CONF=/etc/machino/hostapd.conf
 PID=/var/run/hostapd.pid
 CTRL=/var/run/hostapd
+DHCP_CONF=/etc/machino/udhcpd.conf
 
 start() {
 	[ -x /usr/sbin/hostapd ] || { echo "hostapd: not installed, skipping"; return 0; }
@@ -63,6 +64,31 @@ start() {
 	# the same console the kernel uses and would drown the boot log.
 	echo -n "starting hostapd: "
 	/usr/sbin/hostapd -B -P "$PID" "$CONF" && echo OK || echo "FAILED (access point will be unavailable)"
+
+	# The DHCP server for the access point's own pool.
+	#
+	# This lives here and not in machino for the same reason hostapd does:
+	# machino must not fork while the media pipeline is live. machino writes
+	# DHCP_CONF; starting the server is this script's job.
+	#
+	# Consequence, stated because it is a real limitation: a CHANGED pool takes
+	# effect at the next "S41hostapd restart", not the moment the web page
+	# applies it. The SSID and the key do take effect immediately, because
+	# those go to hostapd over its control socket.
+	start_dhcp
+}
+
+start_dhcp() {
+	[ -f "$DHCP_CONF" ] || return 0
+	command -v udhcpd >/dev/null 2>&1 || {
+		echo "udhcpd: not installed - access point clients will get no address"
+		return 0
+	}
+	# udhcpd refuses to start without it, and an access point whose clients
+	# never get an address looks exactly like a broken camera.
+	[ -f /var/run/udhcpd.leases ] || : > /var/run/udhcpd.leases
+	echo -n "starting udhcpd: "
+	udhcpd "$DHCP_CONF" && echo OK || echo "FAILED (access point clients will get no address)"
 }
 
 stop() {
@@ -71,8 +97,8 @@ stop() {
 		kill "$(cat "$PID")" 2>/dev/null && echo OK || echo "not running"
 		rm -f "$PID"
 	fi
-	# udhcpd is started by machino's AP path, not here, but it must not outlive
-	# the access point it was serving.
+	# udhcpd must not outlive the access point it was serving: a DHCP server
+	# still handing out leases for a network that is gone is worse than none.
 	[ -f /var/run/udhcpd.pid ] && kill "$(cat /var/run/udhcpd.pid)" 2>/dev/null
 	rm -f /var/run/udhcpd.pid
 }

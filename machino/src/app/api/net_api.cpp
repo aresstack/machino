@@ -148,14 +148,25 @@ Response NetApiService::usb_patch(const std::string& body)
     if (!usb::UsbHostService::resolve(cfg, d_.usb->capabilities(), resolved, e))
         return ApiService::fail(422, "invalid_value", path, e);
 
-    // Persist BEFORE applying. A port that comes up after a reboot but was
-    // never written is the confusing failure; the other order is merely a
-    // change that did not take.
+    // Persist BEFORE applying. A port that is on now and off after a reboot is
+    // the confusing failure; a change that did not take is not.
+    const usb::UsbConfig previous = d_.usb->config();
     if (d_.save_usb && !d_.save_usb(cfg, e))
         return ApiService::fail(500, "io_error", path, e);
 
-    if (!d_.usb->apply(cfg, e).is_ok())
+    if (!d_.usb->apply(cfg, e).is_ok()) {
+        // The config was already written. Leaving it there would mean a 500
+        // that nevertheless changes what the port does at the next boot --
+        // "nothing was applied" has to be true on disk as well, not just in
+        // RAM. If putting it back also fails there is nothing further we can
+        // do, and saying so beats a reassuring message.
+        std::string e2;
+        if (d_.save_usb && !d_.save_usb(previous, e2))
+            return ApiService::fail(500, "io_error", path,
+                                    e + "; the previous setting could also not be restored (" + e2 +
+                                    ") -- the stored USB configuration is now the one that failed");
         return ApiService::fail(500, "io_error", path, e);
+    }
 
     Json out = usb_status_json(d_.usb->status());
     out.set("config", usb_config_json(d_.usb->config()));

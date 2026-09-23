@@ -123,6 +123,15 @@ Result HostapdAp::start(const net::WifiApConfig& cfg, std::string& err)
     LOGI(MOD, "access point up on %s (ssid %zu bytes, %s, channel %d)",
          ifname_.c_str(), cfg.ssid.size(),
          net::wifi_security_name(cfg.security), cfg.channel);
+
+    // Said plainly rather than left to be discovered: the SSID and the key go
+    // to hostapd over the control socket and take effect now, but udhcpd is
+    // started by the init script and does not re-read its config. A pool that
+    // was changed in this call is written and will be used at the next
+    // S41hostapd restart -- until then clients get the previous pool.
+    if (cfg.dhcp_server)
+        LOGI(MOD, "DHCP pool written to %s; a CHANGED pool takes effect at the "
+                  "next '/etc/init.d/S41hostapd restart'", paths_.dhcp_conf_path.c_str());
     return Result::ok();
 }
 
