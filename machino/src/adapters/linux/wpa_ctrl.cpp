@@ -30,10 +30,13 @@ Result WpaCtrl::ensure_open()
     int fd = ::socket(AF_UNIX, SOCK_DGRAM, 0);
     if (fd < 0) return Result::error(errno);
 
-    // Our end needs a name so wpa_supplicant can reply. Include the pid so two
-    // instances cannot collide on a stale socket.
+    // Our end needs a name so wpa_supplicant can reply. The pid alone is not
+    // enough: two WpaCtrl objects in one process -- two radios, or a retry
+    // while the first is still open -- would bind the same path and the second
+    // bind would fail. A per-object counter makes the name unique.
+    static int seq = 0;
     char ours[128];
-    std::snprintf(ours, sizeof(ours), "/tmp/machino-wpa-%d", (int)::getpid());
+    std::snprintf(ours, sizeof(ours), "/tmp/machino-wpa-%d-%d", (int)::getpid(), seq++);
     ::unlink(ours);
 
     struct sockaddr_un local;

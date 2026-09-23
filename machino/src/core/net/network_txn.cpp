@@ -93,6 +93,13 @@ bool NetworkTxn::recover(std::string& err)
         return false;
     }
 
+    // Continue the token sequence across the restart. Without this the
+    // counter starts at 1 again, and a browser still holding a token from
+    // before the crash could confirm a DIFFERENT change that happens to get
+    // the same number -- which is precisely the confirmation-of-something-
+    // -else this class is supposed to make impossible.
+    if (r.token >= next_token_) next_token_ = r.token + 1;
+
     if (!r.pending) {
         rec_ = r;                                     // just the confirmed baseline
         return false;

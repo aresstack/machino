@@ -171,6 +171,33 @@ void test_stale_token_cannot_confirm()
     TCHECK(ap.current == "OLD");
 }
 
+void test_a_token_from_before_a_restart_cannot_confirm_a_later_change()
+{
+    // Regression: the token counter restarted at 1 with the process, so a
+    // browser still holding a token from before the crash could confirm a
+    // DIFFERENT change that happened to get the same number.
+    MemStore st;
+    uint64_t old_token = 0;
+    {
+        Applier ap;
+        NetworkTxn tx(st, [&](const std::string& c) { return ap(c); });
+        std::string err;
+        TCHECK(tx.begin("A", "B", 0, 60000, old_token, err));
+    }
+
+    Applier ap2;
+    NetworkTxn tx2(st, [&](const std::string& c) { return ap2(c); });
+    std::string err;
+    tx2.recover(err);
+
+    uint64_t new_token = 0;
+    TCHECK(tx2.begin("A", "C", 0, 60000, new_token, err));
+    TCHECK(new_token != old_token);
+    TCHECK(!tx2.confirm(old_token, err));       // the stale one must not work
+    TCHECK(tx2.pending());
+    TCHECK(tx2.confirm(new_token, err));        // the right one still does
+}
+
 void test_failed_write_refuses_to_apply()
 {
     // If we cannot write down how to undo it, we must not do it.
@@ -268,6 +295,7 @@ void run_network_txn_tests()
     test_corrupt_record_is_discarded_not_trusted();
     test_garbage_record_is_discarded();
     test_stale_token_cannot_confirm();
+    test_a_token_from_before_a_restart_cannot_confirm_a_later_change();
     test_failed_write_refuses_to_apply();
     test_failed_apply_restores_and_reports();
     test_second_change_is_refused_while_pending();

@@ -57,8 +57,17 @@ struct UplinkStatus {
     UplinkMetrics metrics;
 };
 
-// A change that undoes itself unless confirmed. Generic on purpose: the same
-// machinery protects a WiFi switch, an IP change and later an LTE APN.
+// A change that undoes itself unless confirmed -- IN MEMORY ONLY.
+//
+// Use net::NetworkTxn (core/net/network_txn.hpp) for anything that can make
+// the camera unreachable. This class survives a browser walking away; it does
+// NOT survive a crash, a watchdog reboot or a power cut, because the undo
+// lives in this object. For a WiFi or IP change that is not good enough, and
+// picking the wrong one of the two is an easy mistake to make -- hence this
+// note rather than a tidy-looking pair of siblings.
+//
+// What this one is still right for: a change that is merely annoying to lose,
+// where a restart already puts things back by itself.
 class StagedChange {
 public:
     using Action = std::function<Result()>;

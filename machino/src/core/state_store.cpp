@@ -42,7 +42,16 @@ bool FileStateStore::save(const std::string& key, const std::string& value)
     }
     // rename over the old file: a reader sees one or the other, never a
     // fragment. This is the whole point of the class.
-    std::remove(final_path.c_str());          // Windows rename refuses an existing target
+    //
+    // On POSIX rename() replaces the target atomically. An earlier version
+    // called remove() first "because Windows needs it" -- which opened a
+    // window where the file did not exist at all, so a power cut in that
+    // instant lost the confirmed configuration. Exactly the failure this
+    // class is here to prevent. Try the atomic path first; fall back only
+    // where the platform refuses it.
+    if (std::rename(tmp_path.c_str(), final_path.c_str()) == 0) return true;
+
+    if (std::remove(final_path.c_str()) != 0) return false;
     return std::rename(tmp_path.c_str(), final_path.c_str()) == 0;
 }
 
