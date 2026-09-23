@@ -147,6 +147,28 @@ void test_a_nested_directory_is_created_too()
     wipe();
 }
 
+void test_a_file_in_the_way_is_not_mistaken_for_a_directory()
+{
+    // mkdir returns EEXIST for a regular file too. Treating that as success
+    // would have the store carry on and write into a path that can never hold
+    // it -- and the failure would surface much later, as a refused network
+    // change with no obvious cause.
+    wipe();
+    make_dir();
+    const std::string blocked = std::string(kDir) + "/blocker";
+    FILE* f = std::fopen(blocked.c_str(), "wb");
+    TCHECK(f != nullptr);
+    if (f) { std::fputs("not a directory", f); std::fclose(f); }
+
+    FileStateStore s(blocked);
+    TCHECK(!s.save("k", "value"));          // refuses rather than pretending
+    std::string out;
+    TCHECK(!s.load("k", out));
+
+    std::remove(blocked.c_str());
+    wipe();
+}
+
 void test_an_empty_value_is_not_the_same_as_an_absent_key()
 {
     // network-pending is read for PRESENCE: "a change was in flight". An empty
@@ -234,6 +256,7 @@ void run_state_store_tests()
 {
     test_the_store_creates_its_own_directory();
     test_a_nested_directory_is_created_too();
+    test_a_file_in_the_way_is_not_mistaken_for_a_directory();
     test_round_trip_and_no_litter();
     test_an_empty_value_is_not_the_same_as_an_absent_key();
     test_a_value_with_newlines_and_nuls_survives();

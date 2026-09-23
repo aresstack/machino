@@ -28,19 +28,23 @@ namespace {
 // never created, every save() failed at open(), and the network transaction
 // therefore had no known-good baseline -- which made it refuse every staged
 // change. Fail-closed, but the whole rollback safety net was inert.
-bool make_one(const std::string& path)
-{
-#if defined(_WIN32)
-    return ::_mkdir(path.c_str()) == 0 || errno == EEXIST;
-#else
-    return ::mkdir(path.c_str(), 0700) == 0 || errno == EEXIST;
-#endif
-}
-
 bool is_dir(const std::string& path)
 {
     struct stat st;
     return ::stat(path.c_str(), &st) == 0 && (st.st_mode & S_IFDIR) != 0;
+}
+
+bool make_one(const std::string& path)
+{
+#if defined(_WIN32)
+    if (::_mkdir(path.c_str()) == 0) return true;
+#else
+    if (::mkdir(path.c_str(), 0700) == 0) return true;
+#endif
+    // EEXIST alone is not success: a regular FILE at this path also gives
+    // EEXIST, and carrying on would then write state into a path that can
+    // never hold it. Only an existing DIRECTORY counts.
+    return errno == EEXIST && is_dir(path);
 }
 
 bool ensure_dir(const std::string& dir)

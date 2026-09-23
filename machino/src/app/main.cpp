@@ -546,23 +546,22 @@ int main(int argc, char** argv) {
         });
         {
             std::string e;
-            // seed_confirmed() returns false for TWO very different reasons:
-            // a baseline already exists (normal), or writing one failed (the
-            // rollback safety net does not exist). An earlier version treated
-            // both as normal with a comment saying so, and on the camera the
-            // second case was the real one -- FileStateStore never created
-            // /etc/machino/state, so every staged network change was refused
-            // with "there is no confirmed configuration to fall back to".
-            //
-            // Which is why the two are told apart here instead.
-            std::string existing;
-            if (!net_txn.confirmed_config(existing)) {
-                if (!net_txn.seed_confirmed("{\"kind\":\"boot\"}", e))
+            // The three outcomes are handled as three, not folded into a
+            // bool. An earlier version treated "could not write it" the same
+            // as "already there", with a comment claiming the latter was the
+            // normal case -- and on the camera the former was true, so every
+            // staged network change was refused for a whole release.
+            switch (net_txn.seed_confirmed("{\"kind\":\"boot\"}", e)) {
+                case net::SeedOutcome::Seeded:
+                    LOGI(MOD, "network: known-good baseline seeded");
+                    break;
+                case net::SeedOutcome::AlreadyPresent:
+                    break;                      // the ordinary case on any later boot
+                case net::SeedOutcome::Failed:
                     LOGE(MOD, "network: no known-good baseline could be written (%s) - "
                               "staged changes will be REFUSED and rollback is unavailable",
                          e.c_str());
-                else
-                    LOGI(MOD, "network: known-good baseline seeded");
+                    break;
             }
             switch (net_txn.recover(e)) {
                 case net::RecoverOutcome::RolledBack:

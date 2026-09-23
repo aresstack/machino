@@ -98,13 +98,19 @@ bool NetworkTxn::load_confirmed(std::string& out) const
     return decode_confirmed(blob, out);
 }
 
-bool NetworkTxn::seed_confirmed(const std::string& config, std::string& err)
+SeedOutcome NetworkTxn::seed_confirmed(const std::string& config, std::string& err)
 {
     std::lock_guard<std::mutex> g(m_);
     std::string existing;
-    if (load_confirmed(existing)) { err = "a confirmed configuration already exists"; return false; }
-    if (!store_.save(ck_, encode_confirmed(config))) { err = "could not write the confirmed configuration"; return false; }
-    return true;
+    if (load_confirmed(existing)) {
+        err = "a confirmed configuration already exists";
+        return SeedOutcome::AlreadyPresent;
+    }
+    if (!store_.save(ck_, encode_confirmed(config))) {
+        err = "could not write the confirmed configuration";
+        return SeedOutcome::Failed;
+    }
+    return SeedOutcome::Seeded;
 }
 
 RecoverOutcome NetworkTxn::recover(std::string& err)

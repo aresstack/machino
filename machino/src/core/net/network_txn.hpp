@@ -43,6 +43,12 @@
 
 namespace machino { namespace net {
 
+enum class SeedOutcome : int {
+    Seeded = 0,         // there was none, one was written
+    AlreadyPresent,     // a baseline exists; nothing to do
+    Failed,             // it could not be written -- rollback is unavailable
+};
+
 enum class RecoverOutcome : int {
     Nothing = 0,        // no transaction was in flight
     RolledBack,         // an unconfirmed change was undone
@@ -67,7 +73,13 @@ public:
 
     // Seeds the known-good configuration when there is none yet (first boot).
     // Refuses to overwrite an existing one -- that is what confirm() is for.
-    bool seed_confirmed(const std::string& config, std::string& err);
+    //
+    // THREE outcomes, deliberately not a bool. The previous signature returned
+    // false both for "a baseline is already there" (normal) and for "writing
+    // one failed" (the rollback safety net does not exist), and a caller
+    // collapsed them into the harmless reading. On the camera the other one
+    // was true, and every staged change was refused for a whole release.
+    SeedOutcome seed_confirmed(const std::string& config, std::string& err);
 
     bool begin(const std::string& candidate, uint32_t now_ms, uint32_t window_ms,
                uint64_t& token_out, std::string& err);

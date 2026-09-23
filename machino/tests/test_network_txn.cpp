@@ -64,7 +64,7 @@ MemStore seeded(const char* good = "GOOD")
     Applier ap;
     NetworkTxn tx(st, [&](const std::string& c) { return ap(c); });
     std::string err;
-    tx.seed_confirmed(good, err);
+    tx.seed_confirmed(good, err);   // SeedOutcome ignored here: the fixture only needs a baseline
     return st;
 }
 
@@ -315,7 +315,7 @@ void test_seed_does_not_overwrite()
     Applier ap;
     NetworkTxn tx(st, [&](const std::string& c) { return ap(c); });
     std::string err;
-    TCHECK(!tx.seed_confirmed("SECOND", err));
+    TCHECK(tx.seed_confirmed("SECOND", err) == net::SeedOutcome::AlreadyPresent);
     std::string c;
     TCHECK(tx.confirmed_config(c) && c == "FIRST");
 }
