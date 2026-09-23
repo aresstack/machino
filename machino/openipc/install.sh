@@ -175,7 +175,20 @@ if [ -r "$HERE/BUILDINFO" ] && [ -r "$ROOT/proc/device-tree/compatible" ]; then
             grep -qi "T40" "$HERE/BUILDINFO" ||
                 die "this bundle does not name T40 in BUILDINFO, but the camera reports '$dt'. Nothing was written." ;;
         "") say "camera does not report a device-tree compatible - platform NOT verified" ;;
-        *)  say "camera reports '$dt', which this installer has no rule for - platform NOT verified" ;;
+        *ingenic*|*Ingenic*)
+            # Another Ingenic part, or a board whose compatible names only the
+            # reference design. The binary may still be wrong, but the vendor
+            # matches and this installer has no table to judge the rest by.
+            say "camera reports '$dt' (Ingenic, not t40) - platform NOT verified" ;;
+        *)
+            # A different vendor entirely. This bundle is a MIPS o32 binary for
+            # an Ingenic T40; on a SigmaStar or HiSilicon board it cannot even
+            # be executed. A first cut only shrugged here and let the install
+            # proceed - that is the two-cameras-on-a-desk mistake, and it is
+            # the one this check exists for.
+            grep -qi "T40" "$HERE/BUILDINFO" &&
+                die "this bundle is built for T40, but the camera reports '$dt'. Nothing was written."
+            say "camera reports '$dt' - platform NOT verified" ;;
     esac
 fi
 

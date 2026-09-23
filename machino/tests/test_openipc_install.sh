@@ -412,6 +412,36 @@ run_install
 has "previous daemon kept" "$WORK/root/etc/machino/backup/machino.prev"
 is  "and it is the one that was replaced" "$(cat "$WORK/root/etc/machino/backup/machino.prev")" "the-old-one"
 
+# ---- 19) AP26: the platform check discriminates, in both directions --------
+mk_dt() {   # $1 = compatible string (nul-separated, as the kernel exposes it)
+    mkdir -p "$WORK/root/proc/device-tree"
+    printf "$1" > "$WORK/root/proc/device-tree/compatible"
+}
+# BUILDINFO is what the check reads on the bundle side; the fake bundle has
+# none, so give it one that names T40 exactly as CI does.
+add_buildinfo() { printf "Target/platform:  T40 / T40NN (xburst2)
+" > "$WORK/bundle/BUILDINFO"; }
+
+# A different vendor must be refused. A first cut only shrugged here, which is
+# the two-cameras-on-a-desk mistake this check exists for.
+make_bundle; make_camera auto; add_buildinfo; mk_dt sigmastar,ssc3350
+run_install
+if grep -q "but the camera reports" "$WORK/out"; then ok; else bad "a SigmaStar device tree was not refused: $(cat "$WORK/out")"; fi
+hasnt "nothing written for the wrong vendor" "$WORK/root/usr/bin/machino"
+
+# Another Ingenic part, or a board whose compatible names only the reference
+# design, must still install - there is no table to judge it by, and refusing
+# would be a guess.
+make_bundle; make_camera auto; add_buildinfo; mk_dt ingenic,shark0
+run_install || bad "an Ingenic board was refused: $(cat "$WORK/out")"
+has "installed on an Ingenic board without a t40 tag" "$WORK/root/usr/bin/machino"
+if grep -q "platform NOT verified" "$WORK/out"; then ok; else bad "the unverified platform was not reported"; fi
+
+# And the real thing passes.
+make_bundle; make_camera auto; add_buildinfo; mk_dt ingenic,shark0ingenic,t400
+run_install || bad "a t40 device tree was refused: $(cat "$WORK/out")"
+has "installed on a t40" "$WORK/root/usr/bin/machino"
+
 # --------- 13) everything shipped to the camera stays BusyBox-clean ---------
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
