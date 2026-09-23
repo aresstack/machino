@@ -181,6 +181,36 @@ void test_wifi_connect_requires_an_ssid()
     TCHECK(cfg.ssid == "x" && cfg.dhcp);
 }
 
+void test_a_typo_is_an_error_not_a_silent_no_op()
+{
+    // Regression: every parser ignored unknown keys, so a PATCH with a
+    // misspelled field answered 200 and changed nothing. The user sees success
+    // and the setting is gone.
+    std::string err;
+
+    usb::UsbConfig u;
+    TCHECK(!usb_config_from_json(parse("{\"enabledd\":true}"), u, err));
+    TCHECK(err.find("enabledd") != std::string::npos);
+    TCHECK(!usb_config_from_json(parse("{\"power\":{\"pinn\":\"PB18\"}}"), u, err));
+    TCHECK(err.find("power.pinn") != std::string::npos);
+
+    net::UplinkPolicy p;
+    TCHECK(!policy_from_json(parse("{\"autoFailoverr\":false}"), p, err));
+    TCHECK(p.auto_failover);                    // and nothing changed
+
+    net::WifiStationConfig w;
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"pasword\":\"longenough\"}"), w, err));
+
+    net::WifiApConfig a;
+    TCHECK(!wifi_ap_from_json(parse("{\"ssid\":\"cam\",\"security\":\"open\",\"chanel\":6}"), a, err));
+
+    // The correctly spelled versions still work.
+    TCHECK(usb_config_from_json(parse("{\"enabled\":true}"), u, err));
+    TCHECK(policy_from_json(parse("{\"autoFailover\":false}"), p, err));
+    TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\",\"password\":\"x\"}"), w, err) == false);
+    TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\",\"passphrase\":\"longenough\"}"), w, err));
+}
+
 void test_a_raw_hex_psk_is_accepted()
 {
     // Regression: the field was capped at 63, so a valid 64-digit PSK pasted
@@ -295,6 +325,7 @@ void run_net_views_tests()
     test_wifi_capabilities_separate_driver_from_tooling();
     test_no_document_ever_contains_a_passphrase();
     test_wifi_connect_requires_an_ssid();
+    test_a_typo_is_an_error_not_a_silent_no_op();
     test_a_raw_hex_psk_is_accepted();
     test_short_passphrase_is_refused_before_it_reaches_the_supplicant();
     test_static_addresses_must_be_addresses();

@@ -72,8 +72,11 @@ Result WpaCtrl::request(const std::string& cmd, std::string& reply, int timeout_
     if (!rc.is_ok()) return rc;
 
     if (::send(fd_, cmd.data(), cmd.size(), 0) < 0) {
+        // errno first: close() calls ::close and ::unlink, either of which may
+        // overwrite it, and we would then report the wrong reason.
+        const int e = errno;
         close();                          // the supplicant probably restarted
-        return Result::error(errno);
+        return Result::error(e);
     }
 
     // wpa_supplicant also pushes unsolicited events (lines starting with '<')

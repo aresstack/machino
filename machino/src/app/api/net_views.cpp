@@ -37,6 +37,26 @@ bool get_int(const Json& o, const char* k, int& out, int lo, int hi, std::string
     return true;
 }
 
+// An unknown key is an error, not something to skip.
+//
+// Silently ignoring it means a PATCH with a typo answers 200 and changes
+// nothing: the user sees success and the setting is gone. The same rule is
+// already enforced in the weirdiked config parser for the same reason -- a
+// misspelling must not leave a security-relevant setting at its default.
+bool reject_unknown(const Json& o, std::initializer_list<const char*> allowed,
+                    const char* where, std::string& err)
+{
+    for (const auto& m : o.members()) {
+        bool known = false;
+        for (const char* a : allowed) if (m.first == a) { known = true; break; }
+        if (!known) {
+            err = std::string("unknown field: ") + (where ? std::string(where) + "." : std::string()) + m.first;
+            return false;
+        }
+    }
+    return true;
+}
+
 Json string_array(const std::vector<std::string>& v)
 {
     Json a = Json::array();
@@ -192,11 +212,13 @@ bool usb_config_from_json(const Json& body, usb::UsbConfig& cfg, std::string& er
     if (!body.is_object()) { err = "body must be an object"; return false; }
 
     usb::UsbConfig next = cfg;
+    if (!reject_unknown(body, {"enabled", "power"}, nullptr, err)) return false;
     if (!get_bool(body, "enabled", next.enabled, err)) return false;
 
     const Json* p = body.get("power");
     if (p) {
         if (!p->is_object()) { err = "power must be an object"; return false; }
+        if (!reject_unknown(*p, {"mode", "pin", "activeLevel", "enableAtBoot", "expert"}, "power", err)) return false;
         std::string mode;
         if (!get_string(*p, "mode", mode, err, 32)) return false;
         if (!mode.empty() && !usb_power_mode_parse(mode, next.mode)) {
@@ -306,6 +328,7 @@ bool policy_from_json(const Json& body, net::UplinkPolicy& p, std::string& err)
 {
     if (!body.is_object()) { err = "body must be an object"; return false; }
     net::UplinkPolicy next = p;
+    if (!reject_unknown(body, {"order", "autoFailover", "returnToPreferred", "pinned", "pinnedUplink"}, nullptr, err)) return false;
 
     const Json* ord = body.get("order");
     if (ord) {
@@ -404,6 +427,7 @@ bool wifi_station_from_json(const Json& body, net::WifiStationConfig& cfg, std::
 {
     if (!body.is_object()) { err = "body must be an object"; return false; }
     net::WifiStationConfig next;
+    if (!reject_unknown(body, {"ssid", "passphrase", "dhcp", "ip", "netmask", "gateway", "dns"}, nullptr, err)) return false;
 
     if (!get_string(body, "ssid", next.ssid, err, 32)) return false;
     if (next.ssid.empty()) { err = "ssid is required"; return false; }
@@ -435,6 +459,7 @@ bool wifi_ap_from_json(const Json& body, net::WifiApConfig& cfg, std::string& er
 {
     if (!body.is_object()) { err = "body must be an object"; return false; }
     net::WifiApConfig next;
+    if (!reject_unknown(body, {"ssid", "passphrase", "security", "channel", "ip", "dhcpStart", "dhcpEnd", "dhcpServer"}, nullptr, err)) return false;
 
     if (!get_string(body, "ssid", next.ssid, err, 32)) return false;
     if (next.ssid.empty()) { err = "ssid is required"; return false; }
