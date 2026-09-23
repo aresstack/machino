@@ -546,8 +546,23 @@ int main(int argc, char** argv) {
         });
         {
             std::string e;
-            if (!net_txn.seed_confirmed("{\"kind\":\"boot\"}", e)) {
-                // Already seeded on an earlier boot; that is the normal case.
+            // seed_confirmed() returns false for TWO very different reasons:
+            // a baseline already exists (normal), or writing one failed (the
+            // rollback safety net does not exist). An earlier version treated
+            // both as normal with a comment saying so, and on the camera the
+            // second case was the real one -- FileStateStore never created
+            // /etc/machino/state, so every staged network change was refused
+            // with "there is no confirmed configuration to fall back to".
+            //
+            // Which is why the two are told apart here instead.
+            std::string existing;
+            if (!net_txn.confirmed_config(existing)) {
+                if (!net_txn.seed_confirmed("{\"kind\":\"boot\"}", e))
+                    LOGE(MOD, "network: no known-good baseline could be written (%s) - "
+                              "staged changes will be REFUSED and rollback is unavailable",
+                         e.c_str());
+                else
+                    LOGI(MOD, "network: known-good baseline seeded");
             }
             switch (net_txn.recover(e)) {
                 case net::RecoverOutcome::RolledBack:

@@ -105,6 +105,48 @@ void test_round_trip_and_no_litter()
     wipe();
 }
 
+void test_the_store_creates_its_own_directory()
+{
+    // THE bug this test exists for. On the camera /etc/machino/state did not
+    // exist, FileStateStore never created it, every save() failed at open(),
+    // and NetworkTxn therefore had no known-good baseline -- so every staged
+    // network change was refused with "there is no confirmed configuration to
+    // fall back to". The entire rollback safety net was inert, and the host
+    // tests could not see it because they all use MemStore or a directory the
+    // test made first.
+    wipe();
+#if defined(_WIN32)
+    ::_mkdir("tests");
+#else
+    ::mkdir("tests", 0755);
+#endif
+    // Deliberately NOT creating kDir here.
+    FileStateStore s(kDir);
+    TCHECK(s.save("k", "value"));
+    std::string out;
+    TCHECK(s.load("k", out) && out == "value");
+    wipe();
+}
+
+void test_a_nested_directory_is_created_too()
+{
+    // /etc/machino/state is two levels below something that may not exist on
+    // a first boot either.
+    const std::string nested = std::string(kDir) + "/a/b";
+    FileStateStore s(nested);
+    TCHECK(s.save("k", "deep"));
+    std::string out;
+    TCHECK(s.load("k", out) && out == "deep");
+
+    std::remove((nested + "/k.state").c_str());
+#if defined(_WIN32)
+    ::_rmdir(nested.c_str()); ::_rmdir((std::string(kDir) + "/a").c_str());
+#else
+    ::rmdir(nested.c_str()); ::rmdir((std::string(kDir) + "/a").c_str());
+#endif
+    wipe();
+}
+
 void test_an_empty_value_is_not_the_same_as_an_absent_key()
 {
     // network-pending is read for PRESENCE: "a change was in flight". An empty
@@ -190,6 +232,8 @@ void test_a_failing_write_does_not_destroy_the_previous_value()
 
 void run_state_store_tests()
 {
+    test_the_store_creates_its_own_directory();
+    test_a_nested_directory_is_created_too();
     test_round_trip_and_no_litter();
     test_an_empty_value_is_not_the_same_as_an_absent_key();
     test_a_value_with_newlines_and_nuls_survives();
