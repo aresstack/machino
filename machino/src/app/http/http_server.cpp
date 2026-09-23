@@ -667,6 +667,16 @@ bool HttpServer::handle_request(Client& c) {
         }
     } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        // AP24: refuse the same way /snapshot does when there is no JPEG unit.
+        // This used to answer 200 and open a multipart stream that could never
+        // carry a frame - and MJPEG clients are exempt from the idle timeout,
+        // so it also held a client slot open for as long as the viewer waited.
+        // A stream that reports success and then produces nothing is the exact
+        // shape this project has been removing everywhere else.
+        else if (pipeline_ && !pipeline_->unit_configured(lifecycle::UNIT_JPEG)) {
+            r = api::ApiService::fail(501, "unavailable", path,
+                                      "jpeg not configured on this platform - no MJPEG stream to give");
+        }
         else {
             c.mjpeg = true; c.next_frame_ms = 0;                 // first frame as soon as possible
             queue(c, mjpeg_headers(MJPEG_BOUNDARY));
@@ -788,7 +798,12 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
         // body bytes an explicit error response still fits.
         if (c.relay_total > 0) { c.out.clear(); return false; }
         c.close_after_flush = true;
-        return queue(c, response(status, "text/plain", std::string(msg) + "\n", false));
+        // AP24: the body names the request too. A bare "backend timed out"
+        // cannot be told apart from a wedged camera by whoever reads it, and
+        // the log line that carries the path is on the camera, not in front of
+        // them.
+        return queue(c, response(status, "text/plain",
+                                 std::string(msg) + " (" + c.relay_what + ")\n", false));
     };
     auto progress = [&]() {
         c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
@@ -806,8 +821,22 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
         return relay_open(c);
     }
     if (re & POLLNVAL) return fail(502, "OpenIPC WebUI backend failed");
-    if (now >= c.relay_abs_deadline_ms)  return fail(504, "OpenIPC WebUI backend exceeded the relay ceiling");
-    if (now >= c.relay_idle_deadline_ms) return fail(504, "OpenIPC WebUI backend timed out");
+    // AP24: name the request and the bound. A bare "backend timed out" cannot
+    // be told apart from a wedged camera, and the case that produces it here
+    // is neither: /cgi-bin/j/time.cgi runs `ntpd -n -q -N`, which on a camera
+    // with no gateway spends 41 s failing DNS and prints nothing meanwhile -
+    // indistinguishable from a hang to an inactivity bound. The reader needs
+    // to know WHICH request and HOW LONG before they can judge that.
+    if (now >= c.relay_abs_deadline_ms) {
+        char m[128];
+        snprintf(m, sizeof m, "OpenIPC WebUI backend exceeded the %d ms relay ceiling", cfg_.relay_max_ms);
+        return fail(504, m);
+    }
+    if (now >= c.relay_idle_deadline_ms) {
+        char m[128];
+        snprintf(m, sizeof m, "OpenIPC WebUI backend sent nothing for %d ms", cfg_.relay_timeout_ms);
+        return fail(504, m);
+    }
     if (c.relay_state == Client::Relay::Connecting) {
         if (re & (POLLERR | POLLHUP)) return fail(502, "OpenIPC WebUI backend unreachable");
         if (!(re & POLLOUT)) return true;                          // still connecting
