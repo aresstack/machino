@@ -79,7 +79,12 @@ jobs:
           CONFIG_EAP=n
           CONFIG_TLS=internal
           CONFIG_INTERNAL_LIBTOMMATH=y
-          CONFIG_SAE=y
+          # SAE (WPA3) ist NICHT drin, und das ist kein Versehen: es braucht die
+          # EC-/Bignum-Schicht, die CONFIG_TLS=internal nicht hat -- der Link
+          # scheitert an crypto_bignum_* und crypto_ec_*. Mit OpenSSL waere es
+          # moeglich, aber das ist auf einem 8-MB-Overlay ein hoher Preis fuer
+          # einen Kamera-Hotspot, den Telefone ohnehin per WPA2 ansprechen.
+          CONFIG_SAE=n
           CONFIG_IEEE80211W=y
           CONFIG_CTRL_IFACE=y
           CONFIG_NO_RADIUS=y
@@ -123,8 +128,9 @@ jobs:
             echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}"
             echo "binary:     $(file -b "$B/hostapd")"
             echo
-            echo "Config: nl80211, WPA2-PSK, SAE, 802.11n, internal TLS."
-            echo "NOT built in: WPS, EAP, RADIUS, accounting, VLAN."
+            echo "Config: nl80211, WPA2-PSK, 802.11n, internal TLS."
+            echo "NOT built in: WPS, EAP, RADIUS, accounting, VLAN, and SAE/WPA3"
+            echo "            -- SAE needs EC support that internal TLS does not have."
             echo
             echo "NOT VERIFIED HERE: that it starts on the camera or that the"
             echo "AIC8800 driver accepts AP mode. Both need the hardware."
