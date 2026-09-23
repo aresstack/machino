@@ -1,57 +1,71 @@
+# AP35 — USB Host / VBUS / WiFi und Quectel EC200A auf T40NN
+
+2026-09-23. Ergebnis vorweg, weil es die Prämisse des Arbeitspakets umkehrt:
+
+> **USB-Host und VBUS sind auf dieser Kamera bereits vollständig und korrekt
+> aktiv.** Es gibt nichts zu implementieren. Was fehlt, sind die
+> Klassentreiber — und die fehlen im Kernel-Image, nicht in der Konfiguration.
+
+Alles unten ist am laufenden Gerät gemessen, rein lesend. Es wurde kein
+Register geschrieben, kein Modul geladen, keine Datei auf der Kamera geändert.
+
+Reproduzierbar mit `machino/tools/usb-inventory.sh` — das Werkzeug ist so
+gebaut, dass es vor und nach dem Einstecken eines Geräts dieselbe Struktur
+ausgibt, damit die physischen Tests vergleichbare Belege liefern statt Prosa.
 
 ---
 
-## Review dieses Dokuments
-
-### Ein echter Fehler: die Modulinventur war unvollständig
-
-Die erste Fassung nannte **11 Module** und führte sie als „die vollständige
-Modulliste des Images". Tatsächlich sind es **28**. Mein `find` war auf
-`/lib/modules/4.4.94/kernel` verwurzelt und übersah damit zwei ganze
-Verzeichnisse:
+## AP35.1 / AP35.2 — Inventar
 
 ```
-ingenic/   17 Module   (u. a. tx-isp-t40, soc-nna, dtrng_dev, motor, 5 Sensoren)
-extra/      1 Modul    (wireguard)
+otg platform dev      10000000.otg_phy, 13500000.otg
+bound drivers         dwc-mac, dwc2, usb_phy
+gadget udc            KEINE          -> also kein Device-/Gadget-Modus
+root hub              usb1, 1d6b:0002 "DWC OTG Controller", 480 MBit, 1 Port
+/dev/bus/usb/001/001  vorhanden
+IRQ 29                13500000.otg, dwc2_hsotg:usb1
 ```
 
-Aufgefallen ist es beim Gegenlesen: `/proc/modules` zeigt `gpio`, `audio`,
-`sensor_imx307_t40`, `tx_isp_t40`, `avpu` und `sinfo` als **geladen** — und
-keines davon stand in meiner angeblich vollständigen Liste. Sechs geladene
-Module ohne Datei hätten mir sofort auffallen müssen.
+Der Device-Tree trägt die OTG-Knoten aktiv:
 
-**Die Schlussfolgerung ändert sich nicht**, und das ist hier wichtig: die
-gezielte Suche nach `cdc*`, `option`, `usbnet` und `rndis*` lief zusätzlich
-über das **gesamte Dateisystem** (`find / -xdev`) und blieb leer. Die
-Klassentreiber fehlen wirklich. Aber die Zahl war falsch und die Liste
-unvollständig, und eine Aussage wie „die vollständige Liste" trägt genau dann,
-wenn sie stimmt.
+```
+/proc/device-tree/apb/otg_phy
+    compatible = ingenic,innophy + syscon
+    dr_mode    = otg
+    status     = okay
+    ingenic,drvvbus-gpio = <phandle 7, 27, 0, 0>      <- AKTIV
+/proc/device-tree/ahb2/otg@0x13500000
+    compatible = ingenic,dwc2-hsotg
+    dr_mode    = otg
+    g-use-dma
+    status     = okay
+    ingenic,usbphy = <24>
+```
 
-**Das Werkzeug hatte denselben Bug** und ist mitkorrigiert: `usb-inventory.sh`
-durchsucht jetzt ganz `/lib/modules`, meldet zusätzlich die Gesamtzahl und
-findet den `regdump` per Glob statt über die fest verdrahtete Adresse
-`13500000.otg`. Neu gegen die Kamera gelaufen: 28 Module, Klassentreiber
-weiterhin sämtlich `MISSING`, 0 WLAN-Gerätetreiber.
+**Abweichung zum AP-Text:** der dort zitierte Stock-Auszug führt die Zeile als
+`#ingenic,drvvbus-gpio`. Was das `#` dort bedeutet, lasse ich offen — ein
+DTS-Kommentar ist es nicht (die sind `/* */` oder `//`), und als Property-Name
+wäre `#name` syntaktisch möglich, aber ungewöhnlich; die naheliegende Lesart
+ist "deaktiviert".
 
-### Zwei Formulierungen korrigiert
+Unabhängig davon steht die **Messung** fest: im laufenden OpenIPC ist die
+Property vorhanden und wirksam, der Pin ist belegt und high. OpenIPC ist bei
+diesem Punkt also mindestens so weit wie der Stand, den der AP-Auszug
+beschreibt.
 
-* Ein Satz sagte, OpenIPC sei „nicht hinter Stock zurück, sondern davor —
-  jedenfalls **hinter** dem Stand, den der AP-Auszug beschreibt". Das
-  widerspricht sich in der eigenen Zeile.
-* Ich hatte das `#` vor `ingenic,drvvbus-gpio` im AP-Auszug als
-  „auskommentiert" gelesen. In DTS ist `#` **kein** Kommentarzeichen. Die
-  Lesart bleibt naheliegend, aber sie ist eine Deutung fremden Textes und
-  steht jetzt als solche da. Die Messung am laufenden Gerät hängt nicht daran.
+## AP35.3 — Rolle: Host, und zwar erzwungen
 
-### Nachgeprüft und bestätigt
+Aus dem `regdump` des Treibers (`/sys/kernel/debug/*.otg/regdump`):
 
-| Behauptung | Ergebnis |
-|---|---|
-| Machino hat keinerlei USB-Bezug | **bestätigt** — `grep` über `src/` und `openipc/` nach usb, ttyUSB, cdc_, rndis, modem: null Treffer |
-| `machino/tools/` ist der richtige Ort | **bestätigt** — dort liegen bereits zehn Werkzeuge; kein CI-Job fasst sie generisch an |
-| keine `.ko` ausserhalb `/lib/modules` | **bestätigt** — `find / -xdev` |
-| Klassentreiber fehlen | **bestätigt**, jetzt über den vollständigen Baum |
-erte trägt, ist bereits Host-Semantik — das Register existiert nur
+```
+GOTGCTL   0x0030000c
+GUSBCFG   0x20001408      Bit 29 FORCEHSTMODE = 1, Bit 30 FORCEDEVMODE = 0
+GINTSTS   0x04000021
+HPRT0     0x00001000      Bit 12 PRTPWR = 1, Bit 0 PRTCONNSTS = 0
+```
+
+**Der Controller läuft im erzwungenen Host-Modus.** Dass HPRT0 überhaupt
+sinnvolle Werte trägt, ist bereits Host-Semantik — das Register existiert nur
 in dieser Rolle.
 
 Der von Thingino beschriebene Rollenwechsel ist damit **gegenstandslos**: er
@@ -150,10 +164,11 @@ usbnet  cdc_ether  cdc_acm  rndis_host  cdc_ncm  option  usb_wwan
 qcserial  usb-storage  cdc_subset
 ```
 
-Nebenbei aus der vollständigen Liste, ohne weitere Prüfung festgehalten:
-`soc-nna.ko` ist vorhanden (deckt sich mit AP23: Treiber da, alles Übrige
-fehlt), ebenso `dtrng_dev.ko`, ein Hardware-Zufallsgenerator. Beide sind
-**nicht geladen** und wurden hier nicht weiter untersucht.
+Nebenbei aus der vollständigen Liste festgehalten, **ohne weitere Prüfung**:
+es gibt `soc-nna.ko` (deckt sich mit AP23: Treiber da, alles Übrige fehlt) und
+`dtrng_dev.ko`, dem Namen nach ein Hardware-Zufallsgenerator. Beide sind
+**nicht geladen**, und was `dtrng_dev` tut, ist hier aus dem Dateinamen
+geschlossen, nicht geprüft.
 
 `usbserial.ko` ist nur der Kern des seriellen Subsystems; ohne `option` bindet
 er an keine Modem-PID. Ein eingestecktes Gerät würde also **enumerieren**
@@ -306,3 +321,76 @@ Ein einziger Punkt, und er ist groß:
 Das berührt den stehenden No-Go-Punkt "ISP/Kernel/Treiber-Deploy" und verlangt
 ein Gerät, an dem jemand sitzt. Es gehört damit vor die Umsetzung eine
 Entscheidung, nicht ein Commit.
+
+---
+
+## Review dieses Dokuments
+
+### Befund 1 — die Modulinventur war unvollständig
+
+Die erste Fassung nannte **11 Module** und bezeichnete sie als "die
+vollständige Modulliste des Images". Es sind **28**. Mein `find` war auf
+`/lib/modules/4.4.94/kernel` verwurzelt und übersah `ingenic/` (17 Module) und
+`extra/` (wireguard).
+
+Aufgefallen beim Gegenlesen: `/proc/modules` führt `gpio`, `audio`,
+`sensor_imx307_t40`, `tx_isp_t40`, `avpu` und `sinfo` als **geladen** — und
+keines davon stand in meiner angeblich vollständigen Liste. Sechs laufende
+Module ohne zugehörige Datei hätten beim Schreiben auffallen müssen.
+
+**Die Schlussfolgerung ändert sich nicht:** die gezielte Suche nach `cdc*`,
+`option`, `usbnet` und `rndis*` lief zusätzlich über das gesamte Dateisystem
+(`find / -xdev`) und blieb leer. Falsch waren Zahl und Liste, nicht der Befund.
+
+Das Werkzeug hatte denselben Bug und ist mitkorrigiert: `usb-inventory.sh`
+durchsucht jetzt ganz `/lib/modules`, meldet die Gesamtzahl und findet den
+`regdump` per Glob statt über die fest verdrahtete Adresse `13500000.otg`.
+Erneut gegen die Kamera gelaufen: 28 Module, Klassentreiber weiterhin sämtlich
+`MISSING`, 0 WLAN-Gerätetreiber.
+
+### Befund 2 — mein Korrekturwerkzeug hat dieses Dokument zerstört
+
+Der schwerwiegendere Fehler, und er betraf nicht den Inhalt, sondern das
+Schreiben.
+
+Rund 50 Zeilen Kopf — Titel, Zusammenfassung, das gesamte Inventar aus
+AP35.1/35.2 und der Anfang von AP35.3 — wurden gelöscht und durch den
+Review-Abschnitt ersetzt. Der Schnitt fiel **mitten in ein Wort**: aus
+"sinnvolle Werte trägt" wurde "erte trägt". **Das war bereits committet und
+gepusht**, bevor es auffiel.
+
+Die Ursache liegt bei mir und war von Anfang an bekannt: für diese Umgebung
+gilt die Vorgabe, Dateioperationen **mit absoluten Windows-Pfaden**
+auszuführen. Ich habe in der Shell durchgehend relative Pfade benutzt. Dazu kam
+ein selbstgebauter perl-Ersetzer mit einem doppelten Trennmarker, dessen
+`substr` daraufhin mit falschem Offset schrieb.
+
+Wiederhergestellt aus dem letzten guten Stand (`git show HEAD~1:...`), danach
+alle fünf Korrekturen einzeln über das Edit-Werkzeug mit absolutem Pfad
+angewandt — jede mit Trefferprüfung, keine Sammelersetzung mehr.
+
+Das ist dieselbe Lehre wie beim awk-Selektor in AP21, der `git grep`-Maskierung
+in AP26 und dem `make`-Aufruf im Audit — mit einem Unterschied: dort hat das
+Werkzeug still das Falsche **geprüft**, hier still das Falsche **geschrieben**.
+Die zweite Variante ist gefährlicher, weil das Ergebnis danach unauffällig
+aussieht und der Fehler erst beim Lesen auffällt.
+
+### Zwei Deutungen entschärft
+
+* Ein Satz sagte, OpenIPC sei "nicht hinter Stock zurück, sondern davor —
+  jedenfalls **hinter** dem Stand, den der AP-Auszug beschreibt". Das
+  widerspricht sich in der eigenen Zeile.
+* Das `#` vor `ingenic,drvvbus-gpio` hatte ich als "auskommentiert" gelesen; in
+  DTS ist `#` kein Kommentarzeichen. Steht jetzt als Deutung fremden Textes da.
+* `dtrng_dev.ko` hatte ich "Hardware-Zufallsgenerator" genannt — das ist aus
+  dem Dateinamen geschlossen, nicht geprüft.
+
+### Nachgeprüft und bestätigt
+
+| Behauptung | Ergebnis |
+|---|---|
+| Machino hat keinerlei USB-Bezug | **bestätigt** — `grep` über `src/` und `openipc/` nach usb, ttyUSB, cdc_, rndis, modem: null Treffer |
+| `machino/tools/` ist der richtige Ort | **bestätigt** — dort liegen zehn weitere Werkzeuge; kein CI-Job fasst sie generisch an |
+| keine `.ko` ausserhalb `/lib/modules` | **bestätigt** — `find / -xdev` |
+| Klassentreiber fehlen | **bestätigt**, jetzt über den vollständigen Baum |
+| FORCEHSTMODE / PRTPWR | unverändert — beide aus dem benannten `regdump`, nicht aus Hand-Offsets |

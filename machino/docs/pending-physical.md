@@ -1,26 +1,42 @@
+# Offene physische Prüfungen — Stand 2026-09-23
+
+Erzeugt am Ende des Batchlaufs AP21–AP23, konsolidiert über AP0–AP23.
+
+Alles hier ist **nicht** durch Hosttests oder CI abzudecken. Vieles davon
+braucht nur einen Kaltstart; einiges braucht einen Menschen am Gerät.
 
 ---
 
-## Gruppe F — USB / VBUS / Modem (AP35)
+## Die Klammer um fast alles: der Daemon läuft noch auf `c1edd92`
 
-Alle softwareseitigen Fragen sind beantwortet (`ap35-usb.md`): Host-Modus ist
-erzwungen, Portspannung ist an, PB27 ist vom Treiber belegt und high. Was
-bleibt, ist Elektrik und Einstecken. Baseline vor jedem Test aufnehmen mit
-`machino/tools/usb-inventory.sh`, danach erneut — die Ausgabe ist dafuer
-gebaut.
+```
+laufender Prozess     machino c1edd92   (pid 992, uptime > 5 h)
+auf /usr/bin/machino  machino 341a8d4
+im Repo               alles bis 53b08f2 (AP21) ist NICHT deployt
+```
 
-| # | Was | Warum physisch |
+Ein **Warmstart des Daemons ist der dokumentierte Hardlock-Auslöser**
+(`t40nn-freeze-nach-install`). Deshalb liegt seit AP14 ein neueres Binary auf
+der Platte, ohne dass der Prozess abgelöst wurde, und deshalb hängt fast jede
+offene Prüfung am nächsten **Cold Power-Cycle**.
+
+Die Reihenfolge nach dem Kaltstart ist nicht beliebig: erst die Dinge, die
+ohne Last messbar sind, dann Last, dann Browser.
+
+---
+
+## A — Beim nächsten Kaltstart, ohne zusätzliches Risiko
+
+| Nr | Prüfung | Woher |
 |---|---|---|
-| F1 | **Spannung am USB-VCC messen**, dazu direkt an PB27 und am Ausgang des Load-Switch | Entscheidet die vier verbliebenen Hypothesen: Switch unbestueckt / active-low / Messpunkt / defekt. Software kann hier nichts mehr beitragen |
-| F2 | Beliebiges **Kleinlast-USB-Geraet** einstecken (Maus, Stick) und `usb-inventory.sh` erneut laufen lassen | Trennt "VBUS fehlt" von "Enumeration fehlt". Der Hub-Treiber ist vorhanden, ein Geraet muesste also in `/sys/bus/usb/devices` auftauchen — auch ohne Klassentreiber |
-| F3 | **WiFi-Platine** einstecken, VID/PID ablesen | Ohne echte Enumeration wird der Chipsatz nicht aus dem Boardlayout geraten (AP35.11) |
-| F4 | **EC200A** einstecken, moeglichst an einem aktiv versorgten Hub | Laut eigener frueherer Messung zieht das Modul 1-2 A Bursts und bootet an einem Host ohne aktiven VBUS-Switch nicht durch |
-| F5 | **Stromaufnahme messen**, wenn F4 laeuft | Maximale Stromfaehigkeit des Boardpfads ist aus Software nicht ableitbar |
-| F6 | Nach einem Kernel mit Klassentreibern: **Lastmessung** WebRTC-Latenz / Paketverlust / IRQ-Last unter Modemverkehr | AP35.15; heute nicht moeglich, weil nichts enumerieren kann |
-
-**F2 ist der billigste und aussagekraeftigste Test** — eine USB-Maus genuegt,
-und das Ergebnis halbiert den Suchraum sofort.
-tatt Schweigen (`jpeg`-Sektion) | AP14 |
+| A1 | `printk` steht nach dem Boot auf `3 3 1 3` (rc.local greift erst beim Start) | AP17 |
+| A2 | `/api/v1/telemetry`: `watchdog_available: true`, `watchdog_enabled: true` | AP4 |
+| A3 | `init_retries` ist **0** und bleibt es | Fix B |
+| A4 | Baseline-Messung AP0.4–0.6 (Boot, ein MAIN-Zyklus, Relay-Smoke) | AP0 |
+| A5 | `ws_video_*`-Zähler erscheinen in der Telemetrie und bewegen sich | AP15 |
+| A6 | Driftmessung `tools/mse-drift.ps1` gegen den **neuen** Build wiederholen | AP15 |
+| A7 | `/ws/upgrade` antwortet mit der Ablehnung, und die Update-Seite zeigt „Nothing was written to flash" | AP21 |
+| A8 | Dashboard-Kachel: eigene Snapshot-Meldung statt Schweigen (`jpeg`-Sektion) | AP14 |
 | A9 | Audio-Panel sagt „both … switched off" statt „has not said yet" | AP20 |
 
 ## S — Sicherheit: die Fixes wirken erst nach der Ablösung (AP30)
@@ -116,3 +132,25 @@ ircut-check.js    0 Befunde
 audio-check.js    "both its microphone and its speaker switched off"
 storage-verdict   "There is no SD card in the camera"
 ```
+
+---
+
+## G — USB / VBUS / Modem (AP35)
+
+Alle softwareseitigen Fragen sind beantwortet (`ap35-usb.md`): Host-Modus ist
+erzwungen, Portspannung ist an, PB27 ist vom Treiber belegt und high. Was
+bleibt, ist Elektrik und Einstecken. Baseline vor jedem Test aufnehmen mit
+`machino/tools/usb-inventory.sh`, danach erneut — die Ausgabe ist dafür
+gebaut.
+
+| # | Was | Warum physisch |
+|---|---|---|
+| G1 | **Spannung am USB-VCC messen**, dazu direkt an PB27 und am Ausgang des Load-Switch | Entscheidet die vier verbliebenen Hypothesen: Switch unbestückt / active-low / Messpunkt / defekt. Software kann hier nichts mehr beitragen |
+| G2 | Beliebiges **Kleinlast-USB-Gerät** einstecken (Maus, Stick) und `usb-inventory.sh` erneut laufen lassen | Trennt "VBUS fehlt" von "Enumeration fehlt". Der Hub-Treiber ist vorhanden, ein Gerät müsste also in `/sys/bus/usb/devices` auftauchen — auch ohne Klassentreiber |
+| G3 | **WiFi-Platine** einstecken, VID/PID ablesen | Ohne echte Enumeration wird der Chipsatz nicht aus dem Boardlayout geraten (AP35.11) |
+| G4 | **EC200A** einstecken, möglichst an einem aktiv versorgten Hub | Laut eigener früherer Messung zieht das Modul 1–2 A Bursts und bootet an einem Host ohne aktiven VBUS-Switch nicht durch |
+| G5 | **Stromaufnahme messen**, wenn G4 läuft | Maximale Stromfähigkeit des Boardpfads ist aus Software nicht ableitbar |
+| G6 | Nach einem Kernel mit Klassentreibern: **Lastmessung** WebRTC-Latenz / Paketverlust / IRQ-Last unter Modemverkehr | AP35.15; heute nicht möglich, weil nichts enumerieren kann |
+
+**G2 ist der billigste und aussagekräftigste Test** — eine USB-Maus genügt,
+und das Ergebnis halbiert den Suchraum sofort.
