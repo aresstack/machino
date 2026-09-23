@@ -12,6 +12,7 @@
 #include "app/log_reader.hpp"
 #include "app/onvif/onvif_service.hpp"
 #include "app/osd/osd_service.hpp"
+#include "app/api/net_api.hpp"
 #include "core/events.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/result.hpp"
@@ -92,6 +93,11 @@ public:
     // Null = no log streaming; /ws/logs then accepts and closes at once.
     void set_log_reader(LogReader* r) { log_reader_ = r; }
 
+    // AP35/AP36: the USB and connectivity surfaces. Null = none of
+    // /api/v1/usb* or /api/v1/network* exists, which is what a build without a
+    // USB backend or a radio should look like to a client.
+    void set_net_api(api::NetApiService* n) { net_api_ = n; }
+
     Result start();
     void   stop();
     int    port() const { return cfg_.port; }
@@ -101,6 +107,7 @@ private:
     osd::OsdService* osd_ = nullptr;
     SetupGate*       setup_ = nullptr;
     onvif::OnvifService* onvif_ = nullptr;
+    api::NetApiService*  net_api_ = nullptr;
     void loop();
     void accept_client();
     // Parse and serve every complete request already buffered in c.in. Stops at

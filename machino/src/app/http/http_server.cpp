@@ -448,6 +448,10 @@ bool HttpServer::handle_request(Client& c) {
             LOGI(MOD, "%s: SSE subscribed (%zu subscribers)", c.peer.c_str(), bus_.subscribers());
             return true;
         }
+    } else if (net_api_ && net_api_->handle(m, path, req.body, r)) {
+        // Asked first among the /api/v1 routes because it owns two whole
+        // prefixes. It returns false for anything outside them, so the chain
+        // below is unchanged for every existing path.
     } else if (path == "/api/v1" || path == "/api/v1/") { r = (m == "GET") ? api_.discovery() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/capabilities") { r = (m == "GET") ? api_.capabilities() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/state")        { r = (m == "GET") ? api_.state() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
