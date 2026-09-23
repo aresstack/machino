@@ -177,9 +177,31 @@ void test_always_on_board_needs_no_pin()
     UsbConfig cfg; cfg.enabled = true;    // BoardDefault
     std::string err;
     TCHECK(s.apply(cfg, err).is_ok());
-    TCHECK(b.set_calls == 0);             // nothing to drive
+    // The backend is told even though there is nothing to switch: it is the
+    // only way it learns to stop driving a pin it held before.
+    TCHECK(b.set_calls == 1);
+    TCHECK(b.last_mode == UsbPowerMode::AlwaysOn);
     TCHECK(s.status().resolved.mode == UsbPowerMode::AlwaysOn);
     TCHECK(!s.status().resolved.drives_power);
+}
+
+void test_switching_to_none_reaches_the_backend()
+{
+    // Regression: the service used to call set_power() only for Gpio, so a
+    // switch from gpio to none never reached the backend -- it kept the pin
+    // asserted and the port stayed powered while the mode said otherwise.
+    FakeBackend b; b.caps = switchable_board();
+    UsbHostService s(b);
+    std::string err;
+
+    UsbConfig on; on.enabled = true;
+    TCHECK(s.apply(on, err).is_ok());
+    TCHECK(b.last_mode == UsbPowerMode::Gpio && b.power);
+
+    UsbConfig none; none.enabled = true; none.mode = UsbPowerMode::None;
+    TCHECK(s.apply(none, err).is_ok());
+    TCHECK(b.last_mode == UsbPowerMode::None);
+    TCHECK(s.status().resolved.mode == UsbPowerMode::None);
 }
 
 void test_gpio_mode_on_a_board_that_cannot_switch()
@@ -301,6 +323,7 @@ void run_usb_tests()
     test_explicit_pin_keeps_its_own_polarity();
     test_always_on_is_refused_on_a_switchable_board();
     test_always_on_board_needs_no_pin();
+    test_switching_to_none_reaches_the_backend();
     test_gpio_mode_on_a_board_that_cannot_switch();
     test_board_without_usb_host();
     test_backend_refusal_leaves_state_unchanged();

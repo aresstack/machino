@@ -6,8 +6,8 @@
 // and lets routing decide. That is what makes "stream over LTE" a routing
 // change rather than an encoder change.
 //
-// Deliberately absent here: SSIDs in the uplink type, AT commands, wpa
-//_supplicant, hostapd, ttyUSB paths, AIC8800, EC200A. Those belong to one
+// Deliberately absent here: SSIDs in the uplink type, AT commands,
+// wpa_supplicant, hostapd, ttyUSB paths, AIC8800, EC200A. Those belong to one
 // adapter implementation each.
 #pragma once
 #include "core/result.hpp"

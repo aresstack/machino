@@ -127,6 +127,39 @@ void test_no_return_to_preferred_keeps_the_working_one()
     TCHECK(m.active_type(t) && t == UplinkType::Cellular);
 }
 
+void test_auto_failover_off_stays_on_the_dead_uplink()
+{
+    // Regression: the selection loop returned the next usable uplink before it
+    // ever looked at auto_failover, so switching it off changed nothing.
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink wifi(UplinkType::Wifi, "wlan0");
+    ConnectivityManager m;
+    m.add(&eth); m.add(&wifi);
+    UplinkPolicy p; p.auto_failover = false;
+    m.set_policy(p);
+    m.evaluate();
+
+    UplinkType t;
+    TCHECK(m.active_type(t) && t == UplinkType::Ethernet);
+
+    eth.st = LinkState::Down; eth.inet = false;
+    TCHECK(!m.evaluate());
+    TCHECK(m.active_type(t) && t == UplinkType::Ethernet);
+}
+
+void test_auto_failover_off_still_selects_the_first_time()
+{
+    // "Do not leave a working uplink" must not become "never pick one".
+    FakeUplink wifi(UplinkType::Wifi, "wlan0");
+    ConnectivityManager m;
+    m.add(&wifi);
+    UplinkPolicy p; p.auto_failover = false;
+    m.set_policy(p);
+    TCHECK(m.evaluate());
+    UplinkType t;
+    TCHECK(m.active_type(t) && t == UplinkType::Wifi);
+}
+
 void test_pinned_uplink_is_honoured_even_when_down()
 {
     // Silently using another uplink would make the status page lie.
@@ -294,6 +327,8 @@ void run_connectivity_tests()
     test_connected_without_internet_is_not_usable();
     test_return_to_preferred();
     test_no_return_to_preferred_keeps_the_working_one();
+    test_auto_failover_off_stays_on_the_dead_uplink();
+    test_auto_failover_off_still_selects_the_first_time();
     test_pinned_uplink_is_honoured_even_when_down();
     test_nothing_usable_yields_no_active_uplink();
     test_status_marks_exactly_one_active();

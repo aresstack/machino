@@ -39,11 +39,14 @@ bool exists(const std::string& path)
 
 } // namespace
 
-SysfsGpio::SysfsGpio(std::string root) : root_(std::move(root)) {}
+SysfsGpio::SysfsGpio(std::string root, bool unexport_on_close)
+    : root_(std::move(root)), unexport_on_close_(unexport_on_close) {}
 
 SysfsGpio::~SysfsGpio()
 {
-    // Give back only what we took. A pin some driver owns was never ours.
+    // Give back only what we took, and only when the owner asked for it --
+    // see the header for why unexporting by default would cut USB power.
+    if (!unexport_on_close_) return;
     std::lock_guard<std::mutex> g(m_);
     for (int n : exported_) {
         char buf[16];

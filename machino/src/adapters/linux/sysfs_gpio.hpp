@@ -22,7 +22,14 @@ namespace machino { namespace linuxsys {
 class SysfsGpio : public IGpioController {
 public:
     // `root` is injectable so a test can point it at a temp tree.
-    explicit SysfsGpio(std::string root = "/sys/class/gpio");
+    //
+    // unexport_on_close defaults to FALSE on purpose. Unexporting returns the
+    // pin to its reset state, and on this board that means the USB load switch
+    // turns off: restarting the media daemon would cut power to the WiFi
+    // dongle the camera is reachable through. A pin left exported costs
+    // nothing; a network interface that disappears on every restart costs a
+    // site visit.
+    explicit SysfsGpio(std::string root = "/sys/class/gpio", bool unexport_on_close = false);
     ~SysfsGpio() override;
 
     bool   available() const override;
@@ -37,6 +44,7 @@ private:
     std::string dir_for(int n) const;
 
     std::string     root_;
+    bool            unexport_on_close_;
     mutable std::mutex m_;
     std::set<int>   exported_;   // only pins WE exported get unexported again
 };

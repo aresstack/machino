@@ -68,21 +68,39 @@ bool StagedChange::begin(Action forward, Action rollback, uint32_t now_ms,
     if (!forward || !rollback) { err = "a staged change needs both an action and its undo"; return false; }
     if (window_ms == 0)        { err = "a confirmation window of zero would roll back instantly"; return false; }
 
+    // Claim the slot BEFORE applying. Checking and then acting outside the
+    // lock would let two callers both pass the check and both apply, and the
+    // rollback order would be undefined -- exactly the situation this class
+    // exists to prevent.
+    uint64_t tok;
     {
         std::lock_guard<std::mutex> g(m_);
         if (pending_) { err = "another change is still waiting for confirmation"; return false; }
+        pending_ = true;
+        tok = token_ = next_token_++;
+        deadline_ms_ = now_ms + window_ms;
+        rollback_ = nullptr;          // nothing to undo until forward succeeded
     }
 
     // Applied outside the lock: the action talks to the platform and may block.
     Result rc = forward();
-    if (!rc.is_ok()) { err = "the change could not be applied"; return false; }
+    if (!rc.is_ok()) {
+        std::lock_guard<std::mutex> g(m_);
+        pending_ = false;
+        err = "the change could not be applied";
+        return false;
+    }
 
     std::lock_guard<std::mutex> g(m_);
-    pending_ = true;
-    token_ = next_token_++;
-    deadline_ms_ = now_ms + window_ms;
+    if (!pending_ || token_ != tok) {
+        // A tick() fired while forward() was running. It found no rollback and
+        // did nothing, so the change stands but is no longer guarded; say so
+        // rather than hand out a token nobody will honour.
+        err = "the confirmation window expired while the change was being applied";
+        return false;
+    }
     rollback_ = std::move(rollback);
-    token_out = token_;
+    token_out = tok;
     return true;
 }
 
@@ -172,24 +190,26 @@ INetworkUplink* ConnectivityManager::select(const std::vector<INetworkUplink*>& 
         return find_type(policy.pinned_type);
     }
 
-    // Keep the current one unless it died or a preferred one came back and we
-    // are allowed to return to it.
-    if (usable(current) && !policy.return_to_preferred) return current;
-
+    // The most preferred uplink that actually works right now.
+    INetworkUplink* best = nullptr;
     for (UplinkType t : policy.order) {
         INetworkUplink* u = find_type(t);
-        if (usable(u)) {
-            if (u == current) return current;
-            // Only move off a working uplink for a strictly preferred one.
-            if (!usable(current)) return u;
-            if (!policy.return_to_preferred) return current;
-            return u;
-        }
-        if (u == current && usable(current)) return current;
+        if (usable(u)) { best = u; break; }
     }
 
+    // Nothing active yet: auto_failover governs whether we LEAVE a working
+    // uplink, not whether we ever pick one. Without this a policy with
+    // failover off would never connect at all.
+    if (!current) return best;
+
+    if (usable(current)) {
+        if (!policy.return_to_preferred) return current;
+        return best ? best : current;
+    }
+
+    // The active uplink died. Staying put is a legitimate choice.
     if (!policy.auto_failover) return current;
-    return nullptr;
+    return best;
 }
 
 bool ConnectivityManager::evaluate()

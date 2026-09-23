@@ -111,13 +111,11 @@ Result UsbHostService::apply(const UsbConfig& cfg, std::string& err)
     UsbResolved r;
     if (!resolve(cfg, caps, r, err)) return Result::error();
 
-    // Nothing is committed until the backend agrees.
-    Result rc = Result::ok();
-    if (r.mode == UsbPowerMode::Gpio) {
-        rc = backend_.set_power(r.mode, r.pin, r.active_high, cfg.enabled);
-    } else if (r.mode == UsbPowerMode::None && !cfg.enabled) {
-        rc = Result::ok();   // nothing to drive, nothing to undo
-    }
+    // The backend is told about EVERY mode, not just Gpio. Skipping the other
+    // modes would mean a switch from gpio to none never reaches it, so it
+    // would keep the pin asserted and the port would stay powered while the
+    // mode says otherwise. Backends treat AlwaysOn/None as "stop driving".
+    Result rc = backend_.set_power(r.mode, r.pin, r.active_high, cfg.enabled);
 
     if (!rc.is_ok()) {
         err = "the platform refused to apply USB power";

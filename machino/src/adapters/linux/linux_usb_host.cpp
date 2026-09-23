@@ -83,9 +83,24 @@ Result LinuxUsbHostBackend::set_power(UsbPowerMode mode, const std::string& pin,
                                       bool active_high, bool on)
 {
     if (mode != UsbPowerMode::Gpio) {
-        // Nothing to drive. Not an error: AlwaysOn and None are legitimate.
-        std::lock_guard<std::mutex> g(m_);
-        driven_known_ = false;
+        // Not an error: AlwaysOn and None are legitimate. But if we were
+        // driving a pin, stop honestly -- leaving it asserted would keep the
+        // port powered while the mode says "none", and the status page would
+        // then disagree with the multimeter.
+        std::string pin_to_drop;
+        bool active_high = true;
+        {
+            std::lock_guard<std::mutex> g(m_);
+            pin_to_drop = driven_pin_;
+            active_high = driven_active_high_;
+            driven_pin_.clear();
+            driven_known_ = false;
+            driven_on_ = false;
+        }
+        if (!pin_to_drop.empty()) {
+            gpio_.write(pin_to_drop, active_high ? false : true);   // de-assert
+            gpio_.release(pin_to_drop);
+        }
         return Result::ok();
     }
     if (!board_power_.switchable) return Result::unsupported();
