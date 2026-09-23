@@ -39,17 +39,17 @@ ohne Last messbar sind, dann Last, dann Browser.
 | A8 | Dashboard-Kachel: eigene Snapshot-Meldung statt Schweigen (`jpeg`-Sektion) | AP14 |
 | A9 | Audio-Panel sagt „both … switched off" statt „has not said yet" | AP20 |
 
-## A2 — Sicherheit: erst nach der Ablösung wirksam (AP30)
+## S — Sicherheit: die Fixes wirken erst nach der Ablösung (AP30)
 
 | Nr | Prüfung | Woher |
 |---|---|---|
-| A10 | Header-Smuggling: `X-Foo: a
-Content-Length: 99` muss **400** ergeben, nicht 404 | AP30 HIGH-1 |
-| A11 | RTSP: 8 KiB ohne Leerzeile schicken — die Verbindung muss fallen, RSS darf nicht wachsen | AP30 HIGH-2 |
-| A12 | `/cgi-bin/../../../etc/shadow` muss **400 von Machino** ergeben, nicht von busybox | AP30 NORMAL |
+| S1 | Header-Smuggling: eine Headerzeile mit einem bare LF und einem zweiten `Content-Length` dahinter muss **400** ergeben, nicht 404 | AP30 HIGH-1 |
+| S2 | RTSP: 8 KiB ohne Leerzeile schicken — die Verbindung muss fallen, RSS darf nicht wachsen | AP30 HIGH-2 |
+| S3 | `/cgi-bin/../../../etc/shadow` muss **400 von Machino** ergeben, nicht von busybox | AP30 NORMAL |
 
-Bis zur Ablösung trägt die Kamera beide HIGH-Schwächen — der laufende Prozess
-ist `c1edd92`.
+**Bis zur Ablösung trägt die Kamera beide HIGH-Schwächen** — der laufende
+Prozess ist `c1edd92`. Das ist der stärkste Grund, den nächsten Kaltstart nicht
+lange aufzuschieben.
 
 ## B — Beim Kaltstart, mit Browser
 
