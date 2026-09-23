@@ -481,6 +481,84 @@ PB27 fuehrt 0 V      -> der Pin wird trotz "out hi" nicht getrieben
 Erst danach ist zu entscheiden, welcher VBUS-Init richtig ist. Bis dahin wird
 weder PB27 getoggelt noch etwas geflasht.
 
+## AP35.21 — Die Messung am Schalter: die Polarität ist invertiert
+
+Messung an der Platine (2026-09-23), SOT-23 im VBUS-Pfad:
+
+```
+Pin 2  Source   3,3 V      die Schiene
+Pin 1  Gate     3,3 V      das Steuersignal
+Pin 3  Drain    0 V        geht an USB-VCC
+```
+
+Bei einem P-Kanal-MOSFET als High-Side-Schalter ist
+**V_GS = Gate − Source = 0 V → gesperrt**. Ein P-FET leitet erst, wenn das Gate
+nach unten gezogen wird. Für einen PNP (Basis/Emitter/Kollektor) gilt dasselbe.
+
+**Die Schaltung ist damit active-low — und die Software treibt das Gate high.**
+Alles Vorherige fügt sich:
+
+```
+Ingenic-Referenz (shark.dts)   GPIO_ACTIVE_HIGH   -> von OpenIPC uebernommen
+dwc2 hcd.c:2505                set_vbus(1)        -> GPIO logisch 1
+weil ACTIVE_HIGH                                  -> physisch HIGH
+P-FET mit Gate high                               -> SPERRT
+Drain                                             -> 0 V   (gemessen)
+```
+
+Und das `#` im Stock-DTB ist damit **kein** „dieses Board hat keinen
+VBUS-Schalter", sondern:
+
+> Die Property ist deaktiviert, damit niemand das Gate anfasst. Unbeansprucht
+> bleibt der Pin im Default-/Pull-Zustand — vermutlich low — und der FET
+> leitet. Stocks USB-Port funktioniert also **gerade deshalb**, weil Stock
+> nichts tut.
+
+OpenIPC „verbessert" hier etwas und schaltet den Port dadurch ab.
+
+### Der Test, der es entscheidet
+
+Rein lesend zuerst (Port B = `0x10010100`, Bit 27 = `0x08000000`; Offsets aus
+`drivers/pinctrl/pinctrl-ingenic.h`: `PxPIN 0x00`, `PxPAT1 0x30`, `PxPAT0 0x40`,
+`PxPAT0S 0x44`, `PxPAT0C 0x48`):
+
+```sh
+devmem 0x10010100 32     # PIN   - tatsaechlicher Pegel
+devmem 0x10010140 32     # PAT0  - Ausgangspegel
+devmem 0x10010130 32     # PAT1  - 0 = Ausgang
+```
+
+Dann das Gate nach low, **und dabei Drain messen**:
+
+```sh
+devmem 0x10010148 32 0x08000000    # PAT0C: PB27 -> low
+```
+
+Zurück:
+
+```sh
+devmem 0x10010144 32 0x08000000    # PAT0S: PB27 -> high
+```
+
+Das ist bewusst derselbe Schreibzugriff, den der Treiber bei
+`gpiod_set_value(gpiod_drvvbus, 0)` selbst ausführt — kein fremder Eingriff,
+nur der Aufruf, den `dwc2` bei `usb_phy_vbus_off()` ohnehin macht. Set- und
+Clear-Register wirken bitweise, andere Pins sind nicht betroffen.
+
+### Der zweite Befund, unabhängig davon
+
+**Die Schiene führt 3,3 V, nicht 5 V.** Auch nach dem Durchschalten stünden am
+USB-VCC rund 3,3 V. Das ist unterhalb der USB-Spezifikation (mindestens 4,4 V
+am Gerät). Folgen, getrennt zu betrachten:
+
+* Ein WLAN-Stick kann damit laufen oder auch nicht — sein interner
+  3,3-V-Regler hat keinen Spielraum mehr.
+* Der **EC200A wird damit nicht laufen**, unabhängig von der Polarität: er
+  braucht 5 V und zieht 1–2 A Bursts.
+
+Die Polaritätsfrage und die Spannungsfrage sind zwei verschiedene Probleme.
+Die erste ist softwareseitig lösbar, die zweite nicht.
+
 ## AP35.19 — Module-only: lässt sich das ohne neues Image lösen?
 
 Die Frage vor dem Image-Tausch: es sind **In-Tree-Treiber** des 4.4.94. Können
