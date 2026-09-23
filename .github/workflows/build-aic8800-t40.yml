@@ -129,10 +129,49 @@ jobs:
           VER=$(sed -n 's/^AIC8800_OPENIPC_VERSION *= *//p' "$MK" | head -1)
           test -n "$SITE" || { echo "::error::the package declares no _SITE"; exit 1; }
           test -n "$VER"  || { echo "::error::the package declares no _VERSION"; exit 1; }
-          echo "site=$SITE version=$VER"
-          git clone "$SITE" "$RUNNER_TEMP/aic8800"
-          git -C "$RUNNER_TEMP/aic8800" checkout "$VER"
+          echo "raw site=$SITE version=$VER"
+
+          # _SITE is a Buildroot MAKE expression, not a URL. The common form is
+          #   $(call github,<org>,<repo>,$(..._VERSION))
+          # and the first version of this step handed that string to git
+          # verbatim. Expand the one form Buildroot actually uses here, and
+          # refuse anything else rather than guessing at a URL.
+          case "$SITE" in
+            *'$(call github,'*)
+              ORG=$(echo "$SITE" | sed -n 's/.*\$(call github, *\([^,]*\) *,.*/\1/p')
+              REPO=$(echo "$SITE" | sed -n 's/.*\$(call github, *[^,]* *, *\([^,)]*\) *,.*/\1/p')
+              test -n "$ORG" && test -n "$REPO" || {
+                echo "::error::could not read org/repo out of: $SITE"; exit 1; }
+              URL="https://github.com/$ORG/$REPO"
+              ;;
+            http*|git@*) URL="$SITE" ;;
+            *) echo "::error::unrecognised _SITE form: $SITE"; exit 1 ;;
+          esac
+          echo "resolved url=$URL"
+
+          git clone "$URL" "$RUNNER_TEMP/aic8800"
+          if [ "$VER" = "HEAD" ] || echo "$VER" | grep -q '[$()]'; then
+            # OpenIPC's package does not pin a commit -- it tracks the default
+            # branch. That is THEIR supply-chain decision and this job will not
+            # silently improve on it, but it does mean two runs of this
+            # workflow can produce different modules. The commit actually used
+            # is recorded in BUILDINFO so a bundle can always be traced back.
+            echo "::warning::the package pins no commit (_VERSION=$VER); building the default branch"
+          else
+            git -C "$RUNNER_TEMP/aic8800" checkout "$VER"
+          fi
+          echo "aic8800 commit: $(git -C "$RUNNER_TEMP/aic8800" rev-parse HEAD)"
           echo "AIC_SRC=$RUNNER_TEMP/aic8800" >> "$GITHUB_ENV"
+          # The module sources are often in a subdirectory rather than at the
+          # root; find the one with a Makefile that builds an object.
+          if [ ! -f "$RUNNER_TEMP/aic8800/Makefile" ]; then
+            SUB=$(find "$RUNNER_TEMP/aic8800" -maxdepth 3 -name Makefile -printf '%h\n' | sort | head -1 || true)
+            test -n "$SUB" || { echo "::error::no Makefile anywhere in the driver source"; exit 1; }
+            echo "::notice::no Makefile at the root; using $SUB"
+            echo "AIC_SRC=$SUB" >> "$GITHUB_ENV"
+          fi
+          echo "--- tree"
+          find "$RUNNER_TEMP/aic8800" -maxdepth 2 | head -40
 
       - name: "Prepare the kernel tree (modules_prepare only, no full image)"
         run: |
