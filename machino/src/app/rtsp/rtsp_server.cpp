@@ -19,6 +19,11 @@
 namespace machino {
 
 static const char* MOD = "RTSP";
+
+// AP30: the largest request this server will buffer before giving up on a
+// connection. Same ceiling as the HTTP head - a real RTSP request is a few
+// hundred bytes.
+static const size_t MAX_RTSP_REQUEST = 8192;
 static int64_t now_ms() { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000; }
 static const size_t RTP_MTU = 1400;
 
@@ -290,6 +295,23 @@ void RtspServer::client_loop(Client* c, std::string peer) {
             if (n < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) break; }
             else {
                 s.inbuf.append(buf, (size_t)n);
+                // AP30: bound it. This loop only drains inbuf when it finds a
+                // blank line, so a client that connects and sends bytes
+                // without ever ending a request grew it without limit - before
+                // any authentication, because auth lives inside
+                // handle_request, which is never reached. On a camera with
+                // 42 MB of RAM and an OOM already in its history, one socket
+                // was enough. The HTTP side has had MAX_IN for this reason;
+                // RTSP had nothing.
+                //
+                // 8 KiB is the same ceiling as the HTTP head: a real DESCRIBE
+                // or SETUP with Authorization and Transport is a few hundred
+                // bytes, so this refuses only what was never a request.
+                if (s.inbuf.size() > MAX_RTSP_REQUEST) {
+                    LOGW(MOD, "%s: request exceeded %zu bytes without ending - dropping",
+                         s.peer.c_str(), (size_t)MAX_RTSP_REQUEST);
+                    break;
+                }
                 size_t end;
                 while ((end = s.inbuf.find("\r\n\r\n")) != std::string::npos) {
                     std::string req = s.inbuf.substr(0, end + 4);

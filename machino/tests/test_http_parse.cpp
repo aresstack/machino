@@ -268,4 +268,37 @@ void run_relay_head_end_tests() {
         HCHECK(out.find("Content-Length: 42\r\n") != std::string::npos);   // normalised to CRLF
         HCHECK(out.find("Content-type: text/plain\r\n") != std::string::npos);
     }
+    // AP30: header smuggling through the relay.
+    //
+    // A header line is split on CRLF, so a BARE LF inside it used to survive
+    // as part of the value - and forward_request writes headers back out
+    // verbatim, so "X-Foo: a\nContent-Length: 99" reached busybox as TWO
+    // headers, one of which Machino never accounted for. Demonstrated against
+    // the real parser before the check existed.
+    {
+        size_t used = 0; Request r;
+        HCHECK(parse_request("GET /x HTTP/1.1\r\nHost: h\r\nX-Foo: a\nContent-Length: 99\r\n\r\n",
+                             used, r) == Parse::Bad);
+        // every other control character too - a field-value is VCHAR/SP/HTAB
+        HCHECK(parse_request("GET /x HTTP/1.1\r\nX-Foo: a\x01b\r\n\r\n", used, r) == Parse::Bad);
+        // a tab is legal and must still pass
+        HCHECK(parse_request("GET /x HTTP/1.1\r\nX-Foo: a\tb\r\n\r\n", used, r) == Parse::Ok);
+        // and the same class in the request TARGET, which is also written back
+        HCHECK(parse_request("GET /x\x01y HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Bad);
+        HCHECK(parse_request("GET /ok?a=1 HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Ok);
+    }
+    // AP30: dot-segments in the path. busybox rejects these too (measured:
+    // both forms come back 400), but that made the property the upstreams and
+    // not ours.
+    {
+        size_t used = 0; Request r;
+        HCHECK(parse_request("GET /cgi-bin/../../../etc/shadow HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Bad);
+        HCHECK(parse_request("GET /%2e%2e/%2e%2e/etc/shadow HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Bad);
+        HCHECK(parse_request("GET /a/%2E%2E/b HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Bad);
+        // a dot inside a NAME is ordinary and must pass, and so is one in the
+        // query - /api/v1/reset?key=video.bitrate is a real request
+        HCHECK(parse_request("GET /a.b/c..d HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Bad);
+        HCHECK(parse_request("GET /api/v1/reset?key=video.bitrate HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Ok);
+        HCHECK(parse_request("GET /a/b?p=../x HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Ok);
+    }
 }

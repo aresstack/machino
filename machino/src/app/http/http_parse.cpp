@@ -27,13 +27,40 @@ Parse parse_request(const std::string& buf, size_t& consumed, Request& out, cons
     std::string version = line.substr(s2 + 1);
     if (version != "HTTP/1.1" && version != "HTTP/1.0") return Parse::Bad;
     if (target.empty() || target[0] != '/') return Parse::Bad;
+    // Same reasoning as the header check below: the request line is written
+    // back out verbatim by forward_request, so a control character in the
+    // target would inject a line of its own upstream. A request-target is
+    // VCHAR only.
+    for (unsigned char ch : target) if (ch < 0x21 || ch == 0x7f) return Parse::Bad;
     size_t q = target.find('?'); r.path = target.substr(0, q); if (q != std::string::npos) r.query = target.substr(q + 1);
+    // AP30: dot-segments in the PATH (the query may legitimately contain them).
+    //
+    // Machino's own routes are exact string matches, so `..` cannot reach one.
+    // Everything else is relayed verbatim, and busybox httpd does reject `..`
+    // and its percent-encoded form - measured: both come back 400. But that
+    // makes the property the UPSTREAM's, not ours, and it would quietly stop
+    // holding the day something else sits behind the relay or a native route
+    // ever touches a path. Rejected here so it does not depend on that.
+    if (r.path.find("..") != std::string::npos) return Parse::Bad;
+    for (size_t i = 0; i + 2 < r.path.size(); ++i)
+        if (r.path[i] == '%' && r.path[i + 1] == '2' && (r.path[i + 2] | 0x20) == 'e') return Parse::Bad;
     for (char c : r.method) if (c < 'A' || c > 'Z') return Parse::Bad;
     r.keep_alive = (version == "HTTP/1.1");
     p = nl + 2;
     while (p < end) {
         size_t e = buf.find("\r\n", p); if (e == std::string::npos || e > end) e = end;
         std::string h = buf.substr(p, e - p); p = e + 2;
+        // AP30: a header line is split on CRLF, so a BARE LF inside it survives
+        // as part of the value - and forward_request writes headers back out
+        // verbatim. "X-Foo: a\nContent-Length: 99" therefore reached busybox as
+        // two headers, one of which Machino never accounted for: header
+        // smuggling into the CGI layer. Demonstrated before this check existed.
+        //
+        // No control character belongs in a field line at all (RFC 7230 3.2:
+        // field-value is VCHAR / SP / HTAB), so the whole class goes at once
+        // rather than just the LF that was found.
+        for (unsigned char ch : h)
+            if (ch < 0x20 && ch != '\t' && ch != '\r') return Parse::Bad;
         size_t c = h.find(':'); if (c == std::string::npos) return Parse::Bad;
         std::string name = lower(h.substr(0, c)), val = h.substr(c + 1); trim(name); trim(val);
         if (name.empty() || r.headers.size() >= lim.max_headers) return Parse::Bad;
