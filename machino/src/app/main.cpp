@@ -480,12 +480,31 @@ int main(int argc, char** argv) {
 
         net::ConnectivityManager conn;
         conn.add(&eth_uplink);
+
+        // The WiFi uplink is registered UNCONDITIONALLY, and that is the
+        // point. An earlier version added it only when a radio was present at
+        // start-up, which looked reasonable and was wrong on this camera: the
+        // AIC8800 hangs off USB, its modules are loaded by hand, and the port
+        // power is a GPIO. The radio therefore appears MINUTES after boot, and
+        // a start-up snapshot had already decided there was none.
+        //
+        // The cost of getting that wrong is not cosmetic. The only way to
+        // re-evaluate it would be restarting the daemon, and a warm restart is
+        // this camera's documented hardlock trigger -- so the WiFi surface
+        // would have stayed dead until the next power cycle.
+        //
+        // Nothing is claimed by registering it: capabilities() is a live
+        // query, WifiStationUplink::state() answers Absent while there is no
+        // interface, and the connectivity manager skips an uplink that is not
+        // usable. The honest answer arrives when the hardware does.
+        conn.add(&wifi_uplink);
+
         const net::WifiCapabilities wcaps = wifi.capabilities();
-        if (wcaps.present) conn.add(&wifi_uplink);
-        LOGI(MOD, "wifi: %s", wcaps.present
+        LOGI(MOD, "wifi at start-up: %s (re-evaluated on every request)",
+             wcaps.present
                  ? (wcaps.station_usable() ? "radio present, station mode usable"
                                            : "radio present, no wpa_supplicant control socket")
-                 : "no radio");
+                 : "no radio yet");
 
         {
             net::UplinkPolicy p;
@@ -545,7 +564,12 @@ int main(int argc, char** argv) {
         api::NetApiService::Deps nd;
         nd.usb  = &usb_service;
         nd.conn = &conn;
-        nd.wifi = wcaps.present ? &wifi : nullptr;
+        // Always wired, for the same reason the uplink above is. A null here
+        // makes every /api/v1/network/wifi route answer "WiFi is not available
+        // on this build" -- which is a statement about the BUILD, and would
+        // have been a lie on a camera whose radio simply had not been powered
+        // up yet.
+        nd.wifi = &wifi;
         nd.txn  = &net_txn;
         nd.now_ms = [] { return (uint32_t)now_ms(); };
         nd.save_usb = [&store](const usb::UsbConfig& c, std::string& e) {
