@@ -100,10 +100,14 @@ jobs:
           export CFLAGS="-Os -I$SYSROOT/include/libnl3"
           export LDFLAGS="-L$SYSROOT/lib -static"
           export LIBS="-lnl-genl-3 -lnl-3 -lm"
-          make -j"$(nproc)" hostapd hostapd_cli
-          "${CROSS}strip" hostapd hostapd_cli
+          # Nur hostapd. hostapd_cli waeren 150 KB auf einem Overlay mit 4,3 MB
+          # frei, und niemand braucht sie: machino spricht den ctrl-Socket ueber
+          # wpa_ctrl.cpp selbst an, und der Rollen-Supervisor startet hostapd
+          # frisch, statt es fernzusteuern.
+          make -j"$(nproc)" hostapd
+          "${CROSS}strip" hostapd
           file hostapd
-          ls -l hostapd hostapd_cli
+          ls -l hostapd
 
       - name: "Gate: it must be a 32-bit mipsel binary and not need a shared libnl"
         run: |
@@ -122,8 +126,7 @@ jobs:
         run: |
           set -eu
           B=bundle/hostapd-t40; mkdir -p "$B"
-          cp "$RUNNER_TEMP/hostapd-$HOSTAP_VER/hostapd/hostapd"     "$B/"
-          cp "$RUNNER_TEMP/hostapd-$HOSTAP_VER/hostapd/hostapd_cli" "$B/"
+          cp "$RUNNER_TEMP/hostapd-$HOSTAP_VER/hostapd/hostapd" "$B/"
           {
             echo "hostapd $HOSTAP_VER for the OpenIPC T40 (mipsel, static)"
             echo "libnl:      $LIBNL_VER, static"
@@ -132,13 +135,15 @@ jobs:
             echo "binary:     $(file -b "$B/hostapd")"
             echo
             echo "Config: nl80211, WPA2-PSK, 802.11n, internal TLS."
+            echo "hostapd_cli is deliberately NOT built: machino drives the"
+            echo "            ctrl socket itself, so it would be dead weight."
             echo "NOT built in: WPS, EAP, RADIUS, accounting, VLAN, and SAE/WPA3"
             echo "            -- SAE needs EC support that internal TLS does not have."
             echo
             echo "NOT VERIFIED HERE: that it starts on the camera or that the"
             echo "AIC8800 driver accepts AP mode. Both need the hardware."
           } > "$B/BUILDINFO"
-          (cd "$B" && sha256sum hostapd hostapd_cli BUILDINFO > SHA256SUMS)
+          (cd "$B" && sha256sum hostapd BUILDINFO > SHA256SUMS)
           cat "$B/BUILDINFO"
 
       - uses: actions/upload-artifact@v4

@@ -337,7 +337,10 @@ if [ "$WITH_AP" = "1" ]; then
         die "--with-access-point given but the bundle has no hostapd (see the build-hostapd-t40 workflow)"
     fi
     put 0755 "$HERE/hostapd" "$ROOT/usr/sbin/hostapd" || die "cannot install hostapd"
-    [ -r "$HERE/hostapd_cli" ] && put 0755 "$HERE/hostapd_cli" "$ROOT/usr/sbin/hostapd_cli"
+    # Kein hostapd_cli. machino spricht den ctrl-Socket ueber wpa_ctrl.cpp
+    # selbst an, und der Rollen-Supervisor startet hostapd frisch, statt es
+    # fernzusteuern. Auf einem Overlay mit 4,3 MB frei sind 150 KB fuer ein
+    # Werkzeug, das niemand aufruft, keine gute Entscheidung.
     if [ "$WITH_WIFI" = "1" ] || [ -f "$INITD/S42wifi" ]; then
         say "installed hostapd (access point selectable from the web page)"
     else
