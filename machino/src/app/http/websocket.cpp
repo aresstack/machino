@@ -101,7 +101,6 @@ static std::string frame_with(uint8_t opcode, const void* payload, size_t len) {
 
 std::string frame(bool text, const void* payload, size_t len) { return frame_with(text ? 1 : 2, payload, len); }
 std::string pong_frame(const std::string& p) { return frame_with(10, p.data(), p.size()); }
-std::string close_frame() { return frame_with(8, "", 0); }
 
 Parse parse_frame(const std::string& in, size_t& consumed, int& opcode, std::string& payload, size_t max_payload) {
     if (in.size() < 2) return Parse::Incomplete;

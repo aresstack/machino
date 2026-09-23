@@ -20,8 +20,13 @@ std::string handshake_response(const std::string& sec_websocket_key);
 std::string frame(bool text, const void* payload, size_t len);
 
 // Control frames.
+//
+// AP33: there is no close_frame() here on purpose. It existed, was never
+// called, and was removed - this server ends a WebSocket by closing the TCP
+// connection (close_after_flush), which every consumer in the contract handles
+// through onclose. If a proper RFC 6455 close handshake is ever wanted it is
+// three lines, but it would be a behaviour change and not a cleanup.
 std::string pong_frame(const std::string& ping_payload);
-std::string close_frame();
 
 enum class Parse { Incomplete, Ok, Bad };
 // Parses ONE client frame from `in`; on Ok, `consumed` bytes were used,
