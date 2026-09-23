@@ -248,8 +248,35 @@ jobs:
       - name: "Build the module"
         run: |
           set -eu
+          # PREALLOC OFF. This is not tuning, it is the difference between a
+          # module that loads and one that takes the camera down.
+          #
+          # The driver's top Makefile does `export CONFIG_PREALLOC_RX_SKB = y`,
+          # which overrides the `?= n` in aic_load_fw/Makefile. With it on,
+          # aicwf_prealloc_init() asks for 847 receive buffers as order-3
+          # (32 KB contiguous) allocations at module init. Measured on the
+          # camera, that is hopeless:
+          #
+          #   Normal free: 3432 kB     <- not the 24 MB `free` suggests; the
+          #                               rest is the IMP reservation and slab
+          #
+          # What actually happened on the first insmod, read off the console:
+          #
+          #   insmod invoked oom-killer: order=3 ... aicwf_prealloc_init
+          #   Out of memory: Kill process 992 (majestic)
+          #   AICWFDBG(LOGERROR) failed to alloc rxbuff data
+          #
+          # The OOM killer took the media daemon, the media daemon is what
+          # feeds /dev/watchdog, and the camera hardware-reset seconds later.
+          # Twice.
+          #
+          # Command-line variables beat the Makefile's export. Without the
+          # prealloc the driver allocates on demand, which is what a box with
+          # 3 MB of free pages needs.
           make -C "$RUNNER_TEMP/linux" ARCH="$ARCH" CROSS_COMPILE="$CROSS" \
-               M="$AIC_SRC" -j"$(nproc)" modules
+               M="$AIC_SRC" -j"$(nproc)" \
+               CONFIG_PREALLOC_RX_SKB=n CONFIG_PREALLOC_TXQ=n \
+               modules
           find "$AIC_SRC" -name '*.ko' -printf '%p  %s bytes\n'
           test -n "$(find "$AIC_SRC" -name '*.ko' -print -quit)" || {
             echo "::error::the build produced no .ko"; exit 1; }
@@ -374,6 +401,8 @@ jobs:
             else
               echo "source: upstream unmodified"
             fi
+            echo "prealloc:    OFF (CONFIG_PREALLOC_RX_SKB=n CONFIG_PREALLOC_TXQ=n) -- the"
+            echo "             upstream default OOMs this camera at module init"
             echo "built:       $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}"
             echo
             echo "NOT VERIFIED HERE: that the module binds the device, that the"
