@@ -67,6 +67,10 @@ static_assert(std::is_constructible<linuxsys::WpaSupplicantWifi,
               "WpaSupplicantWifi nimmt ifname plus Pfadsatz");
 static_assert(std::is_constructible<linuxsys::LinuxNetif, std::string>::value, "");
 
+static_assert(std::is_constructible<linuxsys::HostapdAp, std::string, linuxsys::HostapdPaths>::value,
+              "HostapdAp nimmt ifname plus Pfadsatz");
+static_assert(std::is_constructible<linuxsys::HostapdAp>::value, "und hat Defaults");
+
 // HttpServer ruft NetApiService::handle() und set_net_api() auf. http_server.cpp
 // braucht arpa/inet.h und laesst sich hier nicht uebersetzen, also wird
 // wenigstens die Aufrufstelle hier festgenagelt: aendert sich die Signatur,

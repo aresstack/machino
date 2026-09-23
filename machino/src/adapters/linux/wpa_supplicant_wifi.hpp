@@ -15,6 +15,7 @@
 // and what USERSPACE TOOLING exists on this image. A missing hostapd does not
 // make the chip incapable, and a capable chip with no hostapd is still no AP.
 #pragma once
+#include "adapters/linux/hostapd_ap.hpp"
 #include "adapters/linux/wpa_ctrl.hpp"
 #include "ports/inetwork.hpp"
 #include <mutex>
@@ -40,6 +41,11 @@ public:
 
     explicit WpaSupplicantWifi(std::string ifname = "wlan0", WpaPaths paths = WpaPaths());
 
+    // The AP half, optional. Null = this build has no access point support at
+    // all, which is a legitimate configuration and is reported as such rather
+    // than as a failure. Borrowed; the caller owns it and outlives this.
+    void set_ap(HostapdAp* ap) { ap_ = ap; }
+
     net::WifiCapabilities capabilities() const override;
     Result scan(std::vector<net::WifiNetwork>& out) override;
 
@@ -63,6 +69,8 @@ private:
     std::string ifname_;
     WpaPaths    paths_;
     mutable WpaCtrl ctrl_;
+    HostapdAp*  ap_ = nullptr;
+    net::WifiMode mode_ = net::WifiMode::Station;
     mutable std::mutex m_;
 };
 

@@ -54,7 +54,7 @@ FAKE
     chmod +x "$B/machino"
     printf 'board = t40nn-imx307-board-a\napi.port = 8080\n' > "$B/machino.conf"
     cp "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$B/sbin/"
-    cp "$PKG/init/S95streamer" "$PKG/init/machino" "$B/init/"
+    cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S41hostapd" "$B/init/"
     cp "$PKG/install.sh" "$PKG/uninstall.sh" "$B/"
     chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/sbin/machino-manager" "$B/init/"*
 }
@@ -442,11 +442,33 @@ make_bundle; make_camera auto; add_buildinfo; mk_dt ingenic,shark0ingenic,t400
 run_install || bad "a t40 device tree was refused: $(cat "$WORK/out")"
 has "installed on a t40" "$WORK/root/usr/bin/machino"
 
+# ---------- 12b) the access point script is opt-in and reversible ----------
+# Installing it unconditionally would start a daemon on every camera, and most
+# of them will never serve their own WLAN.
+make_bundle; make_camera auto
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
+hasnt "no access point script without the flag" "$WORK/root/etc/init.d/S41hostapd"
+
+make_bundle; make_camera auto
+run_install --with-access-point || bad "--with-access-point was refused: $(cat "$WORK/out")"
+has "access point script installed on request" "$WORK/root/etc/init.d/S41hostapd"
+# The image here has no hostapd, and the installer has to say so rather than
+# leaving the user to wonder why the web page still greys the AP out.
+if grep -q "no /usr/sbin/hostapd" "$WORK/out"; then ok; else bad "the missing hostapd was not reported"; fi
+
+run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
+hasnt "access point script removed again" "$WORK/root/etc/init.d/S41hostapd"
+
+# An unknown flag must still be an error -- adding one option is not a licence
+# to accept anything.
+make_bundle; make_camera auto
+if run_install --with-acces-point; then bad "a misspelled flag was accepted"; else ok; fi
+
 # --------- 13) everything shipped to the camera stays BusyBox-clean ---------
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
 # check keeps the next such regression out.
-for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino"; do
+for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S41hostapd"; do
     if grep -nE '(^|[^-a-z_])install +-[dm]' "$f"; then bad "$(basename "$f") uses install(1), which BusyBox does not have"; else ok; fi
     if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
     if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi

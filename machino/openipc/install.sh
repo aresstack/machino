@@ -11,6 +11,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # MACHINO_ROOT is a test hook: empty in production, a throwaway tree in the
 # host tests. Everything the installer touches goes through it.
 ROOT="${MACHINO_ROOT:-}"
+WITH_AP=0
 STATE_DIR="$ROOT/etc/machino"
 WWW="$ROOT/var/www"
 CGI="$WWW/cgi-bin"
@@ -25,12 +26,21 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             cat <<EOF
-usage: ./install.sh
+usage: ./install.sh [--with-access-point]
 
 The WebUI login is Machino's Majestic drop-in session login against the
 camera's root account - there is nothing to configure here.
+
+  --with-access-point   also install S41hostapd, which runs hostapd from boot
+                        so the WiFi access point can be switched on from the
+                        web page without a reboot. Off by default: it starts a
+                        daemon on every camera, and most cameras will never
+                        serve their own WLAN. Without it machino reports AP
+                        mode as unavailable, with the reason, and everything
+                        else is unaffected.
 EOF
             exit 0 ;;
+        --with-access-point) WITH_AP=1 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -276,6 +286,25 @@ if [ -f "$INITD/S95majestic" ]; then
     say "moved $INITD/S95majestic -> $INITD/majestic (a backup is in $BACKUP)"
 fi
 put 0755 "$HERE/init/S95streamer" "$INITD/S95streamer" || die "cannot install S95streamer"
+
+# Opt-in only. machino never starts hostapd itself -- fork+exec while the media
+# pipeline is live is the documented OOM trigger on this camera -- so the
+# access point needs hostapd already running, which is what this script does.
+# Installing it unconditionally would start a daemon on every camera, and most
+# of them will never serve their own WLAN.
+if [ "$WITH_AP" = "1" ]; then
+    if [ -r "$HERE/init/S41hostapd" ]; then
+        put 0755 "$HERE/init/S41hostapd" "$INITD/S41hostapd" || die "cannot install S41hostapd"
+        if [ -x "$ROOT/usr/sbin/hostapd" ]; then
+            say "installed S41hostapd (the access point can be enabled from the web page)"
+        else
+            warn "installed S41hostapd, but this image has no /usr/sbin/hostapd -"
+            warn "the access point will stay unavailable until hostapd is present"
+        fi
+    else
+        die "--with-access-point given but the bundle has no init/S41hostapd"
+    fi
+fi
 
 # ------------------------------------------------------- initial selection ---
 # Keep streaming whatever streams right now. Installing must not switch.

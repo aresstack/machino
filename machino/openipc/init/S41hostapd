@@ -1,0 +1,100 @@
+#!/bin/sh
+# hostapd for the machino access point.
+#
+# WHY THIS EXISTS AS AN INIT SCRIPT AT ALL
+#
+# machino never starts hostapd. It writes /etc/machino/hostapd.conf and then
+# reconfigures the RUNNING daemon over its control socket (DISABLE / ENABLE).
+# The reason is not tidiness: fork+exec while the IMP media pipeline is live is
+# the documented trigger of an out-of-memory incident on this camera, which is
+# also why the log reader forks exactly once at start-up and why the WiFi code
+# talks to wpa_supplicant's socket instead of running wpa_cli.
+#
+# So hostapd has to already be running by the time machinod comes up, and it
+# has to come up BEFORE S95streamer -- hence S41, well ahead of it.
+#
+# A camera with no AP configured still runs hostapd, disabled. That costs a few
+# hundred kilobytes of RSS and buys the property that enabling the access point
+# from the web page never needs a reboot. If that trade is wrong for an image,
+# remove this script: machino then reports AP mode as unavailable with
+# "hostapd is installed but not running" as the reason, and everything else
+# keeps working.
+
+CONF=/etc/machino/hostapd.conf
+PID=/var/run/hostapd.pid
+CTRL=/var/run/hostapd
+
+start() {
+	[ -x /usr/sbin/hostapd ] || { echo "hostapd: not installed, skipping"; return 0; }
+
+	mkdir -p "$CTRL"
+	if [ ! -f "$CONF" ]; then
+		# No access point has ever been configured. Write the minimum hostapd
+		# needs to start with the radio DISABLED, so the control socket exists
+		# and machino can enable it later without a reboot. There is no SSID
+		# and no key here -- nothing is on the air.
+		# The first interface with a wireless directory, or wlan0. Guessing a
+		# name that does not exist makes hostapd exit at once, and then the
+		# control socket the whole design depends on is never created.
+		IFACE=wlan0
+		for d in /sys/class/net/*; do
+			if [ -d "$d/wireless" ] || [ -d "$d/phy80211" ]; then
+				IFACE=$(basename "$d")
+				break
+			fi
+		done
+		mkdir -p /etc/machino
+		cat > "$CONF" <<-EOF
+			# placeholder written by S41hostapd: no access point is configured.
+			# machino replaces this file when one is.
+			interface=$IFACE
+			driver=nl80211
+			ctrl_interface=$CTRL
+			ssid=machino-unconfigured
+			hw_mode=g
+			channel=1
+			wpa=0
+			start_disabled=1
+		EOF
+		chmod 600 "$CONF"
+	fi
+
+	# -B daemonises, -P writes the pid. No -d: hostapd's debug output goes to
+	# the same console the kernel uses and would drown the boot log.
+	echo -n "starting hostapd: "
+	/usr/sbin/hostapd -B -P "$PID" "$CONF" && echo OK || echo "FAILED (access point will be unavailable)"
+}
+
+stop() {
+	if [ -f "$PID" ]; then
+		echo -n "stopping hostapd: "
+		kill "$(cat "$PID")" 2>/dev/null && echo OK || echo "not running"
+		rm -f "$PID"
+	fi
+	# udhcpd is started by machino's AP path, not here, but it must not outlive
+	# the access point it was serving.
+	[ -f /var/run/udhcpd.pid ] && kill "$(cat /var/run/udhcpd.pid)" 2>/dev/null
+	rm -f /var/run/udhcpd.pid
+}
+
+case "$1" in
+	start) start ;;
+	stop)  stop ;;
+	restart)
+		stop
+		sleep 1
+		start
+		;;
+	status)
+		if [ -f "$PID" ] && kill -0 "$(cat "$PID")" 2>/dev/null; then
+			echo "hostapd: running (pid $(cat "$PID"))"
+		else
+			echo "hostapd: not running"
+			exit 1
+		fi
+		;;
+	*)
+		echo "usage: $0 {start|stop|restart|status}"
+		exit 1
+		;;
+esac

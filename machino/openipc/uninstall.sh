@@ -61,6 +61,15 @@ fi
 # ---------------------------------------------------- restore the boot slot ---
 rm -f "$INITD/S95streamer"
 
+# The access point script, if --with-access-point installed one. Stopped first:
+# leaving hostapd running against a config we are about to remove would put an
+# access point on the air that nothing manages any more.
+if [ -f "$INITD/S41hostapd" ]; then
+    "$INITD/S41hostapd" stop >/dev/null 2>&1
+    rm -f "$INITD/S41hostapd"
+    rm -f "$STATE_DIR/hostapd.conf" "$STATE_DIR/udhcpd.conf"
+fi
+
 if [ -f "$INITD/majestic" ]; then
     move_file "$INITD/majestic" "$INITD/S95majestic" || warn "could not move majestic back into the boot slot"
 elif [ -f "$BACKUP/S95majestic" ]; then

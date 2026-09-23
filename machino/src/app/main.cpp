@@ -14,6 +14,7 @@
 #include "adapters/linux/linux_usb_host.hpp"
 #include "adapters/linux/sysfs_gpio.hpp"
 #include "adapters/linux/wifi_station_uplink.hpp"
+#include "adapters/linux/hostapd_ap.hpp"
 #include "adapters/linux/wpa_supplicant_wifi.hpp"
 #include "app/compat/majestic_migrate.hpp"
 #include "app/http/http_server.hpp"
@@ -468,6 +469,13 @@ int main(int argc, char** argv) {
 
         linuxsys::LinuxEthernetUplink eth_uplink("eth0");
         linuxsys::WpaSupplicantWifi   wifi("wlan0");
+        // hostapd is started by the init script, before this process and
+        // therefore before IMP. Machino only writes its config and
+        // reconfigures it over the control socket -- fork+exec while the media
+        // pipeline is live is the documented trigger of an out-of-memory
+        // incident on this camera.
+        linuxsys::HostapdAp           wifi_ap("wlan0");
+        wifi.set_ap(&wifi_ap);
         linuxsys::WifiStationUplink   wifi_uplink(wifi, "wlan0");
 
         net::ConnectivityManager conn;
@@ -509,6 +517,11 @@ int main(int argc, char** argv) {
                 net::WifiStationConfig sc;
                 if (!api::wifi_station_from_json(*conf, sc, e)) return Result::error();
                 return wifi.start_station(sc);
+            }
+            if (kind->as_string() == "wifi-ap") {
+                net::WifiApConfig ac;
+                if (!api::wifi_ap_from_json(*conf, ac, e)) return Result::error();
+                return wifi.start_ap(ac);
             }
             return Result::unsupported();
         });

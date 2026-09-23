@@ -54,26 +54,32 @@ net::WifiCapabilities WpaSupplicantWifi::capabilities() const
     c.ifname = ifname_;
     c.present = driver_bound();
 
-    // What the DRIVER can do. Without nl80211/iw this image cannot ask, so
-    // rather than guessing: station and scan are what every supported chip
-    // does and what wpa_supplicant needs anyway, and AP is reported as
-    // unknown-therefore-no unless the tooling is there to prove it.
-    //
-    // This is deliberately conservative. Claiming AP support we have not
-    // verified produces a UI control that fails at the radio, which is worse
-    // than a greyed-out one with a reason next to it.
+    // What the DRIVER can do. Without nl80211/iw this image cannot ask it
+    // directly, so: station and scan are what every chip we support does and
+    // what wpa_supplicant needs anyway. Concurrent STA+AP is NOT claimed --
+    // claiming a capability we have not verified produces a control that
+    // fails at the radio, which is worse than a greyed-out one with a reason.
     c.driver_station = c.present;
     c.driver_scan    = c.present;
-    c.driver_ap      = c.present && have_binary("hostapd");
     c.driver_concurrent_sta_ap = false;
 
     c.wpa_supplicant_available = have_binary("wpa_supplicant") && ctrl_.available();
-    c.hostapd_available        = have_binary("hostapd");
-    c.dhcp_server_available    = have_binary("udhcpd") || have_binary("dnsmasq");
 
-    if (!c.present)                       c.ap_unavailable_reason = "no WiFi radio is bound on " + ifname_;
-    else if (!c.hostapd_available)        c.ap_unavailable_reason = "hostapd is not in this image";
-    else if (!c.dhcp_server_available)    c.ap_unavailable_reason = "no DHCP server in this image";
+    // The AP half is the hostapd adapter's to answer, because "can this board
+    // run an access point" is a question about a different daemon and a
+    // different config file. No adapter wired means no AP support in this
+    // build, which is a legitimate configuration -- so it is reported as one
+    // rather than as a failure.
+    if (ap_) {
+        ap_->describe(c);
+    } else {
+        c.driver_ap = false;
+        c.hostapd_available = false;
+        c.dhcp_server_available = false;
+        c.ap_unavailable_reason = c.present
+            ? "this build has no access point support"
+            : "no WiFi radio is bound on " + ifname_;
+    }
 
     if (c.present) {
         // Read once, not built from a string we chose: the name here is the
@@ -187,21 +193,44 @@ Result WpaSupplicantWifi::start_station(const net::WifiStationConfig& cfg)
     // SAVE_CONFIG is NOT called. The staged-change transaction owns
     // persistence; writing wpa_supplicant.conf here would make a change
     // survive the rollback that is supposed to undo it.
+    mode_ = net::WifiMode::Station;
     LOGI(MOD, "station configured on %s (ssid %zu bytes, %s)",
          ifname_.c_str(), cfg.ssid.size(), open ? "open" : "with a key");
     return Result::ok();
 }
 
-Result WpaSupplicantWifi::start_ap(const net::WifiApConfig&)
+Result WpaSupplicantWifi::start_ap(const net::WifiApConfig& cfg)
 {
-    // hostapd is a different daemon with a different config file. Pretending
-    // wpa_supplicant can do it would produce a "success" and no access point.
-    return Result::unsupported();
+    std::lock_guard<std::mutex> g(m_);
+    // hostapd is a different daemon with a different config file. Without one
+    // wired, pretending wpa_supplicant could do it would produce a "success"
+    // and no access point.
+    if (!ap_) return Result::unsupported();
+
+    // Leave station mode first. On a chip that cannot do both at once --
+    // which is all of them here, driver_concurrent_sta_ap is false -- an
+    // association still in progress fights the AP for the radio, and the
+    // symptom is an access point that comes up and immediately drops.
+    ctrl_.ok_request("DISCONNECT");
+
+    std::string err;
+    Result rc = ap_->start(cfg, err);
+    if (!rc.is_ok()) {
+        LOGW(MOD, "access point not started: %s", err.c_str());
+        return rc;
+    }
+    mode_ = net::WifiMode::AccessPoint;
+    return Result::ok();
 }
 
 Result WpaSupplicantWifi::stop()
 {
     std::lock_guard<std::mutex> g(m_);
+    if (mode_ == net::WifiMode::AccessPoint) {
+        Result rc = ap_ ? ap_->stop() : Result::unsupported();
+        mode_ = net::WifiMode::Station;
+        return rc;
+    }
     if (!ctrl_.available()) return Result::unsupported();
     ctrl_.ok_request("DISCONNECT");
     return Result::ok();
@@ -209,12 +238,19 @@ Result WpaSupplicantWifi::stop()
 
 net::WifiMode WpaSupplicantWifi::mode() const
 {
-    return net::WifiMode::Station;      // this adapter only does station mode
+    std::lock_guard<std::mutex> g(m_);
+    return mode_;
 }
 
 net::LinkState WpaSupplicantWifi::state() const
 {
     std::lock_guard<std::mutex> g(m_);
+    // In AP mode wpa_supplicant's STATUS describes a station that is not
+    // associating, which would read as "down" and make the status page cry
+    // wolf about a radio that is working exactly as asked.
+    if (mode_ == net::WifiMode::AccessPoint)
+        return (ap_ && ap_->running()) ? net::LinkState::Connected : net::LinkState::Failed;
+
     if (!ctrl_.available()) return net::LinkState::Absent;
 
     std::string reply;
@@ -235,6 +271,10 @@ net::LinkState WpaSupplicantWifi::state() const
 bool WpaSupplicantWifi::station_status(net::WifiNetwork& out) const
 {
     std::lock_guard<std::mutex> g(m_);
+    // In AP mode there is no network we are a station on. Answering with a
+    // stale one from before the switch would put an SSID on the status page
+    // that the camera is not connected to.
+    if (mode_ == net::WifiMode::AccessPoint) return false;
     if (!ctrl_.available()) return false;
 
     std::string reply;
