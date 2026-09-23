@@ -24,7 +24,9 @@ struct FakeUplink : INetworkUplink {
     NetworkInfo ni;
     int         connects = 0, disconnects = 0;
 
-    explicit FakeUplink(UplinkType type, const char* ifname) : t(type) { ni.ifname = ifname; }
+    std::string uid;
+    explicit FakeUplink(UplinkType type, const char* ifname) : t(type), uid(ifname) { ni.ifname = ifname; }
+    std::string   id() const override { return uid; }
 
     UplinkType    type() const override { return t; }
     LinkState     state() const override { return st; }
@@ -50,7 +52,7 @@ void test_prefers_the_first_usable_in_order()
 
     // Reorder: WiFi first.
     UplinkPolicy p;
-    p.order = {UplinkType::Wifi, UplinkType::Ethernet, UplinkType::Cellular};
+    p.order = {"wifi", "ethernet", "cellular"};
     m.set_policy(p);
     TCHECK(m.evaluate());
     TCHECK(m.active_type(t) && t == UplinkType::Wifi);
@@ -82,7 +84,7 @@ void test_connected_without_internet_is_not_usable()
     m.add(&wifi); m.add(&cell);
 
     UplinkPolicy p;
-    p.order = {UplinkType::Wifi, UplinkType::Cellular};
+    p.order = {"wifi", "cellular"};
     m.set_policy(p);
 
     m.evaluate();
@@ -169,12 +171,74 @@ void test_pinned_uplink_is_honoured_even_when_down()
 
     ConnectivityManager m;
     m.add(&eth); m.add(&wifi);
-    UplinkPolicy p; p.pinned = true; p.pinned_type = UplinkType::Wifi;
+    UplinkPolicy p; p.pinned = true; p.pinned_uplink = "wifi";
     m.set_policy(p);
     m.evaluate();
 
     UplinkType t;
     TCHECK(m.active_type(t) && t == UplinkType::Wifi);
+}
+
+void test_an_id_selector_picks_one_of_two_same_type_uplinks()
+{
+    // The reason ids exist: with two modems, "cellular" cannot say which.
+    FakeUplink lte_a(UplinkType::Cellular, "lte0");
+    FakeUplink lte_b(UplinkType::Cellular, "lte1");
+    ConnectivityManager m;
+    m.add(&lte_a); m.add(&lte_b);
+
+    UplinkPolicy p; p.order = {"lte1", "cellular"};
+    m.set_policy(p);
+    m.evaluate();
+    TCHECK(m.active_id() == "lte1");
+
+    // Falls back to the type entry when the named one is unusable.
+    lte_b.st = LinkState::Down; lte_b.inet = false;
+    TCHECK(m.evaluate());
+    TCHECK(m.active_id() == "lte0");
+}
+
+void test_pin_accepts_an_id_as_well_as_a_type()
+{
+    FakeUplink lte_a(UplinkType::Cellular, "lte0");
+    FakeUplink lte_b(UplinkType::Cellular, "lte1");
+    ConnectivityManager m;
+    m.add(&lte_a); m.add(&lte_b);
+    UplinkPolicy p; p.pinned = true; p.pinned_uplink = "lte1";
+    m.set_policy(p);
+    m.evaluate();
+    TCHECK(m.active_id() == "lte1");
+}
+
+void test_path_change_is_announced()
+{
+    // Switching uplinks changes the source address and the NAT path, so live
+    // sockets can break. Transports have to hear about it; the media pipeline
+    // still does not.
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink wifi(UplinkType::Wifi, "wlan0");
+    ConnectivityManager m;
+    m.add(&eth); m.add(&wifi);
+
+    std::string seen_from = "?", seen_to = "?";
+    int calls = 0;
+    m.set_on_path_change([&](const std::string& f, const std::string& t) {
+        ++calls; seen_from = f; seen_to = t;
+    });
+
+    m.evaluate();
+    TCHECK(calls == 1 && seen_from.empty() && seen_to == "eth0");
+
+    TCHECK(!m.evaluate());             // nothing changed
+    TCHECK(calls == 1);                // so nothing announced
+
+    eth.st = LinkState::Down; eth.inet = false;
+    m.evaluate();
+    TCHECK(calls == 2 && seen_from == "eth0" && seen_to == "wlan0");
+
+    wifi.st = LinkState::Down; wifi.inet = false;
+    m.evaluate();
+    TCHECK(calls == 3 && seen_to.empty());   // losing everything is a change too
 }
 
 void test_nothing_usable_yields_no_active_uplink()
@@ -356,6 +420,9 @@ void run_connectivity_tests()
     test_auto_failover_off_stays_on_the_dead_uplink();
     test_auto_failover_off_still_selects_the_first_time();
     test_pinned_uplink_is_honoured_even_when_down();
+    test_an_id_selector_picks_one_of_two_same_type_uplinks();
+    test_pin_accepts_an_id_as_well_as_a_type();
+    test_path_change_is_announced();
     test_nothing_usable_yields_no_active_uplink();
     test_status_marks_exactly_one_active();
     test_staged_change_rolls_back_without_confirmation();

@@ -50,6 +50,12 @@ class INetworkUplink {
 public:
     virtual ~INetworkUplink() = default;
 
+    // A stable identity, unique within the process, e.g. "wlan0" or "lte1".
+    // The TYPE is not an identity: a board can carry two modems or two radios,
+    // and a preference list written as "cellular" could then not say which one.
+    // Ids survive an interface going away and coming back; ifname may not.
+    virtual std::string id() const = 0;
+
     virtual UplinkType    type() const = 0;
     virtual LinkState     state() const = 0;
     virtual NetworkInfo   info() const = 0;
@@ -65,6 +71,18 @@ public:
 };
 
 // ---------------------------------------------------------------- WiFi
+//
+// An access point is NOT an uplink. A camera serving its own WLAN so a phone
+// can reach the setup page is working exactly as intended, and it has no
+// internet by design. Treating that as a failed uplink would make the status
+// page cry wolf and could make failover tear the AP down.
+//
+//   WifiAdapter
+//     Station mode     -> feeds an INetworkUplink
+//     AccessPoint mode -> feeds a local access service, never an uplink
+//
+// Handing internet from another uplink to AP clients is routing plus NAT and
+// a separate feature; it does not change what an AP is.
 
 enum class WifiMode : int { Station = 0, AccessPoint };
 
@@ -101,14 +119,38 @@ struct WifiApConfig {
     bool         dhcp_server = true;
 };
 
+// Two independent questions, kept apart on purpose.
+//
+// What the RADIO AND ITS DRIVER can do is one thing; what USERSPACE TOOLING is
+// installed is another. Installing hostapd does not make a chip AP-capable,
+// and an AP-capable chip is useless without it. An earlier version collapsed
+// both into one flag, which would have produced a UI that promises AP mode as
+// soon as a binary appears -- and then fails at the radio.
 struct WifiCapabilities {
-    bool present = false;          // a radio exists (driver bound, interface up)
-    bool station = false;
-    bool access_point = false;     // false when the platform has no hostapd
-    bool scanning = false;
+    bool present = false;              // a radio exists, driver bound
+
+    // driver / hardware
+    bool driver_station = false;
+    bool driver_ap = false;            // needs nl80211/iw to answer honestly
+    bool driver_scan = false;
+    bool driver_concurrent_sta_ap = false;
+
+    // userspace tooling present on this image
+    bool wpa_supplicant_available = false;
+    bool hostapd_available = false;
+    bool dhcp_server_available = false;
+
     std::string ifname;
     std::string driver;
-    std::string ap_unavailable_reason;   // shown in the UI instead of a dead control
+
+    // Both sides must agree before a mode is offered.
+    bool station_usable() const { return present && driver_station && wpa_supplicant_available; }
+    bool ap_usable()      const { return present && driver_ap && hostapd_available; }
+    bool scan_usable()    const { return present && driver_scan; }
+
+    // Filled by the adapter with the concrete reason, so the UI can say
+    // "hostapd is not in this image" instead of greying out a control.
+    std::string ap_unavailable_reason;
 };
 
 class IWifiAdapter {

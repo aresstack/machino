@@ -188,22 +188,28 @@ INetworkUplink* ConnectivityManager::select(const std::vector<INetworkUplink*>& 
     auto usable = [](INetworkUplink* u) {
         return u && u->state() == LinkState::Connected && u->has_internet();
     };
-    auto find_type = [&](UplinkType t) -> INetworkUplink* {
-        for (INetworkUplink* u : uplinks) if (u && u->type() == t) return u;
+
+    // A selector is an uplink id or a type name. Ids win: they are the precise
+    // answer, and a board with two modems needs them.
+    auto match = [&](const std::string& sel, bool want_usable) -> INetworkUplink* {
+        for (INetworkUplink* u : uplinks)
+            if (u && u->id() == sel && (!want_usable || usable(u))) return u;
+        for (INetworkUplink* u : uplinks)
+            if (u && uplink_type_name(u->type()) == sel && (!want_usable || usable(u))) return u;
         return nullptr;
     };
 
     if (policy.pinned) {
         // Honour the pin even when it is down: the user asked for exactly this
         // one, and silently using another would make the status page a lie.
-        return find_type(policy.pinned_type);
+        return match(policy.pinned_uplink, false);
     }
 
     // The most preferred uplink that actually works right now.
     INetworkUplink* best = nullptr;
-    for (UplinkType t : policy.order) {
-        INetworkUplink* u = find_type(t);
-        if (usable(u)) { best = u; break; }
+    for (const std::string& sel : policy.order) {
+        INetworkUplink* u = match(sel, true);
+        if (u) { best = u; break; }
     }
 
     // Nothing active yet: auto_failover governs whether we LEAVE a working
@@ -238,10 +244,32 @@ bool ConnectivityManager::evaluate()
 
     INetworkUplink* chosen = select(snapshot, policy, current);
 
-    std::lock_guard<std::mutex> g(m_);
-    if (chosen == active_) return false;
-    active_ = chosen;
+    PathChangeFn notify;
+    std::string from, to;
+    {
+        std::lock_guard<std::mutex> g(m_);
+        if (chosen == active_) return false;
+        from = active_ ? active_->id() : std::string();
+        to   = chosen  ? chosen->id()  : std::string();
+        active_ = chosen;
+        notify = on_path_change_;
+    }
+    // Outside the lock: a transport reacting to this may tear down sessions,
+    // and it must not do that while holding the connectivity mutex.
+    if (notify) notify(from, to);
     return true;
+}
+
+void ConnectivityManager::set_on_path_change(PathChangeFn fn)
+{
+    std::lock_guard<std::mutex> g(m_);
+    on_path_change_ = std::move(fn);
+}
+
+std::string ConnectivityManager::active_id() const
+{
+    std::lock_guard<std::mutex> g(m_);
+    return active_ ? active_->id() : std::string();
 }
 
 INetworkUplink* ConnectivityManager::active() const
@@ -275,6 +303,7 @@ std::vector<UplinkStatus> ConnectivityManager::status() const
     for (INetworkUplink* u : snapshot) {
         if (!u) continue;
         UplinkStatus s;
+        s.id = u->id();
         s.type = u->type();
         s.state = u->state();
         s.internet = u->has_internet();

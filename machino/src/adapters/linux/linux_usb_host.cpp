@@ -43,6 +43,19 @@ bool is_device_dir(const std::string& name)
     return name.find('-') != std::string::npos;
 }
 
+// Does device "1-1.2" hang off root hub "usb1"? Device names start with the
+// bus number of their root hub followed by '-'.
+//
+// This matters on a board with two host controllers: without the check, a
+// device on somebody else's port would show up as ours, and the USB page
+// would offer to power-cycle a port it does not own.
+bool belongs_to_hub(const std::string& dev, const std::string& hub)
+{
+    if (hub.size() <= 3) return false;            // "usb" + digits
+    const std::string bus = hub.substr(3);        // "1"
+    return dev.compare(0, bus.size(), bus) == 0 && dev.size() > bus.size() && dev[bus.size()] == '-';
+}
+
 } // namespace
 
 LinuxUsbHostBackend::LinuxUsbHostBackend(IGpioController& gpio,
@@ -168,6 +181,12 @@ bool LinuxUsbHostBackend::power_state(bool& on_out) const
 std::vector<UsbDevice> LinuxUsbHostBackend::devices() const
 {
     std::vector<UsbDevice> out;
+
+    // Only the tree below OUR root hub. Reporting every device on the box
+    // would be wrong the moment a board has a second controller.
+    const std::string hub = first_root_hub();
+    if (hub.empty()) return out;
+
     DIR* d = ::opendir(sysfs_usb_.c_str());
     if (!d) return out;
 
@@ -175,6 +194,7 @@ std::vector<UsbDevice> LinuxUsbHostBackend::devices() const
     while ((e = ::readdir(d)) != nullptr) {
         const std::string name = e->d_name;
         if (!is_device_dir(name)) continue;
+        if (!belongs_to_hub(name, hub)) continue;
 
         const std::string base = sysfs_usb_ + "/" + name;
         std::string vid;

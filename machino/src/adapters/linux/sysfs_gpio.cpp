@@ -39,8 +39,8 @@ bool exists(const std::string& path)
 
 } // namespace
 
-SysfsGpio::SysfsGpio(std::string root, bool unexport_on_close)
-    : root_(std::move(root)), unexport_on_close_(unexport_on_close) {}
+SysfsGpio::SysfsGpio(const hw::IPinResolver& resolver, std::string root, bool unexport_on_close)
+    : resolver_(resolver), root_(std::move(root)), unexport_on_close_(unexport_on_close) {}
 
 SysfsGpio::~SysfsGpio()
 {
@@ -63,23 +63,9 @@ bool SysfsGpio::available() const
 
 bool SysfsGpio::resolve(const std::string& name, int& number_out) const
 {
-    // P<letter><digits>, nothing else. A malformed name must not silently
-    // become pin 0 -- that is a real pin.
-    if (name.size() < 3 || (name[0] != 'P' && name[0] != 'p')) return false;
-    char letter = name[1];
-    if (letter >= 'a' && letter <= 'z') letter = (char)(letter - 'a' + 'A');
-    if (letter < 'A' || letter > 'F') return false;
-
-    int idx = 0;
-    size_t i = 2;
-    if (i >= name.size()) return false;
-    for (; i < name.size(); ++i) {
-        if (name[i] < '0' || name[i] > '9') return false;
-        idx = idx * 10 + (name[i] - '0');
-        if (idx > 31) return false;
-    }
-    number_out = (letter - 'A') * 32 + idx;
-    return true;
+    // Delegated on purpose: see the header. This class must not know what a
+    // pin name looks like on any particular SoC.
+    return resolver_.resolve(name, number_out);
 }
 
 std::string SysfsGpio::dir_for(int n) const

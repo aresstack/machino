@@ -27,18 +27,28 @@
 namespace machino { namespace net {
 
 struct UplinkPolicy {
-    // Most preferred first. Types not listed are never selected automatically.
-    std::vector<UplinkType> order{UplinkType::Ethernet, UplinkType::Wifi, UplinkType::Cellular};
+    // Most preferred first. Each entry is either an uplink ID ("wlan0",
+    // "lte1") or a TYPE name ("ethernet", "wifi", "cellular"); an id wins over
+    // a type when both could match.
+    //
+    // Types alone are not enough: a board can carry two modems or two radios,
+    // and "cellular" could then not say which one. Types stay allowed because
+    // they are what a single-radio board wants to write, and they keep working
+    // when the interface is renamed.
+    std::vector<std::string> order{"ethernet", "wifi", "cellular"};
+
     bool auto_failover = true;         // drop to the next one when the active dies
     bool return_to_preferred = true;   // go back up when a better one recovers
+
     // When set, only this uplink is ever used and failover is off. This is the
     // "I know what I want" switch; it must be honoured even if it means no
     // connectivity, otherwise the UI lies.
-    bool         pinned = false;
-    UplinkType   pinned_type = UplinkType::Ethernet;
+    bool        pinned = false;
+    std::string pinned_uplink;         // id or type name, same matching
 };
 
 struct UplinkStatus {
+    std::string   id;
     UplinkType    type = UplinkType::Ethernet;
     LinkState     state = LinkState::Absent;
     bool          internet = false;
@@ -88,8 +98,19 @@ public:
     // Recompute the active uplink. Returns true when it changed.
     bool evaluate();
 
+    // Called after the active uplink changed, OUTSIDE the lock.
+    //
+    // "Streaming over LTE is just a routing change" is true for the encoder
+    // and false for anything holding a socket: the source address and the NAT
+    // path change, so live TCP, RTSP and WebRTC sessions can break. Transports
+    // subscribe here and decide for themselves -- ICE restart, reconnect, or
+    // nothing. The media pipeline still never learns which uplink it is on.
+    using PathChangeFn = std::function<void(const std::string& from_id, const std::string& to_id)>;
+    void set_on_path_change(PathChangeFn fn);
+
     INetworkUplink* active() const;
     bool            active_type(UplinkType& out) const;
+    std::string     active_id() const;      // "" when nothing is active
 
     std::vector<UplinkStatus> status() const;
 
@@ -103,6 +124,7 @@ private:
     mutable std::mutex m_;
     std::vector<INetworkUplink*> uplinks_;
     UplinkPolicy policy_;
+    PathChangeFn on_path_change_;
     INetworkUplink* active_ = nullptr;
 };
 

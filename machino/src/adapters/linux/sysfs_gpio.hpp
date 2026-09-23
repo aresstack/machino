@@ -1,10 +1,10 @@
-// Linux GPIO through /sys/class/gpio, addressed by logical pin name.
+// Linux GPIO through /sys/class/gpio.
 //
-// Naming convention: "P<letter><index>" -- port letter A..F, index 0..31, so
-// the global number is (letter - 'A') * 32 + index. That is the numbering the
-// Ingenic pinctrl uses (PB18 -> 50) and it is shared by several SoC families;
-// a platform that numbers differently supplies its own IGpioController rather
-// than teaching this one exceptions.
+// This class knows sysfs and nothing else. How a logical pin name becomes a
+// number is NOT its business -- an earlier version hardcoded the Ingenic
+// "P<letter><index> = bank*32 + index" convention here, which quietly made a
+// supposedly generic Linux backend SoC-specific. The board profile now picks
+// an hw::IPinResolver and hands it in.
 //
 // Why sysfs and not the character device: this kernel is 4.4, where
 // /dev/gpiochip* has no line-request ABI worth using, and sysfs is exactly
@@ -12,6 +12,7 @@
 // every write with echo, which matters when the next person debugs this with
 // a multimeter.
 #pragma once
+#include "core/hw/pin_resolver.hpp"
 #include "ports/igpio.hpp"
 #include <mutex>
 #include <set>
@@ -29,7 +30,10 @@ public:
     // dongle the camera is reachable through. A pin left exported costs
     // nothing; a network interface that disappears on every restart costs a
     // site visit.
-    explicit SysfsGpio(std::string root = "/sys/class/gpio", bool unexport_on_close = false);
+    // `resolver` is borrowed and must outlive this object.
+    explicit SysfsGpio(const hw::IPinResolver& resolver,
+                       std::string root = "/sys/class/gpio",
+                       bool unexport_on_close = false);
     ~SysfsGpio() override;
 
     bool   available() const override;
@@ -43,6 +47,7 @@ public:
 private:
     std::string dir_for(int n) const;
 
+    const hw::IPinResolver& resolver_;
     std::string     root_;
     bool            unexport_on_close_;
     mutable std::mutex m_;
