@@ -34,7 +34,12 @@ bool ifreq_ioctl(const std::string& ifname, unsigned long req, struct ifreq& ifr
     if (fd < 0) return false;
 
     std::memset(&ifr, 0, sizeof(ifr));
-    std::snprintf(ifr.ifr_name, IFNAMSIZ, "%s", ifname.c_str());
+    // memcpy after the length check above, not snprintf: the name is already
+    // known to fit, and a truncating snprintf here would silently address a
+    // DIFFERENT interface rather than fail. Same reasoning as the unix socket
+    // path in wpa_ctrl.cpp, where the cross build's -Wformat-truncation
+    // caught it.
+    std::memcpy(ifr.ifr_name, ifname.data(), ifname.size());
     const bool ok = (::ioctl(fd, req, &ifr) == 0);
     ::close(fd);
     return ok;

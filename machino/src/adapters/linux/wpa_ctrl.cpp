@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <cstring>
 #include <poll.h>
 #include <sys/socket.h>
@@ -34,15 +35,26 @@ Result WpaCtrl::ensure_open()
     // enough: two WpaCtrl objects in one process -- two radios, or a retry
     // while the first is still open -- would bind the same path and the second
     // bind would fail. A per-object counter makes the name unique.
-    static int seq = 0;
-    char ours[128];
-    std::snprintf(ours, sizeof(ours), "/tmp/machino-wpa-%d-%d", (int)::getpid(), seq++);
-    ::unlink(ours);
-
     struct sockaddr_un local;
     std::memset(&local, 0, sizeof(local));
     local.sun_family = AF_UNIX;
-    std::snprintf(local.sun_path, sizeof(local.sun_path), "%s", ours);
+
+    // Straight into sun_path, and CHECKED. sun_path is 108 bytes on Linux; an
+    // earlier version formatted into a 128-byte buffer first and copied that
+    // in, so a long path was silently truncated. A truncated unix socket
+    // address is not a clean failure -- it names a different socket, and the
+    // bind or connect then succeeds against the wrong thing or fails with an
+    // error that points nowhere near the cause.
+    static int seq = 0;
+    const int n = std::snprintf(local.sun_path, sizeof(local.sun_path),
+                                "/tmp/machino-wpa-%d-%d", (int)::getpid(), seq++);
+    if (n < 0 || (size_t)n >= sizeof(local.sun_path)) {
+        ::close(fd);
+        return Result::error(ENAMETOOLONG);
+    }
+    const std::string ours = local.sun_path;
+    ::unlink(ours.c_str());
+
     if (::bind(fd, (struct sockaddr*)&local, sizeof(local)) < 0) {
         int e = errno; ::close(fd); return Result::error(e);
     }
@@ -50,9 +62,16 @@ Result WpaCtrl::ensure_open()
     struct sockaddr_un remote;
     std::memset(&remote, 0, sizeof(remote));
     remote.sun_family = AF_UNIX;
-    std::snprintf(remote.sun_path, sizeof(remote.sun_path), "%s", iface_path_.c_str());
+    // Same check for the far end. A control directory deeper than 107 bytes is
+    // unusual but perfectly legal, and connecting to a truncated path would
+    // reach whatever happens to be at the shorter name.
+    if (iface_path_.size() >= sizeof(remote.sun_path)) {
+        ::close(fd); ::unlink(ours.c_str());
+        return Result::error(ENAMETOOLONG);
+    }
+    std::memcpy(remote.sun_path, iface_path_.data(), iface_path_.size());
     if (::connect(fd, (struct sockaddr*)&remote, sizeof(remote)) < 0) {
-        int e = errno; ::close(fd); ::unlink(ours); return Result::error(e);
+        int e = errno; ::close(fd); ::unlink(ours.c_str()); return Result::error(e);
     }
 
     fd_ = fd;
