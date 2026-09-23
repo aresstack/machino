@@ -115,7 +115,15 @@ Result UsbHostService::apply(const UsbConfig& cfg, std::string& err)
     // modes would mean a switch from gpio to none never reaches it, so it
     // would keep the pin asserted and the port would stay powered while the
     // mode says otherwise. Backends treat AlwaysOn/None as "stop driving".
-    Result rc = backend_.set_power(r.mode, r.pin, r.active_high, cfg.enabled);
+    //
+    // Except on a board with no USB host at all: there is nothing to drive and
+    // nothing to stop driving, and a null backend answers Unsupported to
+    // everything. Calling it would turn "USB is off, as you asked" into a
+    // failure.
+    Result rc = Result::ok();
+    if (caps.host_supported) {
+        rc = backend_.set_power(r.mode, r.pin, r.active_high, cfg.enabled);
+    }
 
     if (!rc.is_ok()) {
         err = "the platform refused to apply USB power";

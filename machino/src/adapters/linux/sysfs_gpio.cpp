@@ -135,9 +135,17 @@ Result SysfsGpio::configure_output(const std::string& name, bool initial_level)
     if (!available()) return Result::unsupported();
 
     GpioPinInfo info;
-    if (holder_of(name, info)) {
-        // Someone else's pin. Refuse; the alternative is taking the Ethernet
-        // PHY reset away from its driver.
+    if (holder_of(name, info) && info.holder != "sysfs") {
+        // A DRIVER holds it. Refuse; the alternative is taking the Ethernet
+        // PHY reset away from its owner.
+        //
+        // "sysfs" is not a driver -- it is the label the kernel gives a pin
+        // that userspace exported, i.e. very likely us on an earlier run.
+        // Measured on the device:
+        //   gpio-50  (   |sysfs            ) out hi     <- exported by us
+        //   gpio-59  (   |ingenic,drvvbus  ) out hi     <- a real driver
+        // Refusing "sysfs" would mean USB power could never be re-established
+        // after a restart, because we deliberately leave the pin exported.
         return Result::busy();
     }
 
@@ -146,7 +154,17 @@ Result SysfsGpio::configure_output(const std::string& name, bool initial_level)
     if (!exists(d)) {
         char buf[16];
         std::snprintf(buf, sizeof(buf), "%d", n);
-        if (!write_file(root_ + "/export", buf)) return Result::error(errno);
+        // The kernel is the real gate here: export returns EBUSY for a pin a
+        // driver already requested. The debugfs check above only lets us give
+        // a better reason; when debugfs is absent we proceed and let this
+        // fail, rather than refusing everything.
+        if (!write_file(root_ + "/export", buf)) {
+            return errno == EBUSY ? Result::busy() : Result::error(errno);
+        }
+        exported_.insert(n);
+    } else {
+        // Already exported -- ours from an earlier run, or left by the vendor
+        // script. Adopt it so we unexport it if asked to.
         exported_.insert(n);
     }
     // direction=high/low sets both at once and avoids a glitch through the

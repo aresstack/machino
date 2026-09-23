@@ -291,6 +291,27 @@ void test_devices_are_passed_through_untouched()
     TCHECK(st.devices[0].product == "AIC8800DC");
 }
 
+void test_null_backend_accepts_being_switched_off()
+{
+    // Regression, and a lesson about fakes: the FakeBackend above answers Ok to
+    // every set_power, so it hid this. The real NullUsbHostBackend answers
+    // Unsupported, and once the service started telling the backend about
+    // EVERY mode, "disable USB on a board that has none" turned into a
+    // failure. Tested against the real class, not the fake.
+    NullUsbHostBackend nb;
+    UsbHostService s(nb);
+    std::string err;
+
+    UsbConfig off;
+    TCHECK(s.apply(off, err).is_ok());
+    TCHECK(err.empty());
+
+    UsbConfig on; on.enabled = true;
+    TCHECK(!s.apply(on, err).is_ok());      // asking for it is still an error
+    TCHECK(s.capabilities().host_supported == false);
+    TCHECK(s.status().devices.empty());
+}
+
 void test_mode_names_round_trip()
 {
     for (UsbPowerMode m : {UsbPowerMode::BoardDefault, UsbPowerMode::Gpio,
@@ -329,6 +350,7 @@ void run_usb_tests()
     test_backend_refusal_leaves_state_unchanged();
     test_enable_at_boot_is_honoured();
     test_devices_are_passed_through_untouched();
+    test_null_backend_accepts_being_switched_off();
     test_mode_names_round_trip();
     test_unknown_power_state_is_reported_as_unknown();
 }
