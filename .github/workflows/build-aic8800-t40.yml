@@ -225,29 +225,21 @@ jobs:
           # NOT produce an image for the camera and nothing here is ever
           # flashed: the camera keeps the kernel it has, which is the whole
           # premise of the module-only approach.
-          # vmlinux AND modules. The built-in code is where printk, kfree,
-          # memcpy and the spinlocks are EXPORT_SYMBOL'd, and those exports
-          # only reach Module.symvers once vmlinux has been linked. A previous
-          # run built modules alone, got 249 symbols, and the gate then
-          # reported half the C library as "not exported by this kernel" --
-          # a false alarm that would have been very easy to wave through.
-          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" vmlinux modules
-
-          test -s Module.symvers || {
-            echo "::error::the kernel build produced no Module.symvers;"
-            echo "::error::the symbol gate cannot run and will not be skipped"
-            exit 1
-          }
-          n=$(wc -l < Module.symvers)
-          echo "Module.symvers: $n exported symbols"
-          # A 4.4 kernel exports thousands. A few hundred means vmlinux did not
-          # contribute and the gate below would be comparing against the wrong
-          # list -- fail here, where the cause is obvious.
-          [ "$n" -gt 2000 ] || {
-            echo "::error::only $n exported symbols; vmlinux exports are missing"
-            echo "::error::the symbol gate would produce false failures"
-            exit 1
-          }
+          # NOT `make vmlinux`. Two attempts at getting the export list from a
+          # kernel build here failed, in different ways, and both are recorded
+          # in machino/tools/kernel/README.md:
+          #
+          #   `make modules` alone   249 symbols, no vmlinux exports -- the
+          #                          gate then called printk and memcpy
+          #                          missing, which is believable and wrong
+          #   `make vmlinux`         does not build: kernel 4.4 with GCC 15
+          #                          dies on -Werror=attribute-alias in the
+          #                          MIPS syscall aliases
+          #
+          # The gate compares against the camera's own exported symbols
+          # instead, captured from /proc/kallsyms. That is not a workaround --
+          # it is the list that actually decides whether insmod succeeds.
+          echo "kernel tree prepared for an external module build"
           grep -q '^CONFIG_MODVERSIONS=y' .config && {
             echo "::warning::this config has MODVERSIONS on; the camera's does not."
             echo "::warning::symbol CRCs would then also have to match, not just vermagic."
@@ -297,12 +289,28 @@ jobs:
       - name: "Gate: every undefined symbol is exported by this kernel"
         run: |
           set -eu
+          # The camera's own exports, captured from /proc/kallsyms on the
+          # running device -- the list that actually decides whether insmod
+          # succeeds. See machino/tools/kernel/README.md for why this is not
+          # taken from a kernel build.
+          CAM="$GITHUB_WORKSPACE/machino/tools/kernel/t40nn-exported-symbols.txt"
+          test -s "$CAM" || { echo "::error::no captured symbol list at $CAM"; exit 1; }
+          n=$(wc -l < "$CAM")
+          echo "camera exports: $n symbols"
+          [ "$n" -gt 2000 ] || { echo "::error::only $n symbols -- the capture looks truncated"; exit 1; }
+
+          cp "$CAM" "$RUNNER_TEMP/exported.txt"
+
+          # A real Module.symvers, if the tree happens to have one, is added
+          # rather than replacing the capture: it can only widen the set, and
+          # then a CI setup that CAN build the kernel loses nothing.
           SYMVERS="$RUNNER_TEMP/linux/Module.symvers"
-          test -f "$SYMVERS" || { echo "::error::no Module.symvers"; exit 1; }
-          # The kernel's own exports, plus the exports of the other modules
-          # built from this tree -- a symbol provided by a module we also ship
-          # is fine, it is a load ORDER question and not a missing symbol.
-          awk '{print $2}' "$SYMVERS" > "$RUNNER_TEMP/exported.txt"
+          if [ -s "$SYMVERS" ]; then
+            echo "also using Module.symvers ($(wc -l < "$SYMVERS") lines)"
+            awk '{print $2}' "$SYMVERS" >> "$RUNNER_TEMP/exported.txt"
+          fi
+          # The other module built here exports symbols too -- aic8800 uses
+          # aic_load_fw. That is a load ORDER question, not a missing symbol.
           if [ -f "$AIC_SRC/Module.symvers" ]; then
             awk '{print $2}' "$AIC_SRC/Module.symvers" >> "$RUNNER_TEMP/exported.txt"
           fi
