@@ -191,12 +191,19 @@ Versuch 2   bf72da8c02968c720b75cf5e6c876a5a41f718df966e9d81d11b72a654eb9241
 `-DMACHINO_VERSION` im Binary, zwei *verschiedene* Commits ergeben also
 notwendigerweise verschiedene Hashes.
 
-Beispiel für den zuletzt auf die Kamera gelegten Build:
+### Release Candidate 1
 
 ```
-Commit   341a8d4
-machino  ec2d9f84cd418cc2350bc6a503d603b354d91f4723c92262ab68f3c94bd6c8ae
+Tag        machino-rc1
+Commit     8f101b6 (8f101b638bee6d0286ed49d7cd1c3d702bbfe68a)
+CI-Lauf    35812288768, gebaut 2026-09-23T02:58:49Z
+
+machino                        3a553c13cf646730d248454ca6ed9938abe3b91bac0c31e23e26f45b5ddbfe76
+machino-openipc-t40nn.tar.gz   12ae7ad4b26776033fc96a49305548c48fb8f287bb835e61acd897cb924324e9
 ```
+
+Zuvor auf die Kamera gelegt (nicht RC1): Commit `341a8d4`, machino
+`ec2d9f84cd418cc2350bc6a503d603b354d91f4723c92262ab68f3c94bd6c8ae`.
 
 ## Gates zu diesem Stand
 
