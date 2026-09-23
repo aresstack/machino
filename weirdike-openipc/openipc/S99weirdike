@@ -1,0 +1,57 @@
+#!/bin/sh
+#
+# weirdiked -- IKEv2/IPsec client. OpenIPC/busybox init script.
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Starts LAST (S99), after S40network and after S98wireguard: the VPN needs a
+# route to its gateway, and it must never delay the camera coming up. If
+# anything here fails, it fails quietly into the log and the camera keeps
+# streaming -- a broken tunnel is not a reason to lose video.
+
+DAEMON=/usr/sbin/weirdiked
+CONF=/etc/weirdike/weirdike.conf
+PIDFILE=/var/run/weirdiked.pid
+
+[ -x "$DAEMON" ] || exit 0
+
+start() {
+    if [ ! -f "$CONF" ]; then
+        echo "weirdike: no $CONF, not starting"
+        return 0
+    fi
+
+    # The config holds a pre-shared key. The daemon refuses a group- or
+    # world-accessible file; say so here too instead of looking broken.
+    mode=$(stat -c %a "$CONF" 2>/dev/null)
+    case "$mode" in
+        600|400) ;;
+        *) echo "weirdike: $CONF has mode ${mode:-?}, expected 600 -- not starting"; return 1 ;;
+    esac
+
+    # The data path is userspace ESP over TUN. Without the module there is no
+    # /dev/net/tun and nothing to do -- the image ships tun.ko but does not
+    # load it by default.
+    if [ ! -c /dev/net/tun ]; then
+        if ! modprobe tun 2>/dev/null; then
+            echo "weirdike: /dev/net/tun missing and 'modprobe tun' failed -- not starting"
+            return 1
+        fi
+    fi
+
+    echo "Starting weirdiked..."
+    start-stop-daemon -S -q -b -m -p "$PIDFILE" -x "$DAEMON" -- -c "$CONF"
+}
+
+stop() {
+    echo "Stopping weirdiked..."
+    start-stop-daemon -K -q -p "$PIDFILE" 2>/dev/null
+    rm -f "$PIDFILE"
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; sleep 1; start ;;
+    status)  /usr/sbin/weirdikectl status ;;
+    *)       echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac

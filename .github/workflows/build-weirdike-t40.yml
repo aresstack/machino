@@ -1,0 +1,106 @@
+name: build-weirdike-t40
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build-weirdike-t40.yml'
+      - 'weirdike-openipc/**'
+      - 'build.sh'
+
+# weirdiked is a separate daemon from machino and builds separately. It shares
+# exactly two things with the media build: the pinned mbedTLS 3.6.7 and the
+# thingino xburst2 musl toolchain -- using anything else here would mean two
+# crypto libraries and two ABIs on one 4.6 MB flash.
+jobs:
+  weirdike-t40:
+    runs-on: ubuntu-latest
+    env:
+      SOC: "T40"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "Install build dependencies"
+        run: sudo apt-get update && sudo apt-get install -y build-essential wget curl git file
+
+      - name: "Host tests: config parsing and input validation"
+        run: make -C weirdike-openipc test
+
+      - name: "Host build of the WeirdIKE core (compiles every vendored file)"
+        # Proves the vendored set is complete and self-consistent before we
+        # care about the cross toolchain. crypto_mbedtls.c is covered by the
+        # cross build below, where mbedTLS is present.
+        run: |
+          cd weirdike-openipc
+          mkdir -p build/obj
+          for f in vendor/weirdike/*.c; do
+            case "$f" in *crypto_mbedtls.c) continue;; esac
+            gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-parameter -Os -D_GNU_SOURCE \
+                -Ivendor/weirdike -c "$f" -o "build/obj/$(basename "$f" .c).o"
+          done
+          echo "core objects: $(ls build/obj/*.o | wc -l)"
+
+      - name: "Fetch the toolchain (T40 musl, same one machino uses)"
+        run: |
+          chmod +x build.sh
+          ./build.sh deps "$SOC" --libc-musl
+
+      - name: "Cross-build mbedTLS for MIPS"
+        run: |
+          TC=$(ls -d toolchain/xburst2-musl/*/bin | head -1)
+          sh machino/tools/fetch-mbedtls.sh "$PWD/3p" "$PWD/$TC/mipsel-linux-gcc" "$PWD/$TC/mipsel-linux-ar"
+
+      - name: "Cross-build weirdiked and weirdikectl"
+        run: |
+          TC=$(ls -d toolchain/xburst2-musl/*/bin | head -1)
+          make -C weirdike-openipc -j"$(nproc)" \
+            MBEDTLS="$PWD/3p/mbedtls-3.6.7" \
+            CROSS_COMPILE="$PWD/$TC/mipsel-linux-"
+          make -C weirdike-openipc \
+            MBEDTLS="$PWD/3p/mbedtls-3.6.7" \
+            CROSS_COMPILE="$PWD/$TC/mipsel-linux-" strip
+
+      - name: "Check the result is what the camera can actually load"
+        run: |
+          cd weirdike-openipc
+          for b in build/weirdiked build/weirdikectl; do
+            file "$b"
+            # 32-bit MIPS little-endian, or it will not even exec on the T40.
+            file "$b" | grep -q "ELF 32-bit LSB" || { echo "not a 32-bit LSB ELF: $b"; exit 1; }
+            file "$b" | grep -qi "mips"          || { echo "not MIPS: $b"; exit 1; }
+          done
+          echo "--- size against the 4.6 MB free on the jffs2 overlay ---"
+          ls -l build/weirdiked build/weirdikectl
+          total=$(stat -c %s build/weirdiked)
+          echo "weirdiked: $total bytes"
+          # A hard acceptance criterion, not an assumption: machino already
+          # occupies 2.6 MB of the overlay.
+          test "$total" -lt 1572864 || { echo "weirdiked exceeds 1.5 MB -- revisit the flash budget"; exit 1; }
+
+      - name: "Package"
+        run: |
+          B=bundle/weirdike-openipc-t40; mkdir -p "$B"
+          cp weirdike-openipc/build/weirdiked          "$B/"
+          cp weirdike-openipc/build/weirdikectl        "$B/"
+          cp weirdike-openipc/openipc/S99weirdike      "$B/"
+          cp weirdike-openipc/openipc/ipsec.cgi        "$B/"
+          cp weirdike-openipc/openipc/weirdike.conf.example "$B/"
+          cp weirdike-openipc/vendor/weirdike/PINNED_COMMIT "$B/WEIRDIKE_PINNED_COMMIT"
+          cp weirdike-openipc/vendor/weirdike/LICENSE  "$B/LICENSE" 2>/dev/null || true
+          {
+            echo "weirdiked for OpenIPC T40"
+            echo "commit:     $(git rev-parse HEAD)"
+            echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ) run ${GITHUB_RUN_ID}"
+            echo "weirdike:   $(head -1 weirdike-openipc/vendor/weirdike/PINNED_COMMIT)"
+            echo "mbedtls:    3.6.7 (same pin as machino's WebRTC path)"
+            echo "binary:     $(file -b "$B/weirdiked")"
+          } > "$B/BUILDINFO"
+          (cd "$B" && sha256sum weirdiked weirdikectl S99weirdike BUILDINFO > SHA256SUMS)
+          cat "$B/BUILDINFO"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: weirdike-openipc-t40
+          path: bundle/weirdike-openipc-t40

@@ -1,0 +1,53 @@
+# weirdiked configuration.
+#
+# Install as /etc/weirdike/weirdike.conf with mode 0600. The daemon REFUSES to
+# read a file that is group- or world-accessible, because this file holds a
+# pre-shared key.
+#
+# Syntax is `key = value`, one per line, # starts a comment. An unknown key is
+# an error, not a warning: a typo must not silently leave a setting at its
+# default.
+
+# --- required ---------------------------------------------------------------
+
+# IPv4 literal or hostname. Letters, digits, dot and hyphen only.
+gateway = vpn.example.com
+
+# Pre-shared key. Keep this file at 0600 and out of backups.
+psk = change-me
+
+# --- identities (optional) ---------------------------------------------------
+
+# Our IKE identity. Empty = derived from the source IP.
+# local_id = camera1.example.com
+
+# The identity we require from the gateway. Empty = accept what it presents.
+# Setting this is the difference between "some peer with the PSK" and "that
+# peer", so set it if the gateway has a stable name.
+# remote_id = vpn.example.com
+
+# --- what the tunnel carries -------------------------------------------------
+
+# The network behind the gateway. Default: 0.0.0.0/0 (everything).
+# remote_subnet = 10.0.0.0/8
+
+# The network we present as ours (TSi). Usually just the camera.
+# local_subnet = 192.168.1.10/32
+
+# --- transport ---------------------------------------------------------------
+
+# port = 500
+# nat_t = yes        # UDP-4500 encapsulation; the only supported data path
+
+# TUN interface name.
+# interface = ipsec0
+
+# The tunnel MTU. 1400 leaves room for the ESP and UDP headers on a 1500-byte
+# path; lower it if the path is smaller.
+# mtu = 1400
+
+# --- lifetimes ----------------------------------------------------------------
+
+# child_lifetime_s = 3300   # 0 = library default (55 min)
+# ike_lifetime_s   = 0      # 0 = never rekey the IKE SA ourselves
+# dpd_interval_s   = 30     # 0 = library default

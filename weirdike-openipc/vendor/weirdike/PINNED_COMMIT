@@ -1,0 +1,25 @@
+WeirdIKE vendored from Miguel0888/WeirdIKE @ d3c5d1e87baf85820e670becf11a1831e4862568
+(GPL-2.0-or-later; see LICENSE / NOTICE in this directory.)
+
+Layout: FLAT -- all headers and sources in this one directory, so a single
+include path (-Ivendor/weirdike) resolves every bare #include.
+
+Contents = upstream include/ + src/core/ + src/esp/ + src/crypto/.
+
+NOT vendored, on purpose:
+
+  src/transport/udp_bsd.*   The daemon brings its own transport. udp_bsd owns
+                            its socket and offers a blocking recv(); weirdiked
+                            needs the opposite: it polls the sockets itself
+                            together with the TUN fd and the control socket,
+                            demultiplexes UDP-4500 with natt_classify() and
+                            feeds only the IKE datagrams to
+                            weirdike_input_datagram(). Its transport vtable
+                            therefore has a send() and a recv() that always
+                            reports "nothing" -- the same split the ESP32
+                            integration uses.
+
+  examples/, tests/         Host-only.
+
+DO NOT edit these files in place. To update: re-copy from upstream and bump the
+SHA above.

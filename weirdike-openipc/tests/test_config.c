@@ -1,0 +1,162 @@
+/*
+ * weirdiked -- host tests for config parsing and input validation (AP34.13).
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * These are the checks that decide whether hostile or merely wrong input can
+ * reach anything that matters. They run on the host with no camera, no
+ * network, and no crypto.
+ */
+#include "wd_config.h"
+
+#include <stdio.h>
+#include <string.h>
+
+static int fails = 0;
+static int checks = 0;
+
+#define CHECK(cond, what) do {                                        \
+    checks++;                                                         \
+    if (!(cond)) { printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, what); fails++; } \
+} while (0)
+
+static int parse(const char *text, wd_config *c, char *err, size_t errcap)
+{
+    return wd_config_parse(text, strlen(text), c, err, errcap);
+}
+
+static void t_minimal(void)
+{
+    wd_config c; char err[256] = {0};
+    CHECK(parse("gateway = vpn.example.com\npsk = hunter2\n", &c, err, sizeof(err)) == 0, "minimal config parses");
+    CHECK(!strcmp(c.gateway, "vpn.example.com"), "gateway kept");
+    CHECK(c.port == 500, "default port 500");
+    CHECK(c.nat_t == 1, "nat_t defaults on");
+    CHECK(c.mtu == 1400, "default mtu");
+    CHECK(!strcmp(c.ifname, "ipsec0"), "default interface");
+    CHECK(c.psk_len == 7, "psk length");
+    wd_config_wipe(&c);
+    CHECK(c.psk_len == 0, "wipe clears the psk length");
+    CHECK(c.psk[0] == 0, "wipe clears the psk bytes");
+}
+
+static void t_required(void)
+{
+    wd_config c; char err[256];
+    CHECK(parse("psk = x\n", &c, err, sizeof(err)) != 0, "gateway is required");
+    CHECK(strstr(err, "gateway") != NULL, "error names the missing key");
+    CHECK(parse("gateway = a.b\n", &c, err, sizeof(err)) != 0, "psk is required");
+}
+
+static void t_unknown_key_is_an_error(void)
+{
+    wd_config c; char err[256];
+    /* A typo must not leave a security-relevant setting at its default. */
+    CHECK(parse("gateway = a.b\npsk = x\nnatt = 0\n", &c, err, sizeof(err)) != 0, "unknown key refused");
+    CHECK(strstr(err, "natt") != NULL, "error names the unknown key");
+}
+
+static void t_hostname_validation(void)
+{
+    CHECK(wd_valid_hostname("vpn.example.com"), "fqdn ok");
+    CHECK(wd_valid_hostname("192.0.2.1"), "ipv4 literal ok");
+    CHECK(wd_valid_hostname("a-b.c"), "hyphen ok");
+    CHECK(!wd_valid_hostname(""), "empty rejected");
+    CHECK(!wd_valid_hostname("a b"), "space rejected");
+    CHECK(!wd_valid_hostname("a;rm -rf /"), "semicolon rejected");
+    CHECK(!wd_valid_hostname("$(id)"), "command substitution rejected");
+    CHECK(!wd_valid_hostname("`id`"), "backtick rejected");
+    CHECK(!wd_valid_hostname("a|b"), "pipe rejected");
+    CHECK(!wd_valid_hostname("a\nb"), "newline rejected");
+    CHECK(!wd_valid_hostname("-lead"), "leading hyphen rejected");
+    CHECK(!wd_valid_hostname(".lead"), "leading dot rejected");
+    CHECK(!wd_valid_hostname("trail."), "trailing dot rejected");
+}
+
+static void t_ifname_validation(void)
+{
+    CHECK(wd_valid_ifname("ipsec0"), "normal name ok");
+    CHECK(!wd_valid_ifname(""), "empty rejected");
+    CHECK(!wd_valid_ifname("../../etc/passwd"), "traversal rejected");
+    CHECK(!wd_valid_ifname("eth0 up"), "space rejected");
+    CHECK(!wd_valid_ifname("0123456789abcdefg"), "over-long rejected");
+}
+
+static void t_cidr(void)
+{
+    wd_cidr c;
+    CHECK(wd_parse_cidr("10.0.0.0/8", &c) == 0 && c.ip[0] == 10 && c.prefix == 8, "cidr with prefix");
+    CHECK(wd_parse_cidr("192.0.2.1", &c) == 0 && c.prefix == 32, "bare address is /32");
+    CHECK(wd_parse_cidr("0.0.0.0/0", &c) == 0 && c.prefix == 0, "default route");
+    CHECK(wd_parse_cidr("255.255.255.255/32", &c) == 0, "broadcast");
+
+    CHECK(wd_parse_cidr("10.0.0.256", &c) != 0, "octet > 255 rejected");
+    CHECK(wd_parse_cidr("10.0.0.1/33", &c) != 0, "prefix > 32 rejected");
+    CHECK(wd_parse_cidr("10.0.0", &c) != 0, "three octets rejected");
+    CHECK(wd_parse_cidr("10.0.0.1.2", &c) != 0, "five octets rejected");
+    CHECK(wd_parse_cidr("10.0.0.010", &c) != 0, "leading zero rejected");
+    CHECK(wd_parse_cidr("10.0.0.1/", &c) != 0, "empty prefix rejected");
+    CHECK(wd_parse_cidr("10.0.0.1 ", &c) != 0, "trailing space rejected");
+    CHECK(wd_parse_cidr("", &c) != 0, "empty rejected");
+    CHECK(wd_parse_cidr("a.b.c.d", &c) != 0, "letters rejected");
+}
+
+static void t_ranges(void)
+{
+    wd_config c; char err[256];
+    CHECK(parse("gateway=a.b\npsk=x\nport = 0\n", &c, err, sizeof(err)) != 0, "port 0 rejected");
+    CHECK(parse("gateway=a.b\npsk=x\nport = 65536\n", &c, err, sizeof(err)) != 0, "port 65536 rejected");
+    CHECK(parse("gateway=a.b\npsk=x\nport = 4500\n", &c, err, sizeof(err)) == 0 && c.port == 4500, "port 4500 ok");
+    CHECK(parse("gateway=a.b\npsk=x\nmtu = 100\n", &c, err, sizeof(err)) != 0, "tiny mtu rejected");
+    CHECK(parse("gateway=a.b\npsk=x\nnat_t = maybe\n", &c, err, sizeof(err)) != 0, "non-boolean rejected");
+    CHECK(parse("gateway=a.b\npsk=x\nnat_t = no\n", &c, err, sizeof(err)) == 0 && c.nat_t == 0, "nat_t=no");
+}
+
+static void t_comments_and_whitespace(void)
+{
+    wd_config c; char err[256];
+    const char *t =
+        "# a comment\n"
+        "\n"
+        "   gateway   =   vpn.example.com   \n"
+        "\tpsk\t=\tsecret\t\n"
+        "# trailing comment\n";
+    CHECK(parse(t, &c, err, sizeof(err)) == 0, "comments and whitespace");
+    CHECK(!strcmp(c.gateway, "vpn.example.com"), "trimmed value");
+    CHECK(c.psk_len == 6, "tab-separated psk");
+}
+
+static void t_error_never_leaks_the_psk(void)
+{
+    wd_config c; char err[256] = {0};
+    /* A later key is bad; the error must not carry the secret that came before. */
+    CHECK(parse("gateway=a.b\npsk=SUPERSECRET\nbogus=1\n", &c, err, sizeof(err)) != 0, "bad key fails");
+    CHECK(strstr(err, "SUPERSECRET") == NULL, "error message holds no psk");
+}
+
+static void t_long_line(void)
+{
+    wd_config c; char err[256];
+    char big[700];
+    memset(big, 'a', sizeof(big) - 1);
+    big[sizeof(big) - 1] = 0;
+    char text[900];
+    snprintf(text, sizeof(text), "gateway = %s\n", big);
+    CHECK(parse(text, &c, err, sizeof(err)) != 0, "over-long line refused, not truncated");
+}
+
+int main(void)
+{
+    t_minimal();
+    t_required();
+    t_unknown_key_is_an_error();
+    t_hostname_validation();
+    t_ifname_validation();
+    t_cidr();
+    t_ranges();
+    t_comments_and_whitespace();
+    t_error_never_leaks_the_psk();
+    t_long_line();
+
+    printf("%d checks, %d failed\n", checks, fails);
+    return fails ? 1 : 0;
+}
