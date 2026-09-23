@@ -506,15 +506,26 @@ P-FET mit Gate high                               -> SPERRT
 Drain                                             -> 0 V   (gemessen)
 ```
 
-Und das `#` im Stock-DTB ist damit **kein** „dieses Board hat keinen
-VBUS-Schalter", sondern:
+Das Bauteil ist identifiziert: Aufdruck **`A1SHB`**, P-Kanal-MOSFET der
+SI2301/HX2301-Familie im SOT-23. Der Marking-Code wird von mehreren Herstellern
+benutzt, ist also nicht herstellereindeutig — die relevanten Daten stimmen
+aber überein: Pin 1 Gate, Pin 2 Source, Pin 3 Drain, P-Kanal.
 
-> Die Property ist deaktiviert, damit niemand das Gate anfasst. Unbeansprucht
-> bleibt der Pin im Default-/Pull-Zustand — vermutlich low — und der FET
-> leitet. Stocks USB-Port funktioniert also **gerade deshalb**, weil Stock
-> nichts tut.
+### Was daraus folgt, und was noch Hypothese ist
 
-OpenIPC „verbessert" hier etwas und schaltet den Port dadurch ab.
+**Gestützt:** OpenIPC treibt das Gate high, und ein P-Kanal-High-Side-Schalter
+ist bei Gate = Source gesperrt. Das erklärt die 0 V vollständig.
+
+**HYPOTHESE, ausdrücklich nicht belegt:** dass Stocks Port *deshalb*
+funktioniert, weil Stock die Property deaktiviert lässt und der Pin über einen
+Pull-down nach low geht. Ich hatte das als Befund formuliert — das war zu
+schnell. Möglich sind ebenso: U-Boot konfiguriert den Pin vorher, der
+Reset-Default passt zufällig, oder der Pull ist gar nicht bestückt. Für den
+OpenIPC-Fix ist die Frage auch nicht entscheidend, sobald der Test unten
+`HIGH → 0 V` und `LOW → 3,3 V` zeigt.
+
+**Ebenfalls offen:** ob PB27 überhaupt an diesem Gate hängt. Bewiesen ist das
+erst, wenn das Gate dem Pegel folgt.
 
 ### Der Test, der es entscheidet
 
@@ -544,6 +555,64 @@ Das ist bewusst derselbe Schreibzugriff, den der Treiber bei
 `gpiod_set_value(gpiod_drvvbus, 0)` selbst ausführt — kein fremder Eingriff,
 nur der Aufruf, den `dwc2` bei `usb_phy_vbus_off()` ohnehin macht. Set- und
 Clear-Register wirken bitweise, andere Pins sind nicht betroffen.
+
+### Reihenfolge, damit der Test etwas beweist
+
+```
+1. WLAN-Platine und EC200A ABSTECKEN
+2. Ausgangszustand messen:  Gate 3,3 V | Source 3,3 V | Drain 0 V
+3. PB27 -> LOW   (PAT0C)
+4. GLEICHZEITIG messen:     Gate ~0 V  ?   und   Drain ~3,3 V  ?
+5. PB27 -> HIGH  (PAT0S)
+6. Drain faellt wieder auf 0 V  ?
+```
+
+Punkt 4 ist der eigentliche Beweis: **beide** Messwerte zusammen zeigen, dass
+PB27 wirklich an diesem Gate hängt und dass der Schalter daran hängt. Fällt das
+Gate nicht mit, ist PB27 nicht die Steuerleitung und die ganze Kette ist wieder
+offen.
+
+Erst wenn 4 und 6 bestätigt sind, kommt die WLAN-Platine dran — und dafür
+genügt als Nachweis bereits:
+
+```
+PRTCONNSTS = 1      (HPRT0 Bit 0)
+dmesg: "new high-speed USB device"
+VID:PID
+```
+
+Ein WLAN-Treiber wird dafür **nicht** gebraucht. Der EC200A bleibt aus diesem
+Versuch draußen.
+
+### Wer das Gate wann anfasst — und warum ein `devmem` nicht der Fix ist
+
+Aus `drivers/usb/dwc2/`:
+
+| Gate → HIGH (FET aus) | Gate → LOW (FET an) |
+|---|---|
+| `dwc2_core_host_init()` — beim Boot | `dwc2_hcd_disconnect()` |
+| `_dwc2_hcd_resume()` | `dwc2_hcd_stop()` |
+| | `dwc2_conn_id_status_change()` |
+| | `_dwc2_hcd_suspend()` |
+
+`SetPortFeature(POWER)` schreibt nur `HPRT0_PWR` und rührt den GPIO **nicht**
+an. Nach dem Boot bleibt der Pegel also stehen; ein einmaliges `devmem` würde
+im Normalbetrieb halten.
+
+Trotzdem ist es nicht der Fix, denn die Logik bleibt invertiert. Daraus folgt
+eine **überprüfbare Vorhersage**: zieht man ein Gerät ab, ruft der Treiber
+`vbus_off` → Gate low → **die Versorgung geht an** statt aus. Tritt das ein,
+ist die Inversion doppelt bestätigt.
+
+Der saubere Fix ist deshalb die Polarität im boardspezifischen DTB:
+
+```
+ingenic,drvvbus-gpio = <&gpb 27 GPIO_ACTIVE_HIGH ...>     falsch fuer dieses Board
+ingenic,drvvbus-gpio = <&gpb 27 GPIO_ACTIVE_LOW  ...>     richtig, wenn der Test PASS zeigt
+```
+
+Das ist ein DTB-Eingriff und damit ein Flash-Schreibvorgang — eine eigene
+Entscheidung, nicht Teil dieses Tests.
 
 ### Der zweite Befund, unabhängig davon
 
