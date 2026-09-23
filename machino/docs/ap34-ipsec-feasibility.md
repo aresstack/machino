@@ -68,11 +68,28 @@ dieses Projekts. `tun.ko` ist ein In-Tree-Standardmodul mit passendem vermagic,
 kein ISP-/Treibertausch — trotzdem gehört der erste Ladeversuch an ein Gerät,
 an dem jemand sitzt. **`PENDING_PHYSICAL`.**
 
+### Das Laden hat bereits einen vorgesehenen Ort
+
+```
+/etc/init.d/S35modules   liest /etc/modules und modprobet jede Zeile
+/etc/modules             enthaelt heute: vfat, exfat
+geladen                  gpio, audio, sensor_imx307_t40, tx_isp_t40,
+                         avpu, sinfo, vfat, fat
+```
+
+Für `tun` braucht es damit **kein neues Initskript und keinen
+`modprobe`-Aufruf im VPN-Dienst**: eine Zeile `tun` in `/etc/modules` ist der
+Stock-Weg dieser Firmware, liegt persistent auf dem Overlay und läuft als
+`S35` **vor** `S40network`. Das ist der unaufdringlichste verfügbare Eingriff
+— er fasst kein bestehendes Skript an, sondern ergänzt eine Datenzeile.
+
 ### Kernel-IPsec — nicht vorhanden, wie angenommen
 
 ```
-/proc/net/xfrm_stat        existiert nicht
-ESP/AH in /proc/net/protocols   keine
+/proc/net/xfrm_stat   existiert nicht
+/proc/net/protocols   13 Eintraege, kein ESP und kein AH darunter:
+                      PACKET PINGv6 RAWv6 UDPLITEv6 UDPv6 TCPv6 UNIX
+                      UDP-Lite PING RAW UDP TCP NETLINK
 ```
 
 **Damit ist die Architekturentscheidung des AP belegt, nicht bloß plausibel:**
@@ -92,11 +109,12 @@ freier Flash         4,6 MB auf dem jffs2-Overlay
 MemAvailable         ~20,9 MB
 ```
 
-**Das Flashbudget ist die engste Stelle.** 4,6 MB frei, und ein `weirdiked` mit
-statisch gelinktem mbedTLS liegt erfahrungsgemäß im Bereich 0,5–1,5 MB — dazu
-`weirdikectl`, Initskript, CGI. Machino selbst belegt bereits 2,6 MB. Das geht
-aus, ist aber kein Fall für großzügige Annahmen; die Paketgröße gehört in die
-Abnahmekriterien.
+**Das Flashbudget ist die engste Stelle.** 4,6 MB frei; `/usr/bin/machino`
+belegt davon bereits 2 636 028 B. Wie groß ein `weirdiked` mit statisch
+gelinktem mbedTLS ausfällt, **weiß ich nicht** — das hängt an Code, den ich
+nicht habe. Eine Hausnummer wäre hier genau die Sorte Zahl, die drei Dokumente
+später wie eine Messung gelesen wird. Die Paketgröße gehört deshalb als hartes
+Abnahmekriterium in die Umsetzung, nicht als Annahme in die Planung.
 
 ---
 
@@ -140,9 +158,10 @@ die die tatsächliche Implementierung festlegen muss. Das wäre geraten.
 2. modprobe tun EINMAL am Gerät, mit jemandem davor   -> PENDING_PHYSICAL
    danach: /dev/net/tun vorhanden? ipsec0 anlegbar?
 3. Crossbuild gegen dieselbe Toolchain wie Machino
-   (thingino xburst2 musl gcc 15.3.0) und dieselbe gepinnte
-   mbedTLS 3.6.7 wie der WebRTC-Pfad  -> AP34.3 ist damit erfüllt,
-   ohne etwas Neues zu erfinden
+   (thingino-toolchain-x86_64_xburst2_musl_gcc15-linux-mipsel; die
+   genaue Compilerversion schreibt das CI beim Bauen nach BUILDINFO)
+   und dieselbe gepinnte mbedTLS 3.6.7 wie der WebRTC-Pfad
+   -> AP34.3 ist damit erfüllt, ohne etwas Neues zu erfinden
 4. Paketgröße gegen 4,6 MB freien Flash prüfen
 5. weirdikectl-Protokoll festschreiben, DANN ipsec.cgi
 6. WebUI-Änderung im OpenIPC-Projekt, nicht in Machinos Installer
@@ -165,7 +184,36 @@ angenommen hatte und die ich nachgemessen habe:
 | Userspace-ESP über TUN ist der richtige Weg | **BELEGT** als einzige Möglichkeit |
 | WireGuard ist vorhanden und bleibt unangetastet | **BELEGT** — nichts angefasst |
 | `/dev/net/tun` ist anlegbar | **STARK GESTÜTZT** — devtmpfs erledigt es beim Modulladen; der Ladevorgang selbst ist `PENDING_PHYSICAL` |
-| Platz für einen zweiten Daemon | **knapp** — 4,6 MB frei, gehört in die Abnahme |
+| Platz für einen zweiten Daemon | **OFFEN** — 4,6 MB frei, davon nichts reserviert; ohne die Quelle ist die Paketgröße unbekannt |
+| Modulladen hat einen Stock-Hook | **BELEGT** — `S35modules` liest `/etc/modules`, läuft vor `S40network` |
 
 **Kein Machino-Code wurde für AP34 geändert.** Das ist die einzige Zeile der
 Zielarchitektur, die heute schon vollständig erfüllt ist.
+
+---
+
+## Review dieses Dokuments
+
+Vier Angaben der ersten Fassung stammten nicht aus einer Messung, sondern aus
+dem Gedächtnis. Alle am Gerät nachgeprüft:
+
+| Behauptung | Ergebnis |
+|---|---|
+| keine ESP/AH-Protokolle | **bestätigt** — jetzt mit der vollständigen Liste aus `/proc/net/protocols` belegt |
+| `/etc/init.d/S98vtun` existiert | **bestätigt** |
+| Machino belegt ~2,6 MB | **bestätigt** — exakt 2 636 028 B |
+| Toolchain „gcc 15.3.0" | **FALSCH.** Diese Version steht im Baum ausschließlich für die *xburst1-uclibc*-Toolchain. Machino baut mit `xburst2-musl-gcc15`. Wer Schritt 3 gefolgt wäre, hätte den falschen Compiler gepinnt. Korrigiert; die genaue Version hält ohnehin BUILDINFO fest. |
+
+Dabei fiel auf, was die erste Fassung übersehen hatte: `S35modules` und
+`/etc/modules` existieren bereits, das Modulladen braucht also keinen neuen
+Mechanismus. Ergänzt.
+
+Entfernt: die geschätzten „0,5–1,5 MB" Binärgröße für einen Daemon, dessen
+Quelltext ich nicht habe.
+
+Ein Werkzeugfehler dabei, protokolliert wie in AP29: die erste
+Ersetzungsschleife verglich UTF-8-dekodierten Dateiinhalt gegen
+undekodierte Bytes aus `__DATA__` und fand null Treffer bei jedem Block mit
+Umlaut. Sie **brach ab**, statt still nichts zu tun — genau der Unterschied
+zum awk-Selektor in AP21 und zur `git grep`-Maskierung in AP26, die beide
+„geprüft" meldeten und das Falsche geprüft hatten.
