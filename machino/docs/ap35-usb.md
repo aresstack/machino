@@ -1,65 +1,57 @@
-# AP35 — USB Host / VBUS / WiFi und Quectel EC200A auf T40NN
-
-2026-09-23. Ergebnis vorweg, weil es die Prämisse des Arbeitspakets umkehrt:
-
-> **USB-Host und VBUS sind auf dieser Kamera bereits vollständig und korrekt
-> aktiv.** Es gibt nichts zu implementieren. Was fehlt, sind die
-> Klassentreiber — und die fehlen im Kernel-Image, nicht in der Konfiguration.
-
-Alles unten ist am laufenden Gerät gemessen, rein lesend. Es wurde kein
-Register geschrieben, kein Modul geladen, keine Datei auf der Kamera geändert.
-
-Reproduzierbar mit `machino/tools/usb-inventory.sh` — das Werkzeug ist so
-gebaut, dass es vor und nach dem Einstecken eines Geräts dieselbe Struktur
-ausgibt, damit die physischen Tests vergleichbare Belege liefern statt Prosa.
 
 ---
 
-## AP35.1 / AP35.2 — Inventar
+## Review dieses Dokuments
+
+### Ein echter Fehler: die Modulinventur war unvollständig
+
+Die erste Fassung nannte **11 Module** und führte sie als „die vollständige
+Modulliste des Images". Tatsächlich sind es **28**. Mein `find` war auf
+`/lib/modules/4.4.94/kernel` verwurzelt und übersah damit zwei ganze
+Verzeichnisse:
 
 ```
-otg platform dev      10000000.otg_phy, 13500000.otg
-bound drivers         dwc-mac, dwc2, usb_phy
-gadget udc            KEINE          -> also kein Device-/Gadget-Modus
-root hub              usb1, 1d6b:0002 "DWC OTG Controller", 480 MBit, 1 Port
-/dev/bus/usb/001/001  vorhanden
-IRQ 29                13500000.otg, dwc2_hsotg:usb1
+ingenic/   17 Module   (u. a. tx-isp-t40, soc-nna, dtrng_dev, motor, 5 Sensoren)
+extra/      1 Modul    (wireguard)
 ```
 
-Der Device-Tree trägt die OTG-Knoten aktiv:
+Aufgefallen ist es beim Gegenlesen: `/proc/modules` zeigt `gpio`, `audio`,
+`sensor_imx307_t40`, `tx_isp_t40`, `avpu` und `sinfo` als **geladen** — und
+keines davon stand in meiner angeblich vollständigen Liste. Sechs geladene
+Module ohne Datei hätten mir sofort auffallen müssen.
 
-```
-/proc/device-tree/apb/otg_phy
-    compatible = ingenic,innophy + syscon
-    dr_mode    = otg
-    status     = okay
-    ingenic,drvvbus-gpio = <phandle 7, 27, 0, 0>      <- AKTIV
-/proc/device-tree/ahb2/otg@0x13500000
-    compatible = ingenic,dwc2-hsotg
-    dr_mode    = otg
-    g-use-dma
-    status     = okay
-    ingenic,usbphy = <24>
-```
+**Die Schlussfolgerung ändert sich nicht**, und das ist hier wichtig: die
+gezielte Suche nach `cdc*`, `option`, `usbnet` und `rndis*` lief zusätzlich
+über das **gesamte Dateisystem** (`find / -xdev`) und blieb leer. Die
+Klassentreiber fehlen wirklich. Aber die Zahl war falsch und die Liste
+unvollständig, und eine Aussage wie „die vollständige Liste" trägt genau dann,
+wenn sie stimmt.
 
-**Abweichung zum AP-Text:** der dort zitierte Stock-Auszug führt die Zeile als
-`#ingenic,drvvbus-gpio`, also **auskommentiert**. Im laufenden OpenIPC ist die
-Property vorhanden und wirksam. OpenIPC ist hier nicht hinter Stock zurück,
-sondern davor — jedenfalls hinter dem Stand, den der AP-Auszug beschreibt.
+**Das Werkzeug hatte denselben Bug** und ist mitkorrigiert: `usb-inventory.sh`
+durchsucht jetzt ganz `/lib/modules`, meldet zusätzlich die Gesamtzahl und
+findet den `regdump` per Glob statt über die fest verdrahtete Adresse
+`13500000.otg`. Neu gegen die Kamera gelaufen: 28 Module, Klassentreiber
+weiterhin sämtlich `MISSING`, 0 WLAN-Gerätetreiber.
 
-## AP35.3 — Rolle: Host, und zwar erzwungen
+### Zwei Formulierungen korrigiert
 
-Aus `/sys/kernel/debug/13500000.otg/regdump`:
+* Ein Satz sagte, OpenIPC sei „nicht hinter Stock zurück, sondern davor —
+  jedenfalls **hinter** dem Stand, den der AP-Auszug beschreibt". Das
+  widerspricht sich in der eigenen Zeile.
+* Ich hatte das `#` vor `ingenic,drvvbus-gpio` im AP-Auszug als
+  „auskommentiert" gelesen. In DTS ist `#` **kein** Kommentarzeichen. Die
+  Lesart bleibt naheliegend, aber sie ist eine Deutung fremden Textes und
+  steht jetzt als solche da. Die Messung am laufenden Gerät hängt nicht daran.
 
-```
-GOTGCTL   0x0030000c
-GUSBCFG   0x20001408      Bit 29 FORCEHSTMODE = 1, Bit 30 FORCEDEVMODE = 0
-GINTSTS   0x04000021
-HPRT0     0x00001000      Bit 12 PRTPWR = 1, Bit 0 PRTCONNSTS = 0
-```
+### Nachgeprüft und bestätigt
 
-**Der Controller läuft im erzwungenen Host-Modus.** Dass HPRT0 überhaupt
-sinnvolle Werte trägt, ist bereits Host-Semantik — das Register existiert nur
+| Behauptung | Ergebnis |
+|---|---|
+| Machino hat keinerlei USB-Bezug | **bestätigt** — `grep` über `src/` und `openipc/` nach usb, ttyUSB, cdc_, rndis, modem: null Treffer |
+| `machino/tools/` ist der richtige Ort | **bestätigt** — dort liegen bereits zehn Werkzeuge; kein CI-Job fasst sie generisch an |
+| keine `.ko` ausserhalb `/lib/modules` | **bestätigt** — `find / -xdev` |
+| Klassentreiber fehlen | **bestätigt**, jetzt über den vollständigen Baum |
+erte trägt, ist bereits Host-Semantik — das Register existiert nur
 in dieser Rolle.
 
 Der von Thingino beschriebene Rollenwechsel ist damit **gegenstandslos**: er
@@ -134,25 +126,34 @@ Das ist der eigentliche Blocker, und er ist hart.
 ```
 built-in auf dem USB-Bus     hub  usb  usbfs          <- mehr nicht
 /sys/bus/usb-serial/drivers  existiert nicht
-Module im gesamten Kernelbaum: 11
+Module unter /lib/modules    28
+.ko ausserhalb /lib/modules  keine (find / -xdev)
 ```
 
-Die vollständige Modulliste des Images:
+Die vollständige Modulliste des Images, in drei Verzeichnissen:
 
 ```
-crypto/ccm.ko          crypto/gcm.ko        crypto/ghash-generic.ko
-i2c-algo-bit.ko        i2c-gpio.ko          net/tun.ko
-usb/serial/usbserial.ko
-fs/fat/fat.ko          fs/fat/vfat.ko
-net/mac80211.ko        net/wireless/cfg80211.ko
+ingenic/  (17)   audio  avpu  dtrng_dev  gpio  motor  mpsys_driver
+                 sample_pwm_core  sample_pwm_hal  sinfo  soc-nna  tx-isp-t40
+                 sensor_gc4653_t40  sensor_imx307_t40  sensor_imx334_t40
+                 sensor_imx335_t40  sensor_imx415_t40
+extra/     (1)   wireguard
+kernel/   (10)   ccm  gcm  ghash-generic  i2c-algo-bit  i2c-gpio  tun
+                 usbserial  fat  vfat  mac80211  cfg80211
 ```
 
-Gesucht und **nicht vorhanden**:
+Gesucht und **nicht vorhanden** — geprüft über den gesamten Modulbaum und
+zusätzlich über das ganze Dateisystem (`find / -xdev`):
 
 ```
 usbnet  cdc_ether  cdc_acm  rndis_host  cdc_ncm  option  usb_wwan
 qcserial  usb-storage  cdc_subset
 ```
+
+Nebenbei aus der vollständigen Liste, ohne weitere Prüfung festgehalten:
+`soc-nna.ko` ist vorhanden (deckt sich mit AP23: Treiber da, alles Übrige
+fehlt), ebenso `dtrng_dev.ko`, ein Hardware-Zufallsgenerator. Beide sind
+**nicht geladen** und wurden hier nicht weiter untersucht.
 
 `usbserial.ko` ist nur der Kern des seriellen Subsystems; ohne `option` bindet
 er an keine Modem-PID. Ein eingestecktes Gerät würde also **enumerieren**
@@ -162,7 +163,7 @@ er an keine Modem-PID. Ein eingestecktes Gerät würde also **enumerieren**
 
 ```
 mac80211.ko, cfg80211.ko          vorhanden (2 von 2)
-drivers/net/wireless/*.ko         0 Dateien
+Gerätetreiber unter *wireless*    0   (über alle 28 Module geprüft)
 ```
 
 Der 802.11-Unterbau ist da, aber **kein einziger Gerätetreiber**. Welcher

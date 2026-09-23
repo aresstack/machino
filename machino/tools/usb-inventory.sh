@@ -22,19 +22,21 @@ kv "gadget udc" "$([ -d /sys/class/udc ] && ls /sys/class/udc || echo 'none -> n
 kv "irq" "$(grep -iE 'otg|dwc' /proc/interrupts | tr -s ' ' | sed 's/^ //')"
 
 say "--- role / port (dwc2 registers, read only) ---"
-if [ -r /sys/kernel/debug/13500000.otg/regdump ]; then
+# Do not hardcode the OTG base address -- glob it, so this survives another SoC.
+REGDUMP=$(ls /sys/kernel/debug/*.otg/regdump 2>/dev/null | head -1)
+if [ -n "$REGDUMP" ] && [ -r "$REGDUMP" ]; then
     for r in GOTGCTL GUSBCFG GINTSTS HPRT0; do
-        v=$(awk -v k="$r" '$1==k {print $3}' /sys/kernel/debug/13500000.otg/regdump)
+        v=$(awk -v k="$r" '$1==k {print $3}' "$REGDUMP")
         kv "$r" "${v:-n/a}"
     done
-    g=$(awk '$1=="GUSBCFG"{print $3}' /sys/kernel/debug/13500000.otg/regdump)
+    g=$(awk '$1=="GUSBCFG"{print $3}' "$REGDUMP")
     # GUSBCFG bit29 = FORCEHSTMODE, bit30 = FORCEDEVMODE
     if [ -n "$g" ]; then
         d=$(printf '%d' "$g" 2>/dev/null)
         [ -n "$d" ] && kv "forced host mode" "$(( (d >> 29) & 1 ))"
         [ -n "$d" ] && kv "forced device mode" "$(( (d >> 30) & 1 ))"
     fi
-    h=$(awk '$1=="HPRT0"{print $3}' /sys/kernel/debug/13500000.otg/regdump)
+    h=$(awk '$1=="HPRT0"{print $3}' "$REGDUMP")
     if [ -n "$h" ]; then
         d=$(printf '%d' "$h" 2>/dev/null)
         # HPRT0 bit0 PRTCONNSTS, bit2 PRTENA, bit4 PRTOVRCURRACT, bit12 PRTPWR
@@ -69,13 +71,18 @@ kv "interfaces bound" "$(ls -d /sys/bus/usb/devices/*:* 2>/dev/null | wc -l)"
 say "--- class drivers available ---"
 kv "built-in (usb bus)" "$(ls /sys/bus/usb/drivers 2>/dev/null | tr '\n' ' ')"
 kv "usb-serial bus" "$([ -d /sys/bus/usb-serial/drivers ] && ls /sys/bus/usb-serial/drivers | tr '\n' ' ' || echo 'absent')"
+# Search ALL of /lib/modules, not just kernel/ -- this image also ships
+# ingenic/ (vendor drivers) and extra/ (wireguard), and an earlier version of
+# this script missed 17 modules by rooting the search at kernel/.
+MODROOT=/lib/modules/"$(uname -r)"
 for m in usbnet cdc_ether cdc_acm rndis_host cdc_ncm option usb_wwan qcserial usb-storage; do
-    f=$(find /lib/modules/"$(uname -r)"/kernel -name "$m.ko" 2>/dev/null | head -1)
+    f=$(find "$MODROOT" -name "$m.ko" 2>/dev/null | head -1)
     kv "module $m" "${f:-MISSING}"
 done
+kv "modules total" "$(find "$MODROOT" -name '*.ko' 2>/dev/null | wc -l)"
 
 say "--- network ---"
 kv "interfaces" "$(ls /sys/class/net | tr '\n' ' ')"
-kv "80211 stack" "$(find /lib/modules/"$(uname -r)"/kernel/net -name 'mac80211.ko' -o -name 'cfg80211.ko' 2>/dev/null | wc -l) of 2 modules"
-kv "wireless device drivers" "$(find /lib/modules/"$(uname -r)"/kernel/drivers/net/wireless -name '*.ko' 2>/dev/null | wc -l)"
+kv "80211 stack" "$(find "$MODROOT" \( -name 'mac80211.ko' -o -name 'cfg80211.ko' \) 2>/dev/null | wc -l) of 2 modules"
+kv "wireless device drivers" "$(find "$MODROOT" -path '*wireless*' -name '*.ko' 2>/dev/null | grep -vc 'cfg80211')"
 say "=== end ==="
