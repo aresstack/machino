@@ -109,7 +109,16 @@ aus dem Header. Eine Cross-Build, die still auf den Host-Compiler zurückgefalle
 ist, scheitert hier statt als nicht ausführbarer Daemon auf der Kamera zu landen.
 
 **Zielplattform.** `BUILDINFO` gegen `/proc/device-tree/compatible`. Zwei
-Kameras auf einem Tisch sind die leichteste Verwechslung mit dem höchsten Preis.
+Kameras auf einem Tisch sind die leichteste Verwechslung mit dem höchsten
+Preis. Ein **anderer Hersteller** im Gerätebaum wird abgelehnt — ein T40-Bündel
+ist auf einer SigmaStar nicht einmal ausführbar. Ein anderes **Ingenic**-Board
+installiert und meldet „platform NOT verified": dafür gibt es keine Tabelle,
+und eine Ablehnung wäre dort geraten.
+
+Nachtrag (AP26): der erste Wurf deckte nur eine Richtung ab — er verlangte T40
+im `BUILDINFO`, *wenn* der Gerätebaum t40 sagte, ließ aber einen fremden
+Hersteller mit einem Achselzucken durch. Gefunden, indem das **echte**
+CI-Artefakt gegen einen Gerätebaum `sigmastar,ssc335` installiert wurde.
 
 **Atomarer Austausch.** `put()` kopiert in eine temporäre Datei **im
 Zielverzeichnis** und benennt sie darüber. Ein `cp` auf einen lebenden Pfad
