@@ -44,6 +44,66 @@ Json string_array(const std::vector<std::string>& v)
     return a;
 }
 
+// Dotted quad, strictly. Rejects leading zeros, out-of-range octets and
+// trailing junk. Without this a static configuration could be handed a string
+// like "nicht-eine-ip", which then lands in a network config file and the
+// camera comes up unreachable with no explanation.
+bool valid_ipv4(const std::string& s)
+{
+    int octets = 0;
+    size_t i = 0;
+    while (octets < 4) {
+        size_t start = i;
+        int v = 0, digits = 0;
+        while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+            v = v * 10 + (s[i] - '0');
+            if (++digits > 3 || v > 255) return false;
+            ++i;
+        }
+        if (digits == 0) return false;
+        if (digits > 1 && s[start] == '0') return false;
+        ++octets;
+        if (octets < 4) {
+            if (i >= s.size() || s[i] != '.') return false;
+            ++i;
+        }
+    }
+    return i == s.size();
+}
+
+bool check_optional_ipv4(const std::string& v, const char* field, std::string& err)
+{
+    if (v.empty()) return true;
+    if (valid_ipv4(v)) return true;
+    err = std::string(field) + " is not an IPv4 address";
+    return false;
+}
+
+// WPA accepts either a passphrase of 8..63 characters or a raw 64-hex-digit
+// PSK. An earlier version capped the field at 63, which rejected the perfectly
+// valid raw key -- someone pasting one from their router got "too long" and no
+// way forward.
+bool check_wifi_secret(const std::string& s, bool required, std::string& err)
+{
+    if (s.empty()) {
+        if (!required) return true;
+        err = "a secured network needs a passphrase";
+        return false;
+    }
+    if (s.size() == 64) {
+        for (char c : s) {
+            const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!hex) { err = "a 64-character key must be a hexadecimal PSK"; return false; }
+        }
+        return true;
+    }
+    if (s.size() < 8 || s.size() > 63) {
+        err = "a passphrase must be 8 to 63 characters, or a 64-digit hexadecimal PSK";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 // ------------------------------------------------------------------ USB
@@ -347,7 +407,9 @@ bool wifi_station_from_json(const Json& body, net::WifiStationConfig& cfg, std::
 
     if (!get_string(body, "ssid", next.ssid, err, 32)) return false;
     if (next.ssid.empty()) { err = "ssid is required"; return false; }
-    if (!get_string(body, "passphrase", next.passphrase, err, 63)) return false;
+    if (!get_string(body, "passphrase", next.passphrase, err, 64)) return false;
+    // Not required: an open network legitimately has none.
+    if (!check_wifi_secret(next.passphrase, false, err)) return false;
 
     next.dhcp = true;
     if (!get_bool(body, "dhcp", next.dhcp, err)) return false;
@@ -360,6 +422,11 @@ bool wifi_station_from_json(const Json& body, net::WifiStationConfig& cfg, std::
         err = "a static configuration needs an ip";
         return false;
     }
+    if (!check_optional_ipv4(next.static_ip, "ip", err)) return false;
+    if (!check_optional_ipv4(next.netmask, "netmask", err)) return false;
+    if (!check_optional_ipv4(next.gateway, "gateway", err)) return false;
+    if (!check_optional_ipv4(next.dns, "dns", err)) return false;
+
     cfg = next;
     return true;
 }
@@ -371,7 +438,7 @@ bool wifi_ap_from_json(const Json& body, net::WifiApConfig& cfg, std::string& er
 
     if (!get_string(body, "ssid", next.ssid, err, 32)) return false;
     if (next.ssid.empty()) { err = "ssid is required"; return false; }
-    if (!get_string(body, "passphrase", next.passphrase, err, 63)) return false;
+    if (!get_string(body, "passphrase", next.passphrase, err, 64)) return false;
 
     std::string sec;
     if (!get_string(body, "security", sec, err, 16)) return false;
@@ -379,18 +446,20 @@ bool wifi_ap_from_json(const Json& body, net::WifiApConfig& cfg, std::string& er
         err = "security must be open, wpa2, wpa3, wpa2-wpa3 or wep";
         return false;
     }
-    // An open AP is a decision, not an accident; a secured one needs a key
-    // long enough for WPA.
-    if (next.security != net::WifiSecurity::Open && next.passphrase.size() < 8) {
-        err = "a secured access point needs a passphrase of at least 8 characters";
-        return false;
-    }
+    // An open AP is a decision, not an accident; a secured one needs a real key.
+    if (!check_wifi_secret(next.passphrase, next.security != net::WifiSecurity::Open, err)) return false;
 
     if (!get_int(body, "channel", next.channel, 0, 196, err)) return false;
     if (!get_string(body, "ip", next.ipv4, err, 45)) return false;
     if (!get_string(body, "dhcpStart", next.dhcp_start, err, 45)) return false;
     if (!get_string(body, "dhcpEnd", next.dhcp_end, err, 45)) return false;
     if (!get_bool(body, "dhcpServer", next.dhcp_server, err)) return false;
+
+    // The AP's own address and its pool go straight into a DHCP server config;
+    // a malformed one there is a service that silently does not start.
+    if (!check_optional_ipv4(next.ipv4, "ip", err)) return false;
+    if (!check_optional_ipv4(next.dhcp_start, "dhcpStart", err)) return false;
+    if (!check_optional_ipv4(next.dhcp_end, "dhcpEnd", err)) return false;
 
     cfg = next;
     return true;

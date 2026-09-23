@@ -171,8 +171,71 @@ void test_wifi_connect_requires_an_ssid()
     // A static configuration without an address is a request to be unreachable.
     TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"dhcp\":false}"), cfg, err));
 
-    TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\",\"passphrase\":\"y\"}"), cfg, err));
+    // A one-character passphrase used to be accepted here. That was the gap,
+    // not the expectation -- it reached wpa_supplicant and came back as a
+    // generic connection failure. Now it is refused, so the shortest thing
+    // that gets through is a real WPA passphrase.
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"passphrase\":\"y\"}"), cfg, err));
+
+    TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\",\"passphrase\":\"longenough\"}"), cfg, err));
     TCHECK(cfg.ssid == "x" && cfg.dhcp);
+}
+
+void test_a_raw_hex_psk_is_accepted()
+{
+    // Regression: the field was capped at 63, so a valid 64-digit PSK pasted
+    // from a router was rejected with "too long" and no way forward.
+    const std::string hex64(64, 'a');
+    net::WifiStationConfig cfg;
+    std::string err;
+    TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\",\"passphrase\":\"" + hex64 + "\"}"), cfg, err));
+    TCHECK(cfg.passphrase.size() == 64);
+
+    // 64 characters that are not hex is a mistake, not a key.
+    const std::string notHex(63, 'z');
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"passphrase\":\"" + notHex + "z\"}"), cfg, err));
+    TCHECK(err.find("hexadecimal") != std::string::npos);
+}
+
+void test_short_passphrase_is_refused_before_it_reaches_the_supplicant()
+{
+    // Otherwise wpa_supplicant rejects it later and the user sees "failed to
+    // connect" instead of "your password is too short".
+    net::WifiStationConfig cfg;
+    std::string err;
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"passphrase\":\"abc\"}"), cfg, err));
+    TCHECK(err.find("8 to 63") != std::string::npos);
+
+    // An open network has none at all, and that is fine.
+    TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\"}"), cfg, err));
+}
+
+void test_static_addresses_must_be_addresses()
+{
+    net::WifiStationConfig cfg;
+    std::string err;
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"dhcp\":false,\"ip\":\"nicht-eine-ip\"}"), cfg, err));
+    TCHECK(err.find("IPv4") != std::string::npos);
+
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"dhcp\":false,\"ip\":\"192.168.1.300\"}"), cfg, err));
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"dhcp\":false,\"ip\":\"192.168.01.1\"}"), cfg, err));
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"dhcp\":false,\"ip\":\"192.168.1.1 \"}"), cfg, err));
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"dhcp\":false,\"ip\":\"192.168.1\"}"), cfg, err));
+    TCHECK(!wifi_station_from_json(parse("{\"ssid\":\"x\",\"ip\":\"1.2.3.4\",\"gateway\":\"gw\"}"), cfg, err));
+
+    TCHECK(wifi_station_from_json(
+        parse("{\"ssid\":\"x\",\"dhcp\":false,\"ip\":\"192.168.1.73\",\"netmask\":\"255.255.255.0\","
+              "\"gateway\":\"192.168.1.1\",\"dns\":\"9.9.9.9\"}"), cfg, err));
+    TCHECK(cfg.static_ip == "192.168.1.73" && !cfg.dhcp);
+}
+
+void test_ap_addresses_are_validated_too()
+{
+    net::WifiApConfig cfg;
+    std::string err;
+    TCHECK(!wifi_ap_from_json(parse("{\"ssid\":\"cam\",\"security\":\"open\",\"ip\":\"999.1.1.1\"}"), cfg, err));
+    TCHECK(!wifi_ap_from_json(parse("{\"ssid\":\"cam\",\"security\":\"open\",\"dhcpStart\":\"x\"}"), cfg, err));
+    TCHECK(wifi_ap_from_json(parse("{\"ssid\":\"cam\",\"security\":\"open\",\"ip\":\"192.168.4.1\"}"), cfg, err));
 }
 
 void test_secured_ap_needs_a_real_passphrase()
@@ -180,7 +243,7 @@ void test_secured_ap_needs_a_real_passphrase()
     net::WifiApConfig cfg;
     std::string err;
     TCHECK(!wifi_ap_from_json(parse("{\"ssid\":\"cam\",\"security\":\"wpa2\",\"passphrase\":\"short\"}"), cfg, err));
-    TCHECK(err.find("8 characters") != std::string::npos);
+    TCHECK(err.find("8 to 63") != std::string::npos);
 
     TCHECK(wifi_ap_from_json(parse("{\"ssid\":\"cam\",\"security\":\"open\"}"), cfg, err));
     TCHECK(cfg.security == net::WifiSecurity::Open);
@@ -232,6 +295,10 @@ void run_net_views_tests()
     test_wifi_capabilities_separate_driver_from_tooling();
     test_no_document_ever_contains_a_passphrase();
     test_wifi_connect_requires_an_ssid();
+    test_a_raw_hex_psk_is_accepted();
+    test_short_passphrase_is_refused_before_it_reaches_the_supplicant();
+    test_static_addresses_must_be_addresses();
+    test_ap_addresses_are_validated_too();
     test_secured_ap_needs_a_real_passphrase();
     test_policy_patch_refuses_a_pin_to_nothing();
     test_network_document_names_the_active_uplink();
