@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 #ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
@@ -39,6 +40,43 @@ std::string config_text_get(const std::string& text, const std::string& key) {
     return "";
 }
 
+// AP26: the machine-written section header, when it heads nothing.
+//
+// Appending a key emits one header, which is right. Removing that key later
+// (the settings page's per-row reset) deletes its line and leaves the header
+// behind - and the next append writes a fresh one. A camera in the field grew
+// EIGHT of them above four keys that way, on a filesystem with 4.6 MB free.
+//
+// Only the exact string this file writes is ever dropped, and only when the
+// next non-blank line is another one of them or the end of the file. A comment
+// the owner wrote can neither match it nor sit between one and its keys.
+static const char* const MANAGED_HDR = "# --- managed by the Machino API ---";
+
+static std::string drop_orphan_headers(const std::string& text) {
+    std::vector<std::string> lines;
+    size_t p = 0;
+    while (p <= text.size()) {
+        const size_t nl = text.find('\n', p);
+        if (nl == std::string::npos) { if (p < text.size()) lines.push_back(text.substr(p)); break; }
+        lines.push_back(text.substr(p, nl - p));
+        p = nl + 1;
+    }
+    std::string out;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i] == MANAGED_HDR) {
+            bool heads_something = false;
+            for (size_t k = i + 1; k < lines.size(); ++k) {
+                if (lines[k].empty()) continue;
+                heads_something = (lines[k] != MANAGED_HDR);
+                break;
+            }
+            if (!heads_something) continue;          // orphan: drop the line
+        }
+        out += lines[i]; out += '\n';
+    }
+    return out;
+}
+
 std::string rewrite_config_text(const std::string& text, const KeyValues& kv, unsigned revision) {
     KeyValues all = kv;
     all.emplace_back("config.revision", std::to_string(revision));
@@ -63,7 +101,7 @@ std::string rewrite_config_text(const std::string& text, const KeyValues& kv, un
         if (first) { if (!out.empty() && out.back() != '\n') out += '\n'; out += "\n# --- managed by the Machino API ---\n"; first = false; }
         out += all[i].first + " = " + all[i].second + "\n";
     }
-    return out;
+    return drop_orphan_headers(out);
 }
 
 std::string remove_config_keys_text(const std::string& text, const std::vector<std::string>& keys, unsigned revision) {

@@ -292,6 +292,62 @@ void test_config_store_preserves_foreign() {
     ACHECK(out3.find("some.future.key = 42\n") != std::string::npos);
 }
 
+// AP26: the file must not accrete section headers.
+//
+// Found on the camera, not in review: /etc/machino/machino.conf had EIGHT
+// "# --- managed by the Machino API ---" lines above four keys. Appending a
+// key writes one header, which is right; removing that key later (the settings
+// page's per-row reset) deletes its line and orphans the header, and the next
+// append writes a fresh one. On 4.6 MB of flash a file that grows a comment
+// per reset is not acceptable, and it is unreadable long before it is large.
+void test_config_store_no_header_litter() {
+    const char* HDR = "# --- managed by the Machino API ---";
+    auto count = [](const std::string& s, const char* needle) {
+        size_t n = 0, at = 0;
+        while ((at = s.find(needle, at)) != std::string::npos) { ++n; at += 1; }
+        return n;
+    };
+
+    // The shape the camera was actually in: headers heading nothing.
+    // config.revision is seeded so the rewrite APPENDS nothing - otherwise it
+    // would legitimately write a fresh header for it and the count below would
+    // be about that rather than about the orphans. (The first cut of this test
+    // asserted 2 and got 3 for exactly that reason: the test was wrong.)
+    std::string text =
+        "board = board-x\n"
+        "config.revision = 2\n"
+        "\n# --- managed by the Machino API ---\n"
+        "video.bitrate = 3000\n"
+        "\n# --- managed by the Machino API ---\n"
+        "\n# --- managed by the Machino API ---\n"
+        "\n# --- managed by the Machino API ---\n"
+        "latency.gop = 40\n";
+    ACHECK(count(text, HDR) == 4);
+
+    const std::string out = rewrite_config_text(text, {{"video.bitrate", "2000"}}, 3);
+    ACHECK(count(out, HDR) == 2);                       // the two that head a key survive
+    ACHECK(out.find("board = board-x\n") != std::string::npos);
+    ACHECK(out.find("video.bitrate = 2000\n") != std::string::npos);
+    ACHECK(out.find("latency.gop = 40\n") != std::string::npos);
+
+    // add-then-remove, twenty times: the count must not climb.
+    std::string t = "board = board-x\n";
+    for (int i = 0; i < 20; ++i) {
+        t = rewrite_config_text(t, {{"video.bitrate", "1000"}}, (unsigned)(i * 2 + 1));
+        t = remove_config_keys_text(t, {"video.bitrate"}, (unsigned)(i * 2 + 2));
+    }
+    ACHECK(count(t, HDR) <= 1);
+    ACHECK(t.find("board = board-x\n") != std::string::npos);
+    ACHECK(t.find("config.revision = 40\n") != std::string::npos);
+
+    // and an owner's own comment is never touched, even right above a key
+    const std::string keep =
+        "# my own note\nboard = board-x\n# another note\n";
+    const std::string kept = rewrite_config_text(keep, {}, 2);
+    ACHECK(kept.find("# my own note\n") != std::string::npos);
+    ACHECK(kept.find("# another note\n") != std::string::npos);
+}
+
 void test_config_store_text() {
     std::string text = "# hdr\nboard = b\nvideo.bitrate = 3000   # kbps\nvideo.bitrate = 999\nlog.level = 2\n";
     std::string out = rewrite_config_text(text, {{"video.bitrate", "1500"}, {"sensor.fps", "15"}}, 5);
@@ -801,6 +857,7 @@ void run_api_tests() {
     test_concurrent_patches();
     test_config_store_text();
     test_config_store_preserves_foreign();
+    test_config_store_no_header_litter();
     test_m7_image_latency_api();
     test_majestic_webui_compat();
     test_rtsp_client_limit_api();
