@@ -239,7 +239,7 @@ ohne dass es jemandem aufgefallen wäre.
 |----|-----|
 | H4 | Läuft `wpa_supplicant` auf diesem Image überhaupt, und liegt sein Control-Socket unter `/var/run/wpa_supplicant/wlan0`? Der ganze Stationspfad hängt daran |
 | ~~H5~~ | **ERLEDIGT 2026-09-23.** Modul bindet `1-1:1.2`, `wlan0` erscheint, Scan liefert 14 Netze. Pfad und Fallstricke in `aic8800-bringup.md` |
-| H6 | Tatsächliches Assoziieren mit einem WPA2-Netz, inklusive DHCP-Lease |
+| ~~H6~~ | **ERLEDIGT 2026-09-23.** WPA2/CCMP assoziiert (`wpa_state=COMPLETED`, RSSI −31), DHCP-Lease 172.21.115.79, Ethernet parallel erreichbar. Details in `aic8800-bringup.md` |
 | H7 | Access Point: `hostapd` vorhanden, startet mit der erzeugten Konfiguration, ein Telefon assoziiert und bekommt eine Adresse |
 | H7a | **Reconfiguration ohne Prozessneustart.** Laufender AP mit SSID A, neue Konfiguration SSID B, `RELOAD_CONFIG` (bzw. SIGHUP als Fallback), danach muss `GET_CONFIG` B melden und ein Scan B sehen. Der Adapter prüft das selbst und schlägt fehl, wenn es nicht stimmt — dass der Pfad auf diesem `hostapd`-Build überhaupt existiert, ist aber ungeprüft |
 | H7b | **Station → AP auf demselben PHY.** `DISABLE_NETWORK all` + `DISCONNECT` müssen `wpa_supplicant` weit genug vom Funkmodul lösen, dass `hostapd` es übernehmen kann. Concurrency wird nirgends unterstellt (`driver_concurrent_sta_ap = false`); ob das Freigeben reicht, entscheidet die Hardware |

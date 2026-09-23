@@ -161,10 +161,100 @@ nl80211-Werkzeug kann dieses Image den Treiber nicht nach seinen
 Interface-Typen fragen, also bleibt `driver_ap_known = false` und der
 AP-Modus ist „versuchbar, nicht bestätigt".
 
+## Station-Betrieb — hardwareverifiziert 2026-09-23
+
+In zwei Stufen getrennt, damit ein Fehlschlag zuordenbar bleibt: erst
+Assoziation, dann erst DHCP.
+
+### Stufe 1 — Assoziation
+
+```sh
+umask 077
+mkdir -p /var/run/wpa_supplicant
+{ echo "ctrl_interface=/var/run/wpa_supplicant"
+  echo "update_config=0"
+  wpa_passphrase "<SSID>" "<PSK>" | grep -v '#psk='
+} > /tmp/wpa.conf
+chmod 600 /tmp/wpa.conf
+wpa_supplicant -B -i wlan0 -c /tmp/wpa.conf -D nl80211
+```
+
+`wpa_passphrase` und das `grep -v '#psk='` gehören zusammen: das Werkzeug
+schreibt den Klartext als Kommentarzeile **neben** den abgeleiteten Schlüssel.
+Ohne den Filter liegt das WLAN-Passwort im Klartext auf dem Overlay. Geprüft
+wird das hinterher, nicht angenommen — `grep -c` auf den Klartext muss `0`
+ergeben.
+
+Ergebnis:
+
+```
+wpa_state          COMPLETED
+ssid/bssid         <SSID> / 06:61:1d:a3:5c:19
+freq               2462 MHz (Kanal 11)
+mode               station, wifi_generation 4
+pairwise/group     CCMP / CCMP
+RSSI −31 dBm       LINKSPEED 65 Mb/s   NOISE −89   WIDTH 20 MHz
+```
+
+`rfkill: Cannot open RFKILL control device` erscheint dabei und ist harmlos —
+dieses Image hat kein rfkill, die Assoziation läuft trotzdem.
+
+### Stufe 2 — DHCP, mit Ethernet parallel
+
+```sh
+udhcpc -i wlan0 -n -q -t 6 -T 3
+```
+
+```
+lease 172.21.115.79 von 172.21.115.8, 3599 s
+dns 172.21.115.8
+```
+
+Routing danach, und das ist der Punkt, auf den es ankam:
+
+```
+default via 172.21.115.8 dev wlan0            <- die EINZIGE Default-Route
+172.21.115.0/24 dev wlan0  src 172.21.115.79
+192.168.1.0/24  dev eth0   src 192.168.1.10   <- Management-Pfad unberührt
+```
+
+Es gab keinen Routen-Konflikt, **weil eth0 nie eine Default-Route hatte**.
+Die Kamera hing bis hierher ohne Gateway im Netz; das erklärt nebenbei den
+Uhrzeit-Befund (`t40nn-uhr-ohne-rtc`) — mit der ersten echten
+Internetverbindung korrigierte `ntpd` die Systemzeit sofort um +10 989 s.
+
+Auf einem Board, das über eth0 *doch* eine Default-Route bekommt, greift
+dieser Automatismus nicht mehr von selbst. Dann muss die WLAN-Default-Route
+eine höhere Metrik bekommen, sonst wandert der Management-Pfad unbemerkt mit.
+
+Beide Wege gleichzeitig nachgewiesen:
+
+```
+eth0  -> 192.168.1.222    0 % Verlust   0,9 ms
+wlan0 -> 172.21.115.8     0 % Verlust   7,7 ms
+wlan0 -> 8.8.8.8          0 % Verlust  49 ms
+machino /api/v1 antwortet auf 192.168.1.10 UND auf 172.21.115.79
+uptime 54 min durchgehend, MemFree 16 304 kB
+```
+
+### Nebenbefund: der Treiber schreibt Schlüsselmaterial ins Kernel-Log
+
+Beim Vier-Wege-Handshake erscheinen auf der Konsole Zeilen der Form
+
+```
+key: 00000000: 04 58 5d 3d 03 49 6f fd 58 a1 e7 9f 26 b4 ab 70
+```
+
+Das ist Debug-Ausgabe des AIC-Treibers, kein Fehler unsererseits — aber es
+heißt, dass **jeder, der `dmesg` lesen darf, an Sitzungsschlüssel kommt**.
+Für den Bring-up ist das hinnehmbar; bevor WLAN produktiv wird, gehört die
+Treiber-Loglevel heruntergesetzt oder diese Ausgabe entfernt. Eigener Punkt,
+nicht mit den Machino-Secrets-Regeln zu verwechseln: die halten sich daran,
+der Fremdtreiber nicht.
+
 ## Offen
 
-* Station-Assoziation (SSID/PSK stehen noch aus)
-* DHCP parallel zu Ethernet
 * Machino-Build mit der Connectivity-API deployen, `/machino/net` im Browser
 * Candidate/Confirm und der H9-Rollback
 * AP-Modus
+* Überlebt der Aufbau einen Reboot-Zyklus (H5a)?
