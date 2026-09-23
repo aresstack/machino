@@ -1,69 +1,52 @@
-# AIC8800 WLAN auf dem T40NN — der Bring-up-Pfad
 
-Stand 2026-09-23. **Hardwareverifiziert bis einschließlich Scan.** Alles hier
-ist gemessen, nicht abgeleitet; die Kommandos sind so gelaufen.
+## AP-Modus (2026-09-23, Kamera 192.168.1.10, beobachtet ueber Ethernet)
 
-## Der Pfad
+Der AIC8800 kann Access Point. Das war bis hierher eine Annahme; jetzt ist es
+gemessen. Der Uebergang Station -> AP im Kernel-Log:
 
-Die Reihenfolge ist nicht beliebig — jeder Schritt hat einen Grund, der weiter
-unten steht.
+    rwnx_cfg80211_disconnect drv_vif_index:0 disconnect reason:3
+    rwnx_cfg80211_unlink_bss(): cfg80211_unlink Viva Espana!!
+    change_if: 2 to 3, 8, 2
+    usb 1-1 wlan0: AP started: ch=0, bcmc_idx=33 channel=2437 bw=1
 
-```sh
-modprobe cfg80211                    # NICHT eingebaut, liegt als Modul
-insmod aic_load_fw.ko                # muss vor aic8800 (depends=aic_load_fw)
-insmod aic8800.ko
-echo 50 > /sys/class/gpio/export     # PB18: Portstrom ERST JETZT
-echo out > /sys/class/gpio/gpio50/direction
-echo 1 > /sys/class/gpio/gpio50/value
-                                     # -> USB-Hotplug -> bind -> wlan0
-ip link set wlan0 up
-iwlist wlan0 scan
-```
+`change_if: 2 to 3` ist der Rollenwechsel des Interface-Typs im Treiber, und er
+laeuft sauber durch: erst die Station-Verbindung abbauen, dann den Typ aendern,
+dann der AP. Genau deshalb sind es getrennte Rollen und keine gleichzeitigen
+Daemons -- der Treiber selbst behandelt sie als Umschaltung.
 
-Der Portstrom kommt **zuletzt**. Andersherum geht es auch, aber so ist es
-robuster: das Gerät taucht auf, wenn der Treiber schon registriert ist, und
-Enumeration und Binding passieren in einem Zug.
+Zustand danach:
 
-## Was dabei herauskommt
+    wlan0  Mode:Master, 192.168.24.1/24
+    hostapd -B -P /var/run/hostapd.pid   laeuft, ctrl-Socket /var/run/hostapd/wlan0
+    udhcpd /etc/machino/udhcpd.conf      laeuft
+    eth0   192.168.1.10 unveraendert
+    machino laeuft weiter, MemAvailable 24824 kB, buddyinfo unauffaellig
 
-```
-aicwf_usb_chipmatch USE AIC8800DC
-rwnx_load_firmware: /lib/firmware/aic8800DC/fmacfw_patch_8800dc_h_u02.bin
-Firmware Version: zh Aug 08 2023 20:31:22 - g41bc49e
-is 5g support = 0                    <- nur 2,4 GHz
-HT supp 1, VHT supp 1, HE supp 0
-support channel: 1 2 3 4 5 6 7 8 9 10 11 12 13 14
-New interface create wlan0
+hostapd 2.10, statisch gegen libnl 3.7.0, 996 KB gestrippt. `hostapd_cli` wird
+NICHT mitgeliefert: machino spricht den ctrl-Socket ueber wpa_ctrl.cpp selbst
+an, und der Supervisor braucht ihn nicht. Das sind 150 KB, die auf einem
+Overlay mit 4,3 MB frei nichts zu suchen haben.
 
-wlan0            5: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500
-MAC              cc:b8:5e:87:c9:1d
-1-1:1.2 driver   -> bus/usb/drivers/aic8800
-iwlist wlan0 scan -> 14 Netze
-```
+Fuer diesen Test liegt das Binary auf tmpfs mit einem Symlink aus /usr/sbin --
+absichtlich: haette der Treiber AP verweigert, waere kein Flash verbraucht
+worden. Die dauerhafte Installation kommt ueber den Installer.
 
-## Die drei Dinge, an denen es gescheitert ist
+HTTP antwortet auf der AP-Adresse: `GET http://192.168.24.1/api/v1/state` gibt
+401. Das ist der Beweis, um den es geht -- der Server ist auf dem Interface
+erreichbar und verlangt Anmeldung. Ein 401 ueber die AP-Adresse ist ein
+erreichbarer Server, keine kaputte Route.
 
-### 1. `CONFIG_PREALLOC_RX_SKB` muss AUS
+NOCH NICHT GEMESSEN (braucht ein zweites Geraet, PENDING_PHYSICAL):
+sieht ein Telefon die SSID, kommt WPA2 zustande, vergibt udhcpd eine Adresse,
+und ist /machino/net dann ueber die Luft bedienbar.
 
-Mit dem Upstream-Default (`y`, vom Top-Makefile erzwungen, obwohl der
-Unter-Makefile `?= n` vorsieht) fordert `aicwf_prealloc_init()` beim
-Modul-Init 847 Empfangspuffer als **order-3**-Blöcke an. Das kostete zwei
-Reboots, bis die Ursache sichtbar war:
+### Ein Nebenbefund, der nicht vergessen werden darf
 
-```
-insmod invoked oom-killer: order=3 ... aicwf_prealloc_init
-Out of memory: Kill process 992 (majestic)
-```
-
-Warum das nie gehen konnte, steht in `/proc/buddyinfo`:
-
-```
-Node 0, zone Normal    41  55  30  20  11  1  2  0  1  2  1  1  0  0  0
-                        ^order-0        ^order-3 = 20 Blöcke frei
-```
-
-**20 verfügbar, 847 gefordert.** `free` meldet dabei ~20 MB und ist für diese
-Frage irrelevant — es geht um *zusammenhängende* Seiten. Bei jeder künftigen
+Der AIC-Treiber schreibt weiterhin Schluesselmaterial ins Kernel-Log
+("key: 00000000: ea a5 2c 65 ..." direkt nach dem AP-Start). Das ist der
+Treiber, nicht machino, aber `dmesg` ist damit auf dieser Kamera ein
+Geheimnistraeger.
+der künftigen
 Speicherfrage zu diesem Treiber ist `buddyinfo` die Messung, nicht `free`.
 
 Gebaut wird deshalb mit:
