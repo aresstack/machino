@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
+#include <unistd.h>      // readlink: the interface's bound driver
 
 namespace machino { namespace linuxsys {
 
