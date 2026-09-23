@@ -238,11 +238,12 @@ ohne dass es jemandem aufgefallen wäre.
 | Nr | Was |
 |----|-----|
 | H4 | Läuft `wpa_supplicant` auf diesem Image überhaupt, und liegt sein Control-Socket unter `/var/run/wpa_supplicant/wlan0`? Der ganze Stationspfad hängt daran |
-| H5 | Bindet das AIC8800-Modul das Gerät und erscheint `wlan0`? Ein Modul kann laden und trotzdem nicht binden — das sieht aus wie ein totes Funkmodul |
+| ~~H5~~ | **ERLEDIGT 2026-09-23.** Modul bindet `1-1:1.2`, `wlan0` erscheint, Scan liefert 14 Netze. Pfad und Fallstricke in `aic8800-bringup.md` |
 | H6 | Tatsächliches Assoziieren mit einem WPA2-Netz, inklusive DHCP-Lease |
 | H7 | Access Point: `hostapd` vorhanden, startet mit der erzeugten Konfiguration, ein Telefon assoziiert und bekommt eine Adresse |
 | H7a | **Reconfiguration ohne Prozessneustart.** Laufender AP mit SSID A, neue Konfiguration SSID B, `RELOAD_CONFIG` (bzw. SIGHUP als Fallback), danach muss `GET_CONFIG` B melden und ein Scan B sehen. Der Adapter prüft das selbst und schlägt fehl, wenn es nicht stimmt — dass der Pfad auf diesem `hostapd`-Build überhaupt existiert, ist aber ungeprüft |
 | H7b | **Station → AP auf demselben PHY.** `DISABLE_NETWORK all` + `DISCONNECT` müssen `wpa_supplicant` weit genug vom Funkmodul lösen, dass `hostapd` es übernehmen kann. Concurrency wird nirgends unterstellt (`driver_concurrent_sta_ap = false`); ob das Freigeben reicht, entscheidet die Hardware |
+| H5a | Bleibt `wlan0` über einen Reboot-Zyklus stabil, wenn Module und GPIO wieder gesetzt werden? Bisher einmalig aufgebaut, nicht wiederholt |
 | H7c | **Geänderter DHCP-Pool.** SSID und Schlüssel wirken über den Control-Socket sofort, der Pool erst nach `/etc/init.d/S41hostapd restart` — `udhcpd` liest seine Konfiguration nicht neu. Die Einschränkung ist im Log und im Skript benannt; dass sie genau so eintritt, ist ungeprüft |
 | H7d | **`driver_ap_known` bleibt heute meist `false`.** Dieser Build fragt den Treiber nicht über nl80211, sondern schließt nur aus einem laufenden, aktivierten BSS auf AP-Fähigkeit. Bis die nl80211-Abfrage existiert, ist AP-Modus „versuchbar, nicht bestätigt" — die WebUI sagt das auch so |
 | H8 | Failover Ethernet → WLAN und zurück, mit laufendem RTSP/WebRTC: bricht die Session, und erholt sie sich? |
