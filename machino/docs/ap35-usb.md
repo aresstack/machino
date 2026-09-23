@@ -368,6 +368,119 @@ echten Enumeration ist nicht bekannt, welcher Treiber gebraucht wird.
 
 ---
 
+## AP35.20 — Der DRVVBUS-Pfad, aus dem Kernelquelltext beider Firmwares
+
+Anlass: ich hatte im Gespräch behauptet, das Board habe **keinen
+software-schaltbaren 5-V-VBUS**. Diese Behauptung ist **zurückgezogen**. Sie
+stützte sich auf zwei Argumente, von denen eines schlicht falsch war:
+
+> Ich schrieb selbst, dass `spi0@0x10043000` im Stock auf `status = "disable"`
+> steht — und leitete daraus trotzdem einen *aktiven* SPI-Pin-Konflikt auf PB27
+> ab. Eine Pindefinition in einem deaktivierten Controller belegt gar nichts.
+
+Das zweite Argument („Stock deaktiviert die GPIO-Property, also gibt es keinen
+VBUS-Enable") war ebenfalls zu schnell: bei Ingenic *könnte* DRVVBUS eine
+dedizierte Pinfunktion des OTG-Blocks sein. Also nachgesehen, statt zu raten.
+
+### Die Kette im OpenIPC-Kernel ist vollständig und feuert
+
+`OpenIPC/linux`, Branch `ingenic-t40`, `drivers/usb/dwc2/hcd.c:2505`:
+
+```c
+usb_phy_vbus_on(hsotg->uphy);                     /* -> iphy_set_vbus(x, 1) */
+dwc2_writel(HPRT0_PWR | HPRT0_CONNDET | ... );    /* -> PRTPWR = 1          */
+```
+
+und `drivers/usb/phy/phy-ingenic-inno.c:208`:
+
+```c
+static int iphy_set_vbus(struct usb_phy *x, int on) {
+    if (!(IS_ERR_OR_NULL(iphy->gpiod_drvvbus))) {
+        printk("OTG VBUS %s\n", on ? "ON" : "OFF");
+        gpiod_set_value(iphy->gpiod_drvvbus, on);
+    }
+    return 0;
+}
+```
+
+Das erklärt die Messung exakt: **derselbe Aufruf** setzt `PRTPWR = 1` *und*
+den GPIO — und genau beides haben wir am Gerät gesehen. Der Pin wird mit
+`GPIOD_OUT_LOW` angefordert und steht trotzdem auf `hi`, also **ist
+`set_vbus(1)` tatsächlich gelaufen**.
+
+### Eine dedizierte DRVVBUS-Pinfunktion gibt es bei Ingenic nicht
+
+```
+drivers/pinctrl/pinctrl-ingenic.{c,h}        keine USB-Funktion
+include/dt-bindings/pinctrl/ingenic-pinctrl.h keine USB-Funktion
+arch/mips/boot/dts/ingenic/t40-pinctrl.dtsi   keine usb/otg-Pingruppe
+```
+
+Die Treffer auf „DRVVBUS" im Baum stammen sämtlich von **anderen Herstellern**
+(MediaTek, SiRF, TI). In diesem Kernel ist DRVVBUS bei Ingenic
+ausschließlich ein GPIO.
+
+### Und Ingenics eigene Referenzboards machen es genauso
+
+```
+shark.dts       ingenic,drvvbus-gpio = <&gpb 27 GPIO_ACTIVE_HIGH ...>
+shark_fast.dts  ingenic,drvvbus-gpio = <&gpb 27 GPIO_ACTIVE_HIGH ...>
+halley2v20.dts  ingenic,drvvbus-gpio = <&gpb 25 GPIO_ACTIVE_HIGH ...>
+seal.dts        ingenic,drvvbus-gpio = <&gpf 26 GPIO_ACTIVE_HIGH ...>
+```
+
+**Gleicher Pin, gleiche Polarität wie OpenIPC hier konfiguriert.** OpenIPCs
+Einstellung ist also keine Erfindung, sondern Ingenics Referenzdesign.
+
+### Der Stock-Kernel hat denselben Treiber — und treibt trotzdem nicht
+
+Aus dem Stock-Image (`kernel_0xd0000.bin`, unkomprimiert lesbar):
+
+```
+Linux version 4.4.94 (jiangtaixu@...) (Ingenic gcc 5.4.0) #11 SMP Fri Apr 1 2022
+"OTG VBUS %s"            <- derselbe printk aus iphy_set_vbus
+"ingenic,drvvbus"        <- derselbe GPIO-Consumer-Name
+"#ingenic,drvvbus-gpio"  <- die deaktivierte Property
+"ingenic,innophy", "ingenic,dwc2-hsotg"
+```
+
+**Stock benutzt exakt denselben Mechanismus und hat ihn abgeschaltet.** Es gibt
+in Stock keinen zweiten, dedizierten Pfad — der Kernel enthält schlicht keinen.
+
+Damit ist die Frage „wie versorgt Stock den Anschluss mit VBUS?" beantwortet:
+**gar nicht.** Und OpenIPC tut hier *mehr* als Stock, nicht weniger.
+
+### Der Port ist als Host gedacht
+
+```
+usbcore, usb_hub_wq, hub_port_connect, usb_hub_claim_port   vorhanden
+g_ether / android_usb / configfs-gadget / f_acm / mass_storage  KEINE
+```
+
+Der Stock-Kernel hat **Host**-Unterstützung und **keine** Gadget-Funktionen.
+Der Anschluss ist also nicht als USB-Device-Port gedacht.
+
+### Was daraus folgt — und was ausdrücklich nicht
+
+**Belegt:** Software-seitig ist die Anforderungskette in OpenIPC vollständig,
+korrekt gegen Ingenics Referenz konfiguriert und nachweislich ausgeführt.
+Stock fordert VBUS nie an. Eine dedizierte Pinfunktion existiert nicht.
+
+**Nicht belegt:** ob auf dieser Platine ein Load-Switch an PB27 hängt. Dafür
+hilft kein Quelltext mehr.
+
+**Der eine Messwert, der das jetzt aufspaltet — direkt an PB27:**
+
+```
+PB27 fuehrt ~3,3 V   -> der SoC treibt, der Fehler liegt dahinter
+                        (Switch fehlt, ist active-low, oder keine 5-V-Schiene)
+PB27 fuehrt 0 V      -> der Pin wird trotz "out hi" nicht getrieben
+                        -> dann ist es doch ein Software-/Pinmux-Befund
+```
+
+Erst danach ist zu entscheiden, welcher VBUS-Init richtig ist. Bis dahin wird
+weder PB27 getoggelt noch etwas geflasht.
+
 ## AP35.19 — Module-only: lässt sich das ohne neues Image lösen?
 
 Die Frage vor dem Image-Tausch: es sind **In-Tree-Treiber** des 4.4.94. Können
