@@ -44,7 +44,7 @@ Klassen: `PASS` · `SUPPORTED_DIFFERENTLY` · `INTENTIONALLY_UNSUPPORTED` ·
 | `WS /ws/video?stream=1` | offen, `avc1.640033`, 640×360 | PASS |
 | `WS /ws/webrtc?stream=0` | offen (signalisiert erst nach dem Offer) | PASS |
 | `WS /ws/logs` | offen, liefert sofort echte syslog-Zeilen | PASS |
-| RTSP MAIN / SUB | nicht im HTTP-Sweep; hardwareabgenommen (M2/M8), Auth-Default seit AP7 **an** | PENDING_PHYSICAL (AP7-Umstellung) |
+| RTSP MAIN / SUB | `OPTIONS` → 200, `Server: machino/c1edd92`, `Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER`. `DESCRIBE /ch0` **und** `/ch1` → **401** mit `WWW-Authenticate: Basic realm="Machino"`, im Daemon-Log als „DESCRIBE main: unauthorised" | PASS (Auth ist scharf) |
 | `WS /ws/upgrade` | **404 im laufenden Build**; ab AP21 angenommen und mit `ERROR: cannot start sysupgrade` beantwortet | PENDING_PHYSICAL |
 | `WS /ws/analytics` | 404 | INTENTIONALLY_UNSUPPORTED (AP19) |
 | `WS /ws/pins` | 404 | INTENTIONALLY_UNSUPPORTED (AP18) |
@@ -86,6 +86,35 @@ Rückfall, der in AP18/AP19 nachgelesen und zitiert ist.
 | `/cgi-bin/j/time.cgi?set=…` (Knopf **Set from browser**) | 200 in 38 ms, „Camera clock set from browser." | PASS |
 
 ---
+
+## Eine offene Frage, die ich nicht erfinden will
+
+RTSP verlangt Authentifizierung — **das ist der gewünschte Zustand** und der
+Default, den AP7 in `83b1f59` gesetzt hat. Nur: der laufende Build ist
+`c1edd92`, und `83b1f59` kommt **16 Commits später**. In `c1edd92` steht
+
+```cpp
+struct RtspAuthConfig { bool enabled = false; ... };
+bool required() const {
+    if (unsafe_) return false;
+    if (!claimed()) return true;
+    return cfg_.enabled && (digest_usable() || cfg_.offer_basic);
+}
+```
+
+und `/etc/machino/machino.conf` auf der Kamera enthält **kein** `rtsp.auth`
+(der Schlüssel heißt genau so, `config.cpp:125`). Mit `claimed() == true` und
+`enabled == false` dürfte `required()` nicht wahr sein.
+
+Dass die Kamera als *claimed* gilt, ist unabhängig belegt: der root-Hash in
+`/etc/shadow` ist 34 Zeichen lang, Machino läuft als root, `/setup` wird nicht
+von Machino bedient, und das Dashboard liefert 200 statt einer Umleitung.
+
+Ich habe den Widerspruch aus dem Quelltext **nicht** auflösen können und
+schreibe deshalb keine Ursache hin. Er ist kein Sicherheitsproblem — Auth an
+ist die sichere Richtung und das, was HEAD ohnehin will —, aber er ist auch
+nicht verstanden. Nach der Ablösung auf HEAD ist er erneut zu prüfen; dort ist
+`enabled = true` und das Verhalten wäre dann erklärt.
 
 ## Die zwei Befunde dieses Durchgangs
 
