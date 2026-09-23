@@ -70,7 +70,8 @@ veröffentlicht wurde, die eine spätere Messung widerlegt hat.
 | Header-Smuggling über das Relay war möglich | BELEGT — gegen den echten Parser vorgeführt, dann behoben |
 | Der RTSP-Lesepuffer war unbegrenzt | BELEGT — im Code gezeigt, dann begrenzt |
 | Path Traversal war nicht ausnutzbar | BELEGT — 400 gemessen, aber **von busybox**; seit AP30 auch von uns |
-| Beide Sicherheitsfixes sind auf der Kamera wirksam | **PENDING_PHYSICAL** — der laufende Prozess ist `c1edd92` |
+| Der laufende Daemon hat die Fixes **nicht** | **BELEGT (2026-09-23, Audit)** — gemessen, nicht angenommen: bare-LF-Header und `%2e%2e`-Traversal ergeben beide **401**, nicht 400. Der Parser nimmt die Requests an und reicht sie an die Auth weiter. Laufender Prozess ist `c1edd92`, die exe ist `(deleted)` — die Platte trägt schon `341a8d4` |
+| Die Fixes wirken im neuen Build auf der Kamera | **PENDING_PHYSICAL** — verlangt die Ablösung; der Gegentest (400 statt 401) ist derselbe und läuft fern, ohne Hardware am Platz |
 
 ---
 

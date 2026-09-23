@@ -43,9 +43,9 @@ ohne Last messbar sind, dann Last, dann Browser.
 
 | Nr | Prüfung | Woher |
 |---|---|---|
-| S1 | Header-Smuggling: eine Headerzeile mit einem bare LF und einem zweiten `Content-Length` dahinter muss **400** ergeben, nicht 404 | AP30 HIGH-1 |
+| S1 | Header-Smuggling: eine Headerzeile mit einem bare LF und einem zweiten `Content-Length` dahinter muss **400** ergeben, nicht 404. **Der Ausgangszustand ist seit dem Audit vom 2026-09-23 gemessen: `c1edd92` antwortet 401.** Der Test ist fernbedienbar (TCP-Socket, roher Request) und braucht niemanden am Gerät — nur den abgelösten Build | AP30 HIGH-1 |
 | S2 | RTSP: 8 KiB ohne Leerzeile schicken — die Verbindung muss fallen, RSS darf nicht wachsen | AP30 HIGH-2 |
-| S3 | `/cgi-bin/../../../etc/shadow` muss **400 von Machino** ergeben, nicht von busybox | AP30 NORMAL |
+| S3 | `/cgi-bin/../../../etc/shadow` muss **400 von Machino** ergeben, nicht von busybox. Ausgangszustand gemessen: `%2e%2e`-Variante ergibt heute 401 | AP30 NORMAL |
 
 **Bis zur Ablösung trägt die Kamera beide HIGH-Schwächen** — der laufende
 Prozess ist `c1edd92`. Das ist der stärkste Grund, den nächsten Kaltstart nicht
