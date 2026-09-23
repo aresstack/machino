@@ -12,6 +12,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # host tests. Everything the installer touches goes through it.
 ROOT="${MACHINO_ROOT:-}"
 WITH_AP=0
+WITH_NETPAGE=0
 STATE_DIR="$ROOT/etc/machino"
 WWW="$ROOT/var/www"
 CGI="$WWW/cgi-bin"
@@ -26,7 +27,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             cat <<EOF
-usage: ./install.sh [--with-access-point]
+usage: ./install.sh [--with-access-point] [--with-network-page]
 
 The WebUI login is Machino's Majestic drop-in session login against the
 camera's root account - there is nothing to configure here.
@@ -38,9 +39,17 @@ camera's root account - there is nothing to configure here.
                         serve their own WLAN. Without it machino reports AP
                         mode as unavailable, with the reason, and everything
                         else is unaffected.
+
+  --with-network-page   add a "Netzwerk & USB (machino)" entry to the stock
+                        WebUI menu, pointing at /machino/net. Off by default:
+                        the installer does not edit p/header.cgi behind your
+                        back. The page is reachable at that URL either way;
+                        this only adds the link. The edit is marked and the
+                        uninstaller removes exactly it.
 EOF
             exit 0 ;;
         --with-access-point) WITH_AP=1 ;;
+        --with-network-page) WITH_NETPAGE=1 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -328,6 +337,47 @@ if [ -f "$legacy_header" ] && grep -q 'machino:begin' "$legacy_header" 2>/dev/nu
     sed '/machino:begin/,/machino:end/d' "$legacy_header" > "$legacy_header.machino.tmp" &&
         mv "$legacy_header.machino.tmp" "$legacy_header" && say "removed the legacy WebUI menu entry" ||
         { rm -f "$legacy_header.machino.tmp"; warn "could not remove the legacy menu entry from $legacy_header"; }
+fi
+
+# ------------------------------------------ the network page's menu entry ---
+# Opt-in, marked, and removed by exactly the same markers on uninstall.
+#
+# The default is to leave p/header.cgi byte-identical. An installer that edits
+# the stock navigation makes a later upgrade of the stock WebUI either revert
+# the change or conflict with it, and a user who did not ask for it should not
+# find their files modified. /machino/net works either way; this only adds the
+# link.
+netpage_header="$CGI/p/header.cgi"
+if [ "$WITH_NETPAGE" = "1" ]; then
+    if [ ! -f "$netpage_header" ]; then
+        warn "--with-network-page given but $netpage_header does not exist - no menu entry added"
+    elif grep -q 'machino-netpage:begin' "$netpage_header" 2>/dev/null; then
+        say "the network page menu entry is already there"
+    else
+        # Anchored on the System dropdown, which is where a network page
+        # belongs and the one anchor this WebUI has had in every version we
+        # have seen. If it is not there we do NOT guess another spot: a menu
+        # entry in the wrong place is worse than none, and the page is still
+        # reachable by URL.
+        anchor='<li><a class="dropdown-item" href="network.cgi">'
+        if grep -qF "$anchor" "$netpage_header"; then
+            awk -v anchor="$anchor" '
+                { print }
+                index($0, anchor) && !done {
+                    print "<!-- machino-netpage:begin (added by machino install.sh --with-network-page) -->"
+                    print "<li><a class=\"dropdown-item\" href=\"/machino/net\">Netzwerk &amp; USB (machino)</a></li>"
+                    print "<!-- machino-netpage:end -->"
+                    done = 1
+                }
+            ' "$netpage_header" > "$netpage_header.machino.tmp" &&
+                mv "$netpage_header.machino.tmp" "$netpage_header" &&
+                say "added the network page to the System menu (marked machino-netpage)" ||
+                { rm -f "$netpage_header.machino.tmp"; warn "could not add the menu entry to $netpage_header"; }
+        else
+            warn "the System menu in $netpage_header does not look as expected - no menu entry added"
+            warn "the page is still reachable at http://<camera>/machino/net"
+        fi
+    fi
 fi
 
 # ------------------------------------------------------------------- done ---

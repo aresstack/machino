@@ -100,6 +100,14 @@ esac
 # ------------------------------------------------------------------ WebUI ---
 rm -f "$CGI/machino.cgi"
 header="$CGI/p/header.cgi"
+# The network page entry, if --with-network-page added one. Removed by its own
+# markers so it cannot take a neighbouring edit with it, and before the legacy
+# cleanup below because the two use different markers on purpose.
+if [ -f "$header" ] && grep -q 'machino-netpage:begin' "$header" 2>/dev/null; then
+    sed '/machino-netpage:begin/,/machino-netpage:end/d' "$header" > "$header.machino.tmp" &&
+        mv "$header.machino.tmp" "$header" && say "removed the network page menu entry" ||
+        { rm -f "$header.machino.tmp"; warn "could not remove the network page entry from $header"; }
+fi
 if [ -f "$header" ] && grep -q 'machino:begin' "$header" 2>/dev/null; then
     sed '/machino:begin/,/machino:end/d' "$header" > "$header.machino.tmp" &&
         mv "$header.machino.tmp" "$header" && say "removed the menu entry" ||

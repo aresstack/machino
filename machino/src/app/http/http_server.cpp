@@ -1,4 +1,5 @@
 #include "app/http/http_server.hpp"
+#include "app/http/netui.hpp"
 #include "app/compat/majestic_webui.hpp"
 #include "app/webrtc/peer.hpp"
 #include "app/http/fmp4.hpp"
@@ -447,6 +448,22 @@ bool HttpServer::handle_request(Client& c) {
             queue(c, sse_event("state", api_.state().body.dump()));         // initial snapshot
             LOGI(MOD, "%s: SSE subscribed (%zu subscribers)", c.peer.c_str(), bus_.subscribers());
             return true;
+        }
+    } else if (net_api_ && (path == "/machino/net" || path == "/machino/net/")) {
+        // Machino's own page, under its own path. The stock WebUI is left
+        // byte-identical: an installer that edits p/header.cgi makes an
+        // upgrade of the stock UI either revert the change or conflict with
+        // it. The menu entry that points here is a separate, explicit step.
+        //
+        // Served only when the network API is wired -- a page whose every
+        // button answers 404 is worse than no page.
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else {
+            const bool ok = queue(c, response(200, "text/html; charset=utf-8",
+                                              std::string(machino_net_page(), machino_net_page_len()),
+                                              req.keep_alive));
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
         }
     } else if (net_api_ && net_api_->handle(m, path, req.body, r)) {
         // Asked first among the /api/v1 routes because it owns two whole

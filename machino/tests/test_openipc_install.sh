@@ -464,6 +464,42 @@ hasnt "access point script removed again" "$WORK/root/etc/init.d/S41hostapd"
 make_bundle; make_camera auto
 if run_install --with-acces-point; then bad "a misspelled flag was accepted"; else ok; fi
 
+# ------- 12c) the menu entry is opt-in and header.cgi stays byte-identical --
+# The installer must not edit p/header.cgi behind the user's back: a later
+# upgrade of the stock WebUI would then either revert the change or conflict
+# with it.
+make_bundle; make_camera auto
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
+if diff -q "$WORK/header.orig" "$WORK/root/var/www/cgi-bin/p/header.cgi" >/dev/null; then ok
+else bad "install touched header.cgi without --with-network-page"; fi
+
+make_bundle; make_camera auto
+run_install --with-network-page || bad "--with-network-page was refused: $(cat "$WORK/out")"
+H="$WORK/root/var/www/cgi-bin/p/header.cgi"
+if grep -q 'machino-netpage:begin' "$H"; then ok; else bad "no menu entry was added"; fi
+if grep -q '/machino/net' "$H"; then ok; else bad "the menu entry does not point at the page"; fi
+# The anchor line must still be there: the entry is added AFTER it, not over it.
+if grep -q 'href="network.cgi"' "$H"; then ok; else bad "the entry replaced the stock Network item"; fi
+
+# Installing twice must not add it twice.
+run_install --with-network-page
+is "entry added exactly once" "$(grep -c 'machino-netpage:begin' "$H")" "1"
+
+run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
+if diff -q "$WORK/header.orig" "$H" >/dev/null; then ok
+else bad "header.cgi is not byte-identical again after uninstall"; fi
+
+# A WebUI whose System menu does not look as expected gets NO entry and says
+# so -- a menu item in the wrong place is worse than none, and the page is
+# still reachable by URL.
+make_bundle; make_camera auto
+printf '<html><body>nothing familiar here</body></html>\n' > "$WORK/root/var/www/cgi-bin/p/header.cgi"
+run_install --with-network-page || bad "install failed on an unfamiliar header: $(cat "$WORK/out")"
+if grep -q "does not look as expected" "$WORK/out"; then ok; else bad "the unfamiliar menu was not reported"; fi
+if grep -q 'machino-netpage' "$WORK/root/var/www/cgi-bin/p/header.cgi"; then
+    bad "an entry was forced into an unfamiliar header"
+else ok; fi
+
 # --------- 13) everything shipped to the camera stays BusyBox-clean ---------
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
