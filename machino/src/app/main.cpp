@@ -9,6 +9,12 @@
 // access is never media demand.
 #include "adapters/ingenic/ingenic_platform.hpp"
 #include "app/api/api_service.hpp"
+#include "app/api/net_api.hpp"
+#include "adapters/linux/linux_ethernet_uplink.hpp"
+#include "adapters/linux/linux_usb_host.hpp"
+#include "adapters/linux/sysfs_gpio.hpp"
+#include "adapters/linux/wifi_station_uplink.hpp"
+#include "adapters/linux/wpa_supplicant_wifi.hpp"
 #include "app/compat/majestic_migrate.hpp"
 #include "app/http/http_server.hpp"
 #include "app/onvif/discovery_server.hpp"
@@ -37,6 +43,8 @@
 #include "core/runtime_stats.hpp"
 #include "core/stream_hub.hpp"
 #include "profiles/builtin_profiles.hpp"
+#include "profiles/usb_profiles.hpp"
+#include "core/state_store.hpp"
 
 #include <csignal>
 #include <cstdio>
@@ -412,6 +420,140 @@ int main(int argc, char** argv) {
                         cfg.system.unsafe);
         IStreamServer& server = rtsp;
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection, &rtsp);
+
+        // AP35/AP36: the USB host and the connectivity layer.
+        //
+        // Constructed HERE, before the HTTP server, so they outlive it: the
+        // server holds a pointer to the API object below and a client may
+        // still be mid-request while the stack unwinds.
+        //
+        // None of this is part of the media lifecycle. A USB device appearing
+        // or a WiFi change must not be able to touch IMP, the pipeline or
+        // WebRTC -- the camera keeps streaming whatever the port does.
+        UsbPowerCapability usb_power;
+        if (!profiles::usb_power_for_board(hwr.board_id, usb_power))
+            LOGI(MOD, "usb: no power profile for board '%s' - the port is reported as not switchable",
+                 hwr.board_id.c_str());
+        linuxsys::SysfsGpio usb_gpio(profiles::ingenic_pin_resolver());
+        linuxsys::LinuxUsbHostBackend usb_backend(usb_gpio, usb_power);
+        usb::UsbHostService usb_service(usb_backend);
+
+        // Settings are read through the key list the writer produces, so the
+        // names cannot drift apart. An absent key keeps the built-in default.
+        auto read_settings = [&store](const KeyValues& keys) {
+            KeyValues present;
+            for (const auto& kv : keys) {
+                const std::string v = store.get(kv.first);
+                if (!v.empty()) present.emplace_back(kv.first, v);
+            }
+            return present;
+        };
+
+        {
+            usb::UsbConfig uc;
+            KeyValues keys; api::usb_config_to_settings(uc, keys);
+            std::string e;
+            if (!api::usb_config_from_settings(read_settings(keys), uc, e))
+                LOGW(MOD, "usb: %s - using defaults", e.c_str());
+            bool applied = false;
+            // Adopted, not applied: whether the port comes up is
+            // enable_at_boot's decision, and apply() here would override it.
+            if (!usb_service.load_config(uc, e))
+                LOGW(MOD, "usb: the stored configuration was rejected (%s) - leaving the port alone", e.c_str());
+            else if (!usb_service.apply_at_boot(e, &applied).is_ok())
+                LOGW(MOD, "usb: boot-time power-up failed: %s", e.c_str());
+            else if (applied)
+                LOGI(MOD, "usb: port power enabled at boot");
+        }
+
+        linuxsys::LinuxEthernetUplink eth_uplink("eth0");
+        linuxsys::WpaSupplicantWifi   wifi("wlan0");
+        linuxsys::WifiStationUplink   wifi_uplink(wifi, "wlan0");
+
+        net::ConnectivityManager conn;
+        conn.add(&eth_uplink);
+        const net::WifiCapabilities wcaps = wifi.capabilities();
+        if (wcaps.present) conn.add(&wifi_uplink);
+        LOGI(MOD, "wifi: %s", wcaps.present
+                 ? (wcaps.station_usable() ? "radio present, station mode usable"
+                                           : "radio present, no wpa_supplicant control socket")
+                 : "no radio");
+
+        {
+            net::UplinkPolicy p;
+            KeyValues keys; api::policy_to_settings(p, keys);
+            std::string e;
+            if (!api::policy_from_settings(read_settings(keys), p, e))
+                LOGW(MOD, "network: %s - using the default order", e.c_str());
+            conn.set_policy(p);
+        }
+
+        // The staged-change record lives next to the config, on the same
+        // overlay, and IStateStore writes it 0600 -- a WiFi candidate carries
+        // a passphrase.
+        FileStateStore net_state("/etc/machino/state");
+        net::NetworkTxn net_txn(net_state, [&wifi](const std::string& blob) -> Result {
+            Json j; std::string e;
+            if (!Json::parse(blob, j, e)) return Result::error();
+            const Json* kind = j.get("kind");
+            const Json* conf = j.get("config");
+            if (!kind || !kind->is_string()) return Result::error();
+
+            // The baseline. "Whatever the boot scripts set" is a real
+            // configuration and restoring it means changing nothing -- the
+            // alternative, inventing one, is how a rollback strands a camera.
+            if (kind->as_string() == "boot") return Result::ok();
+
+            if (!conf) return Result::error();
+            if (kind->as_string() == "wifi-station") {
+                net::WifiStationConfig sc;
+                if (!api::wifi_station_from_json(*conf, sc, e)) return Result::error();
+                return wifi.start_station(sc);
+            }
+            return Result::unsupported();
+        });
+        {
+            std::string e;
+            if (!net_txn.seed_confirmed("{\"kind\":\"boot\"}", e)) {
+                // Already seeded on an earlier boot; that is the normal case.
+            }
+            switch (net_txn.recover(e)) {
+                case net::RecoverOutcome::RolledBack:
+                    LOGW(MOD, "network: %s", e.c_str());
+                    break;
+                case net::RecoverOutcome::ConfirmedUnusable:
+                    LOGE(MOD, "network: %s", e.c_str());
+                    break;
+                case net::RecoverOutcome::Nothing:
+                    break;
+            }
+        }
+
+        api::NetApiService::Deps nd;
+        nd.usb  = &usb_service;
+        nd.conn = &conn;
+        nd.wifi = wcaps.present ? &wifi : nullptr;
+        nd.txn  = &net_txn;
+        nd.now_ms = [] { return (uint32_t)now_ms(); };
+        nd.save_usb = [&store](const usb::UsbConfig& c, std::string& e) {
+            KeyValues kv; api::usb_config_to_settings(c, kv);
+            return store.commit(kv, e);
+        };
+        nd.save_policy = [&store](const net::UplinkPolicy& p, std::string& e) {
+            KeyValues kv; api::policy_to_settings(p, kv);
+            return store.commit(kv, e);
+        };
+        api::NetApiService net_api(nd);
+
+        // Transports hear about an uplink switch; the media pipeline never
+        // does. The source address and the NAT path change underneath a live
+        // socket, so this is a transport concern and not an encoder one.
+        conn.subscribe_path_change([](const std::string& from, const std::string& to) {
+            LOGI(MOD, "network path: %s -> %s",
+                 from.empty() ? "(none)" : from.c_str(), to.empty() ? "(none)" : to.c_str());
+        });
+        conn.evaluate();
+
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
         // Front-door: the Majestic drop-in login gates :80 exactly like
@@ -447,6 +589,7 @@ int main(int argc, char** argv) {
         http::SetupGate setup_gate(claim_state, set_root_password, shadow_check, eula_present);
         httpd.set_setup(&setup_gate);
         httpd.set_log_reader(&log_reader);
+        httpd.set_net_api(&net_api);
 
         // AP11 ONVIF. Off by default until it has met a real client; the
         // profiles it advertises are the ones the pipeline actually has, so
@@ -533,6 +676,21 @@ int main(int argc, char** argv) {
         ev.data.fd = sub_timer.fd();  epoll_ctl(ep, EPOLL_CTL_ADD, sub_timer.fd(), &ev);
         ev.data.fd = jpeg_timer.fd(); epoll_ctl(ep, EPOLL_CTL_ADD, jpeg_timer.fd(), &ev);
         if (tfd >= 0) { ev.data.fd = tfd; epoll_ctl(ep, EPOLL_CTL_ADD, tfd, &ev); }
+
+        // The connectivity poll. Its own timer rather than a piggyback on the
+        // telemetry one: telemetry can be switched off, and the rollback of an
+        // unconfirmed network change must not depend on that. Two seconds is
+        // fast enough that the confirmation countdown on the web page does not
+        // visibly lag, and slow enough that reading sysfs costs nothing.
+        const int net_tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+        if (net_tfd >= 0) {
+            struct itimerspec its{};
+            its.it_interval.tv_sec = 2; its.it_value.tv_sec = 2;
+            timerfd_settime(net_tfd, 0, &its, nullptr);
+            ev.data.fd = net_tfd; epoll_ctl(ep, EPOLL_CTL_ADD, net_tfd, &ev);
+        } else {
+            LOGW(MOD, "network: no poll timer - failover and change rollback will not run");
+        }
 
         lifecycle::DemandHandle hold;
         if (cfg.pipeline.always_on) {
@@ -650,6 +808,14 @@ int main(int argc, char** argv) {
                     } else if (tfd >= 0 && out[i].data.fd == tfd) {
                         uint64_t x; while (read(tfd, &x, sizeof x) > 0) {}
                         log_telemetry(perf);
+                    } else if (net_tfd >= 0 && out[i].data.fd == net_tfd) {
+                        uint64_t x; while (read(net_tfd, &x, sizeof x) > 0) {}
+                        // Rollback first. If an unconfirmed change has run out
+                        // of time, the selection that follows should see the
+                        // restored configuration, not the one being undone.
+                        if (net_api.tick())
+                            LOGW(MOD, "network: an unconfirmed change was rolled back");
+                        conn.evaluate();
                     }
                 }
             }
@@ -671,6 +837,7 @@ int main(int argc, char** argv) {
         LOGI(MOD, "lifecycle summary: generations=%u starts=%u stops=%u restarts=%u failed=%u last_error='%s'",
              st.generation, st.start_count, st.stop_count, st.restart_count, st.failed_count, st.last_error.c_str());
         if (tfd >= 0) close(tfd);
+        if (net_tfd >= 0) close(net_tfd);
         close(ep);
     }
 

@@ -5,6 +5,9 @@
 #include "adapters/linux/wpa_ctrl.hpp"
 #include "core/hw/pin_resolver.hpp"
 #include "app/api/net_api.hpp"
+#include "adapters/linux/linux_ethernet_uplink.hpp"
+#include "adapters/linux/wifi_station_uplink.hpp"
+#include "adapters/linux/wpa_supplicant_wifi.hpp"
 #include "core/net/connectivity.hpp"
 #include "core/net/network_txn.hpp"
 #include "core/usb/usb_host_service.hpp"
@@ -39,6 +42,30 @@ static_assert(!std::is_abstract<NullUsbHostBackend>::value, "");
 // Der Resolver aus dem Boardprofil passt an das GPIO-Backend.
 static_assert(std::is_base_of<hw::IPinResolver, hw::BankPinResolver>::value, "");
 static_assert(std::is_base_of<hw::IPinResolver, hw::NumericPinResolver>::value, "");
+
+// AP36 Uplinks und WLAN-Adapter. Auch diese .cpp brauchen Linux-Header, also
+// wird hier wenigstens festgenagelt, dass sie die Ports wirklich erfuellen und
+// dass main() sie so bauen kann.
+static_assert(std::is_base_of<net::INetworkUplink, linuxsys::LinuxEthernetUplink>::value, "");
+static_assert(std::is_base_of<net::INetworkUplink, linuxsys::WifiStationUplink>::value, "");
+static_assert(std::is_base_of<net::IWifiAdapter,   linuxsys::WpaSupplicantWifi>::value, "");
+static_assert(!std::is_abstract<linuxsys::LinuxEthernetUplink>::value,
+              "LinuxEthernetUplink muss instanziierbar sein - sonst fehlt eine Override");
+static_assert(!std::is_abstract<linuxsys::WifiStationUplink>::value, "");
+static_assert(!std::is_abstract<linuxsys::WpaSupplicantWifi>::value, "");
+
+static_assert(std::is_constructible<linuxsys::LinuxEthernetUplink,
+                  std::string, std::string, std::string>::value,
+              "LinuxEthernetUplink nimmt ifname, /sys, /proc");
+static_assert(std::is_constructible<linuxsys::LinuxEthernetUplink>::value,
+              "und hat Defaults fuer den Normalfall");
+static_assert(std::is_constructible<linuxsys::WifiStationUplink,
+                  net::IWifiAdapter&, std::string, std::string, std::string>::value,
+              "WifiStationUplink nimmt den Adapter plus Pfade");
+static_assert(std::is_constructible<linuxsys::WpaSupplicantWifi,
+                  std::string, linuxsys::WpaSupplicantWifi::Paths>::value,
+              "WpaSupplicantWifi nimmt ifname plus Pfadsatz");
+static_assert(std::is_constructible<linuxsys::LinuxNetif, std::string>::value, "");
 
 // HttpServer ruft NetApiService::handle() und set_net_api() auf. http_server.cpp
 // braucht arpa/inet.h und laesst sich hier nicht uebersetzen, also wird

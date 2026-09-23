@@ -51,7 +51,7 @@ endif
 CORE_SRC := src/core/random.cpp src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp src/core/runtime_stats.cpp src/core/log_file.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp \
             src/core/lifecycle/pipeline_manager.cpp src/core/power/performance_service.cpp src/core/media/tuning_service.cpp \
-            src/core/detection/detection_service.cpp src/core/usb/usb_host_service.cpp src/core/net/connectivity.cpp src/core/hw/pin_resolver.cpp src/core/state_store.cpp src/core/net/network_txn.cpp src/app/api/net_views.cpp src/app/api/net_api.cpp src/core/net/wpa_parse.cpp src/profiles/usb_profiles.cpp \
+            src/core/detection/detection_service.cpp src/core/usb/usb_host_service.cpp src/core/net/connectivity.cpp src/core/hw/pin_resolver.cpp src/core/state_store.cpp src/core/net/network_txn.cpp src/app/api/net_views.cpp src/app/api/net_api.cpp src/core/net/wpa_parse.cpp src/core/net/proc_net.cpp src/profiles/usb_profiles.cpp \
             src/profiles/builtin_profiles.cpp
 SRC := src/core/log.cpp $(CORE_SRC) \
        src/app/log_reader.cpp src/app/osd/osd_service.cpp src/app/onvif/soap.cpp src/app/onvif/discovery.cpp src/app/onvif/discovery_server.cpp src/app/onvif/onvif_service.cpp src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/http/setup.cpp src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/http/http_server.cpp \
@@ -59,7 +59,7 @@ SRC := src/core/log.cpp $(CORE_SRC) \
        src/app/watchdog.cpp src/app/linux_watchdog.cpp \
        src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp src/app/rtsp/rtsp_server.cpp src/app/main.cpp \
        src/app/webrtc/sdp.cpp src/app/webrtc/stun.cpp src/app/webrtc/rtp.cpp src/app/webrtc/aes.cpp src/app/webrtc/srtp.cpp src/app/webrtc/dtls.cpp src/app/webrtc/peer.cpp \
-       src/adapters/linux/sysfs_gpio.cpp src/adapters/linux/linux_usb_host.cpp \
+       src/adapters/linux/sysfs_gpio.cpp src/adapters/linux/linux_usb_host.cpp src/adapters/linux/wpa_ctrl.cpp src/adapters/linux/linux_netif.cpp src/adapters/linux/linux_ethernet_uplink.cpp src/adapters/linux/wpa_supplicant_wifi.cpp src/adapters/linux/wifi_station_uplink.cpp \
        src/adapters/ingenic/sensor_params.cpp src/adapters/ingenic/imp_sessions.cpp \
        src/adapters/ingenic/ingenic_power_control.cpp \
        src/adapters/ingenic/ingenic_image_control.cpp \
@@ -78,10 +78,10 @@ ifeq ($(OS),Windows_NT)
 HOST_LIBS += -lbcrypt -lws2_32
 endif
 TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp tests/test_json.cpp tests/test_events.cpp \
-            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_webrtc.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/test_schema_contract.cpp tests/test_logging.cpp tests/test_osd.cpp tests/test_setup.cpp tests/test_onvif.cpp tests/test_discovery.cpp tests/test_onvif_digest.cpp tests/test_random.cpp tests/test_watchdog.cpp tests/test_usb.cpp tests/test_connectivity.cpp tests/test_pin_resolver.cpp tests/test_network_txn.cpp tests/test_net_views.cpp tests/test_net_api.cpp tests/test_wpa_parse.cpp tests/test_adapter_wiring.cpp tests/log_stub.cpp \
+            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_webrtc.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/test_schema_contract.cpp tests/test_logging.cpp tests/test_osd.cpp tests/test_setup.cpp tests/test_onvif.cpp tests/test_discovery.cpp tests/test_onvif_digest.cpp tests/test_random.cpp tests/test_watchdog.cpp tests/test_usb.cpp tests/test_connectivity.cpp tests/test_pin_resolver.cpp tests/test_network_txn.cpp tests/test_net_views.cpp tests/test_net_api.cpp tests/test_wpa_parse.cpp tests/test_proc_net.cpp tests/test_adapter_wiring.cpp tests/log_stub.cpp \
             src/core/random.cpp src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp src/core/runtime_stats.cpp src/core/log_file.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp src/core/lifecycle/pipeline_manager.cpp \
-            src/core/power/performance_service.cpp src/core/media/tuning_service.cpp src/core/detection/detection_service.cpp src/core/usb/usb_host_service.cpp src/core/net/connectivity.cpp src/core/hw/pin_resolver.cpp src/core/state_store.cpp src/core/net/network_txn.cpp src/app/api/net_views.cpp src/app/api/net_api.cpp src/core/net/wpa_parse.cpp src/profiles/usb_profiles.cpp \
+            src/core/power/performance_service.cpp src/core/media/tuning_service.cpp src/core/detection/detection_service.cpp src/core/usb/usb_host_service.cpp src/core/net/connectivity.cpp src/core/hw/pin_resolver.cpp src/core/state_store.cpp src/core/net/network_txn.cpp src/app/api/net_views.cpp src/app/api/net_api.cpp src/core/net/wpa_parse.cpp src/core/net/proc_net.cpp src/profiles/usb_profiles.cpp \
             src/app/osd/osd_service.cpp src/app/watchdog.cpp \
             src/app/api/api_service.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/onvif/soap.cpp src/app/onvif/discovery.cpp src/app/onvif/onvif_service.cpp src/app/http/setup.cpp \
             src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp tests/test_rtsp_auth.cpp tests/test_rtsp_claim.cpp \

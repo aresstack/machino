@@ -65,6 +65,18 @@ public:
     // Validate, then apply. On failure nothing is changed and `err` explains.
     Result apply(const UsbConfig& cfg, std::string& err);
 
+    // Adopt a stored configuration WITHOUT touching the port.
+    //
+    // Start-up reads the file and then lets apply_at_boot() decide whether the
+    // port actually comes up -- which is the entire point of enable_at_boot.
+    // Going through apply() to load it would power the port on regardless of
+    // what the user asked for, and there would be no way to say "remember this
+    // setting but leave the port alone".
+    //
+    // Still validated: a hand-edited file that names a pin the board does not
+    // wire is rejected here rather than at the first apply.
+    bool load_config(const UsbConfig& cfg, std::string& err);
+
     // Apply the stored configuration; used once at start-up when
     // enable_at_boot is set. Separate from apply() so the boot path cannot
     // silently turn a port on that the user disabled.

@@ -35,4 +35,24 @@ int security_from_flags(const std::string& flags);
 // absent; an absent key and an empty value are different answers.
 bool wpa_status_field(const std::string& status, const std::string& key, std::string& out);
 
+// ------------------------------------------- building control commands
+//
+// The control interface is a LINE protocol. An SSID or a passphrase that
+// contains a newline would end the command and start another one, so a WiFi
+// form on the web page would be a way to issue arbitrary wpa_supplicant
+// commands. These two are the only sanctioned way to put user text into a
+// command, and both refuse rather than sanitise -- silently dropping a
+// character from a passphrase produces a camera that cannot associate and no
+// explanation anywhere.
+
+// Hex-encodes a value for the unquoted form: SET_NETWORK 0 ssid 48656c6c6f.
+// Preferred for the SSID, which is arbitrary bytes by specification and may
+// legitimately contain quotes, backslashes and non-UTF-8. Never fails.
+std::string wpa_hex(const std::string& raw);
+
+// Quotes a value for the quoted form. Returns false on anything that cannot
+// safely be quoted: a newline, a carriage return or any other control
+// character. Used for the passphrase, which has no hex form.
+bool wpa_quote(const std::string& raw, std::string& out);
+
 }} // namespace machino::net

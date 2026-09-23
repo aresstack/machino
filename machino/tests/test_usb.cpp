@@ -341,8 +341,74 @@ void test_unknown_power_state_is_reported_as_unknown()
 
 } // namespace
 
+namespace {
+
+void test_loading_a_stored_config_does_not_touch_the_port()
+{
+    // Start-up reads the file; whether the port comes up is enable_at_boot's
+    // decision. An earlier wiring went through apply() to load the settings,
+    // which powered the port on for every user who had asked it not to.
+    FakeBackend b; b.caps = switchable_board();
+    usb::UsbHostService svc(b);
+
+    usb::UsbConfig c;
+    c.enabled = true;
+    c.enable_at_boot = false;
+
+    std::string e;
+    TCHECK(svc.load_config(c, e));
+    TCHECK(b.set_calls == 0);
+    TCHECK(!b.power);
+    TCHECK(svc.config().enabled);          // but it IS remembered
+
+    bool applied = true;
+    TCHECK(svc.apply_at_boot(e, &applied).is_ok());
+    TCHECK(!applied && b.set_calls == 0);
+}
+
+void test_loading_then_booting_powers_the_port()
+{
+    FakeBackend b; b.caps = switchable_board();
+    usb::UsbHostService svc(b);
+
+    usb::UsbConfig c;
+    c.enabled = true;
+    c.enable_at_boot = true;
+
+    std::string e;
+    TCHECK(svc.load_config(c, e));
+    bool applied = false;
+    TCHECK(svc.apply_at_boot(e, &applied).is_ok());
+    TCHECK(applied && b.power && b.last_pin == "PB18");
+}
+
+void test_a_hand_edited_config_naming_an_unwired_pin_is_rejected_on_load()
+{
+    // Not at the first apply, when the reason is far from the cause: the rest
+    // of the GPIO space on this board is the sensor reset, the PHY reset and
+    // the flash.
+    FakeBackend b; b.caps = switchable_board();
+    usb::UsbHostService svc(b);
+
+    usb::UsbConfig c;
+    c.enabled = true;
+    c.mode = UsbPowerMode::Gpio;
+    c.pin = "PA07";                         // not in allowed_pins, no expert flag
+
+    std::string e;
+    TCHECK(!svc.load_config(c, e));
+    TCHECK(!e.empty());
+    TCHECK(b.set_calls == 0);
+    TCHECK(!svc.config().enabled);          // nothing was remembered either
+}
+
+} // namespace
+
 void run_usb_tests()
 {
+    test_loading_a_stored_config_does_not_touch_the_port();
+    test_loading_then_booting_powers_the_port();
+    test_a_hand_edited_config_naming_an_unwired_pin_is_rejected_on_load();
     test_board_default_resolves_to_the_wired_pin();
     test_disable_turns_the_port_off();
     test_unlisted_pin_is_refused_without_expert();

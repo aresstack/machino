@@ -136,6 +136,17 @@ Result UsbHostService::apply(const UsbConfig& cfg, std::string& err)
     return Result::ok();
 }
 
+bool UsbHostService::load_config(const UsbConfig& cfg, std::string& err)
+{
+    UsbResolved r;
+    if (!resolve(cfg, backend_.capabilities(), r, err)) return false;
+
+    std::lock_guard<std::mutex> g(m_);
+    cfg_ = cfg;
+    resolved_ = r;
+    return true;
+}
+
 Result UsbHostService::apply_at_boot(std::string& err, bool* applied)
 {
     if (applied) *applied = false;

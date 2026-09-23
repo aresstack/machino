@@ -50,6 +50,12 @@ void test_security_is_conservative()
     TCHECK(security_from_flags("[WPA2-PSK-CCMP][ESS]") == (int)WifiSecurity::Wpa2);
     TCHECK(security_from_flags("[WPA2-PSK-CCMP][SAE][ESS]") == (int)WifiSecurity::Wpa2Wpa3);
     TCHECK(security_from_flags("[SAE][ESS]") == (int)WifiSecurity::Wpa3);
+    // WPA1-only keeps its own value. It used to come back as Wpa2, which told
+    // the user their network was something it is not and hid the TKIP.
+    TCHECK(security_from_flags("[WPA-PSK-TKIP][ESS]") == (int)WifiSecurity::Wpa);
+    TCHECK(security_from_flags("[WPA][ESS]") == (int)WifiSecurity::Wpa);
+    // A mixed WPA/WPA2 cell is WPA2 to us: that is the one we would join.
+    TCHECK(security_from_flags("[WPA-PSK-TKIP][WPA2-PSK-CCMP][ESS]") == (int)WifiSecurity::Wpa2);
     TCHECK(security_from_flags("[WEP][ESS]") == (int)WifiSecurity::Wep);
     TCHECK(security_from_flags("[ESS]") == (int)WifiSecurity::Open);
     // Unknown -> open, so the UI does not demand a passphrase nobody wants.
@@ -74,6 +80,35 @@ void test_empty_and_header_only()
     TCHECK(parse_scan_results("bssid / frequency / signal level / flags / ssid\n").empty());
 }
 
+void test_control_commands_cannot_be_injected_into()
+{
+    // The control interface is a line protocol. If a newline in an SSID or a
+    // passphrase reached it, the WiFi form on the web page would be a way to
+    // issue arbitrary wpa_supplicant commands -- REMOVE_NETWORK, or worse,
+    // reading the configured PSK back out.
+    std::string q;
+    TCHECK(!wpa_quote("pass\nREMOVE_NETWORK all", q));
+    TCHECK(!wpa_quote("pass\rmore", q));
+    TCHECK(!wpa_quote(std::string("pass\0word", 9), q));
+    TCHECK(!wpa_quote("bell\x07here", q));
+
+    // Quotes and backslashes are legal in a passphrase and get escaped, not
+    // rejected -- refusing them would lock out a perfectly good network.
+    TCHECK(wpa_quote("he said \"hi\"", q) && q == "\"he said \\\"hi\\\"\"");
+    TCHECK(wpa_quote("back\\slash", q) && q == "\"back\\\\slash\"");
+    TCHECK(wpa_quote("", q) && q == "\"\"");
+    TCHECK(wpa_quote("plain", q) && q == "\"plain\"");
+    // Non-ASCII is fine: a passphrase is bytes.
+    TCHECK(wpa_quote("pa\xc3\x9fwort", q));
+
+    // The SSID goes in hex precisely so none of the above can apply to it: an
+    // SSID is arbitrary bytes by specification.
+    TCHECK(wpa_hex("Hello") == "48656c6c6f");
+    TCHECK(wpa_hex("") == "");
+    TCHECK(wpa_hex(std::string("\x00\xff", 2)) == "00ff");
+    TCHECK(wpa_hex("a\nb") == "610a62");
+}
+
 } // namespace
 
 void run_wpa_parse_tests()
@@ -83,4 +118,5 @@ void run_wpa_parse_tests()
     test_security_is_conservative();
     test_status_fields();
     test_empty_and_header_only();
+    test_control_commands_cannot_be_injected_into();
 }

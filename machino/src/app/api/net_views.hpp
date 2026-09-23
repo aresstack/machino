@@ -44,6 +44,14 @@ Json network_json(const std::vector<net::UplinkStatus>& uplinks,
 Json policy_json(const net::UplinkPolicy& p);
 bool policy_from_json(const Json& body, net::UplinkPolicy& p, std::string& err);
 
+// machino.conf mapping, same shape as the USB one. The order list is one
+// comma-separated value rather than indexed keys: it is read and written as a
+// whole, and indexed keys leave orphans behind when the list gets shorter.
+void policy_to_settings(const net::UplinkPolicy& p,
+                        std::vector<std::pair<std::string, std::string>>& out);
+bool policy_from_settings(const std::vector<std::pair<std::string, std::string>>& in,
+                          net::UplinkPolicy& p, std::string& err);
+
 // ------------------------------------------------------------------ WiFi
 
 Json wifi_capabilities_json(const net::WifiCapabilities& c);

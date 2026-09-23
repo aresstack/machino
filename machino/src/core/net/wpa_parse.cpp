@@ -63,7 +63,10 @@ int security_from_flags(const std::string& flags)
 
     if (sae && wpa2)  return (int)WifiSecurity::Wpa2Wpa3;
     if (sae)          return (int)WifiSecurity::Wpa3;
-    if (wpa2 || wpa1) return (int)WifiSecurity::Wpa2;
+    if (wpa2)         return (int)WifiSecurity::Wpa2;
+    // WPA1 gets its own value. Reporting it as WPA2 would tell the user their
+    // network is something it is not, and hide that they are on TKIP.
+    if (wpa1)         return (int)WifiSecurity::Wpa;
     if (wep)          return (int)WifiSecurity::Wep;
     return (int)WifiSecurity::Open;
 }
@@ -84,6 +87,34 @@ bool wpa_status_field(const std::string& status, const std::string& key, std::st
         }
     }
     return false;
+}
+
+std::string wpa_hex(const std::string& raw)
+{
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.reserve(raw.size() * 2);
+    for (unsigned char c : raw) {
+        out += kHex[(c >> 4) & 0xf];
+        out += kHex[c & 0xf];
+    }
+    return out;
+}
+
+bool wpa_quote(const std::string& raw, std::string& out)
+{
+    std::string s = "\"";
+    for (unsigned char c : raw) {
+        // Refuse, do not strip. A passphrase quietly shortened by one
+        // character produces a camera that cannot associate, and nothing
+        // anywhere says why.
+        if (c < 0x20 || c == 0x7f) return false;
+        if (c == '"' || c == '\\') s += '\\';
+        s += (char)c;
+    }
+    s += '"';
+    out = s;
+    return true;
 }
 
 }} // namespace machino::net

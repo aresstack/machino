@@ -316,8 +316,68 @@ void test_network_document_names_the_active_uplink()
 
 } // namespace
 
+namespace {
+
+void test_policy_survives_a_settings_round_trip()
+{
+    net::UplinkPolicy p;
+    p.order = {"lte1", "ethernet", "wifi"};
+    p.auto_failover = false;
+    p.return_to_preferred = false;
+    p.pinned = true;
+    p.pinned_uplink = "lte1";
+
+    std::vector<std::pair<std::string, std::string>> kv;
+    policy_to_settings(p, kv);
+
+    net::UplinkPolicy back;
+    std::string err;
+    TCHECK(policy_from_settings(kv, back, err));
+    TCHECK(back.order == p.order);
+    TCHECK(back.auto_failover == false && back.return_to_preferred == false);
+    TCHECK(back.pinned && back.pinned_uplink == "lte1");
+}
+
+void test_an_empty_order_in_the_file_leaves_the_default_alone()
+{
+    // A present-but-empty key is "unset", not "no preference at all". Clearing
+    // the order would leave the camera with nothing to choose between.
+    net::UplinkPolicy p;
+    const std::vector<std::string> before = p.order;
+    std::vector<std::pair<std::string, std::string>> kv{{"network.order", ""}};
+    std::string err;
+    TCHECK(policy_from_settings(kv, p, err));
+    TCHECK(p.order == before);
+}
+
+void test_the_order_list_tolerates_spacing()
+{
+    net::UplinkPolicy p;
+    std::vector<std::pair<std::string, std::string>> kv{{"network.order", " wifi , ethernet ,, cellular "}};
+    std::string err;
+    TCHECK(policy_from_settings(kv, p, err));
+    TCHECK(p.order.size() == 3);
+    TCHECK(p.order.size() == 3 && p.order[0] == "wifi" && p.order[2] == "cellular");
+}
+
+void test_a_hand_edited_pin_to_nothing_is_refused_too()
+{
+    // The file must not be able to produce a state the API would reject.
+    net::UplinkPolicy p;
+    std::vector<std::pair<std::string, std::string>> kv{{"network.pinned", "true"}};
+    std::string err;
+    TCHECK(!policy_from_settings(kv, p, err));
+    TCHECK(!p.pinned);
+}
+
+} // namespace
+
 void run_net_views_tests()
 {
+    test_policy_survives_a_settings_round_trip();
+    test_an_empty_order_in_the_file_leaves_the_default_alone();
+    test_the_order_list_tolerates_spacing();
+    test_a_hand_edited_pin_to_nothing_is_refused_too();
     test_usb_status_reports_capabilities_and_resolution();
     test_unknown_power_state_is_not_reported_as_off();
     test_usb_patch_rejects_bad_values_and_changes_nothing();

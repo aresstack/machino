@@ -466,7 +466,7 @@ void test_name_round_trips()
     TCHECK(wifi_mode_parse("access-point", m) && m == WifiMode::AccessPoint);
     TCHECK(!wifi_mode_parse("ap", m));
 
-    for (WifiSecurity s : {WifiSecurity::Open, WifiSecurity::Wpa2, WifiSecurity::Wpa3,
+    for (WifiSecurity s : {WifiSecurity::Open, WifiSecurity::Wpa, WifiSecurity::Wpa2, WifiSecurity::Wpa3,
                            WifiSecurity::Wpa2Wpa3, WifiSecurity::Wep}) {
         WifiSecurity back;
         TCHECK(wifi_security_parse(wifi_security_name(s), back) && back == s);

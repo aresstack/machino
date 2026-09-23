@@ -42,6 +42,7 @@ const char* wifi_security_name(WifiSecurity s)
 {
     switch (s) {
         case WifiSecurity::Open:     return "open";
+        case WifiSecurity::Wpa:      return "wpa";
         case WifiSecurity::Wpa2:     return "wpa2";
         case WifiSecurity::Wpa3:     return "wpa3";
         case WifiSecurity::Wpa2Wpa3: return "wpa2-wpa3";
@@ -53,6 +54,7 @@ const char* wifi_security_name(WifiSecurity s)
 bool wifi_security_parse(const std::string& s, WifiSecurity& out)
 {
     if (s == "open")       { out = WifiSecurity::Open;     return true; }
+    if (s == "wpa")        { out = WifiSecurity::Wpa;      return true; }
     if (s == "wpa2")       { out = WifiSecurity::Wpa2;     return true; }
     if (s == "wpa3")       { out = WifiSecurity::Wpa3;     return true; }
     if (s == "wpa2-wpa3")  { out = WifiSecurity::Wpa2Wpa3; return true; }

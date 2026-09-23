@@ -86,7 +86,12 @@ public:
 
 enum class WifiMode : int { Station = 0, AccessPoint };
 
-enum class WifiSecurity : int { Open = 0, Wpa2, Wpa3, Wpa2Wpa3, Wep };
+// Wpa is WPA1/TKIP, and it has its own value for a reason: it is neither WPA2
+// nor open. Folding it into Wpa2 -- which an earlier version did -- tells the
+// user their network is something it is not, and hides that they are on a
+// cipher that has been broken for years. The UI can then say "WPA (legacy)"
+// and mean it.
+enum class WifiSecurity : int { Open = 0, Wpa, Wpa2, Wpa3, Wpa2Wpa3, Wep };
 
 const char* wifi_mode_name(WifiMode m);
 bool        wifi_mode_parse(const std::string& s, WifiMode& out);

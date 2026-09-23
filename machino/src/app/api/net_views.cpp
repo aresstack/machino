@@ -355,6 +355,67 @@ bool policy_from_json(const Json& body, net::UplinkPolicy& p, std::string& err)
     return true;
 }
 
+void policy_to_settings(const net::UplinkPolicy& p,
+                        std::vector<std::pair<std::string, std::string>>& out)
+{
+    std::string order;
+    for (const std::string& s : p.order) {
+        if (!order.empty()) order += ",";
+        order += s;
+    }
+    out.emplace_back("network.order", order);
+    out.emplace_back("network.auto_failover", p.auto_failover ? "true" : "false");
+    out.emplace_back("network.return_to_preferred", p.return_to_preferred ? "true" : "false");
+    out.emplace_back("network.pinned", p.pinned ? "true" : "false");
+    out.emplace_back("network.pinned_uplink", p.pinned_uplink);
+}
+
+bool policy_from_settings(const std::vector<std::pair<std::string, std::string>>& in,
+                          net::UplinkPolicy& p, std::string& err)
+{
+    net::UplinkPolicy next = p;
+    for (const auto& kv : in) {
+        const std::string& k = kv.first;
+        const std::string& v = kv.second;
+        if (k == "network.order") {
+            // An empty value means the key is present but unset. Clearing the
+            // order would leave the camera with no preference at all, so the
+            // built-in default stands rather than being overwritten with
+            // nothing.
+            if (v.empty()) continue;
+            std::vector<std::string> list;
+            size_t pos = 0;
+            while (pos <= v.size()) {
+                const size_t comma = v.find(',', pos);
+                std::string item = v.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                size_t a = 0, b = item.size();
+                while (a < b && item[a] == ' ') ++a;
+                while (b > a && item[b - 1] == ' ') --b;
+                item = item.substr(a, b - a);
+                if (!item.empty()) list.push_back(item);
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+            if (list.empty()) { err = "network.order lists no usable entry"; return false; }
+            next.order = list;
+        }
+        else if (k == "network.auto_failover")       next.auto_failover = (v == "true" || v == "1");
+        else if (k == "network.return_to_preferred") next.return_to_preferred = (v == "true" || v == "1");
+        else if (k == "network.pinned")              next.pinned = (v == "true" || v == "1");
+        else if (k == "network.pinned_uplink")       next.pinned_uplink = v;
+        // Unknown keys are someone else's; the config store keeps them.
+    }
+
+    // The same rule the JSON path enforces, because a hand-edited file must
+    // not be able to produce a state the API refuses to create.
+    if (next.pinned && next.pinned_uplink.empty()) {
+        err = "network.pinned needs network.pinned_uplink";
+        return false;
+    }
+    p = next;
+    return true;
+}
+
 // ------------------------------------------------------------------ WiFi
 
 Json wifi_capabilities_json(const net::WifiCapabilities& c)
