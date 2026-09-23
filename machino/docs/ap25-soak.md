@@ -1,3 +1,26 @@
+> ## REOPENED 2026-09-23 08:06 — der 20-Zyklen-Lauf läuft
+>
+> Der unten empfohlene Lauf (`-Cycles 20`, gleiche Parameter: phase 180 s,
+> settle 30 s) wurde gestartet, **auf demselben Prozess** wie der erste Lauf
+> (pid 992, `c1edd92`) — die Reihe setzt sich also fort statt neu anzufangen,
+> `pipeline_generation` läuft von 28 weiter.
+>
+> ```
+> erster Lauf   Zyklus 1..5   4794  4906  4953  5063  5103 kB   ~77 kB/Zyklus
+> Fortsetzung   Zyklus 1      5136 5200 5256 5188   Mittel 5195 kB
+>               Zyklus 2      5188 5200 ...         Mittel 5194 kB (unvollständig)
+> ```
+>
+> **Noch keine Entscheidung.** Zwei Zyklen, davon einer unvollständig, trennen
+> ein Plateau nicht von einer Geraden — das ist derselbe Fehler, den dieses
+> Dokument dem ersten Lauf vorwirft. Festzuhalten ist nur: der erste
+> vollständige Zyklus der Fortsetzung liegt bei 5195 kB, und der zweite bisher
+> nicht darüber. Wäre der Anstieg linear weitergegangen, stünde Zyklus 6 bei
+> rund 5180 und Zyklus 7 bei 5257 kB — die Messung liegt im Bereich des
+> ersten, nicht des zweiten.
+>
+> Das Ergebnis kommt, wenn alle 20 Zyklen durch sind (rund 3,7 h ab Start).
+
 # AP25 — Performance / RAM / Long-Run-Soak
 
 Lauf vom 2026-09-23, 02:52–04:43. **5 von 6 Zyklen** — der sechste fiel aus,
