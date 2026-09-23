@@ -71,6 +71,12 @@ Vollständig in `pending-physical.md`, hier nur die Gruppen und ihre Zahl:
 | **C** — gezielte Fehlerfälle | 5 | Rebind-Rollback, Watchdog feuert, Shutdown-Reaping, echter Install, Rollback-Pfad |
 | **D** — `NEEDS_HUMAN` | 4 | Factory-Reset, `nmem=` in U-Boot, Modultausch, echter `sysupgrade` |
 | **E** — Fragen an die Platine | 4 | IR-Cut vorhanden? Mikrofon? Lautsprecher? SD-Slot verdrahtet? |
+| **G** — USB / VBUS / Modem (AP35) | 6 | VCC an PB27 und Load-Switch messen, Kleinlastgerät einstecken, WiFi-VID/PID, EC200A am aktiven Hub, Stromaufnahme, Lastmessung gegen WebRTC |
+
+Nachgetragen am 2026-09-23: Gruppe **G** kam mit AP35 dazu, damit sind es 37
+statt 31 nummerierte Punkte. Die Gruppe **F** in `pending-physical.md` steht
+bewusst nicht in dieser Tabelle — sie sammelt Offenes *ohne* Prüfplan
+(Hardlock-Ursache, OSD-Backend) und lässt sich deshalb nicht abzählen.
 
 **B1 ist der Punkt mit dem größten Rückrollwert** — er verschiebt die
 ausgehandelte WebRTC-Nutzlast auf einem hardwareabgenommenen Pfad. Spielt
