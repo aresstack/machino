@@ -49,6 +49,8 @@ jobs:
       CROSS: "mipsel-linux-"
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: "Install build dependencies"
         run: |
@@ -59,19 +61,22 @@ jobs:
       - name: "Fetch the mipsel toolchain"
         run: |
           set -eu
-          # The same thingino toolchain build-machino-t40 uses, so a module and
-          # the daemon come out of one compiler family. The kernel is C only,
-          # so the C++ side is irrelevant here.
-          TC_URL="https://github.com/themactep/thingino-firmware/releases/download/toolchain-xburst1/thingino-toolchain_xburst1_musl_gcc14-linux-mipsel.tar.gz"
-          wget -q "$TC_URL" -O "$RUNNER_TEMP/tc.tar.gz" || {
-              echo "::error::the toolchain tarball could not be fetched from $TC_URL"
-              echo "::error::this job cannot guess a substitute -- update TC_URL"
-              exit 1
-          }
-          mkdir -p "$RUNNER_TEMP/tc"
-          tar -xzf "$RUNNER_TEMP/tc.tar.gz" -C "$RUNNER_TEMP/tc"
-          BIN=$(find "$RUNNER_TEMP/tc" -type d -name bin | head -1)
-          test -n "$BIN" || { echo "::error::no bin/ in the toolchain tarball"; exit 1; }
+          # Through the repo's own build.sh, exactly as build-machino-t40 does.
+          #
+          # The first version of this step carried a hand-written release URL
+          # and the run died on it -- a URL invented here is a second source of
+          # truth for something the repo already knows, and it drifted before
+          # it ever worked. build.sh pins the archive AND verifies its SHA256.
+          #
+          # A kernel module links no libc, so the musl userspace toolchain is
+          # the right compiler for it; the vermagic gate below is what actually
+          # decides whether the result will load.
+          chmod +x build.sh
+          ./build.sh deps T40 --libc-musl
+          BIN=$(ls -d toolchain/*/*/bin 2>/dev/null | head -1)
+          test -n "$BIN" || { echo "::error::build.sh produced no toolchain bin/"; ls -R toolchain | head -40; exit 1; }
+          BIN="$PWD/$BIN"
+          test -x "$BIN/${CROSS}gcc" || { echo "::error::no ${CROSS}gcc in $BIN"; ls "$BIN" | head -20; exit 1; }
           echo "$BIN" >> "$GITHUB_PATH"
           echo "TC_BIN=$BIN" >> "$GITHUB_ENV"
           "$BIN/${CROSS}gcc" --version | head -1
