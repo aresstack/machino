@@ -176,6 +176,21 @@ machino-openipc-t40nn.tar.gz     das Installationspaket
 vollständigen Compiler-Flags. `SHA256SUMS` deckt jede Datei des Pakets ab und
 wird vom Installer geprüft.
 
+### Der Build ist reproduzierbar — gemessen, nicht behauptet
+
+Derselbe Commit (`de7b189`) wurde zweimal gebaut: der reguläre CI-Lauf und ein
+`gh run rerun` desselben Laufs (`attempt=2`, Artefakt neu erzeugt um
+01:35:27 Z).
+
+```
+Versuch 1   bf72da8c02968c720b75cf5e6c876a5a41f718df966e9d81d11b72a654eb9241
+Versuch 2   bf72da8c02968c720b75cf5e6c876a5a41f718df966e9d81d11b72a654eb9241
+```
+
+**Bitidentisch.** Das gilt für denselben Commit — der Versionsstring steckt per
+`-DMACHINO_VERSION` im Binary, zwei *verschiedene* Commits ergeben also
+notwendigerweise verschiedene Hashes.
+
 Beispiel für den zuletzt auf die Kamera gelegten Build:
 
 ```
