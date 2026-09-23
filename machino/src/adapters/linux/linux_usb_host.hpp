@@ -37,6 +37,8 @@ private:
     std::string        sysfs_usb_;
     std::string        controller_;
 
+    std::string        first_root_hub() const;
+
     mutable std::mutex m_;
     std::string        driven_pin_;      // the pin we currently hold, if any
     bool               driven_active_high_ = true;

@@ -278,6 +278,32 @@ void test_second_change_is_refused_while_one_is_pending()
     TCHECK(err.find("still waiting") != std::string::npos);
 }
 
+void test_expiry_during_apply_leaves_nothing_behind()
+{
+    // If the window elapses while forward() is still running, nobody ends up
+    // holding a token for a change that was applied. begin() must therefore
+    // undo it, so "returned false" always means "nothing changed" -- otherwise
+    // a caller that retries applies it twice.
+    StagedChange sc;
+    int applied = 0, undone = 0;
+    uint64_t tok = 0;
+    std::string err;
+
+    // forward() ticks past its own deadline, simulating a slow apply.
+    auto slow_forward = [&]{
+        ++applied;
+        sc.tick(50000);          // the window (10 s from t=0) is long gone
+        return Result::ok();
+    };
+
+    TCHECK(!sc.begin(slow_forward, [&]{ ++undone; return Result::ok(); },
+                     0, 10000, tok, err));
+    TCHECK(applied == 1);
+    TCHECK(undone == 1);         // and it was taken back
+    TCHECK(!sc.pending());
+    TCHECK(err.find("expired") != std::string::npos);
+}
+
 void test_zero_window_is_refused()
 {
     StagedChange sc;
@@ -337,6 +363,7 @@ void run_connectivity_tests()
     test_wrong_token_does_not_confirm();
     test_failed_forward_leaves_nothing_pending();
     test_second_change_is_refused_while_one_is_pending();
+    test_expiry_during_apply_leaves_nothing_behind();
     test_zero_window_is_refused();
     test_rollback_survives_the_millisecond_wrap();
     test_name_round_trips();

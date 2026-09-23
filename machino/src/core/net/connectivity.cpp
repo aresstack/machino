@@ -91,16 +91,25 @@ bool StagedChange::begin(Action forward, Action rollback, uint32_t now_ms,
         return false;
     }
 
-    std::lock_guard<std::mutex> g(m_);
-    if (!pending_ || token_ != tok) {
-        // A tick() fired while forward() was running. It found no rollback and
-        // did nothing, so the change stands but is no longer guarded; say so
-        // rather than hand out a token nobody will honour.
+    bool expired = false;
+    {
+        std::lock_guard<std::mutex> g(m_);
+        if (!pending_ || token_ != tok) {
+            expired = true;     // a tick() fired while forward() was running
+        } else {
+            rollback_ = std::move(rollback);
+            token_out = tok;
+        }
+    }
+    if (expired) {
+        // The change went through but is no longer guarded, and nobody holds a
+        // token for it. Undo it here so that "begin() returned false" always
+        // means "nothing changed" -- otherwise a caller that retries would
+        // apply it twice.
+        rollback();
         err = "the confirmation window expired while the change was being applied";
         return false;
     }
-    rollback_ = std::move(rollback);
-    token_out = tok;
     return true;
 }
 
@@ -214,8 +223,22 @@ INetworkUplink* ConnectivityManager::select(const std::vector<INetworkUplink*>& 
 
 bool ConnectivityManager::evaluate()
 {
+    // The uplink queries below read sysfs. Doing that while holding m_ would
+    // put file I/O in a critical section shared with the API thread, so the
+    // list is snapshotted first and select() runs unlocked.
+    std::vector<INetworkUplink*> snapshot;
+    UplinkPolicy policy;
+    INetworkUplink* current = nullptr;
+    {
+        std::lock_guard<std::mutex> g(m_);
+        snapshot = uplinks_;
+        policy = policy_;
+        current = active_;
+    }
+
+    INetworkUplink* chosen = select(snapshot, policy, current);
+
     std::lock_guard<std::mutex> g(m_);
-    INetworkUplink* chosen = select(uplinks_, policy_, active_);
     if (chosen == active_) return false;
     active_ = chosen;
     return true;
@@ -237,16 +260,25 @@ bool ConnectivityManager::active_type(UplinkType& out) const
 
 std::vector<UplinkStatus> ConnectivityManager::status() const
 {
-    std::lock_guard<std::mutex> g(m_);
+    // Same reason as evaluate(): info() and metrics() read sysfs, and the
+    // status page is served from the HTTP thread. Snapshot, then query.
+    std::vector<INetworkUplink*> snapshot;
+    INetworkUplink* current = nullptr;
+    {
+        std::lock_guard<std::mutex> g(m_);
+        snapshot = uplinks_;
+        current = active_;
+    }
+
     std::vector<UplinkStatus> out;
-    out.reserve(uplinks_.size());
-    for (INetworkUplink* u : uplinks_) {
+    out.reserve(snapshot.size());
+    for (INetworkUplink* u : snapshot) {
         if (!u) continue;
         UplinkStatus s;
         s.type = u->type();
         s.state = u->state();
         s.internet = u->has_internet();
-        s.active = (u == active_);
+        s.active = (u == current);
         s.info = u->info();
         s.metrics = u->metrics();
         out.push_back(s);

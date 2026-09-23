@@ -262,13 +262,19 @@ void test_enable_at_boot_is_honoured()
     TCHECK(s.apply(cfg, err).is_ok());
     int before = b.set_calls;
 
-    TCHECK(s.apply_at_boot(err).is_ok());
+    bool did = true;
+    err = "should not be touched";
+    TCHECK(s.apply_at_boot(err, &did).is_ok());
+    TCHECK(!did);                           // and it reports that it did nothing
+    TCHECK(err == "should not be touched"); // no error text on a non-error
     TCHECK(b.set_calls == before);          // boot path did not touch the port
 
     UsbConfig boot = cfg; boot.enable_at_boot = true;
     TCHECK(s.apply(boot, err).is_ok());
     before = b.set_calls;
-    TCHECK(s.apply_at_boot(err).is_ok());
+    did = false;
+    TCHECK(s.apply_at_boot(err, &did).is_ok());
+    TCHECK(did);
     TCHECK(b.set_calls == before + 1);
 }
 

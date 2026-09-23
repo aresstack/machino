@@ -68,7 +68,12 @@ public:
     // Apply the stored configuration; used once at start-up when
     // enable_at_boot is set. Separate from apply() so the boot path cannot
     // silently turn a port on that the user disabled.
-    Result apply_at_boot(std::string& err);
+    //
+    // `applied` distinguishes "did nothing because the user said not to" from
+    // "did it". Returning Ok while also filling `err` -- as an earlier version
+    // did -- makes a caller that logs any non-empty err report a success as a
+    // problem.
+    Result apply_at_boot(std::string& err, bool* applied = nullptr);
 
     UsbConfig       config() const;
     UsbCapabilities capabilities() const;

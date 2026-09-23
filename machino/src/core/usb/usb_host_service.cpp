@@ -136,18 +136,20 @@ Result UsbHostService::apply(const UsbConfig& cfg, std::string& err)
     return Result::ok();
 }
 
-Result UsbHostService::apply_at_boot(std::string& err)
+Result UsbHostService::apply_at_boot(std::string& err, bool* applied)
 {
+    if (applied) *applied = false;
+
     UsbConfig c;
     {
         std::lock_guard<std::mutex> g(m_);
         c = cfg_;
     }
-    if (!c.enable_at_boot) {
-        err = "enable_at_boot is off";
-        return Result::ok();     // not a failure: the user asked for this
-    }
-    return apply(c, err);
+    if (!c.enable_at_boot) return Result::ok();   // the user asked for this
+
+    Result rc = apply(c, err);
+    if (applied && rc.is_ok()) *applied = true;
+    return rc;
 }
 
 UsbConfig UsbHostService::config() const

@@ -57,14 +57,36 @@ LinuxUsbHostBackend::LinuxUsbHostBackend(IGpioController& gpio,
     if (board_power_.switchable && !gpio_.available()) board_power_.switchable = false;
 }
 
+// The first root hub, whatever it is called. An earlier version hardcoded
+// "usb1"; that happens to be right on this SoC and wrong on anything with a
+// second controller or a different probe order.
+std::string LinuxUsbHostBackend::first_root_hub() const
+{
+    DIR* d = ::opendir(sysfs_usb_.c_str());
+    if (!d) return std::string();
+    std::string best;
+    struct dirent* e;
+    while ((e = ::readdir(d)) != nullptr) {
+        const std::string n = e->d_name;
+        if (n.size() < 4 || n.compare(0, 3, "usb") != 0) continue;
+        bool digits = true;
+        for (size_t i = 3; i < n.size(); ++i) if (n[i] < '0' || n[i] > '9') { digits = false; break; }
+        if (!digits) continue;
+        if (best.empty() || n < best) best = n;   // stable: lowest number wins
+    }
+    ::closedir(d);
+    return best;
+}
+
 UsbCapabilities LinuxUsbHostBackend::capabilities() const
 {
     UsbCapabilities c;
-    c.host_supported = is_dir(sysfs_usb_);
+    const std::string hub = first_root_hub();
+    c.host_supported = is_dir(sysfs_usb_) && !hub.empty();
     c.controller = controller_;
     if (c.host_supported) {
         // Root hub speed is the honest ceiling for this port.
-        std::string s = slurp_or(sysfs_usb_ + "/usb1/speed");
+        std::string s = slurp_or(sysfs_usb_ + "/" + hub + "/speed");
         if (s == "480") c.max_speed = "high";
         else if (s == "12") c.max_speed = "full";
         else if (!s.empty()) c.max_speed = s;
@@ -76,7 +98,7 @@ UsbCapabilities LinuxUsbHostBackend::capabilities() const
 bool LinuxUsbHostBackend::host_active() const
 {
     // A root hub exists exactly when the controller came up in host mode.
-    return is_dir(sysfs_usb_ + "/usb1");
+    return !first_root_hub().empty();
 }
 
 Result LinuxUsbHostBackend::set_power(UsbPowerMode mode, const std::string& pin,
