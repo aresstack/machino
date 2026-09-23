@@ -181,8 +181,43 @@ auf dem Entwicklungsrechner belegen.
 | Nr | Was | Warum offen |
 |----|-----|-------------|
 | ~~H1~~ | ~~Cross-Compile von `main.cpp`, `http_server.cpp` und allen `adapters/linux/*`~~ | **ERLEDIGT 2026-09-23.** `build-machino-t40` grün auf `b85b126`. Und es hat sich gelohnt: der Lauf fand vier Fehler, die lokal unsichtbar waren — siehe unten |
-| H2 | `build-aic8800-t40.yml` | **Läuft inzwischen.** Beide Module bauen (`aic_load_fw.ko` 92 224 B, `aic8800.ko` 552 512 B) mit dem vermagic der Kamera. Offen sind nur noch Symbol-Gate und Alias-Report |
+| ~~H2~~ | ~~`build-aic8800-t40.yml`~~ | **Der ABI-Vertrag ist erfüllt, siehe unten.** Beide Module bauen; vermagic stimmt; alle 159 undefinierten Symbole sind im laufenden Kernel der Kamera exportiert |
 | H3 | `release-machino.yml` | unverändert: geschrieben, nie ausgeführt |
+
+### AIC8800: der ABI-Vertrag ist erfüllt (2026-09-23)
+
+Aus AP35.19 war „module-only ist strukturell möglich" eine **Schlussfolgerung**.
+Jetzt ist es ein gebautes Artefakt mit drei nachgewiesenen Eigenschaften:
+
+```
+aic_load_fw/aic_load_fw.ko      92 224 Bytes
+aic8800_fdrv/aic8800.ko        552 512 Bytes
+vermagic                        4.4.94 SMP preempt mod_unload MIPS32_R2 32BIT
+undefinierte Symbole            159, davon im Kernel der Kamera exportiert: 159
+```
+
+Die Symbolprüfung lief **gegen `/proc/kallsyms` der laufenden Kamera**, nicht
+gegen einen nachgebauten Kernel — also gegen genau den Kernel, in den das Modul
+geladen würde. Der CI-Job hatte hier zuerst Alarm geschlagen (`printk`, `kfree`,
+`memcpy` angeblich nicht exportiert); das war ein **Fehlalarm** aus einer
+unvollständigen `Module.symvers`: `make modules` ohne `vmlinux` liefert nur 249
+Einträge statt der 5716, die die Kamera tatsächlich exportiert. Der Job baut
+jetzt `vmlinux modules` und bricht ab, wenn die Liste unplausibel kurz ist.
+
+Hardwareseitig ebenfalls belegt, per UART gemessen:
+
+```
+GPIO 50 (PB18) = 1   ->  DEV a69c:88dc  speed=480  mA=500  ifs=3
+                         mfr=AICSemi  prod=AIC8800DC
+                         1-1:1.0 cls=e0 drv=none   (Bluetooth)
+                         1-1:1.1 cls=e0 drv=none   (Bluetooth)
+                         1-1:1.2 cls=ff drv=none   (vendor, der WLAN-Teil)
+```
+
+**Was weiterhin offen ist:** ob das Modul das Gerät *bindet* und ob `wlan0`
+erscheint. Ein Modul kann laden und trotzdem nicht binden — das sieht aus wie
+ein totes Funkmodul. Das ist H5 und bleibt `PENDING_PHYSICAL`, bis das Modul
+tatsächlich geladen wurde.
 
 ### Was der Cross-Build gefunden hat, das die Hosttests nicht sehen konnten
 

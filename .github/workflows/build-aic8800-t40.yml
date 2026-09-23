@@ -225,14 +225,29 @@ jobs:
           # NOT produce an image for the camera and nothing here is ever
           # flashed: the camera keeps the kernel it has, which is the whole
           # premise of the module-only approach.
-          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" modules
+          # vmlinux AND modules. The built-in code is where printk, kfree,
+          # memcpy and the spinlocks are EXPORT_SYMBOL'd, and those exports
+          # only reach Module.symvers once vmlinux has been linked. A previous
+          # run built modules alone, got 249 symbols, and the gate then
+          # reported half the C library as "not exported by this kernel" --
+          # a false alarm that would have been very easy to wave through.
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" vmlinux modules
 
           test -s Module.symvers || {
             echo "::error::the kernel build produced no Module.symvers;"
             echo "::error::the symbol gate cannot run and will not be skipped"
             exit 1
           }
-          echo "Module.symvers: $(wc -l < Module.symvers) exported symbols"
+          n=$(wc -l < Module.symvers)
+          echo "Module.symvers: $n exported symbols"
+          # A 4.4 kernel exports thousands. A few hundred means vmlinux did not
+          # contribute and the gate below would be comparing against the wrong
+          # list -- fail here, where the cause is obvious.
+          [ "$n" -gt 2000 ] || {
+            echo "::error::only $n exported symbols; vmlinux exports are missing"
+            echo "::error::the symbol gate would produce false failures"
+            exit 1
+          }
           grep -q '^CONFIG_MODVERSIONS=y' .config && {
             echo "::warning::this config has MODVERSIONS on; the camera's does not."
             echo "::warning::symbol CRCs would then also have to match, not just vermagic."
