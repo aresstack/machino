@@ -136,9 +136,26 @@ struct WifiCapabilities {
 
     // driver / hardware
     bool driver_station = false;
-    bool driver_ap = false;            // needs nl80211/iw to answer honestly
     bool driver_scan = false;
     bool driver_concurrent_sta_ap = false;
+
+    // AP support has THREE states, not two, and collapsing them is a mistake
+    // this code has already made twice:
+    //
+    //   known=false              we have not asked the driver. Not "no".
+    //   known=true,  ap=false    the driver said no.
+    //   known=true,  ap=true     the driver said yes, or we have watched it do it.
+    //
+    // The presence of a hostapd binary says NOTHING about any of this -- it is
+    // a userspace package. An earlier version set driver_ap from it, which
+    // promised AP mode on every image that happened to ship hostapd.
+    //
+    // Answering "known" properly means asking nl80211 for the wiphy's
+    // supported interface types. That is not wired yet, so on this build
+    // `known` only becomes true by observation: hostapd running on this
+    // interface has already had the driver accept AP mode.
+    bool driver_ap_known = false;
+    bool driver_ap = false;
 
     // userspace tooling present on this image
     bool wpa_supplicant_available = false;
@@ -150,8 +167,23 @@ struct WifiCapabilities {
 
     // Both sides must agree before a mode is offered.
     bool station_usable() const { return present && driver_station && wpa_supplicant_available; }
-    bool ap_usable()      const { return present && driver_ap && hostapd_available; }
     bool scan_usable()    const { return present && driver_scan; }
+
+    // "The driver is KNOWN to do AP mode, and the tooling is there." This is
+    // the only thing that may be presented as a capability.
+    bool ap_verified() const {
+        return present && driver_ap_known && driver_ap && hostapd_available;
+    }
+
+    // "Everything we can see is in place, but nobody has confirmed the radio
+    // does AP mode." Offering the attempt is reasonable -- refusing outright
+    // would make the feature unreachable on every board we have not profiled,
+    // including the one in front of us. Presenting it as a capability would
+    // not be, which is why it is a separate question.
+    bool ap_attemptable() const {
+        return present && hostapd_available && dhcp_server_available &&
+               (!driver_ap_known || driver_ap);
+    }
 
     // Filled by the adapter with the concrete reason, so the UI can say
     // "hostapd is not in this image" instead of greying out a control.

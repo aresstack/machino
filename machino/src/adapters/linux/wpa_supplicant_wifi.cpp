@@ -207,10 +207,18 @@ Result WpaSupplicantWifi::start_ap(const net::WifiApConfig& cfg)
     // and no access point.
     if (!ap_) return Result::unsupported();
 
-    // Leave station mode first. On a chip that cannot do both at once --
-    // which is all of them here, driver_concurrent_sta_ap is false -- an
-    // association still in progress fights the AP for the radio, and the
-    // symptom is an access point that comes up and immediately drops.
+    // Get wpa_supplicant off the radio first. DISCONNECT alone is not enough:
+    // it drops the current association but leaves the networks enabled, so the
+    // supplicant starts scanning and re-associating within seconds and fights
+    // hostapd for the PHY. The symptom is an access point that comes up and
+    // immediately drops, which looks like a driver fault.
+    //
+    // This is NOT an assumption that the chip can do STA and AP at once --
+    // driver_concurrent_sta_ap is false and nothing here claims otherwise. It
+    // is the opposite: assume it cannot, and clear the way. Whether hostapd
+    // then actually got the radio is not assumed either; HostapdAp::start()
+    // reads the running SSID back and fails if it does not match.
+    ctrl_.ok_request("DISABLE_NETWORK all");
     ctrl_.ok_request("DISCONNECT");
 
     std::string err;

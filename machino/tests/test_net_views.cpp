@@ -130,7 +130,7 @@ void test_wifi_capabilities_separate_driver_from_tooling()
     c.present = true;
     c.driver_station = true;
     c.driver_scan = true;
-    c.driver_ap = true;                 // the chip could
+    c.driver_ap_known = true; c.driver_ap = true;   // the chip could
     c.hostapd_available = false;        // but the image cannot
     c.wpa_supplicant_available = true;
     c.ap_unavailable_reason = "hostapd is not part of this image";
@@ -140,6 +140,47 @@ void test_wifi_capabilities_separate_driver_from_tooling()
     TCHECK(txt.find("\"hostapd\":false") != std::string::npos);      // tooling
     TCHECK(txt.find("\"usable\":{\"station\":true,\"accessPoint\":false") != std::string::npos);
     TCHECK(txt.find("hostapd is not part of this image") != std::string::npos);
+}
+
+void test_an_unasked_driver_is_reported_as_unknown_not_as_no()
+{
+    // "We have not asked the radio" and "the radio said no" are different
+    // answers, and collapsing them is a mistake this code made twice: first by
+    // deriving driver_ap from the presence of a hostapd BINARY -- which is a
+    // userspace package and proves nothing about the driver -- and then by
+    // reporting the unasked case as a flat false.
+    net::WifiCapabilities c;
+    c.present = true;
+    c.driver_station = c.driver_scan = true;
+    c.wpa_supplicant_available = true;
+    c.hostapd_available = true;
+    c.dhcp_server_available = true;
+    // driver_ap_known stays false: nothing has asked nl80211.
+
+    const std::string txt = wifi_capabilities_json(c).dump();
+    TCHECK(txt.find("\"accessPoint\":null") != std::string::npos);
+    TCHECK(txt.find("\"accessPointKnown\":false") != std::string::npos);
+
+    // Not verified -- so nothing may present it as a capability ...
+    TCHECK(!c.ap_verified());
+    TCHECK(txt.find("\"accessPointVerified\":false") != std::string::npos);
+    // ... but attemptable, because refusing every board we have not
+    // interrogated would make the feature unreachable on all of them.
+    TCHECK(c.ap_attemptable());
+
+    // And once the driver HAS said no, it is a no.
+    c.driver_ap_known = true;
+    c.driver_ap = false;
+    TCHECK(!c.ap_attemptable());
+    TCHECK(!c.ap_verified());
+    TCHECK(wifi_capabilities_json(c).dump().find("\"accessPoint\":false") != std::string::npos);
+
+    // A hostapd binary on its own still proves nothing.
+    net::WifiCapabilities b;
+    b.present = true;
+    b.hostapd_available = true;
+    TCHECK(!b.driver_ap_known);
+    TCHECK(!b.ap_verified());
 }
 
 void test_no_document_ever_contains_a_passphrase()
@@ -383,6 +424,7 @@ void run_net_views_tests()
     test_usb_patch_rejects_bad_values_and_changes_nothing();
     test_usb_config_survives_a_settings_round_trip();
     test_wifi_capabilities_separate_driver_from_tooling();
+    test_an_unasked_driver_is_reported_as_unknown_not_as_no();
     test_no_document_ever_contains_a_passphrase();
     test_wifi_connect_requires_an_ssid();
     test_a_typo_is_an_error_not_a_silent_no_op();

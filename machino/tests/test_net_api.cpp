@@ -85,7 +85,8 @@ net::WifiCapabilities full_radio()
 {
     net::WifiCapabilities c;
     c.present = true;
-    c.driver_station = c.driver_ap = c.driver_scan = true;
+    c.driver_station = c.driver_scan = true;
+    c.driver_ap_known = true; c.driver_ap = true;
     c.wpa_supplicant_available = c.hostapd_available = c.dhcp_server_available = true;
     c.ifname = "wlan0";
     c.driver = "aic8800";

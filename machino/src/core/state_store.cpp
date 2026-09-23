@@ -66,12 +66,26 @@ bool write_durably(const std::string& path, const std::string& value)
 
 // After the rename, the DIRECTORY entry itself is still only in the cache.
 // Without this the file can survive while the name pointing at it does not.
-void fsync_directory(const std::string& dir)
+// Returns false when the rename is NOT known to have reached the medium.
+//
+// A rename is a directory operation: without this, the new name can still be
+// lost to a power cut even though the data was fsync'd. So a failure here is
+// reported, not swallowed -- "we wrote it" has to mean it.
+//
+// The one exception is a filesystem that refuses to open a directory at all.
+// That is a property of the filesystem rather than a failure of this write,
+// and treating it as an error would make the store unusable there.
+bool fsync_directory(const std::string& dir)
 {
-    const int dfd = ::open(dir.c_str(), O_RDONLY);
-    if (dfd < 0) return;            // best effort: not all filesystems allow it
-    ::fsync(dfd);
+    const int dfd = ::open(dir.c_str(), O_RDONLY | O_CLOEXEC);
+    if (dfd < 0) return errno == EACCES || errno == EPERM || errno == EINVAL;
+    int rc;
+    do { rc = ::fsync(dfd); } while (rc != 0 && errno == EINTR);
+    // EINVAL on a directory means this filesystem does not support it, which
+    // is not this write failing either.
+    const bool ok = (rc == 0) || (errno == EINVAL);
     ::close(dfd);
+    return ok;
 }
 
 } // namespace
@@ -100,15 +114,32 @@ bool FileStateStore::save(const std::string& key, const std::string& value)
     // fragment. On POSIX this replaces the target atomically; an earlier
     // version called remove() first "because Windows needs it", which opened a
     // window where the file did not exist at all.
+#if defined(_WIN32)
+    // Windows rename(2) fails if the target exists, so the delete really is
+    // needed here -- and this platform is the host test environment, not the
+    // camera. The window it opens is accepted for that reason and for no
+    // other; it must not exist on the target.
     if (std::rename(tmp_path.c_str(), final_path.c_str()) != 0) {
-        if (std::remove(final_path.c_str()) != 0) return false;
-        if (std::rename(tmp_path.c_str(), final_path.c_str()) != 0) return false;
+        if (std::remove(final_path.c_str()) != 0) { std::remove(tmp_path.c_str()); return false; }
+        if (std::rename(tmp_path.c_str(), final_path.c_str()) != 0) { std::remove(tmp_path.c_str()); return false; }
+    }
+    return true;
+#else
+    // NOT on POSIX. Deleting the target and renaming again would mean that any
+    // rename failure -- ENOSPC, EROFS, EIO, a full jffs2 overlay -- destroys
+    // the last known-good record on the way to failing anyway. That is exactly
+    // the class of bug this file was rewritten to remove: for
+    // network-confirmed, losing it is what makes a rollback impossible.
+    if (std::rename(tmp_path.c_str(), final_path.c_str()) != 0) {
+        ::unlink(tmp_path.c_str());     // leave no half-written litter behind
+        return false;
     }
 
-#if !defined(_WIN32)
-    fsync_directory(dir_);
-#endif
+    // The data is on the medium and the name now points at it -- but the name
+    // itself is a directory entry, and that has to be durable too.
+    if (!fsync_directory(dir_)) return false;
     return true;
+#endif
 }
 
 void FileStateStore::clear(const std::string& key)

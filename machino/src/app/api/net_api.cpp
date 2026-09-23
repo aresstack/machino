@@ -274,13 +274,28 @@ Response NetApiService::wifi_ap(const std::string& body)
     if (!d_.wifi) return not_wired(path, "WiFi");
 
     const net::WifiCapabilities caps = d_.wifi->capabilities();
-    if (!caps.ap_usable()) {
-        // The adapter filled in which half is missing -- the radio or the
-        // tooling -- so the UI can say so instead of greying out a control.
-        return ApiService::fail(409, "unsupported", path,
-                                caps.ap_unavailable_reason.empty()
-                                    ? std::string("access point mode is not available")
-                                    : caps.ap_unavailable_reason);
+    // ATTEMPTABLE, not verified. Refusing every board whose driver we have not
+    // interrogated would make the feature unreachable on all of them,
+    // including the one in front of us; claiming it works would be a promise
+    // nothing here has earned. So the attempt is allowed and the adapter
+    // VERIFIES the result -- a radio that cannot do AP mode fails there, with
+    // hostapd's own reason, rather than silently serving nothing.
+    if (!caps.ap_attemptable()) {
+        // The adapter normally fills in which half is missing. When it has not
+        // -- an adapter that does not implement describe() -- the reason is
+        // derived here rather than falling back to "not available", which
+        // tells the user nothing they can act on.
+        std::string why = caps.ap_unavailable_reason;
+        if (why.empty()) {
+            if (!caps.present)                    why = "no WiFi radio is present";
+            else if (!caps.hostapd_available)     why = "hostapd is not in this image";
+            else if (!caps.dhcp_server_available) why = "no DHCP server in this image; "
+                                                        "clients would associate and get no address";
+            else if (caps.driver_ap_known && !caps.driver_ap)
+                                                  why = "this radio's driver does not support access point mode";
+            else                                  why = "access point mode is not available";
+        }
+        return ApiService::fail(409, "unsupported", path, why);
     }
 
     Json j; Response err;

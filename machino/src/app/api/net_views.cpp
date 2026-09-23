@@ -427,7 +427,11 @@ Json wifi_capabilities_json(const net::WifiCapabilities& c)
 
     Json d = Json::object();
     d.set("station", Json::boolean(c.driver_station));
-    d.set("accessPoint", Json::boolean(c.driver_ap));
+    // Three states, not two. "We have not asked the driver" is reported as
+    // null, because false would read as "the radio cannot do it" and that is
+    // a claim nothing in this build has earned.
+    d.set("accessPoint", c.driver_ap_known ? Json::boolean(c.driver_ap) : Json::null());
+    d.set("accessPointKnown", Json::boolean(c.driver_ap_known));
     d.set("scan", Json::boolean(c.driver_scan));
     d.set("concurrentStaAp", Json::boolean(c.driver_concurrent_sta_ap));
     j.set("driverSupports", d);
@@ -439,9 +443,16 @@ Json wifi_capabilities_json(const net::WifiCapabilities& c)
     j.set("tooling", t);
 
     // What the UI should actually offer: both halves have to agree.
+    //
+    // For the access point there are two different questions and the document
+    // carries both, because answering only one of them forces a lie. A board
+    // whose driver we have not asked is ATTEMPTABLE but not VERIFIED -- the
+    // control is offered, labelled as unverified, and a failure then comes
+    // back as a real error instead of contradicting a promise made here.
     Json u = Json::object();
     u.set("station", Json::boolean(c.station_usable()));
-    u.set("accessPoint", Json::boolean(c.ap_usable()));
+    u.set("accessPoint", Json::boolean(c.ap_attemptable()));
+    u.set("accessPointVerified", Json::boolean(c.ap_verified()));
     u.set("scan", Json::boolean(c.scan_usable()));
     j.set("usable", u);
 

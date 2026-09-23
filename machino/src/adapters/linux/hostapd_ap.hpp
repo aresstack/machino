@@ -26,6 +26,7 @@ namespace machino { namespace linuxsys {
 struct HostapdPaths {
     std::string ctrl_dir  = "/var/run/hostapd";
     std::string conf_path = "/etc/machino/hostapd.conf";
+    std::string pid_path  = "/var/run/hostapd.pid";
     std::string dhcp_conf_path = "/etc/machino/udhcpd.conf";
     std::string sys_root  = "/sys";
     std::vector<std::string> bin_dirs{"/usr/sbin", "/sbin", "/usr/bin", "/bin"};
@@ -53,9 +54,22 @@ public:
 
     bool running() const;
 
+    // hostapd's STATUS reports state=ENABLED once the BSS is actually up. That
+    // is the only observation in this build that proves the DRIVER accepted AP
+    // mode, so it is what sets driver_ap_known.
+    bool bss_enabled() const;
+
+    // The SSID hostapd is really serving, read back with GET_CONFIG. Used to
+    // VERIFY a reconfiguration instead of assuming it took.
+    bool running_ssid(std::string& out) const;
+
 private:
     bool write_file(const std::string& path, const std::string& text, std::string& err) const;
     bool have_binary(const char* name) const;
+    // Makes hostapd re-read its configuration file. Returns false when neither
+    // mechanism is available.
+    bool reload_config();
+    bool signal_hup() const;
 
     std::string  ifname_;
     HostapdPaths paths_;

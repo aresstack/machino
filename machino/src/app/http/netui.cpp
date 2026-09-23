@@ -129,6 +129,10 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   <div class="card" id="c-ap">
     <h2>Eigenes WLAN bereitstellen</h2>
     <div id="ap-unavail" class="unavail" hidden></div>
+    <p class="note" id="ap-unverified" hidden>Ob dieses Funkmodul den
+    Access-Point-Modus beherrscht, wurde nicht abgefragt — dieser Build stellt
+    keine nl80211-Anfrage. Der Versuch ist erlaubt; scheitert er, meldet
+    hostapd den Grund, statt dass hier etwas versprochen wird.</p>
     <div id="ap-form">
       <div class="row">
         <div><label for="apssid">SSID</label><input id="apssid" maxlength="32"></div>
@@ -399,10 +403,17 @@ async function loadWifi() {
   if (!sta) msg($("m-station"), "Client-Modus ist nicht nutzbar: " +
       (c.present ? "wpa_supplicant ist nicht erreichbar" : "kein Funkmodul vorhanden"), "");
 
+  // Three states, not two. "accessPoint" means we may OFFER the attempt;
+  // "accessPointVerified" means the driver is known to do it. An unverified
+  // board still gets the form -- refusing every radio nobody has interrogated
+  // would make the feature unreachable on all of them -- but it is labelled
+  // as unverified rather than presented as a capability.
   const ap = c.usable && c.usable.accessPoint;
+  const apSure = c.usable && c.usable.accessPointVerified;
   $("ap-form").hidden = !ap;
   $("ap-unavail").hidden = !!ap;
   $("ap-unavail").textContent = c.apUnavailableReason || "Access-Point-Modus ist nicht verfügbar.";
+  $("ap-unverified").hidden = !(ap && !apSure);
 }
 
 async function loadUsb() {

@@ -2,8 +2,11 @@
 
 #include "core/log.hpp"
 #include "core/net/hostapd_conf.hpp"
+#include "core/net/wpa_parse.hpp"
 
 #include <cerrno>
+#include <csignal>
+#include <cstdio>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -44,11 +47,18 @@ void HostapdAp::describe(net::WifiCapabilities& caps) const
     caps.hostapd_available     = have_binary("hostapd");
     caps.dhcp_server_available = have_binary("udhcpd") || have_binary("dnsmasq");
 
-    // driver_ap is about the RADIO, and without nl80211/iw this image cannot
-    // ask it. What we CAN observe is whether hostapd is actually up on this
-    // interface, which is stronger evidence than a binary existing: hostapd
-    // only opens that socket after the driver accepted AP mode.
-    if (running()) caps.driver_ap = true;
+    // driver_ap is a question about the RADIO, and the presence of a hostapd
+    // binary is no evidence at all -- it is a userspace package. Without an
+    // nl80211 query this image cannot ask the driver directly, so the only
+    // honest source is OBSERVATION: hostapd running with an enabled BSS on
+    // this interface has already had the driver accept AP mode.
+    //
+    // Anything short of that leaves `known` false, which is a third answer and
+    // not a no. See WifiCapabilities for why the two must not be collapsed.
+    if (running() && bss_enabled()) {
+        caps.driver_ap_known = true;
+        caps.driver_ap = true;
+    }
 
     if (!caps.present)                    caps.ap_unavailable_reason = "no WiFi radio is bound on " + ifname_;
     else if (!caps.hostapd_available)     caps.ap_unavailable_reason = "hostapd is not in this image";
@@ -56,6 +66,9 @@ void HostapdAp::describe(net::WifiCapabilities& caps) const
         "hostapd is installed but not running; it is started by the init script, not by machino";
     else if (!caps.dhcp_server_available) caps.ap_unavailable_reason =
         "no DHCP server in this image; clients would associate and get no address";
+    else if (!caps.driver_ap_known)       caps.ap_unavailable_reason =
+        "the driver has not been asked whether it supports access point mode "
+        "(no nl80211 query in this build); starting one is allowed but unverified";
     else                                  caps.ap_unavailable_reason.clear();
 }
 
@@ -88,6 +101,45 @@ bool HostapdAp::write_file(const std::string& path, const std::string& text, std
     return true;
 }
 
+bool HostapdAp::bss_enabled() const
+{
+    std::string reply;
+    if (!ctrl_.request("STATUS", reply, 2000).is_ok()) return false;
+    std::string state;
+    // hostapd reports the interface state here; ENABLED is the only value that
+    // means the driver accepted AP mode and the BSS is on the air.
+    if (!net::wpa_status_field(reply, "state", state)) return false;
+    return state == "ENABLED";
+}
+
+bool HostapdAp::running_ssid(std::string& out) const
+{
+    std::string reply;
+    if (!ctrl_.request("GET_CONFIG", reply, 2000).is_ok()) return false;
+    return net::wpa_status_field(reply, "ssid", out);
+}
+
+bool HostapdAp::signal_hup() const
+{
+    // The pid file is written by the init script that started hostapd. No
+    // fork, no exec -- kill(2) on a pid we did not create.
+    FILE* f = ::fopen(paths_.pid_path.c_str(), "r");
+    if (!f) return false;
+    long pid = 0;
+    const int n = std::fscanf(f, "%ld", &pid);
+    ::fclose(f);
+    if (n != 1 || pid <= 1) return false;
+    return ::kill((pid_t)pid, SIGHUP) == 0;
+}
+
+bool HostapdAp::reload_config()
+{
+    // RELOAD_CONFIG first: it is the explicit "re-read the file" command and
+    // it tells us whether it worked. Older builds answer UNKNOWN COMMAND.
+    if (ctrl_.ok_request("RELOAD_CONFIG", 5000)) return true;
+    return signal_hup();
+}
+
 Result HostapdAp::start(const net::WifiApConfig& cfg, std::string& err)
 {
     std::lock_guard<std::mutex> g(m_);
@@ -106,16 +158,38 @@ Result HostapdAp::start(const net::WifiApConfig& cfg, std::string& err)
     if (!write_file(paths_.conf_path, conf, err)) return Result::error();
     if (cfg.dhcp_server && !write_file(paths_.dhcp_conf_path, dhcp, err)) return Result::error();
 
-    // DISABLE then ENABLE is hostapd's own reconfigure path: it re-reads the
-    // file on ENABLE. RELOAD only picks up a subset of the keys, which is how
-    // a changed passphrase silently does not take.
-    ctrl_.ok_request("DISABLE", 5000);
-    if (!ctrl_.ok_request("ENABLE", 5000)) {
-        err = "hostapd refused the new configuration";
-        // Deliberately not rolled back: hostapd has already read the file, and
-        // writing the previous one back without a successful ENABLE would
-        // leave the file and the running state disagreeing. The staged-change
-        // transaction above this is what restores a working setup.
+    // Making hostapd re-read the FILE is a separate operation from enabling
+    // the BSS, and an earlier version of this code got that wrong: ENABLE maps
+    // to hostapd_enable_iface(), which brings up the configuration hostapd
+    // already has in memory. DISABLE+ENABLE would therefore have re-raised the
+    // OLD access point -- on a fresh camera, the placeholder SSID from the
+    // init script -- while reporting success.
+    //
+    // Re-reading the file is RELOAD_CONFIG (hostapd_reload_config), with
+    // SIGHUP as the fallback for builds whose control interface does not carry
+    // it. kill(2) is a signal, not a fork, so it stays within the rule that
+    // keeps this daemon from spawning processes while IMP is live.
+    if (!reload_config()) {
+        err = "hostapd would not re-read its configuration (no RELOAD_CONFIG and no pid to signal)";
+        return Result::error();
+    }
+
+    // Now bring the BSS up. It may already be enabled, in which case hostapd
+    // answers FAIL and that is not an error -- which is why the result is not
+    // checked here and the verification below is what decides.
+    ctrl_.ok_request("ENABLE", 5000);
+
+    // VERIFY, do not assume. This is the whole reason the sequence above is
+    // not simply fired and reported as done: read back what hostapd is really
+    // serving and compare it with what was asked for.
+    std::string live;
+    if (!running_ssid(live)) {
+        err = "hostapd did not report a running access point after the reconfiguration";
+        return Result::error();
+    }
+    if (live != cfg.ssid) {
+        err = "hostapd is serving '" + live + "', not the requested network; "
+              "the configuration was written but did not take effect";
         return Result::error();
     }
 

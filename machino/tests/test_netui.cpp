@@ -163,6 +163,14 @@ void test_the_capability_names_match()
     TCHECK(has(p, "usable.accessPoint"));
     TCHECK(has(p, "usable.scan"));
     TCHECK(has(p, "apUnavailableReason"));
+
+    // AP support is three-valued, and the page must not flatten it back: an
+    // attemptable-but-unverified radio gets the form AND a note saying nobody
+    // asked the driver.
+    TCHECK(has(caps, "\"accessPointVerified\""));
+    TCHECK(has(caps, "\"accessPointKnown\""));
+    TCHECK(has(p, "usable.accessPointVerified"));
+    TCHECK(has(p, "ap-unverified"));
 }
 
 void test_the_staged_change_fields_match()
