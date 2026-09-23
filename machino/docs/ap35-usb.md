@@ -555,12 +555,46 @@ Familie sind LCC-/mini-PCIe-Bausteine mit **eigener** VBAT-Versorgung, bei
 denen USB nur Daten führt. Der Anschluss ist also für die Zusatzplatinen des
 Herstellers ausgelegt, nicht für einen USB-Dongle mit 5-V-Bedarf.
 
+### Enumeration bewiesen: AIC8800DC
+
+Mit gesetztem GPIO 50 und angesteckter Hersteller-WLAN-Platine:
+
+```
+HPRT0   0x00001005     PRTCONNSTS=1, PRTENA=1, PRTPWR=1
+dmesg   usb 1-1: new high-speed USB device number 2 using dwc2
+sysfs   1-1, 1-1:1.0, 1-1:1.1, 1-1:1.2
+
+idVendor/idProduct    a69c:88dc
+manufacturer/product  AICSemi / AIC8800DC
+bNumInterfaces        3      speed 480      bMaxPower 500mA
+
+1-1:1.0   cls=e0 sub=01 prot=01     Wireless Controller / Bluetooth
+1-1:1.1   cls=e0 sub=01 prot=01     Bluetooth
+1-1:1.2   cls=ff sub=ff prot=ff     vendor-specific -> WLAN
+```
+
+**Damit ist die gesamte Kette nachgewiesen:** Versorgung, D+/D−, PHY,
+Host-Controller und Enumeration funktionieren. Ein WLAN-Treiber war dafür
+nicht nötig und ist auch nicht geladen.
+
+Der Nebenfund aus AP35.19 bestätigt sich: die OpenIPC-Firmware führt ein
+Paket **`aic8800-openipc`**. Das war dort ausdrücklich als *Spur* notiert,
+weil AP35.11 verbietet, den Chipsatz aus dem Boardlayout zu raten — jetzt ist
+er gemessen, und das Paket ist der passende Treiber.
+
 ### Offen
 
-* WLAN-Zusatzplatine anstecken → `PRTCONNSTS = 1`, VID:PID. Steht aus, weil
-  dafür das UART-Kabel getauscht werden muss.
-* GPIO 50 dauerhaft setzen (Initskript oder `rc.local`). Bisher nur zur
-  Laufzeit gesetzt, ein Reboot verliert es.
+* **`aic8800`-Treiber bauen und laden.** Der Chip braucht zusätzlich
+  Firmware-Blobs; beides liefert das OpenIPC-Paket. Das ist derselbe
+  Module-only-Weg wie in AP35.19 — der Kernel exportiert alles Nötige, und
+  `mac80211`/`cfg80211` liegen bereits im Image.
+* **GPIO 50 dauerhaft setzen.** Bisher nur zur Laufzeit; ein Reboot verliert
+  es. Drei Zeilen in einem Initskript, analog zu Stocks `appinstall`.
+* **Kartenslot auf der Platine.** Die Zusatzplatine trägt einen Kartenslot.
+  Der SoC hat einen MMC-Controller mit `cd-gpios` im DTB, der bisher nie eine
+  Karte gesehen hat. Falls der Slot am MMC-Host hängt, wäre das ein
+  Recording-Ziel — und damit ein offener Punkt aus AP19 neu zu bewerten.
+* **EC200A:** enumeriert an diesem Port nicht (3,3 V). Unverändert.
 
 ## AP35.21 — Die Messung am Schalter: die Polarität ist invertiert (überholt)
 
