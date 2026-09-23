@@ -52,6 +52,9 @@ __bswapdi2
 __bswapsi2
 __bzero
 __cap_empty_set
+__cfg80211_alloc_event_skb
+__cfg80211_alloc_reply_skb
+__cfg80211_send_event_skb
 __check_sticky
 __class_create
 __class_register
@@ -113,7 +116,7 @@ __dst_free
 __elv_add_request
 __ethtool_get_settings
 __f_setown
-__fat_fs_error	[fat]
+__fat_fs_error
 __fdget
 __fib6_flush_trees
 __find_get_block
@@ -151,6 +154,7 @@ __i2c_board_list
 __i2c_board_lock
 __i2c_first_dynamic_bus_num
 __i2c_transfer
+__ieee80211_get_channel
 __inc_zone_page_state
 __inet6_lookup_established
 __inet_hash
@@ -819,6 +823,7 @@ br_dev_queue_push_xmit
 br_forward_finish
 br_handle_frame_finish
 br_should_route_hook
+bridge_tunnel_header
 brioctl_set
 bsearch
 buffer_check_dirty_writeback
@@ -870,6 +875,76 @@ cdev_add
 cdev_alloc
 cdev_del
 cdev_init
+cfg80211_abandon_assoc
+cfg80211_assoc_timeout
+cfg80211_auth_timeout
+cfg80211_cac_event
+cfg80211_calculate_bitrate
+cfg80211_ch_switch_notify
+cfg80211_ch_switch_started_notify
+cfg80211_chandef_compatible
+cfg80211_chandef_create
+cfg80211_chandef_dfs_required
+cfg80211_chandef_usable
+cfg80211_chandef_valid
+cfg80211_check_combinations
+cfg80211_check_station_change
+cfg80211_classify8021d
+cfg80211_conn_failed
+cfg80211_connect_result
+cfg80211_cqm_beacon_loss_notify
+cfg80211_cqm_pktloss_notify
+cfg80211_cqm_rssi_notify
+cfg80211_cqm_txe_notify
+cfg80211_crit_proto_stopped
+cfg80211_del_sta_sinfo
+cfg80211_disconnected
+cfg80211_find_ie
+cfg80211_find_vendor_ie
+cfg80211_ft_event
+cfg80211_get_bss
+cfg80211_get_drvinfo
+cfg80211_get_p2p_attr
+cfg80211_get_station
+cfg80211_gtk_rekey_notify
+cfg80211_ibss_joined
+cfg80211_inform_bss_data
+cfg80211_inform_bss_frame_data
+cfg80211_iter_combinations
+cfg80211_mgmt_tx_status
+cfg80211_michael_mic_failure
+cfg80211_new_sta
+cfg80211_notify_new_peer_candidate
+cfg80211_pmksa_candidate_notify
+cfg80211_probe_status
+cfg80211_put_bss
+cfg80211_radar_event
+cfg80211_ready_on_channel
+cfg80211_ref_bss
+cfg80211_reg_can_beacon
+cfg80211_reg_can_beacon_relax
+cfg80211_remain_on_channel_expired
+cfg80211_report_obss_beacon
+cfg80211_report_wowlan_wakeup
+cfg80211_roamed
+cfg80211_roamed_bss
+cfg80211_rx_assoc_resp
+cfg80211_rx_mgmt
+cfg80211_rx_mlme_mgmt
+cfg80211_rx_spurious_frame
+cfg80211_rx_unexpected_4addr_frame
+cfg80211_rx_unprot_mlme_mgmt
+cfg80211_scan_done
+cfg80211_sched_scan_results
+cfg80211_sched_scan_stopped
+cfg80211_sched_scan_stopped_rtnl
+cfg80211_shutdown_all_interfaces
+cfg80211_stop_iface
+cfg80211_tdls_oper_request
+cfg80211_tx_mlme_mgmt
+cfg80211_unlink_bss
+cfg80211_unregister_wdev
+cfg80211_vendor_cmd_reply
 cgroup_attach_task_all
 cgrp_dfl_root
 check_disk_change
@@ -1695,23 +1770,23 @@ execute_in_process_context
 f_setown
 fanout_mutex
 fasync_helper
-fat_add_entries	[fat]
-fat_alloc_new_dir	[fat]
-fat_attach	[fat]
-fat_build_inode	[fat]
-fat_detach	[fat]
-fat_dir_empty	[fat]
-fat_fill_super	[fat]
-fat_flush_inodes	[fat]
-fat_free_clusters	[fat]
-fat_get_dotdot_entry	[fat]
-fat_getattr	[fat]
-fat_remove_entries	[fat]
-fat_scan	[fat]
-fat_search_long	[fat]
-fat_setattr	[fat]
-fat_sync_inode	[fat]
-fat_time_unix2fat	[fat]
+fat_add_entries
+fat_alloc_new_dir
+fat_attach
+fat_build_inode
+fat_detach
+fat_dir_empty
+fat_fill_super
+fat_flush_inodes
+fat_free_clusters
+fat_get_dotdot_entry
+fat_getattr
+fat_remove_entries
+fat_scan
+fat_search_long
+fat_setattr
+fat_sync_inode
+fat_time_unix2fat
 fb_notifier_call_chain
 fb_register_client
 fb_unregister_client
@@ -1771,7 +1846,7 @@ finish_no_open
 finish_open
 finish_wait
 firmware_kobj
-fix_point_div_32	[tx_isp_t40]
+fix_point_div_32
 fixed_size_llseek
 fl6_merge_options
 fl6_sock_lookup
@@ -1835,6 +1910,7 @@ freeze_wake
 freezer_cgrp_subsys_enabled_key
 freezer_cgrp_subsys_on_dfl_key
 freezing_slow_path
+freq_reg_info
 fs_bio_set
 fs_kobj
 fs_overflowgid
@@ -2173,6 +2249,24 @@ idr_is_empty
 idr_preload
 idr_remove
 idr_replace
+ieee80211_amsdu_to_8023s
+ieee80211_bss_get_ie
+ieee80211_chandef_to_operating_class
+ieee80211_channel_to_frequency
+ieee80211_data_from_8023
+ieee80211_data_to_8023
+ieee80211_frequency_to_channel
+ieee80211_get_hdrlen_from_skb
+ieee80211_get_mesh_hdrlen
+ieee80211_get_num_supported_channels
+ieee80211_get_response_rate
+ieee80211_hdrlen
+ieee80211_ie_split
+ieee80211_ie_split_ric
+ieee80211_mandatory_rates
+ieee80211_operating_class_to_band
+ieee80211_radiotap_iterator_init
+ieee80211_radiotap_iterator_next
 iget5_locked
 iget_failed
 iget_locked
@@ -2611,7 +2705,7 @@ irq_work_run
 irq_work_sync
 is_bad_inode
 is_skb_forwardable
-isp_printf	[tx_isp_t40]
+isp_printf
 ispmem_base
 ispmem_size
 iter_div_u64_rem
@@ -3833,7 +3927,7 @@ power_gate_ops
 power_group_name
 power_register_gate
 power_unregister_gate
-pr_printf	[audio]
+pr_printf
 prandom_bytes
 prandom_bytes_state
 prandom_seed
@@ -3853,27 +3947,27 @@ print_stack_trace
 printk
 printk_emit
 printk_timed_ratelimit
-private_capable	[tx_isp_t40]
-private_clk_disable	[tx_isp_t40]
-private_clk_disable_unprepare	[tx_isp_t40]
-private_clk_enable	[tx_isp_t40]
-private_clk_get	[tx_isp_t40]
-private_clk_get_rate	[tx_isp_t40]
-private_clk_prepare_enable	[tx_isp_t40]
-private_clk_put	[tx_isp_t40]
-private_clk_set_rate	[tx_isp_t40]
-private_devm_clk_get	[tx_isp_t40]
-private_devm_clk_put	[tx_isp_t40]
-private_gpio_direction_output	[tx_isp_t40]
-private_gpio_free	[tx_isp_t40]
-private_gpio_request	[tx_isp_t40]
-private_i2c_add_driver	[tx_isp_t40]
-private_i2c_del_driver	[tx_isp_t40]
-private_i2c_get_clientdata	[tx_isp_t40]
-private_i2c_set_clientdata	[tx_isp_t40]
-private_i2c_transfer	[tx_isp_t40]
-private_jzgpio_set_func	[tx_isp_t40]
-private_msleep	[tx_isp_t40]
+private_capable
+private_clk_disable
+private_clk_disable_unprepare
+private_clk_enable
+private_clk_get
+private_clk_get_rate
+private_clk_prepare_enable
+private_clk_put
+private_clk_set_rate
+private_devm_clk_get
+private_devm_clk_put
+private_gpio_direction_output
+private_gpio_free
+private_gpio_request
+private_i2c_add_driver
+private_i2c_del_driver
+private_i2c_get_clientdata
+private_i2c_set_clientdata
+private_i2c_transfer
+private_jzgpio_set_func
+private_msleep
 probe_irq_mask
 probe_irq_off
 probe_irq_on
@@ -4021,6 +4115,7 @@ recalc_sigpending
 reciprocal_value
 redirty_page_for_writepage
 ref_module
+reg_initiator_name
 regcache_cache_bypass
 regcache_cache_only
 regcache_drop_region
@@ -4164,6 +4259,9 @@ regulator_sync_voltage
 regulator_unregister
 regulator_unregister_notifier
 regulator_unregister_supply_alias
+regulatory_hint
+regulatory_set_wiphy_regd
+regulatory_set_wiphy_regd_sync_rtnl
 release_dentry_name_snapshot
 release_firmware
 release_pages
@@ -4203,6 +4301,7 @@ resource_list_free
 resume_device_irqs
 revalidate_disk
 revert_creds
+rfc1042_header
 rhashtable_destroy
 rhashtable_free_and_destroy
 rhashtable_init
@@ -5054,8 +5153,8 @@ timerqueue_iterate_next
 timespec64_to_jiffies
 timespec_trunc
 timeval_to_jiffies
-tisp_log2_fixed_to_fixed	[tx_isp_t40]
-tisp_math_exp2	[tx_isp_t40]
+tisp_log2_fixed_to_fixed
+tisp_math_exp2
 totalhigh_pages
 totalram_pages
 touch_atime
@@ -5162,10 +5261,10 @@ tty_vhangup
 tty_wait_until_sent
 tty_wakeup
 tty_write_room
-tx_isp_exit	[tx_isp_t40]
-tx_isp_init	[tx_isp_t40]
-tx_isp_subdev_deinit	[tx_isp_t40]
-tx_isp_subdev_init	[tx_isp_t40]
+tx_isp_exit
+tx_isp_init
+tx_isp_subdev_deinit
+tx_isp_subdev_init
 uart_add_one_port
 uart_console_write
 uart_get_baud_rate
@@ -5535,6 +5634,14 @@ watchdog_init_timeout
 watchdog_register_device
 watchdog_unregister_device
 wb_writeout_inc
+wiphy_apply_custom_regulatory
+wiphy_free
+wiphy_new_nm
+wiphy_register
+wiphy_rfkill_set_hw_state
+wiphy_rfkill_start_polling
+wiphy_rfkill_stop_polling
+wiphy_unregister
 wireless_nlevent_flush
 wireless_send_event
 woken_wake_function

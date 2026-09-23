@@ -5,10 +5,10 @@ T40NN exports, one per line, sorted.
 
 ```
 source      /proc/kallsyms on the camera, __ksymtab_* entries
-captured    2026-09-23 from 192.168.1.10
+captured    2026-09-23 from 192.168.1.10, with cfg80211 loaded
 kernel      4.4.94, vermagic "4.4.94 SMP preempt mod_unload MIPS32_R2 32BIT"
-count       5708
-md5         0a34d63fba7d01c2f8cc5f9a763b967f
+count       5815
+md5         2a692756b6b52fd2d1e6ab7f0cc756f0
 ```
 
 ## Why this file exists instead of a kernel build
@@ -47,12 +47,29 @@ The file is a snapshot and can go stale. Two guards:
 * Re-capture after any kernel change:
 
 ```sh
-# on the camera
-grep -o ' __ksymtab_.*' /proc/kallsyms | sed 's/ __ksymtab_//' | sort -u > /tmp/exp.txt
+# on the camera -- load the wireless stack FIRST, see below
+modprobe cfg80211
+awk '/ __ksymtab_/ { sub(/.*__ksymtab_/,""); sub(/[ \t].*/,""); print }' \
+    /proc/kallsyms | sort -u > /tmp/exp.txt
 wc -l /tmp/exp.txt; md5sum /tmp/exp.txt
 ```
 
 and update the header above with the new count and md5.
+
+Two traps in that one command, both hit on the first attempt:
+
+* **`modprobe cfg80211` has to come first.** `aic8800.ko` needs 44 `cfg80211_*`
+  symbols. They are not built into this kernel -- `cfg80211.ko` and
+  `mac80211.ko` ship as modules under `/lib/modules/4.4.94/kernel/net/` and
+  are not loaded by default. A capture taken before loading it makes the gate
+  report those 44 as missing, which reads like "this board cannot do WiFi" and
+  is really just load order.
+
+* **Module symbols carry a trailing `[module]` field** in `/proc/kallsyms`,
+  built-in ones do not. A `sed 's/ __ksymtab_//'` leaves it attached, so the
+  entries come out as `cfg80211_connect_result\t[cfg80211]` and match nothing.
+  The line count still goes up, which makes it look like it worked. Hence the
+  `awk` above, which cuts at the first whitespace.
 
 The gate still prefers a real `Module.symvers` when one is present, so a CI
 setup that can build the kernel does not lose anything by this file existing.
