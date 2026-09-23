@@ -2,9 +2,27 @@
 
 2026-09-23. Ergebnis vorweg, weil es die Prämisse des Arbeitspakets umkehrt:
 
-> **USB-Host und VBUS sind auf dieser Kamera bereits vollständig und korrekt
-> aktiv.** Es gibt nichts zu implementieren. Was fehlt, sind die
-> Klassentreiber — und die fehlen im Kernel-Image, nicht in der Konfiguration.
+> **Die Host-Rolle ist aktiv, und die Software fordert VBUS an.** Der
+> Controller steht im erzwungenen Host-Modus, `PRTPWR` ist gesetzt, DRVVBUS
+> (PB27) ist vom Treiber belegt und asserted, der Root-Hub läuft ab Boot.
+> **Was daraus am Stecker ankommt, ist damit nicht gezeigt** — siehe den
+> Kasten unten. Getrennt davon fehlen die USB-Klassentreiber im Image.
+
+> ### Wichtige Abgrenzung: Anforderung ≠ Spannung
+>
+> ```
+> belegt        DWC2 PRTPWR = 1, DRVVBUS/PB27 asserted
+>               => Linux/T40 fordert Host-Modus und Portspannung an
+> NICHT belegt  dass am Zusatzstecker tatsächlich 5 V anliegen
+> Gegenbeleg    am Stecker wurden real 0 V gemessen
+> Status        actual connector VBUS -> PENDING_PHYSICAL
+> ```
+>
+> Ein Registerbit ist eine Anforderung an eine externe Schaltung, keine
+> Messung an ihrem Ausgang. Der reale 0-V-Messwert wird durch die
+> Registerinterpretation **nicht** überschrieben; beide Befunde stehen
+> nebeneinander, und der Widerspruch zwischen ihnen ist genau das, was die
+> physische Messung auflösen muss.
 
 Alles unten ist am laufenden Gerät gemessen, rein lesend. Es wurde kein
 Register geschrieben, kein Modul geladen, keine Datei auf der Kamera geändert.
@@ -64,6 +82,9 @@ GINTSTS   0x04000021
 HPRT0     0x00001000      Bit 12 PRTPWR = 1, Bit 0 PRTCONNSTS = 0
 ```
 
+`PRTPWR = 1` heißt: der Controller **fordert Portspannung an**. Ob die externe
+Schaltung sie liefert, steht in keinem Register der CPU.
+
 **Der Controller läuft im erzwungenen Host-Modus.** Dass HPRT0 überhaupt
 sinnvolle Werte trägt, ist bereits Host-Semantik — das Register existiert nur
 in dieser Rolle.
@@ -91,7 +112,7 @@ Offsets zu einem benannten CPM-Register ist für T40 nicht belegt. Da die Rolle
 > Schluss war falsch; dass nichts enumeriert ist, steht auf `PRTCONNSTS = 0`
 > und einem leeren sysfs, nicht auf dem Zähler.
 
-## AP35.4 — Der VBUS-Pfad ist softwareseitig fertig
+## AP35.4 — Die Software fordert VBUS an; der Stecker ist ungeprüft
 
 ```
 /sys/kernel/debug/gpio:
@@ -99,39 +120,53 @@ Offsets zu einem benannten CPM-Register ist für T40 nicht belegt. Da die Rolle
 ```
 
 GPB beginnt bei 32, Pin 27 ergibt GPIO 59 — **das ist PB27**. Der Pin ist vom
-Treiber beansprucht, als Ausgang konfiguriert und **HIGH getrieben**. Parallel
-dazu meldet der Controller `PRTPWR = 1`. Beide Seiten, GPIO und
-Host-Controller, sagen also: Portspannung ein.
+Treiber beansprucht, als Ausgang konfiguriert und **HIGH getrieben**. Zusammen
+mit `PRTPWR = 1` heißt das: **die Anforderungsseite ist vollständig** — CPU und
+Controller verlangen beide Portspannung.
 
-**Damit ist die Leitfrage des AP beantwortet, aber anders als vermutet.** Wenn
-am USB-VCC 0 V gemessen werden, liegt das *nicht* an Pinmux, Device-Tree,
-Treiber oder Rolle — diese Kette ist vollständig und aktiv. Übrig bleiben
-ausschließlich Hardwareursachen:
+**Das ist nicht dasselbe wie Spannung am Stecker.** Beides sind Zustände
+*innerhalb* des SoC; der Pfad dahinter — Pegelwandler, Load-Switch, Sicherung,
+Stecker — ist aus Software nicht beobachtbar. Gegen die Registerlesung steht
+ein realer Messwert von **0 V** am Zusatzstecker, und dieser Messwert wiegt
+schwerer, weil er am Ziel der Kette genommen wurde.
+
+Der Widerspruch hat mehrere mögliche Auflösungen:
 
 1. der externe Load-Switch ist auf dieser Bestückungsvariante nicht bestückt,
 2. er ist **active-low**, dann bedeutet "out hi" gerade *aus*,
 3. gemessen wurde an einer Stelle hinter einem offenen Pfad,
-4. der Schalter ist defekt.
+4. der Schalter oder seine Versorgung ist defekt,
+5. der Pin führt auf dieser Variante gar nicht an den vorgesehenen Schalter.
 
-Welche davon zutrifft, entscheidet **keine** Software. Das ist eine Messung mit
-dem Multimeter an PB27 und am Schalterausgang → `PENDING_PHYSICAL`.
+**Welche zutrifft, ist offen.** Software kann zwei Beiträge noch leisten — die
+Polarität aus dem Treiberquelltext bestimmen und prüfen, ob eine andere
+Bestückungsvariante im Device-Tree beschrieben ist; beides ist hier nicht
+getan. Die Entscheidung fällt am Multimeter: PB27 selbst, Eingang und Ausgang
+des Schalters, Steckerkontakt → **`PENDING_PHYSICAL` (G1)**.
 
 Aus demselben Grund wurde **nichts** geschaltet: das AP verbietet "blind PB27
 auf HIGH setzen" — der Pin steht ohnehin high, und ihn gegen den Treiber zu
 manipulieren wäre genau der verbotene Eingriff.
 
-## AP35.5 — Nichts zu aktivieren
+## AP35.5 — Auf der Anforderungsseite bleibt nichts zu aktivieren
 
-Der AP sieht einen nichtpersistenten Host-/VBUS-Test vor. Der entfällt: Host
-ist erzwungen, Portspannung ist an, der Root-Hub steht. Es gibt keinen
-sicheren, nichtpersistenten Schritt, der etwas verbessern würde — also wurde
-keiner ausgeführt.
+Der AP sieht einen nichtpersistenten Host-/VBUS-Test vor. Der entfällt für
+das, was er erreichen sollte: Host-Modus ist bereits erzwungen, `PRTPWR` und
+DRVVBUS sind bereits gesetzt, der Root-Hub steht. Ein Schreibzugriff könnte
+nur wiederholen, was schon anliegt.
 
-## AP35.6 — Nichts zu integrieren
+**Das heißt nicht, dass der VBUS-Punkt erledigt ist** — es heißt, dass er
+nicht durch Schreiben in ein Register zu erledigen ist. Bleibt am Stecker
+0 V, liegt die Ursache hinter dem SoC.
 
-"Boot → USB Host aktiv → VBUS korrekt → Root Hub bereit ohne UART-Befehl" ist
-**der Ist-Zustand**. Kein Initskript, kein `usb-role`, kein `devmem`, keine
-DTB-Änderung. Das beste Ergebnis, das dieses Teil-AP haben konnte.
+## AP35.6 — Auf der Anforderungsseite nichts zu integrieren
+
+"Boot → Host-Modus aktiv → VBUS angefordert → Root Hub bereit, ohne
+UART-Befehl" ist **der Ist-Zustand**. Kein Initskript, kein `usb-role`, kein
+`devmem`, keine DTB-Änderung nötig.
+
+Das ursprüngliche AP-Ziel lautet "VBUS korrekt". Ob das erreicht ist, hängt an
+der Steckermessung und ist deshalb **offen**, nicht erfüllt.
 
 ## AP35.7 / AP35.10 — Hier bricht es ab: die Klassentreiber fehlen
 
@@ -295,9 +330,9 @@ reinen Hosttests ableiten."
 |---|---|
 | Stock/OpenIPC USB-Pfad verglichen | **ERFÜLLT** — mit einer Abweichung: `drvvbus-gpio` ist in OpenIPC aktiv, im AP-Stockauszug auskommentiert |
 | T40 Host-Rolle verstanden | **ERFÜLLT** — FORCEHSTMODE=1, aus dem benannten regdump |
-| PB27/DRVVBUS-Pfad geklärt | **ERFÜLLT, softwareseitig** — gpio-59 vom Treiber belegt, out hi, PRTPWR=1. Der Rest ist Elektrik |
-| dauerhafte Host-Aktivierung implementiert | **ENTFÄLLT** — war nie nötig, ist ab Boot aktiv |
-| VBUS-Steuerung softwareseitig korrekt | **ERFÜLLT** |
+| PB27/DRVVBUS-Pfad geklärt | **TEILWEISE** — die Anforderungsseite ist geklärt (gpio-59 belegt, out hi, PRTPWR=1); der Pfad vom Pin zum Stecker ist es **nicht**, und dort wurden 0 V gemessen |
+| dauerhafte Host-Aktivierung implementiert | **ENTFÄLLT** — war nie nötig, die Rolle ist ab Boot aktiv |
+| VBUS-Steuerung softwareseitig korrekt | **ANFORDERUNG ERFÜLLT, WIRKUNG OFFEN** — `PRTPWR`/DRVVBUS gesetzt; ob 5 V am Stecker ankommen, ist `PENDING_PHYSICAL` (G1) |
 | USB enumeration funktioniert | **UNGEPRÜFT** — kein Gerät verfügbar; der Hub-Treiber ist vorhanden |
 | WiFi-Platine unterstützt oder klassifiziert | **KLASSIFIZIERT: nicht unterstützt** — mac80211/cfg80211 da, null Gerätetreiber |
 | EC200A 2c7c:6005 erkannt | **BLOCKIERT** — `option`/`cdc_ether`/`rndis_host`/`cdc_ncm` fehlen im Image |
@@ -310,17 +345,129 @@ reinen Hosttests ableiten."
 
 ## Was jetzt wirklich fehlt
 
-Ein einziger Punkt, und er ist groß:
+**Belegt ist:** die Klassentreiber `option`, `cdc_ether`, `rndis_host`,
+`cdc_ncm`, `usbnet`, `cdc_acm`, `usb_wwan` sind im aktuellen Image nicht
+vorhanden — weder als Modul noch eingebaut auf dem USB-Bus.
 
-> **Die USB-Klassentreiber müssen in den Kernel.** `option`, `cdc_ether`,
-> `rndis_host`, `cdc_ncm` für den EC200A; der passende Gerätetreiber für die
-> WiFi-Platine. Das ist eine Kernel-/Buildroot-Konfiguration plus ein neues
-> Image — kein Paket, das man nachinstalliert, und das schließt AP35.10s
-> Vorgabe "nicht mit Debian/OpenWrt-Paketinstallation arbeiten" korrekt ein.
+**Nicht belegt ist**, dass daraus ein neues Kernel-Image folgt. Eine frühere
+Fassung dieses Dokuments hat genau das behauptet; das war ein Sprung von
+"fehlen" zu "nur per Image nachrüstbar". Diese Kette hat ein fehlendes Glied:
 
-Das berührt den stehenden No-Go-Punkt "ISP/Kernel/Treiber-Deploy" und verlangt
-ein Gerät, an dem jemand sitzt. Es gehört damit vor die Umsetzung eine
-Entscheidung, nicht ein Commit.
+> Es sind **In-Tree-Treiber** des Kernels 4.4.94. Lassen sie sich gegen
+> exakt dieselbe Kernelquelle und -konfiguration als `.ko` bauen, und passt
+> das `vermagic`, dann genügt es, sie ins Overlay zu legen und per
+> `/etc/modules` laden zu lassen. Das wäre erheblich risikoärmer als ein
+> Image-Tausch.
+
+Diese Frage wird in **AP35.19** untersucht (eigener Abschnitt weiter unten).
+Erst wenn Module-only scheitert, ist ein Image die Antwort — und erst dann ist
+der No-Go-Punkt "ISP/Kernel/Treiber-Deploy" überhaupt berührt.
+
+Für die WiFi-Platine bleibt es ohnehin nachgelagert: ohne VID/PID aus einer
+echten Enumeration ist nicht bekannt, welcher Treiber gebraucht wird.
+
+---
+
+## AP35.19 — Module-only: lässt sich das ohne neues Image lösen?
+
+Die Frage vor dem Image-Tausch: es sind **In-Tree-Treiber** des 4.4.94. Können
+sie als einzelne `.ko` gegen genau diesen Kernel gebaut und ins Overlay gelegt
+werden?
+
+### Der Abhängigkeitstest — und er fällt positiv aus
+
+Alles, was die fehlenden Module an Fremdsymbolen brauchen, ist **fest
+eingebaut und exportiert**. Geprüft über `/proc/kallsyms` (`kptr_restrict = 0`,
+5716 Exporte) auf das Vorhandensein von `__ksymtab_<symbol>`:
+
+| Gruppe | Beispielsymbole | Status |
+|---|---|---|
+| usbcore | `usb_register_driver`, `usb_deregister`, `usb_submit_urb`, `usb_control_msg`, `usb_alloc_urb`, `usb_get_dev`, `usb_ifnum_to_if` | **alle exportiert** |
+| Netz | `alloc_etherdev_mqs`, `register_netdev`, `netif_rx`, `eth_type_trans`, `skb_put`, `__netdev_alloc_skb` | **alle exportiert** |
+| **MII** | `mii_ethtool_gset`, `mii_nway_restart`, `generic_mii_ioctl`, `mii_link_ok` | **alle exportiert** |
+| TTY | `tty_register_driver`, `tty_port_init`, `tty_standard_install`, `tty_port_open` | **alle exportiert** |
+
+Die MII-Zeile ist die wichtigste: `usbnet` hängt hart an `mii`, und `mii` ist
+kein Modul, sondern **eingebaut**. Bestätigt durch `modules.builtin`:
+
+```
+drivers/usb/common/usb-common.ko     eingebaut
+drivers/usb/core/usbcore.ko          eingebaut
+drivers/usb/dwc2/dwc2.ko             eingebaut
+drivers/usb/phy/phy-ingenic-inno.ko  eingebaut
+drivers/net/mii.ko                   eingebaut      <- entscheidend
+drivers/net/phy/libphy.ko            eingebaut
+drivers/tty/serial/serial_core.ko    eingebaut
+```
+
+`usbnet`, `cdc_*`, `rndis*` und `option` kommen in `modules.builtin`
+**nicht** vor — sie sind also weder eingebaut noch als Modul vorhanden, und
+genau das sollen sie werden.
+
+### Damit löst sich die Kette vollständig gegen Vorhandenes auf
+
+```
+usbnet       -> usbcore (eingebaut) + mii (eingebaut)        OK
+cdc_ether    -> usbnet                                        OK
+cdc_ncm      -> usbnet                                        OK
+rndis_host   -> usbnet + cdc_ether                            OK
+cdc_acm      -> usbcore + tty (eingebaut)                     OK
+option       -> usbserial   <- liegt bereits als .ko im Image OK
+usb_wwan     -> usbserial                                     OK
+```
+
+Zu `usb_serial_register_drivers`, das im Exporttest als **FEHLT** erschien:
+das ist kein Mangel, sondern Ladereihenfolge. Das Symbol exportiert
+`usbserial.ko`, und das ist **nicht geladen**. Sobald es geladen ist, steht es
+zur Verfügung. Deshalb ist es in der Tabelle oben auch nicht als Blocker
+geführt.
+
+### Der ABI-Vertrag ist erfüllbar
+
+`CONFIG_MODVERSIONS=n` (aus AP8): es gibt **keine Symbol-CRCs**, der gesamte
+Vertrag ist der vermagic-String. Der lautet hier
+
+```
+4.4.94 SMP preempt mod_unload MIPS32_R2 32BIT
+```
+
+und wurde bereits an `tun.ko` als exakt passend nachgewiesen (AP34). Ein aus
+derselben Quelle mit derselben Konfiguration gebautes Modul trägt denselben
+String.
+
+### Woher Quelle und Konfiguration kämen
+
+```
+Kernel      Linux 4.4.94, gebaut 2026-09-17 von einem GitHub-Runner
+Compiler    buildroot-gcc-13.3.0        (aus /proc/version)
+Quelle      OpenIPC/linux, Branch ingenic-t40
+Konfig      aus dem OpenIPC-Firmware-Buildroot fuer dieses Board
+```
+
+### Verdikt
+
+> **Module-only ist strukturell möglich.** Es spricht kein technischer Befund
+> dagegen: alle Fremdsymbole sind exportiert, die harte `mii`-Abhängigkeit ist
+> eingebaut, der ABI-Vertrag ist ein String ohne CRCs, und die Quelle ist
+> benannt. Die frühere Aussage "es braucht ein neues Kernel-Image" ist damit
+> **zurückgezogen**.
+
+**Gebaut wurde nichts**, und das ist ehrlich zu benennen: auf dieser Maschine
+existiert **kein `make`** — weder in MSYS2 (`usr/bin`, `mingw64`, `ucrt64`,
+`clang64`) noch in PowerShell, `cmake` und `ninja` ebenso wenig. Der Beweis
+durch einen echten Build steht deshalb aus und braucht eine Linux-Maschine
+oder einen CI-Job mit der Buildroot-Toolchain.
+
+Auf der Kamera wurde weisungsgemäß **nichts geladen**.
+
+### Nebenfund für die WiFi-Platine
+
+Die OpenIPC-Firmware führt ein Paket **`aic8800-openipc`** — ein USB-WLAN-
+Treiber. Der AIC8800 ist in Kamera-Zusatzplatinen verbreitet, und das wäre der
+naheliegende Kandidat. **Behauptet wird das nicht**: AP35.11 verbietet
+ausdrücklich, den Chipsatz aus dem Boardlayout zu erraten, und ohne VID/PID
+aus einer echten Enumeration bleibt es eine Spur, kein Befund. Sie ist
+notiert, damit G3 weiß, wonach es sucht.
 
 ---
 
