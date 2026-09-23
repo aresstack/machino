@@ -180,9 +180,23 @@ auf dem Entwicklungsrechner belegen.
 
 | Nr | Was | Warum offen |
 |----|-----|-------------|
-| H1 | Cross-Compile von `main.cpp`, `http_server.cpp` und allen `adapters/linux/*` | Diese Dateien brauchen Linux-Header (`arpa/inet.h`); lokal nicht übersetzbar. Die Aufrufstellen sind per `static_assert` in `tests/test_adapter_wiring.cpp` festgenagelt — das fängt Signaturbrüche, **keine** Übersetzungsfehler |
-| H2 | `build-aic8800-t40.yml` | Workflow geschrieben, nie ausgeführt; `gh` ist in dieser Umgebung nicht authentifiziert. Beim ersten Lauf werden vermutlich Toolchain-URL oder Kernel-Config-Pfad nachzuziehen sein. Beides bricht mit einer Meldung ab, die das sagt, statt zu raten |
-| H3 | `release-machino.yml` | dito |
+| ~~H1~~ | ~~Cross-Compile von `main.cpp`, `http_server.cpp` und allen `adapters/linux/*`~~ | **ERLEDIGT 2026-09-23.** `build-machino-t40` grün auf `b85b126`. Und es hat sich gelohnt: der Lauf fand vier Fehler, die lokal unsichtbar waren — siehe unten |
+| H2 | `build-aic8800-t40.yml` | **Läuft inzwischen.** Beide Module bauen (`aic_load_fw.ko` 92 224 B, `aic8800.ko` 552 512 B) mit dem vermagic der Kamera. Offen sind nur noch Symbol-Gate und Alias-Report |
+| H3 | `release-machino.yml` | unverändert: geschrieben, nie ausgeführt |
+
+### Was der Cross-Build gefunden hat, das die Hosttests nicht sehen konnten
+
+Der Grund, warum H1 als eigener Punkt geführt wurde, hat sich beim ersten
+Hinsehen sofort bestätigt. `PENDING_CI` war das richtige Etikett; **nicht
+hinzusehen** war der Fehler — der Cross-Build war schon vor diesem Batch rot,
+ohne dass es jemandem aufgefallen wäre.
+
+| Fund | Warum lokal unsichtbar |
+|------|------------------------|
+| fehlendes `#include <unistd.h>` für `::readlink` in `linux_usb_host.cpp` | Die Datei braucht Linux-Header und wird hier nicht übersetzt. Die `static_assert`s nageln Signaturen fest, nicht Übersetzbarkeit |
+| `system(3)` ist unter glibc `warn_unused_result`, also `-Werror` | Der Host-Compiler markiert es nicht so. Ausgerechnet im neuen Durability-Test |
+| `sun_path` ist 108 Bytes — der Socket-Pfad konnte still gekürzt werden | `-Wformat-truncation` ist im Cross-Build an. **Kein kosmetischer Hinweis:** eine gekürzte Unix-Socket-Adresse benennt einen *anderen* Socket |
+| dieselbe Klasse bei `ifr_name` (16 Bytes) | dito; durch die vorhandene Längenprüfung nicht erreichbar, aber präventiv beseitigt |
 
 ### `PENDING_PHYSICAL` — braucht die Kamera
 

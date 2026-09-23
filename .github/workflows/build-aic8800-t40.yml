@@ -35,7 +35,7 @@ on:
 jobs:
   aic8800:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       KERNEL_REPO: "https://github.com/OpenIPC/linux"
       KERNEL_REF: "${{ github.event.inputs.kernel_ref || 'ingenic-t40' }}"
@@ -208,15 +208,31 @@ jobs:
             echo "no patches needed"
           fi
 
-      - name: "Prepare the kernel tree (modules_prepare only, no full image)"
+      - name: "Prepare the kernel tree and its export list"
         run: |
           set -eu
           cd "$RUNNER_TEMP/linux"
           cp "$KCONFIG" .config
-          # A module needs a configured, prepared tree with the same options --
-          # not a built image. The camera's kernel is not being replaced.
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS" olddefconfig
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" modules_prepare
+
+          # modules_prepare is enough to COMPILE an external module, but it does
+          # not produce Module.symvers -- that is written by the kernel's own
+          # module build, and the symbol gate needs it. The first run of that
+          # gate died with "no Module.symvers" for exactly this reason.
+          #
+          # This builds the kernel's modules to obtain the export list. It does
+          # NOT produce an image for the camera and nothing here is ever
+          # flashed: the camera keeps the kernel it has, which is the whole
+          # premise of the module-only approach.
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" modules
+
+          test -s Module.symvers || {
+            echo "::error::the kernel build produced no Module.symvers;"
+            echo "::error::the symbol gate cannot run and will not be skipped"
+            exit 1
+          }
+          echo "Module.symvers: $(wc -l < Module.symvers) exported symbols"
           grep -q '^CONFIG_MODVERSIONS=y' .config && {
             echo "::warning::this config has MODVERSIONS on; the camera's does not."
             echo "::warning::symbol CRCs would then also have to match, not just vermagic."

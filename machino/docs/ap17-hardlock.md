@@ -243,8 +243,15 @@ die Aushandlung, kein Beweis. Nächstes Mal vor dem Eingreifen über UART
 `cat /sys/class/net/eth0/carrier` und `ethtool eth0` lesen; das trennt
 „Link weg" von „IP weg".
 
-Nebenbefund, offen: das Root-Passwort für UART/WebUI ist nicht mehr
-`_hdt2021t40_` — zwei saubere Versuche wurden abgelehnt. Plausibel, weil der
-Claim-Flow (AP10) genau diesen Shadow-Eintrag setzt und WebUI-Login und
-Systemlogin dieselbe Anmeldung sind. `PENDING_PHYSICAL`; es wird nicht
-geraten.
+Nebenbefund, **zurückgezogen**: aus zwei abgelehnten UART-Logins wurde hier
+zunächst geschlossen, das Root-Passwort sei nicht mehr `_hdt2021t40_`. Das war
+falsch — der Betreiber hat sich unmittelbar danach mit genau diesem Passwort
+von Hand angemeldet. Die Ablehnung kam vom Anmeldeweg, nicht von der
+Anmeldung: `tools`-seitig wird die Zeile über `C:\tmp\uart.ps1` geschickt, und
+busybox' `login` ist beim Zeilenende und beim Timing zwischen Prompt und
+Eingabe empfindlich (bekannt aus der Telnet-Analyse: `login` braucht CR, die
+Shell nicht).
+
+Die Lehre ist allgemeiner als der Einzelfall: **„zwei Versuche abgelehnt" ist
+ein Befund über den Kanal, nicht über das Geheimnis.** Der Schluss auf eine
+geänderte Anmeldung brauchte eine zweite, unabhängige Quelle und hatte keine.
