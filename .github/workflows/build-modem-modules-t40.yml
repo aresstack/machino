@@ -1,0 +1,284 @@
+name: build-modem-modules-t40
+# AP-M2: die USB-Kernelmodule fuer das Quectel EC200A-EU, gebaut fuer den
+# Kernel, den die Kamera bereits hat.
+#
+# Anders als beim AIC8800 ist hier nichts Fremdes zu bauen: option, usb_wwan,
+# usbnet und cdc_ether sind IN-TREE-Treiber von Linux 4.4.94. Sie fehlen nur im
+# OpenIPC-Image, weil die Kamera nie ein Modem tragen sollte. Es genuegt also,
+# denselben Kernelbaum mit denselben Konfigurationsoptionen zu nehmen und genau
+# diese zwei Verzeichnisse als Module zu uebersetzen.
+#
+# Auf der Kamera gemessen (docs/ec200a-reuse-map.md):
+#
+#   usbserial.ko   VORHANDEN im Image
+#   option.ko      fehlt
+#   usb_wwan.ko    fehlt
+#   usbnet.ko      fehlt
+#   cdc_ether.ko   fehlt
+#   MII            in den Kernel EINGEBAUT -- kein fuenftes Modul noetig
+#
+# Was dieser Job beweist und was nicht:
+#
+#   BEWIESEN     die Module uebersetzen gegen 4.4.94/ingenic-t40 fuer mipsel,
+#                tragen exakt den vermagic der Kamera, und jedes undefinierte
+#                Symbol wird von diesem Kernel exportiert
+#   NICHT        dass das EC200A enumeriert, dass option es bindet, oder dass
+#                ein AT-Port entsteht. Das braucht die Hardware und bleibt
+#                PENDING_PHYSICAL.
+#
+# UNGEPATCHT, und das ist eine Entscheidung. option.c dieses Kernels kennt
+# 0x6005 nicht. Der passende Eintrag braucht aber die richtige
+# `.reserved`-Maske, und welche Interfacenummern die Netzwerkfunktion belegt,
+# ist bis zum Auslesen des Config-Descriptors offen (UNKNOWN 1 in der
+# Reuse-Map). Ein geratener Eintrag waere schlimmer als keiner: er wuerde
+# entweder den AT-Port oder das Netzwerkinterface verschlucken. Fuer das
+# Bring-up gibt es den vom Kernel vorgesehenen Weg
+#
+#   echo 2c7c 6005 > /sys/bus/usb-serial/drivers/option1/new_id
+#
+# der alle Interfaces bindet -- fuer AP-M2 harmlos, weil dort noch kein
+# Netzwerkpfad aufgebaut wird, und lehrreich, weil er zeigt, welche Interfaces
+# ueberhaupt seriell ansprechbar sind.
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_ref:
+        description: "OpenIPC/linux ref to build against"
+        required: false
+        default: "ingenic-t40"
+  push:
+    branches: [ main ]
+    paths: [ '.github/workflows/build-modem-modules-t40.yml' ]
+
+permissions:
+  contents: read
+
+jobs:
+  modem-modules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      KERNEL_REPO: "https://github.com/OpenIPC/linux"
+      KERNEL_REF: "${{ github.event.inputs.kernel_ref || 'ingenic-t40' }}"
+      FIRMWARE_REPO: "https://github.com/OpenIPC/firmware"
+      # Der String der Kamera, von einem geladenen Modul abgelesen. Auf einem
+      # CONFIG_MODVERSIONS=n-Kernel ist er der ganze ABI-Vertrag.
+      WANT_VERMAGIC: "4.4.94 SMP preempt mod_unload MIPS32_R2 32BIT"
+      ARCH: "mips"
+      CROSS: "mipsel-linux-"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: "Dependencies"
+        run: sudo apt-get update && sudo apt-get install -y build-essential bc bison flex libssl-dev kmod file wget curl git
+
+      - name: "Toolchain"
+        run: |
+          set -eu
+          chmod +x build.sh
+          ./build.sh deps T40 --libc-musl
+          BIN=$(ls -d toolchain/*/*/bin 2>/dev/null | head -1)
+          test -n "$BIN" || { echo "::error::no toolchain"; exit 1; }
+          echo "$PWD/$BIN" >> "$GITHUB_PATH"
+          "$PWD/$BIN/${CROSS}gcc" --version | head -1
+
+      - name: "Fetch the kernel source (OpenIPC/linux @ ${{ env.KERNEL_REF }})"
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$KERNEL_REF" "$KERNEL_REPO" "$RUNNER_TEMP/linux"
+          echo "kernel commit: $(git -C "$RUNNER_TEMP/linux" rev-parse HEAD)"
+          V=$(make -s -C "$RUNNER_TEMP/linux" kernelversion)
+          echo "kernelversion: $V"
+          case "$V" in
+            4.4.94*) ;;
+            *) echo "::error::this branch is $V, the camera runs 4.4.94 -- a module built here would not load"; exit 1 ;;
+          esac
+
+      - name: "Find the board's kernel config in OpenIPC/firmware"
+        run: |
+          set -eu
+          git clone --depth 1 --filter=blob:none --sparse "$FIRMWARE_REPO" "$RUNNER_TEMP/fw"
+          git -C "$RUNNER_TEMP/fw" sparse-checkout set br-ext-chip-ingenic
+          # Dieselbe Begruendung wie im aic8800-Job: eine erfundene defconfig
+          # ergibt einen anderen vermagic und ein Modul, das nicht laedt.
+          CFG=$(find "$RUNNER_TEMP/fw" \( -name '*t40*.config' -o -name '*t40*defconfig' \) -print 2>/dev/null | sort | head -1 || true)
+          [ -n "$CFG" ] || { echo "::error::no T40 kernel config found under br-ext-chip-ingenic"; exit 1; }
+          echo "kernel config: $CFG"
+          echo "KCONFIG=$CFG" >> "$GITHUB_ENV"
+
+      - name: "Enable exactly the five options these modules need"
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/linux"
+          cp "$KCONFIG" .config
+          echo "--- vorher"
+          grep -E "CONFIG_USB_SERIAL[= ]|CONFIG_USB_SERIAL_OPTION|CONFIG_USB_SERIAL_WWAN|CONFIG_USB_USBNET|CONFIG_USB_NET_CDCETHER|CONFIG_MODVERSIONS" .config || echo "(keine davon gesetzt)"
+
+          # Als MODUL, nicht eingebaut: ein =y wuerde ein Kernelimage
+          # erfordern, und das wird auf dieser Kamera nicht getauscht.
+          ./scripts/config --file .config \
+            --module CONFIG_USB_SERIAL \
+            --module CONFIG_USB_SERIAL_WWAN \
+            --module CONFIG_USB_SERIAL_OPTION \
+            --module CONFIG_USB_USBNET \
+            --module CONFIG_USB_NET_CDCETHER
+
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" olddefconfig
+          echo "--- nachher"
+          grep -E "CONFIG_USB_SERIAL[= ]|CONFIG_USB_SERIAL_OPTION|CONFIG_USB_SERIAL_WWAN|CONFIG_USB_USBNET|CONFIG_USB_NET_CDCETHER|CONFIG_MII|CONFIG_MODVERSIONS" .config || true
+
+          # Die Annahme, die den vermagic traegt: an CONFIG_SMP, CONFIG_PREEMPT
+          # und CONFIG_MODULE_UNLOAD darf sich durch unser olddefconfig nichts
+          # geaendert haben. Das Gate unten wuerde es fangen, aber hier ist die
+          # Fehlermeldung verstaendlich.
+          for s in CONFIG_SMP CONFIG_PREEMPT CONFIG_MODULE_UNLOAD; do
+            grep -q "^$s=y" .config || echo "::warning::$s is not =y -- the vermagic gate will decide"
+          done
+          # MODVERSIONS wuerde zusaetzlich Symbol-CRCs verlangen und die ganze
+          # Modul-Strategie umwerfen.
+          if grep -q "^CONFIG_MODVERSIONS=y" .config; then
+            echo "::error::CONFIG_MODVERSIONS=y in this config -- symbol CRCs would have to match too, not just vermagic"
+            exit 1
+          fi
+
+      - name: "Build the two driver directories as modules"
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/linux"
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" modules_prepare
+          # M=<verzeichnis> geht auch fuer in-tree-Verzeichnisse und baut nur
+          # deren Module -- kein ganzer Kernel, keine Stunde Laufzeit.
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" M=drivers/usb/serial modules
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" M=drivers/net/usb   modules
+          echo "--- gebaut"
+          find drivers/usb/serial drivers/net/usb -name '*.ko' -printf '%p  %s bytes\n' | sort
+
+      - name: "Gate: the four modules we came for must exist"
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/linux"
+          miss=0
+          for m in drivers/usb/serial/usbserial.ko \
+                   drivers/usb/serial/usb_wwan.ko \
+                   drivers/usb/serial/option.ko \
+                   drivers/net/usb/usbnet.ko \
+                   drivers/net/usb/cdc_ether.ko; do
+            if [ -s "$m" ]; then echo "  ok   $m"
+            else echo "::error::missing $m"; miss=1; fi
+          done
+          exit $miss
+
+      - name: "Gate: vermagic must be the camera's, exactly"
+        run: |
+          set -eu
+          # Trailing-Whitespace beidseitig getrimmt, aus demselben Grund wie im
+          # aic8800-Job: der Kernel setzt vermagic aus Tokens zusammen, die
+          # jeweils ein Leerzeichen anhaengen.
+          trim() { printf '%s' "$1" | sed 's/[[:space:]]*$//'; }
+          want=$(trim "$WANT_VERMAGIC")
+          fail=0
+          for ko in $(find "$RUNNER_TEMP/linux/drivers/usb/serial" "$RUNNER_TEMP/linux/drivers/net/usb" -name '*.ko'); do
+            raw=$(modinfo -F vermagic "$ko")
+            got=$(trim "$raw")
+            echo "$(basename "$ko"): [$raw]"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$(basename "$ko") vermagic is '$got', the camera wants '$want'"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: "Gate: every undefined symbol is exported by the camera's kernel"
+        run: |
+          set -eu
+          # Dieselbe Liste wie im aic8800-Job: die tatsaechlichen Exporte der
+          # Kamera, aus /proc/kallsyms abgegriffen. Gegen Module.symvers dieses
+          # Builds zu pruefen wuerde nur beweisen, dass der Build mit sich
+          # selbst einig ist.
+          CAM="$GITHUB_WORKSPACE/machino/tools/kernel/t40nn-exported-symbols.txt"
+          test -s "$CAM" || { echo "::error::no captured symbol list at $CAM"; exit 1; }
+          n=$(wc -l < "$CAM"); echo "camera exports: $n symbols"
+          [ "$n" -gt 2000 ] || { echo "::error::only $n symbols -- the capture looks truncated"; exit 1; }
+
+          sort -u "$CAM" > /tmp/cam.sorted
+          # Die Module exportieren auch untereinander: option braucht usb_wwan
+          # und usbserial, cdc_ether braucht usbnet. Das ist eine Ladereihen-
+          # folge, kein fehlendes Symbol -- also kommen ihre Exporte dazu.
+          : > /tmp/ours
+          for ko in $(find "$RUNNER_TEMP/linux/drivers/usb/serial" "$RUNNER_TEMP/linux/drivers/net/usb" -name '*.ko'); do
+            "${CROSS}nm" -g --defined-only "$ko" 2>/dev/null | awk '{print $3}' >> /tmp/ours
+          done
+          sort -u /tmp/ours > /tmp/ours.sorted
+          cat /tmp/cam.sorted /tmp/ours.sorted | sort -u > /tmp/available
+
+          fail=0
+          for ko in drivers/usb/serial/usbserial.ko drivers/usb/serial/usb_wwan.ko \
+                    drivers/usb/serial/option.ko drivers/net/usb/usbnet.ko \
+                    drivers/net/usb/cdc_ether.ko; do
+            p="$RUNNER_TEMP/linux/$ko"
+            "${CROSS}nm" -u "$p" 2>/dev/null | awk '{print $2}' | sort -u > /tmp/need
+            # __this_module und die gcc-Hilfssymbole kommen nicht aus kallsyms.
+            grep -vE '^(__this_module|__gnu_|_gp_disp|__mips)' /tmp/need > /tmp/need2 || true
+            missing=$(comm -23 /tmp/need2 /tmp/available || true)
+            if [ -n "$missing" ]; then
+              echo "::error::$(basename "$ko") needs symbols this kernel does not export:"
+              echo "$missing" | sed 's/^/    /'
+              fail=1
+            else
+              echo "  $(basename "$ko"): all undefined symbols are exported"
+            fi
+          done
+          exit $fail
+
+      - name: "Bundle"
+        run: |
+          set -eu
+          B=bundle/modem-modules-t40; mkdir -p "$B/modules"
+          for m in usbserial usb_wwan option; do
+            cp "$RUNNER_TEMP/linux/drivers/usb/serial/$m.ko" "$B/modules/"
+          done
+          for m in usbnet cdc_ether; do
+            cp "$RUNNER_TEMP/linux/drivers/net/usb/$m.ko" "$B/modules/"
+          done
+          "${CROSS}strip" --strip-debug "$B/modules/"*.ko
+          {
+            echo "USB modem kernel modules for the OpenIPC T40 (EC200A-EU)"
+            echo
+            echo "kernel:     $KERNEL_REPO @ $KERNEL_REF ($(git -C "$RUNNER_TEMP/linux" rev-parse HEAD))"
+            echo "config:     $KCONFIG"
+            echo "toolchain:  $(${CROSS}gcc --version | head -1)"
+            echo "vermagic:   $WANT_VERMAGIC (verified against every .ko)"
+            echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}"
+            echo
+            echo "Load order: usbserial -> usb_wwan -> option"
+            echo "            usbnet    -> cdc_ether"
+            echo
+            echo "usbserial.ko is ALSO present in the stock OpenIPC image. Ours is"
+            echo "shipped so the set is self-consistent; whether to install it or"
+            echo "use the image's is an open decision (see ec200a-reuse-map.md)."
+            echo
+            echo "option.ko is UNPATCHED: this kernel's table has no 2c7c:6005."
+            echo "Binding it needs either a driver entry with the correct"
+            echo ".reserved mask -- which depends on the device's real interface"
+            echo "numbers, still unmeasured -- or, for bring-up:"
+            echo "    echo 2c7c 6005 > /sys/bus/usb-serial/drivers/option1/new_id"
+            echo "which binds every interface and is therefore fine only while no"
+            echo "network path exists."
+            echo
+            echo "MII is built into this kernel, so no mii.ko is needed. Verified"
+            echo "on the camera, not assumed from the Kconfig 'select'."
+            echo
+            echo "NOT VERIFIED HERE: that the EC200A enumerates, that option"
+            echo "binds it, or that a ttyUSB appears. All of that needs the"
+            echo "hardware and an externally powered hub."
+          } > "$B/BUILDINFO"
+          (cd "$B" && sha256sum modules/*.ko BUILDINFO > SHA256SUMS)
+          cat "$B/BUILDINFO"; echo; ls -l "$B/modules"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: modem-modules-t40
+          path: bundle/modem-modules-t40
+          if-no-files-found: error
