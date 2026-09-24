@@ -1,46 +1,82 @@
 
-## USB-WLAN
+## USB-Nutzung: WLAN oder Mobilfunk
 
-Das Paket bringt alles mit, was das WLAN braucht -- Treiber, Firmware, hostapd
-und den Rollen-Supervisor -- und `install.sh` legt es per Default ab. **WLAN
-selbst ist aus.**
+Die Kamera hat genau **einen** USB-Port. Deshalb gibt es genau **eine**
+Einstellung:
+
+    usb.mode = off        Default. In machino.conf.
+    usb.mode = wifi
+    usb.mode = cellular
+
+Das Paket bringt **beide** Nutzlasten mit -- fuer WLAN Treiber, Firmware,
+hostapd und den Rollen-Supervisor, fuer Mobilfunk `option`, `usb_wwan`,
+`usbnet`, `cdc_ether` und den Datenpfad-Helfer -- und `install.sh` legt beide
+per Default ab. **Beide sind aus.**
 
 Beides zusammen ist Absicht. Der Schalter sitzt in der Machino-Oberflaeche
-unter *Netzwerk & USB → USB-WLAN*, und ein Schalter, der erst wirkt, nachdem
-jemand per SSH Kernelmodule nachkopiert hat, waere keiner. Gleichzeitig hat die
-Kamera genau EINEN USB-Port, und eingeschaltetes WLAN belegt ihn: cfg80211,
-aic_load_fw, aic8800, Portstrom auf PB18. Wer dort ein Modem betreiben will,
-soll dafuer nichts bezahlen muessen.
+unter *Netzwerk & USB → USB-Nutzung*, und ein Schalter, der erst wirkt, nachdem
+jemand per SSH Kernelmodule nachkopiert hat, waere keiner.
 
-    usb.wifi.enabled = false      Default. In machino.conf.
+Warum EIN Feld und nicht zwei Haken: zwei Haken koennten "beides an" ausdruecken,
+was die Hardware nicht kann. Welcher der beiden dann gewinnt, entschiede die
+Reihenfolge der Init-Skripte -- und das liest niemand nach, bevor er ein
+Haekchen setzt.
 
-Bei **aus** tut `S42wifi` beim Boot nichts: kein Modul, kein Portstrom, kein
-wpa_supplicant, kein hostapd, kein DHCP auf wlan0. Der Port bleibt frei.
+Bei **off** tut `machino-usb-helper` beim Boot nichts: kein Modul, kein
+Portstrom auf PB18, kein wpa_supplicant, kein hostapd, kein Modem-Helfer, kein
+DHCP. Der Port bleibt vollstaendig frei.
 
-Bei **an** laeuft die auf Hardware erarbeitete Reihenfolge:
+Bei **wifi** laeuft die auf Hardware erarbeitete Reihenfolge:
 
     cfg80211 -> aic_load_fw -> aic8800 -> GPIO 50 (PB18) -> wlan0 -> Supervisor
 
+Bei **cellular** diese:
+
+    usbnet -> cdc_ether -> usbserial -> usb_wwan -> option -> GPIO 50 -> Helfer
+
+Die Netzwerkmodule kommen zuerst, und das ist kein Zufall: `option` bindet ueber
+`new_id` ALLE Interfaces eines Geraets. Waere es zuerst da, verschluckte der
+Notnagel auch das ECM-Interface -- ein Modem mit tadellosem AT-Port und ohne
+Datenpfad.
+
 Eine Aenderung wirkt beim **naechsten Neustart**, und die Seite sagt das auch
-so. Kernelmodule bei laufender IMP-Pipeline nachzuladen ist genau der Weg, den
-dieser Entwurf vermeidet.
+so, samt dem Modus, der gerade tatsaechlich laeuft. Kernelmodule bei laufender
+IMP-Pipeline zu tauschen ist genau der Weg, den dieser Entwurf vermeidet.
+
+Ein Upgrade von einer Installation vor AP-M6 uebernimmt `usb.wifi.enabled`
+einmalig: `true` wird zu `wifi`, `false` zu `off`. Danach entscheidet `usb.mode`.
+Der alte Schluessel wird weiter *geschrieben*, aber nicht mehr gelesen -- er ist
+der Rueckfall fuer ein Boot-Skript, das ein halbes Upgrade stehengelassen hat.
+
+Die Mobilfunk-Konfiguration (APN, PDP-Typ, Auth, SIM-PIN) haengt **nicht** am
+Modus. `usb.mode = wifi` loescht keinen gespeicherten APN.
 
 ### Optionen
 
-    ./install.sh                          Nutzlast installieren, WLAN aus
-    ./install.sh --with-wifi              zusaetzlich usb.wifi.enabled=true
-    ./install.sh --without-wifi-payload   Treiber/Firmware/hostapd weglassen
+    ./install.sh                             beide Nutzlasten, usb.mode unveraendert
+    ./install.sh --usb-mode=wifi             zusaetzlich usb.mode = wifi
+    ./install.sh --usb-mode=cellular         zusaetzlich usb.mode = cellular
+    ./install.sh --without-wifi-payload      Treiber/Firmware/hostapd weglassen
+    ./install.sh --without-cellular-payload  Modem-Module und Helfer weglassen
+
+Ohne `--usb-mode` bleibt stehen, was in der Datei steht: eine Neuinstallation
+ueber eine bestehende hinweg setzt die Wahl des Betreibers nicht zurueck.
 
 `--without-wifi-payload` spart rund 2 MB des 8,7-MB-Overlays (aic8800.ko 550 K,
-aic_load_fw.ko 87 K, Firmware 362 K, hostapd 996 K) und macht den Schalter
+aic_load_fw.ko 87 K, Firmware 362 K, hostapd 996 K) und macht die WLAN-Auswahl
 wirkungslos -- die Seite sagt dann, dass nichts zu schalten da ist, statt etwas
-anzubieten, das nicht funktionieren kann. `--with-wifi` zusammen mit
-`--without-wifi-payload` wird abgelehnt: das waere ein Funkmodul einschalten,
+anzubieten, das nicht funktionieren kann. Einen Modus zu waehlen, dessen
+Nutzlast weggelassen wurde, wird abgelehnt: das waere ein Geraet einschalten,
 dessen Treiber nicht installiert ist.
 
-`--with-access-point` wird noch angenommen und ignoriert; hostapd gehoert jetzt
-zur Standard-Nutzlast. `hostapd_cli` wird nicht mitgeliefert -- machino spricht
-den ctrl-Socket selbst.
+`--with-wifi` ist der alte Name fuer `--usb-mode=wifi` und bleibt erhalten,
+damit bestehende Installationsbefehle nicht brechen. `--with-access-point` wird
+noch angenommen und ignoriert; hostapd gehoert zur Standard-Nutzlast.
+`hostapd_cli` wird nicht mitgeliefert -- machino spricht den ctrl-Socket selbst.
+
+Ein `S42wifi` aus einer aelteren Installation wird beim Installieren
+**entfernt**. Es liefe sonst neben `S42usb`, laese noch `usb.wifi.enabled` und
+laedte auf einer auf Mobilfunk gestellten Kamera trotzdem den WLAN-Treiber.
 
 ### Station und Access Point
 

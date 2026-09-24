@@ -547,6 +547,24 @@ else bad "a reinstall without --usb-mode reset the selection"; fi
 make_bundle; make_camera auto
 if run_install --usb-mode=lte; then bad "--usb-mode=lte was accepted"; else ok; fi
 
+# Ein Bundle ohne den Boot-Helfer ist kein Bundle.
+#
+# Er gehoert zu keiner der beiden Nutzlasten und laesst sich nicht abwaehlen:
+# ohne ihn waere usb.mode ein Wert, den niemand liest, und die Auswahl in der
+# Oberflaeche eine Attrappe. Also abbrechen, statt eine halbe Installation
+# hinzulegen, die erst beim naechsten Neustart auffaellt.
+make_bundle; make_camera auto
+rm -f "$WORK/bundle/sbin/machino-usb-helper"
+if run_install; then bad "a bundle without machino-usb-helper was accepted"; else ok; fi
+case "$(cat "$WORK/out")" in
+    *machino-usb-helper*) ok ;;
+    *) bad "the missing boot helper was not named" ;;
+esac
+
+make_bundle; make_camera auto
+rm -f "$WORK/bundle/init/S42usb"
+if run_install; then bad "a bundle without init/S42usb was accepted"; else ok; fi
+
 # Ein bereits installiertes S42wifi MUSS verschwinden.
 #
 # Sonst laufen nach einem Upgrade zwei Boot-Skripte: eines liest
@@ -646,6 +664,112 @@ case "$red" in
     *"SME: Trying to authenticate with 06:61:1d:a3:5c:19"*) ok ;;
     *) bad "the filter mangled a line that has nothing to do with secrets" ;;
 esac
+
+# Der Bootpfad selbst: laedt jeder Modus GENAU seinen Stack?
+#
+# Das ist die eine Zusage von AP-M6, und bis hierher hat sie nichts bewiesen.
+# read_mode() unten prueft die ENTSCHEIDUNG; dieser Block prueft, was daraus
+# folgt. Ohne ihn waere "im WLAN-Modus wird kein Modem-Modul geladen" ein Satz
+# in einem Kommentar.
+#
+# Die Kommandos werden ueber den PATH abgefangen und schreiben mit, was von
+# ihnen verlangt wurde. Nichts davon beruehrt das echte System: MACHINO_ROOT
+# zeigt auf einen Wegwerfbaum, und ein "insmod" hier ist ein Zweizeiler.
+usb_tree() {
+    U="$WORK/usbroot"; rm -rf "$U"
+    mkdir -p "$U/etc/machino/modules" "$U/usr/sbin" "$U/var/run" \
+             "$U/sys/class/gpio/gpio50" "$U/sys/class/net/wlan0" "$U/dev"
+    for m in aic8800 aic_load_fw option usb_wwan usbnet cdc_ether usbserial; do
+        echo fake > "$U/etc/machino/modules/$m.ko"
+    done
+    # Die beiden Daemons: sie duerfen laufen, sollen aber sofort wieder gehen.
+    for s in machino-wifi-role machino-cellular-helper; do
+        printf '#!/bin/sh\necho "started %s" >> "$USB_ACTIONS"\nexit 0\n' "$s" > "$U/usr/sbin/$s"
+        chmod +x "$U/usr/sbin/$s"
+    done
+    # Das Modem ist da: sonst liefe der 20-s-Notnagel bei jedem Testlauf.
+    : > "$U/dev/ttyUSB0"
+
+    BIN="$WORK/usbbin"; rm -rf "$BIN"; mkdir -p "$BIN"
+    for c in insmod modprobe ip usleep; do
+        printf '#!/bin/sh\necho "%s $*" >> "$USB_ACTIONS"\nexit 0\n' "$c" > "$BIN/$c"
+        chmod +x "$BIN/$c"
+    done
+    # lsmod meldet konsequent "nichts geladen", damit load_module wirklich
+    # jedes Mal bis zum insmod kommt.
+    printf '#!/bin/sh\nexit 0\n' > "$BIN/lsmod"; chmod +x "$BIN/lsmod"
+}
+
+run_usb_helper() {
+    printf 'usb.mode = %s\n' "$1" > "$U/etc/machino/machino.conf"
+    USB_ACTIONS="$WORK/actions.log"; : > "$USB_ACTIONS"
+    export USB_ACTIONS
+    PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" start \
+        > "$WORK/usbout" 2>&1
+}
+did()   { if grep -q -- "$2" "$WORK/actions.log"; then ok; else bad "$1: '$2' was not done"; fi; }
+didnt() { if grep -q -- "$2" "$WORK/actions.log"; then bad "$1: '$2' happened anyway"; else ok; fi; }
+
+usb_tree
+# --- off: NICHTS. Kein Modul, kein Portstrom, kein Daemon.
+run_usb_helper off
+didnt "off loads no wifi driver"      "aic8800"
+didnt "off loads no firmware loader"  "aic_load_fw"
+didnt "off loads no cfg80211"         "cfg80211"
+didnt "off loads no modem serial"     "option"
+didnt "off loads no usb_wwan"         "usb_wwan"
+didnt "off loads no cdc_ether"        "cdc_ether"
+didnt "off starts no daemon"          "started machino"
+didnt "off runs no insmod at all"     "insmod"
+# Und der Portstrom bleibt unten: bei "off" wird gpio50/value nicht angefasst.
+if [ ! -s "$U/sys/class/gpio/gpio50/value" ]; then ok
+else bad "off raised the port power (PB18)"; fi
+is "off records what it started" "$(cat "$U/var/run/machino-usb-mode")" "off"
+
+# --- wifi: der WLAN-Stack und NUR der.
+usb_tree
+run_usb_helper wifi
+did   "wifi loads cfg80211"        "modprobe cfg80211"
+did   "wifi loads aic_load_fw"     "aic_load_fw.ko"
+did   "wifi loads aic8800"         "aic8800.ko"
+did   "wifi starts the supervisor" "started machino-wifi-role"
+didnt "wifi loads no option"       "option.ko"
+didnt "wifi loads no usb_wwan"     "usb_wwan.ko"
+didnt "wifi loads no usbnet"       "usbnet.ko"
+didnt "wifi loads no cdc_ether"    "cdc_ether.ko"
+didnt "wifi starts no modem helper" "started machino-cellular-helper"
+is "wifi raised the port power" "$(cat "$U/sys/class/gpio/gpio50/value")" "1"
+is "wifi records what it started" "$(cat "$U/var/run/machino-usb-mode")" "wifi"
+
+# --- cellular: der Mobilfunkstack und NUR der.
+usb_tree
+run_usb_helper cellular
+did   "cellular loads usbnet"      "usbnet.ko"
+did   "cellular loads cdc_ether"   "cdc_ether.ko"
+did   "cellular loads usb_wwan"    "usb_wwan.ko"
+did   "cellular loads option"      "option.ko"
+did   "cellular starts the helper" "started machino-cellular-helper"
+didnt "cellular loads no aic8800"  "aic8800.ko"
+didnt "cellular loads no aic_load_fw" "aic_load_fw.ko"
+didnt "cellular loads no cfg80211" "cfg80211"
+didnt "cellular starts no wifi supervisor" "started machino-wifi-role"
+is "cellular raised the port power" "$(cat "$U/sys/class/gpio/gpio50/value")" "1"
+is "cellular records what it started" "$(cat "$U/var/run/machino-usb-mode")" "cellular"
+
+# Die Reihenfolge, und zwar genau diese: `option` bindet ueber new_id ALLE
+# Interfaces eines Geraets. Kaeme es vor cdc_ether, verschluckte der Notnagel
+# das ECM-Interface -- ein Modem mit tadellosem AT-Port und ohne Datenpfad.
+n_cdc=$(grep -n "cdc_ether.ko" "$WORK/actions.log" | head -1 | cut -d: -f1)
+n_opt=$(grep -n "option.ko"    "$WORK/actions.log" | head -1 | cut -d: -f1)
+if [ -n "$n_cdc" ] && [ -n "$n_opt" ] && [ "$n_cdc" -lt "$n_opt" ]; then ok
+else bad "option was loaded before cdc_ether (cdc=$n_cdc option=$n_opt)"; fi
+
+# Ein unbekannter Modus faellt geschlossen aus -- nicht auf WLAN, nicht auf
+# Mobilfunk, sondern auf gar nichts.
+usb_tree
+run_usb_helper lte
+didnt "an unknown mode loads nothing" "insmod"
+is "an unknown mode records off" "$(cat "$U/var/run/machino-usb-mode")" "off"
 
 # read_mode(): entscheidet, WELCHER Stack beim Boot geladen wird und ob der
 # USB-Port ueberhaupt bestromt wird. Fail-closed in jedem Zweifelsfall.

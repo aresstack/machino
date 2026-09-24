@@ -944,7 +944,15 @@ refresh();
 // Polled, not pushed. The status here changes on the scale of seconds and a
 // dedicated SSE stream for one page would be a second thing to keep alive
 // through exactly the network changes this page makes.
-setInterval(() => { loadNetwork().catch(() => {}); }, 5000);
+setInterval(() => {
+  loadNetwork().catch(() => {});
+  // Der Mobilfunkstatus gehoert dazu: Registrierung, Signal und Datenlink
+  // aendern sich im Sekundentakt, und eine Seite, die dafuer ein Neuladen
+  // verlangt, ist waehrend eines Verbindungsaufbaus nutzlos. Das Formular
+  // wird dabei nicht angefasst, solange jemand darin steht -- siehe
+  // loadCellular().
+  loadCellular().catch(() => {});
+}, 5000);
 </script>
 </body>
 </html>

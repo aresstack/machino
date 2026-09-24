@@ -219,6 +219,73 @@ jobs:
           (cd "$O" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
           (cd bundle && tar czf machino-openipc-t40nn.tar.gz machino-openipc-t40nn)
           ls -l bundle/machino-openipc-t40nn.tar.gz; cat "$O/SHA256SUMS"
+
+          # ---- Flash-Budget ------------------------------------------------
+          #
+          # Das Overlay der Kamera hat rund 8,7 MB, und die Nutzlasten sind
+          # per Default ALLE dabei. Eine Zahl, die erst am Geraet auffaellt,
+          # ist zu spaet: "kein Platz mehr" heisst dort, dass ein halb
+          # geschriebenes Binary im Boot-Slot liegt.
+          #
+          # Gemessen wird die INSTALLIERTE Groesse, nicht die des Archivs.
+          # Komprimiert sagt nichts darueber, was nachher auf dem Flash liegt.
+          kb() { du -sk "$@" 2>/dev/null | awk '{s+=$1} END {print (s?s:0)}'; }
+          {
+            echo "## Flash budget"
+            echo
+            echo "| Teil | KB |"
+            echo "|------|----|"
+            echo "| machino (Binary) | $(kb "$O/machino") |"
+            echo "| WLAN-Module | $(kb "$O/wifi/modules") |"
+            echo "| WLAN-Firmware | $(kb "$O/wifi/firmware") |"
+            echo "| hostapd | $(kb "$O/wifi/hostapd") |"
+            echo "| Modem-Module | $(kb "$O/cellular/modules") |"
+            echo "| Helfer und Skripte | $(kb "$O/sbin" "$O/init" "$O"/*.script "$O"/*.sh) |"
+            echo "| **Gesamt (entpackt)** | **$(kb "$O")** |"
+            echo "| Archiv | $(kb bundle/machino-openipc-t40nn.tar.gz) |"
+            echo
+            total=$(kb "$O")
+            echo "Overlay der T40NN: rund 8700 KB. Belegt: ${total} KB."
+            # Kein harter Fehler. Das Overlay einer anderen Box kann groesser
+            # sein, und eine Funktion zu streichen, damit eine Zahl huebsch
+            # aussieht, waere die falsche Reaktion. Aber es muss AUFFALLEN.
+            if [ "$total" -gt 6000 ]; then
+              echo
+              echo "> **Warnung:** ueber 6000 KB. Das laesst wenig Luft fuer"
+              echo "> Konfiguration, Logs und ein zweites Binary waehrend eines"
+              echo "> Upgrades. Vor dem naechsten Zuwachs pruefen, was wirklich"
+              echo "> gebraucht wird."
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          # ---- Was drin ist, in einer Zeile pro Frage ----------------------
+          {
+            echo
+            echo "## Artefakt"
+            echo
+            echo "| | |"
+            echo "|--|--|"
+            echo "| Commit | ${GITHUB_SHA} |"
+            echo "| Kernel-Module vermagic | $(grep -ah -m1 -o 'vermagic=[^ ]*' "$O"/wifi/modules/*.ko "$O"/cellular/modules/*.ko 2>/dev/null || echo '(keine Module im Bundle)') |"
+            echo "| WLAN mitgeliefert | $([ -n "$(ls "$O/wifi/modules" 2>/dev/null)" ] && echo ja || echo NEIN) |"
+            echo "| Mobilfunk mitgeliefert | $([ -n "$(ls "$O/cellular/modules" 2>/dev/null)" ] && echo ja || echo NEIN) |"
+            echo "| Boot-Helfer | $([ -f "$O/sbin/machino-usb-helper" ] && echo ja || echo NEIN) |"
+            echo "| Veraltetes S41hostapd im Bundle | $([ -f "$O/init/S41hostapd" ] && echo JA || echo nein) |"
+            echo "| Veraltetes S42wifi im Bundle | $([ -f "$O/init/S42wifi" ] && echo JA || echo nein) |"
+            echo
+            echo "Hardwarevalidierung ist hiermit NICHT erfolgt. Was am Geraet"
+            echo "geprueft werden muss, steht in machino/docs/pending-physical.md."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          # Ein Entwurfsskript, das wieder ins Bundle wandert, ist genau der
+          # Fehler, der hier schon einmal passiert ist: S41hostapd stand im
+          # Kopierblock und hat ihn zerlegt, nachdem die Datei verschwunden war.
+          for stale in S41hostapd S42wifi; do
+            if [ -f "$O/init/$stale" ]; then
+              echo "::error::$stale is in the bundle again - it was superseded by S42usb + the role supervisor"
+              exit 1
+            fi
+          done
       - name: "Upload OpenIPC install bundle"
         uses: actions/upload-artifact@v4
         with:

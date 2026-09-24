@@ -1,33 +1,60 @@
 
----
+## I — WLAN als Produkt (Batch WLAN/AP, 2026-09-24)
 
-## AP-M5 — Mobilfunk als Uplink, Routing und Failover
+### Auf Hardware bewiesen
 
-Alles hier ist softwareseitig fertig und hostseitig geprüft. Was fehlt, ist die
-Kamera. Kein Punkt dieser Liste wurde geschätzt, geraten oder aus einem grünen
-Test abgeleitet — die Hosttests prüfen die Entscheidung, nicht den Kernel.
+  * Access Point: Telefon verbunden, DHCP-Adresse, WebUI ueber
+    `http://192.168.24.1/`, Live-H.264 ueber den AP. Im Kernel-Log als
+    assoziierte Station belegt (`Del sta 9 (be:43:e6:78:0b:63)`).
+  * `change_if: 2 to 3` und zurueck `3 to 2` -- der Treiber behandelt Station
+    und AP als Typwechsel eines Interface, nicht als zwei Betriebsarten.
+  * Rollenwechsel Station -> AP -> Station vollstaendig, ohne
+    Wiederholungsversuch, eth0 durchgehend unberuehrt (01:53:44 bis 00:54:40,
+    siehe aic8800-bringup.md).
+  * Boot-Gate in allen drei Zustaenden: Schluessel fehlt / `false` / `true`.
+    Bei den ersten beiden meldet S42wifi "aus" und laedt nichts.
+  * `claim_interface` beendet einen verwaisten Supplicant auf wlan0 und laesst
+    den udhcpc von eth0 in Ruhe.
 
-### `PENDING_PHYSICAL`
+### `PENDING_PHYSICAL` — offen
 
-| Nr | Was |
-|----|-----|
-| M5-1 | **rtnetlink auf diesem Kernel.** `LinuxRouteBackend` setzt Default-Routen über `RTM_NEWROUTE`/`RTM_DELROUTE` statt über `ip route` — ein Socket, kein `fork()`. Dass 4.4.94 auf dieser Box die Nachricht so annimmt (`RTA_OIF`, `RTA_PRIORITY`, `RT_SCOPE_LINK` bei fehlendem Gateway) ist ungeprüft. Der ACK wird gelesen, ein Fehler landet also im Log statt still zu verschwinden |
-| M5-2 | **Die Metrik-Umschreibung im Betrieb.** Boot-Skript und DHCP-Hooks setzen ihre Startwerte (eth0 0, wlan0 200, Mobilfunk 300); machino soll sie durch die Policy-Metriken ersetzen, und zwar ohne dass die Kamera zwischendurch ohne Default-Route dasteht. Neu-vor-alt ist getestet, die Lücke in der Praxis nicht |
-| M5-3 | **Eine fremde Default-Route wirklich in Ruhe lassen.** Ein VPN oder eine zweite Route von Hand anlegen und prüfen, dass die Reconciliation sie nicht anfasst. Am Gerät ist das der Fall, in dem ein Fehler die Kamera unerreichbar macht |
-| M5-4 | **Failover Ethernet → Mobilfunk mit laufendem RTSP/WebRTC.** Das `path_change`-Signal geht raus, die Quelladresse und der NAT-Pfad wechseln. Ob die Transporte sich erholen, entscheidet keine Zustandsmaschine |
-| M5-5 | **Die Entprellung mit echtem Zittern.** 3 s zum Verlassen, 15 s zum Zurückkehren — die Zahlen sind aus dem Verhalten hergeleitet, das vermieden werden soll, nicht aus einer Messung an einem wackelnden Link |
-| M5-6 | **DNS-Eigentum und die Rückgabe.** Mobilfunk aktiv, `resolv.conf` trägt die Resolver des Anbieters; zurück auf Ethernet, und die vorherigen müssen wieder dastehen. Genau dieser Fall war der Review-Befund, und die Momentaufnahme überlebt **keinen** Daemon-Neustart — stirbt machino, während Mobilfunk aktiv ist, bleiben die Resolver des Anbieters, bis ein Lease sie ersetzt |
-| M5-7 | **Der AT-Port nach einer Re-Enumeration.** `rediscover_modem_port()` sucht neu, sobald der bisherige Pfad weg ist. Dass der neue `ttyUSB` dann schon da ist und nicht erst Sekunden später, ist eine Annahme |
-| M5-8 | **Zwei Uplinks gleichzeitig oben.** Ethernet und Mobilfunk zusammen, ohne dass sich beide die Default-Route gegenseitig wegnehmen. Hostseitig deterministisch, am Kernel ungeprüft |
-| M5-9 | **Last des Mobilfunk-Ticks.** Der 2-s-Takt schickt jetzt zusätzlich eine AT-Runde, solange Mobilfunk eingeschaltet ist. Wirkung auf RSS und CPU über einen Soak ist offen — derselbe offene Trend wie H10 |
+  * **Assoziation an ein konkretes Netz nach dem Rollenwechsel.** Der
+    Test-Hotspot "Viva Espana" war abgeschaltet; `iwlist scan` zeigte zehn
+    andere Netze, dieses nicht. Der Supplicant steht korrekt auf
+    `wpa_state=SCANNING`. Bewiesen ist der Rollenwechsel, nicht das
+    Wiederfinden eines bestimmten Netzes.
+  * **Boot mit `usb.wifi.enabled=true` und leerem Zustand.** Alle Gate-Tests
+    liefen auf einer Kamera, deren Module bereits geladen waren. Dass
+    `load_modules` beim echten Kaltstart aus `/etc/machino/modules` laedt, ist
+    aus dem Bring-up bekannt, in dieser Fassung des Skripts aber nicht erneut
+    gemessen.
+  * **Installation aus dem Release-Artefakt heraus.** Die Nutzlast im Bundle
+    ist geprueft (2,09 MB, 2 Module, 19 Firmware-Dateien, hostapd), aber
+    `install.sh` wurde damit noch nicht auf der Kamera ausgefuehrt -- die
+    Kamera traegt die von Hand kopierten Dateien.
 
-### Was bewusst NICHT geprüft werden muss
+### `PENDING_BROWSER` — offen
 
-`usb.cellular` ist per Vorgabe aus. Ohne eingeschalteten Mobilfunk schickt
-`CellularUplink::tick()` **kein einziges AT-Kommando** und der Uplink meldet
-`absent`; eine Kamera ohne Modem verhält sich also exakt wie vor AP-M5. Das ist
-hostseitig festgenagelt (`test_switched_off_is_absent_and_sends_nothing`).
-al p50/p95" | AP15 |
+  * Die Registerkarte *USB-WLAN* auf `/machino/net`: Schalter, Hinweistext,
+    der Wechsel der Meldung zwischen "nicht gespeichert" und dem Zustandstext,
+    und dass Station/AP bei ausgeschaltetem WLAN "aus (USB-WLAN ist nicht
+    aktiviert)" zeigen statt "Funkmodul nicht vorhanden". Nur im Simulator
+    (test_netui) geprueft, nie in einem echten Browser gerendert.
+Request) und braucht niemanden am Gerät — nur den abgelösten Build | AP30 HIGH-1 |
+| S2 | RTSP: 8 KiB ohne Leerzeile schicken — die Verbindung muss fallen, RSS darf nicht wachsen | AP30 HIGH-2 |
+| S3 | `/cgi-bin/../../../etc/shadow` muss **400 von Machino** ergeben, nicht von busybox. Ausgangszustand gemessen: `%2e%2e`-Variante ergibt heute 401 | AP30 NORMAL |
+
+**Bis zur Ablösung trägt die Kamera beide HIGH-Schwächen** — der laufende
+Prozess ist `c1edd92`. Das ist der stärkste Grund, den nächsten Kaltstart nicht
+lange aufzuschieben.
+
+## B — Beim Kaltstart, mit Browser
+
+| Nr | Prüfung | Woher |
+|---|---|---|
+| B1 | **WebRTC spielt weiterhin**, jetzt auf pt 102 statt 41 — das Annahme-Log nennt die Nutzlast im Klartext | AP16 |
+| B2 | WebRTC MAIN ~50–100 ms, keine unerklärten DTLS/SRTP-Fehler, PLI → IDR | AP16-Gate |
+| B3 | `prft` erscheint im Stats-Panel als „capture→arrival p50/p95" | AP15 |
 | B4 | MSE-Latenz über längere Laufzeit im Auge behalten (Band `lagFloor + 1 s`) | AP15 |
 | B5 | Bestehende RTSP-Clients bekommen jetzt 401 (Auth-Default umgestellt) | AP7 |
 | B6 | AP6–AP10 Laufzeitprüfungen der Config-/Schema-Wege | AP6–10 |
@@ -227,3 +254,56 @@ ohne dass es jemandem aufgefallen wäre.
 | H11 | `/machino/net` in einem Browser öffnen. Die Feldnamen sind gegen die echten JSON-Builder getestet (`tests/test_netui.cpp`), das Layout ist es nicht |
 | H12 | Der Bestätigungs-Countdown im Ernstfall: Banner sichtbar, Zähler läuft, Bestätigung kommt an, Rollback wird als solcher angezeigt |
 | H13 | Der Menüeintrag aus `install.sh --with-network-page` an einer echten `header.cgi` — die Tests benutzen einen nachgebauten Ausschnitt |
+
+---
+
+## AP-M5 — Mobilfunk als Uplink, Routing und Failover
+
+Alles hier ist softwareseitig fertig und hostseitig geprüft. Was fehlt, ist die
+Kamera. Kein Punkt dieser Liste wurde geschätzt, geraten oder aus einem grünen
+Test abgeleitet — die Hosttests prüfen die Entscheidung, nicht den Kernel.
+
+### `PENDING_PHYSICAL`
+
+| Nr | Was |
+|----|-----|
+| M5-1 | **rtnetlink auf diesem Kernel.** `LinuxRouteBackend` setzt Default-Routen über `RTM_NEWROUTE`/`RTM_DELROUTE` statt über `ip route` — ein Socket, kein `fork()`. Dass 4.4.94 auf dieser Box die Nachricht so annimmt (`RTA_OIF`, `RTA_PRIORITY`, `RT_SCOPE_LINK` bei fehlendem Gateway) ist ungeprüft. Der ACK wird gelesen, ein Fehler landet also im Log statt still zu verschwinden |
+| M5-2 | **Die Metrik-Umschreibung im Betrieb.** Boot-Skript und DHCP-Hooks setzen ihre Startwerte (eth0 0, wlan0 200, Mobilfunk 300); machino soll sie durch die Policy-Metriken ersetzen, und zwar ohne dass die Kamera zwischendurch ohne Default-Route dasteht. Neu-vor-alt ist getestet, die Lücke in der Praxis nicht |
+| M5-3 | **Eine fremde Default-Route wirklich in Ruhe lassen.** Ein VPN oder eine zweite Route von Hand anlegen und prüfen, dass die Reconciliation sie nicht anfasst. Am Gerät ist das der Fall, in dem ein Fehler die Kamera unerreichbar macht |
+| M5-4 | **Failover Ethernet → Mobilfunk mit laufendem RTSP/WebRTC.** Das `path_change`-Signal geht raus, die Quelladresse und der NAT-Pfad wechseln. Ob die Transporte sich erholen, entscheidet keine Zustandsmaschine |
+| M5-5 | **Die Entprellung mit echtem Zittern.** 3 s zum Verlassen, 15 s zum Zurückkehren — die Zahlen sind aus dem Verhalten hergeleitet, das vermieden werden soll, nicht aus einer Messung an einem wackelnden Link |
+| M5-6 | **DNS-Eigentum und die Rückgabe.** Mobilfunk aktiv, `resolv.conf` trägt die Resolver des Anbieters; zurück auf Ethernet, und die vorherigen müssen wieder dastehen. Genau dieser Fall war der Review-Befund, und die Momentaufnahme überlebt **keinen** Daemon-Neustart — stirbt machino, während Mobilfunk aktiv ist, bleiben die Resolver des Anbieters, bis ein Lease sie ersetzt |
+| M5-7 | **Der AT-Port nach einer Re-Enumeration.** `rediscover_modem_port()` sucht neu, sobald der bisherige Pfad weg ist. Dass der neue `ttyUSB` dann schon da ist und nicht erst Sekunden später, ist eine Annahme |
+| M5-8 | **Zwei Uplinks gleichzeitig oben.** Ethernet und Mobilfunk zusammen, ohne dass sich beide die Default-Route gegenseitig wegnehmen. Hostseitig deterministisch, am Kernel ungeprüft |
+| M5-9 | **Last des Mobilfunk-Ticks.** Der 2-s-Takt schickt jetzt zusätzlich eine AT-Runde, solange Mobilfunk eingeschaltet ist. Wirkung auf RSS und CPU über einen Soak ist offen — derselbe offene Trend wie H10 |
+
+### Was bewusst NICHT geprüft werden muss
+
+`usb.cellular` ist per Vorgabe aus. Ohne eingeschalteten Mobilfunk schickt
+`CellularUplink::tick()` **kein einziges AT-Kommando** und der Uplink meldet
+`absent`; eine Kamera ohne Modem verhält sich also exakt wie vor AP-M5. Das ist
+hostseitig festgenagelt (`test_switched_off_is_absent_and_sends_nothing`).
+
+---
+
+## AP-M6 — USB-Modus, Boot, Packaging
+
+### `PENDING_PHYSICAL`
+
+| Nr | Was |
+|----|-----|
+| M6-1 | **`usb.mode=off` auf einer Kamera, an der etwas steckt.** Die ganze Zusage lautet: kein Modul, kein Portstrom, kein Daemon. Nachzuweisen ist sie nur negativ — `lsmod` ohne aic/option, GPIO 50 unten, kein ttyUSB, kein wlan0 |
+| M6-2 | **`usb.mode=cellular` laedt die Module in der beabsichtigten Reihenfolge.** Insbesondere: bindet `cdc_ether` das ECM-Interface, BEVOR `option` (ggf. ueber `new_id`) an die Reihe kommt? Die Reihenfolge ist aus der Reuse-Map hergeleitet, nicht gemessen. Geht sie schief, entsteht ein Modem mit AT-Port und ohne Datenpfad |
+| M6-3 | **Der `new_id`-Notnagel.** Er laeuft nur, wenn nach 20 s kein `ttyUSB` da ist. Ob `option.c` dieses Kernels ihn ueberhaupt anbietet (`option1` vs. `option`) und ob er dann das schon gebundene Netzwerkinterface in Ruhe laesst, ist ungeprueft |
+| M6-4 | **Der Moduswechsel ueber einen echten Neustart.** wifi → cellular → off, jeweils speichern, neu starten, und `machino-usb-helper status` muss danach dasselbe sagen wie die Seite |
+| M6-5 | **Das Entfernen von `S42wifi` bei einem echten Upgrade.** Hostseitig geprueft; am Geraet haengt daran, ob nach dem Upgrade wirklich nur noch ein Boot-Skript laeuft |
+| M6-6 | **Flash-Budget in Zahlen vom Geraet.** CI misst das entpackte Bundle. Was nach dem Installieren tatsaechlich auf dem Overlay liegt (inklusive Konfiguration und Logs), sagt nur `df` auf der Kamera |
+| M6-7 | **Bootzeit.** Der Helfer wartet bis zu 15 s auf `wlan0` bzw. bis zu 20 s (plus 10 s Notnagel) auf einen `ttyUSB`. Im Fehlerfall — Modul da, Geraet nicht — verlaengert das den Boot messbar, und niemand hat gemessen, wie stark |
+
+### `PENDING_BROWSER`
+
+| Nr | Was |
+|----|-----|
+| M6-8 | Die Auswahl *USB-Nutzung* in einem Browser: drei Radios, Speichern, und der Hinweis muss danach „Aktiv ist noch …" sagen und nicht „Gespeichert" allein |
+| M6-9 | Die Mobilfunkseite mit einem echten Modem: dass „–" wirklich dort steht, wo nichts gemessen wurde, und keine 0 |
+| M6-10 | Die Seite bei `usb.mode != cellular`: der Hinweis oben muss erscheinen, die Zugangsdaten aber weiter ausfuellbar sein |

@@ -32,22 +32,34 @@
 # ist kein Zustand, aus dem man ohne Stromzyklus herauskommt. "Neustart
 # erforderlich" ist die ehrliche Antwort.
 
-CONF=/etc/machino/machino.conf
-MODDIR=/etc/machino/modules
-MODEDIR=/var/run
-MODEFILE=/var/run/machino-usb-mode      # was WIRKLICH gestartet wurde
+# MACHINO_ROOT ist ein Testhaken: leer in Produktion, ein Wegwerfbaum in den
+# Hosttests. Dieselbe Konvention wie in install.sh, und aus demselben Grund --
+# ohne sie liesse sich die eine Zusage dieses Skripts ("im WLAN-Modus wird
+# KEIN Modem-Modul geladen und umgekehrt") nur an der Kamera pruefen, also in
+# der Praxis gar nicht.
+#
+# Nur Pfade. Die Kommandos (insmod, modprobe, ip) kommen aus dem PATH; ein
+# Test stellt sie dort hin und schaut zu.
+ROOT="${MACHINO_ROOT:-}"
+
+CONF=$ROOT/etc/machino/machino.conf
+MODDIR=$ROOT/etc/machino/modules
+SYSDIR=$ROOT/sys
+DEVDIR=$ROOT/dev
+RUNDIR=$ROOT/var/run
+MODEFILE=$RUNDIR/machino-usb-mode       # was WIRKLICH gestartet wurde
 GPIO=50                                 # PB18, der Portstrom
 
 # --- WLAN ---
-WPACTRL=/var/run/wpa_supplicant
-WIFI_SUPERVISOR=/usr/sbin/machino-wifi-role
-WIFI_ROLEFILE=/etc/machino/wifi-role
+WPACTRL=$RUNDIR/wpa_supplicant
+WIFI_SUPERVISOR=$ROOT/usr/sbin/machino-wifi-role
+WIFI_ROLEFILE=$ROOT/etc/machino/wifi-role
 WIFI_IFACE=wlan0
-WIFI_PIDFILE=/var/run/machino-wifi-role.pid
+WIFI_PIDFILE=$RUNDIR/machino-wifi-role.pid
 
 # --- Mobilfunk ---
-CELL_HELPER=/usr/sbin/machino-cellular-helper
-CELL_PIDFILE=/var/run/machino-cellular-helper.pid
+CELL_HELPER=$ROOT/usr/sbin/machino-cellular-helper
+CELL_PIDFILE=$RUNDIR/machino-cellular-helper.pid
 CELL_VID=2c7c
 CELL_PID=6005
 
@@ -85,10 +97,10 @@ read_mode() {
 # Der Portstrom. NUR wenn der Port auch benutzt wird -- bei "off" bleibt die
 # Schiene unten, und zwar auch dann, wenn ein Geraet daran haengt.
 port_power_on() {
-	[ -d /sys/class/gpio/gpio$GPIO ] || echo $GPIO > /sys/class/gpio/export 2>/dev/null
-	[ -d /sys/class/gpio/gpio$GPIO ] || { say "GPIO $GPIO nicht exportierbar"; return 1; }
-	echo out > /sys/class/gpio/gpio$GPIO/direction
-	echo 1   > /sys/class/gpio/gpio$GPIO/value
+	[ -d $SYSDIR/class/gpio/gpio$GPIO ] || echo $GPIO > $SYSDIR/class/gpio/export 2>/dev/null
+	[ -d $SYSDIR/class/gpio/gpio$GPIO ] || { say "GPIO $GPIO nicht exportierbar"; return 1; }
+	echo out > $SYSDIR/class/gpio/gpio$GPIO/direction
+	echo 1   > $SYSDIR/class/gpio/gpio$GPIO/value
 }
 
 load_module() {
@@ -123,7 +135,7 @@ start_wifi() {
 	# rund drei Sekunden. Eine feste Wartezeit waere entweder zu kurz oder
 	# verschenkt Bootzeit, also wird gepollt.
 	n=0
-	while [ ! -d /sys/class/net/$WIFI_IFACE ]; do
+	while [ ! -d $SYSDIR/class/net/$WIFI_IFACE ]; do
 		n=$((n + 1))
 		[ $n -ge 60 ] && { say "$WIFI_IFACE erschien nicht - haengt das Modul am Port?"; return 1; }
 		usleep 250000 2>/dev/null || sleep 1
@@ -150,13 +162,13 @@ stop_wifi() {
 		kill "$(cat "$WIFI_PIDFILE")" 2>/dev/null
 		rm -f "$WIFI_PIDFILE"
 	fi
-	[ -f /var/run/udhcpc.$WIFI_IFACE.pid ] && kill "$(cat /var/run/udhcpc.$WIFI_IFACE.pid)" 2>/dev/null
-	rm -f /var/run/udhcpc.$WIFI_IFACE.pid
-	[ -f /var/run/udhcpd.pid ] && kill "$(cat /var/run/udhcpd.pid)" 2>/dev/null
-	rm -f /var/run/udhcpd.pid
+	[ -f $RUNDIR/udhcpc.$WIFI_IFACE.pid ] && kill "$(cat $RUNDIR/udhcpc.$WIFI_IFACE.pid)" 2>/dev/null
+	rm -f $RUNDIR/udhcpc.$WIFI_IFACE.pid
+	[ -f $RUNDIR/udhcpd.pid ] && kill "$(cat $RUNDIR/udhcpd.pid)" 2>/dev/null
+	rm -f $RUNDIR/udhcpd.pid
 	# Der Supervisor raeumt seine eigenen Prozesse per PID-Datei ab; hier nur
 	# die Faelle, in denen er selbst nicht mehr laeuft.
-	for p in /var/run/wpa_supplicant.$WIFI_IFACE.pid /var/run/hostapd.pid; do
+	for p in $RUNDIR/wpa_supplicant.$WIFI_IFACE.pid $RUNDIR/hostapd.pid; do
 		[ -f "$p" ] && { kill "$(cat "$p")" 2>/dev/null; rm -f "$p"; }
 	done
 	ip link set $WIFI_IFACE down 2>/dev/null
@@ -190,13 +202,13 @@ start_cellular() {
 	# (core/cellular/modem_ports). Hier geht es nur darum, ob ueberhaupt etwas
 	# gebunden wurde.
 	n=0
-	while [ ! -e /dev/ttyUSB0 ]; do
+	while [ ! -e $DEVDIR/ttyUSB0 ]; do
 		n=$((n + 1))
 		[ $n -ge 80 ] && break          # 20 s
 		usleep 250000 2>/dev/null || sleep 1
 	done
 
-	if [ ! -e /dev/ttyUSB0 ]; then
+	if [ ! -e $DEVDIR/ttyUSB0 ]; then
 		# Der vom Kernel vorgesehene Notnagel: option.c dieses Kernels kennt
 		# 0x6005 nicht. Ein geratener Eintrag in der Treibertabelle waere
 		# schlimmer, weil die richtige .reserved-Maske davon abhaengt, welche
@@ -204,14 +216,14 @@ start_cellular() {
 		#
 		# Gefahrlos ist das NUR, weil cdc_ether oben schon gebunden hat: ein
 		# bereits belegtes Interface nimmt new_id nicht weg.
-		for d in /sys/bus/usb-serial/drivers/option1 /sys/bus/usb-serial/drivers/option; do
+		for d in $SYSDIR/bus/usb-serial/drivers/option1 $SYSDIR/bus/usb-serial/drivers/option; do
 			[ -w "$d/new_id" ] || continue
 			say "kein ttyUSB - melde $CELL_VID:$CELL_PID bei $(basename "$d") an"
 			echo "$CELL_VID $CELL_PID" > "$d/new_id" 2>/dev/null
 			break
 		done
 		n=0
-		while [ ! -e /dev/ttyUSB0 ]; do
+		while [ ! -e $DEVDIR/ttyUSB0 ]; do
 			n=$((n + 1))
 			[ $n -ge 40 ] && { say "kein serieller Port - steckt das Modem?"; break; }
 			usleep 250000 2>/dev/null || sleep 1
@@ -233,10 +245,10 @@ stop_cellular() {
 		rm -f "$CELL_PIDFILE"
 	fi
 	# Die DHCP-Clients des Helfers, falls er sie nicht mehr abraeumen konnte.
-	for p in /var/run/udhcpc.usb0.pid /var/run/udhcpc.eth1.pid /var/run/udhcpc.wwan0.pid; do
+	for p in $RUNDIR/udhcpc.usb0.pid $RUNDIR/udhcpc.eth1.pid $RUNDIR/udhcpc.wwan0.pid; do
 		[ -f "$p" ] && { kill "$(cat "$p")" 2>/dev/null; rm -f "$p"; }
 	done
-	rm -f /var/run/machino-cellular.state
+	rm -f $RUNDIR/machino-cellular.state
 }
 
 # ------------------------------------------------------------------ main ----
@@ -283,12 +295,12 @@ case "${1:-}" in
 	status)
 		echo "configured: $(read_mode)"
 		echo "started:    $(cat "$MODEFILE" 2>/dev/null || echo '-')"
-		echo "wlan0:      $([ -d /sys/class/net/$WIFI_IFACE ] && echo vorhanden || echo fehlt)"
+		echo "wlan0:      $([ -d $SYSDIR/class/net/$WIFI_IFACE ] && echo vorhanden || echo fehlt)"
 		echo "aic module: $(lsmod | grep -c '^aic') geladen"
 		echo "role:       $(cat "$WIFI_ROLEFILE" 2>/dev/null || echo '-')"
 		echo "supplicant: $([ -e $WPACTRL/$WIFI_IFACE ] && echo laeuft || echo aus)"
-		echo "hostapd:    $([ -e /var/run/hostapd/$WIFI_IFACE ] && echo laeuft || echo aus)"
-		echo "ttyUSB:     $(ls /dev/ttyUSB* 2>/dev/null | tr '\n' ' ')"
+		echo "hostapd:    $([ -e $RUNDIR/hostapd/$WIFI_IFACE ] && echo laeuft || echo aus)"
+		echo "ttyUSB:     $(ls $DEVDIR/ttyUSB* 2>/dev/null | tr '\n' ' ')"
 		echo "cell helper:$([ -f "$CELL_PIDFILE" ] && echo " laeuft" || echo " aus")"
 		;;
 	*) echo "usage: $0 {start|stop|restart|status|mode}"; exit 1 ;;
