@@ -105,7 +105,9 @@ struct Rig {
         svc.set_clock([this] { return clock.t; });
         link.set_clock([this] { return clock.t; });
     }
-    void configure(const cellular::CellularConfig& c) { svc.set_config(c); link.set_config(c); }
+    // Ueber den Uplink, nicht an ihm vorbei -- so herum macht es main.cpp auch,
+    // und nur so wird die Absicht im naechsten tick() wirklich durchgesetzt.
+    void configure(const cellular::CellularConfig& c) { uplink.set_config(c); }
     void run(int n = 14, uint64_t step = 500)
     {
         for (int i = 0; i < n; ++i) {
@@ -197,6 +199,23 @@ void test_switched_off_is_absent_and_sends_nothing()
     TCHECK(r.uplink.state() == LinkState::Absent);
     TCHECK(r.at.sent().empty());
     TCHECK(!r.uplink.enabled());
+}
+
+void test_enabled_is_the_switch_even_with_auto_connect_off()
+{
+    // autoConnect is false by DEFAULT. A first version made the bring-up
+    // depend on it, so switching cellular on did nothing whatsoever -- no
+    // error, no hint, and no second button that could have triggered it.
+    // autoConnect describes something else: the modem's own persistent
+    // self-connect (AT+QNETDEVCTL type 3), which belongs to the state machine.
+    Rig r;
+    r.be.iface_present = true;
+    cellular::CellularConfig c = on_config();
+    c.auto_connect = false;
+    r.configure(c);
+    arm_healthy_modem(r.at);
+    r.run();
+    TCHECK(r.uplink.state() == LinkState::Connected);
 }
 
 void test_a_modem_that_enumerates_but_does_not_answer_is_down()
@@ -488,6 +507,7 @@ void run_cellular_uplink_tests()
 
     test_no_modem_is_absent_not_failed();
     test_switched_off_is_absent_and_sends_nothing();
+    test_enabled_is_the_switch_even_with_auto_connect_off();
     test_a_modem_that_enumerates_but_does_not_answer_is_down();
     test_registered_but_no_datalink_is_not_connected();
     test_an_interface_without_an_address_is_not_connected();

@@ -39,11 +39,29 @@
 // Text, nicht im Zustand. Was NICHT passiert: Connected zu melden, weil ein
 // usb0 existiert. Connected heisst hier ausschliesslich EcmState::Up, und das
 // heisst: Adresse konfiguriert.
+//
+// ZWEI THREADS, EIN MODEM
+//
+// tick() laeuft im Hauptthread; state(), info() und die Statusseite laufen im
+// HTTP-Thread. Deshalb reden die Abfragen NICHT mit dem Dienst und der
+// Zustandsmaschine, sondern mit einer Abschrift, die tick() hinterlegt.
+//
+// Das ist kein Vorsichtsritual. CellularStatus besteht zum grossen Teil aus
+// std::string -- Betreibername, ICCID, Zellkennung. Sie zu lesen, waehrend
+// poll() sie neu setzt, ist ein Datenrennen mit einem Zeiger und einer Laenge,
+// die nicht zusammenpassen; das endet nicht in einem falschen Wert, sondern in
+// einem Absturz des Mediendaemons.
+//
+// Aus demselben Grund SCHICKEN connect(), disconnect() und set_config() nichts
+// -- sie hinterlegen eine Absicht, und tick() fuehrt sie aus. Ein
+// AT-Kommando aus dem HTTP-Thread waere ein zweiter Sprecher auf demselben
+// seriellen Port.
 #pragma once
 #include "core/cellular/cellular_service.hpp"
 #include "core/cellular/ecm_link.hpp"
 #include "ports/inetwork.hpp"
 #include <functional>
+#include <mutex>
 #include <string>
 
 namespace machino { namespace net {
@@ -62,19 +80,19 @@ public:
     void set_reachability(ReachabilityFn fn) { reach_ = std::move(fn); }
 
     // Eine Runde Modemarbeit: Absicht durchsetzen, Status abfragen,
-    // Zustandsmaschine einen Schritt weiterdrehen. Bewusst NICHT Teil von
-    // INetworkUplink.
+    // Zustandsmaschine einen Schritt weiterdrehen, Abschrift hinterlegen.
     //
+    // NUR aus dem Hauptthread, und bewusst NICHT Teil von INetworkUplink.
     // Ethernet und WLAN brauchen so etwas nicht, weil sysfs sich selbst
     // aktualisiert; das Modem muss gefragt werden. Waere das in state() oder
-    // info() versteckt, wuerde jeder Statusaufruf aus dem HTTP-Thread AT-
-    // Kommandos ausloesen -- und ein Browser, der die Seite offen laesst,
+    // info() versteckt, wuerde jeder Statusaufruf aus dem HTTP-Thread
+    // AT-Kommandos ausloesen -- und ein Browser, der die Seite offen laesst,
     // haette die Taktung des Datenpfads in der Hand.
     void tick();
 
-    // Administrativ. Trennt "der Benutzer will keinen Mobilfunk" von "es ist
-    // keiner da": beides sieht von aussen wie Absent aus, aber nur eines davon
-    // ist ein Grund, jemanden zu benachrichtigen.
+    // Administrativ eingeschaltet. Trennt "der Benutzer will keinen
+    // Mobilfunk" von "es ist keiner da": beides sieht von aussen wie Absent
+    // aus, aber nur eines davon ist ein Grund, jemanden zu benachrichtigen.
     bool enabled() const;
 
     std::string   id() const override { return id_; }
@@ -99,25 +117,36 @@ public:
     // beide an beide erinnern muessen, sind eine Falle: wer nur den Dienst
     // setzt, aendert die angezeigte Konfiguration, ohne dass sich am Aufbau
     // etwas aendert.
+    //
+    // Wirksam wird sie im naechsten tick(); gelesen wird sie sofort zurueck.
     void set_config(const cellular::CellularConfig& c);
 
-    // Fuer die Statusseite. Roh und ungefiltert; das Weglassen der Geheimnisse
+    // Abschriften, nach WERT. Eine Referenz waere ein Zeiger auf etwas, das
+    // der Hauptthread gerade umschreibt. Das Weglassen der Geheimnisse
     // passiert in den JSON-Sichten, nicht hier.
-    const cellular::CellularConfig&    config() const { return svc_.config(); }
-    const cellular::CellularStatus&    modem_status() const { return svc_.status(); }
-    const cellular::CellularLinkState& link_state() const { return link_.state(); }
+    cellular::CellularConfig    config() const;
+    cellular::CellularStatus    modem_status() const;
+    cellular::CellularLinkState link_state() const;
 
 private:
+    LinkState state_locked() const;
+
     cellular::CellularService& svc_;
     cellular::EcmLink&         link_;
     std::string                id_;
     ReachabilityFn             reach_;
 
-    // Spiegel der zuletzt gesehenen Absicht, damit eine Aenderung an der
-    // Konfiguration auffaellt, ohne dass jemand sie hier melden muss.
-    bool last_enabled_ = false;
-    bool last_auto_connect_ = false;
-    bool auto_connect_latched_ = false;
+    mutable std::mutex m_;
+
+    // Die Wahrheit fuer alle Leser. Nur tick() schreibt sie.
+    cellular::CellularStatus    st_;
+    cellular::CellularLinkState ls_;
+
+    // Die Absicht. Von jedem Thread setzbar, vom Hauptthread ausgefuehrt.
+    cellular::CellularConfig cfg_;
+    bool cfg_dirty_ = true;      // beim ersten tick() anwenden
+    bool want_up_ = false;
+    bool intent_dirty_ = false;
 };
 
 }} // namespace machino::net
