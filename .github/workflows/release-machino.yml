@@ -114,6 +114,14 @@ jobs:
           cp -f machino/openipc/sbin/machino-usb-helper "$O/sbin/machino-usb-helper"
           cp -f machino/openipc/sbin/machino-wifi-role "$O/sbin/machino-wifi-role"
           cp -f machino/openipc/udhcpc-wlan.script     "$O/udhcpc-wlan.script"
+          # Die Mobilfunkseite des USB-Ports. Sie fehlte hier, solange es nur
+          # WLAN gab -- ein Release mit einer "4G-Mobilfunk"-Auswahl und ohne
+          # den Datenpfad-Helfer waere derselbe Fehler wie ein WLAN-Schalter
+          # ohne Treiber.
+          cp -f machino/openipc/sbin/machino-cellular-helper "$O/sbin/machino-cellular-helper"
+          cp -f machino/openipc/udhcpc-cellular.script       "$O/udhcpc-cellular.script"
+          cp -f machino/openipc/ppp-ip-up.script             "$O/ppp-ip-up.script"
+          cp -f machino/openipc/ppp-ip-down.script           "$O/ppp-ip-down.script"
           cp -f machino/openipc/README.md              "$O/README.md"
           cp -f machino/docs/install-openipc.md        "$O/INSTALL.md"
 

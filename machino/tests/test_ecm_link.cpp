@@ -30,7 +30,7 @@ public:
 
     int dhcp_starts = 0, dhcp_stops = 0, teardowns = 0, set_down_calls = 0;
     std::vector<std::string> dhcp_started_on;
-    EcmAddress assigned;
+    LinkAddress assigned;
 
     bool find_interface(EcmInterface& out) override
     {
@@ -46,7 +46,7 @@ public:
         return true;
     }
     bool dhcp_stop(const std::string&) override { ++dhcp_stops; running_ = false; return true; }
-    bool read_address(const std::string&, EcmAddress& out) override
+    bool read_address(const std::string&, LinkAddress& out) override
     {
         if (assigned.has_address()) { out = assigned; return true; }
         if (!running_ || !dhcp_gives_address) return false;
@@ -55,13 +55,13 @@ public:
         out.dns1 = "192.168.43.1";
         return true;
     }
-    bool set_address(const std::string&, const EcmAddress& a) override
+    bool set_address(const std::string&, const LinkAddress& a) override
     {
         if (set_address_fails) return false;
         assigned = a;
         return true;
     }
-    void teardown(const std::string&) override { ++teardowns; assigned = EcmAddress{}; }
+    void teardown(const std::string&) override { ++teardowns; assigned = LinkAddress{}; }
 
     bool dhcp_running() const { return running_; }
 
@@ -110,11 +110,11 @@ CellularConfig telekom_config()
 }
 
 // Bis zu n Ticks, oder bis der Zustand erreicht ist.
-EcmState run(EcmLink& l, const CellularStatus& s, Clock& c, int n = 12, uint64_t step = 500)
+DataLinkState run(EcmLink& l, const CellularStatus& s, Clock& c, int n = 12, uint64_t step = 500)
 {
     for (int i = 0; i < n; ++i) {
-        const EcmState st = l.tick(s).state;
-        if (st == EcmState::Up || st == EcmState::Failed) return st;
+        const DataLinkState st = l.tick(s).state;
+        if (st == DataLinkState::Up || st == DataLinkState::Failed) return st;
         c.t += step;
     }
     return l.state().state;
@@ -197,7 +197,7 @@ void test_a_modem_already_in_ecm_mode_comes_up_without_a_reboot()
     l.set_config(telekom_config());
     l.connect();
 
-    TCHECK(run(l, healthy_status(), c) == EcmState::Up);
+    TCHECK(run(l, healthy_status(), c) == DataLinkState::Up);
     TCHECK(l.interface_name() == "usb0");
     // NIC-Modus: die Adresse kommt vom Modem, NICHT per DHCP.
     TCHECK(l.address().ipv4 == "37.81.97.187");
@@ -236,14 +236,14 @@ void test_a_mode_switch_reboots_once_and_waits_for_the_modem()
     l.set_config(telekom_config());
     l.connect();
 
-    TCHECK(l.tick(healthy_status()).state == EcmState::WaitReenumeration);
+    TCHECK(l.tick(healthy_status()).state == DataLinkState::WaitReenumeration);
     TCHECK(t.count_sent("AT+CFUN=1,1") == 1);
 
     // Das Modem verschwindet -- erwartet, kein Fehler.
     CellularStatus gone;
     gone.present = false;
     for (int i = 0; i < 20; ++i) { c.t += 1000; l.tick(gone); }
-    TCHECK(l.state().state == EcmState::WaitReenumeration);
+    TCHECK(l.state().state == DataLinkState::WaitReenumeration);
     TCHECK(t.count_sent("AT+CFUN=1,1") == 1);     // NICHT noch einmal
 
     // Es kommt zurueck, jetzt als ECM. set_reply, nicht reply: die alte
@@ -259,7 +259,7 @@ void test_a_mode_switch_reboots_once_and_waits_for_the_modem()
             "+CGCONTRDP: 1,5,\"internet.t-d1.de\",\"37.81.97.187.255.255.255.240\","
             "\"37.81.97.185\",\"10.74.210.210\",\"10.74.210.211\"\r\nOK\r\n");
     be.iface_present = true;
-    TCHECK(run(l, healthy_status(), c) == EcmState::Up);
+    TCHECK(run(l, healthy_status(), c) == DataLinkState::Up);
     TCHECK(t.count_sent("AT+CFUN=1,1") == 1);
 }
 
@@ -280,7 +280,7 @@ void test_a_modem_that_cannot_do_ecm_does_not_reboot_forever()
 
     for (int i = 0; i < 200; ++i) { l.tick(healthy_status()); c.t += 5000; }
     TCHECK(t.count_sent("AT+CFUN=1,1") == 1);
-    TCHECK(l.state().state == EcmState::Failed);
+    TCHECK(l.state().state == DataLinkState::Failed);
     TCHECK(l.state().detail.find("nicht unterstuetzt") != std::string::npos);
 }
 
@@ -297,7 +297,7 @@ void test_an_unreadable_mode_changes_nothing()
     l.set_config(telekom_config());
     l.connect();
     l.tick(healthy_status());
-    TCHECK(l.state().state == EcmState::Failed);
+    TCHECK(l.state().state == DataLinkState::Failed);
     TCHECK(t.count_sent("AT+QCFG=\"usbnet\",") == 0);
     TCHECK(t.count_sent("AT+CFUN") == 0);
 }
@@ -315,12 +315,12 @@ void test_nothing_happens_without_sim_or_registration()
     CellularStatus s = healthy_status();
     s.sim = SimState::PinRequired;
     s.sim_detail = "SIM verlangt eine PIN";
-    TCHECK(l.tick(s).state == EcmState::WaitSim);
+    TCHECK(l.tick(s).state == DataLinkState::WaitSim);
     TCHECK(t.sent().empty());                    // kein einziges Kommando
 
     s.sim = SimState::Ready;
     s.registration = RegState::Searching;
-    TCHECK(l.tick(s).state == EcmState::WaitRegistration);
+    TCHECK(l.tick(s).state == DataLinkState::WaitRegistration);
     TCHECK(t.sent().empty());
     TCHECK(l.state().detail.find("searching") != std::string::npos);
 }
@@ -338,7 +338,7 @@ void test_dhcp_in_routing_mode_and_only_on_our_interface()
     l.set_config(cfg);
     l.connect();
 
-    TCHECK(run(l, healthy_status(), c) == EcmState::Up);
+    TCHECK(run(l, healthy_status(), c) == DataLinkState::Up);
     TCHECK(be.dhcp_starts == 1);
     TCHECK(be.dhcp_started_on.size() == 1 && be.dhcp_started_on[0] == "usb0");
     TCHECK(l.address().ipv4 == "192.168.43.100");
@@ -379,11 +379,11 @@ void test_dhcp_timeout_fails_and_stops_its_own_client()
     // Bis zum ersten Fehlschlag laufen lassen -- danach versucht die Maschine
     // es absichtlich wieder, also waere "DHCP laeuft nicht" am Ende einer
     // langen Schleife die falsche Frage.
-    for (int i = 0; i < 60 && l.state().state != EcmState::Failed; ++i) {
+    for (int i = 0; i < 60 && l.state().state != DataLinkState::Failed; ++i) {
         l.tick(healthy_status());
         c.t += 2000;
     }
-    TCHECK(l.state().state == EcmState::Failed);
+    TCHECK(l.state().state == DataLinkState::Failed);
     TCHECK(l.state().detail.find("DHCP") != std::string::npos);
     TCHECK(be.dhcp_stops == 1);          // der eigene Client, genau einmal
     TCHECK(!be.dhcp_running());
@@ -401,9 +401,9 @@ void test_a_late_interface_is_waited_for_a_missing_one_is_not_forever()
 
     // Kommt spaet: das ist in Ordnung.
     for (int i = 0; i < 5; ++i) { l.tick(healthy_status()); c.t += 1000; }
-    TCHECK(l.state().state == EcmState::WaitNetif);
+    TCHECK(l.state().state == DataLinkState::WaitNetif);
     be.iface_present = true;
-    TCHECK(run(l, healthy_status(), c) == EcmState::Up);
+    TCHECK(run(l, healthy_status(), c) == DataLinkState::Up);
 }
 
 void test_an_interface_that_never_appears_gives_a_reason()
@@ -416,7 +416,7 @@ void test_an_interface_that_never_appears_gives_a_reason()
     l.set_config(telekom_config());
     l.connect();
     for (int i = 0; i < 40; ++i) { l.tick(healthy_status()); c.t += 2000; }
-    TCHECK(l.state().state == EcmState::Failed);
+    TCHECK(l.state().state == DataLinkState::Failed);
     TCHECK(l.state().detail.find("cdc_ether") != std::string::npos);
 }
 
@@ -431,18 +431,18 @@ void test_link_loss_after_up_returns_to_addressing_not_to_zero()
     CellularConfig cfg = telekom_config(); cfg.nic_mode = false;
     l.set_config(cfg);
     l.connect();
-    TCHECK(run(l, healthy_status(), c) == EcmState::Up);
+    TCHECK(run(l, healthy_status(), c) == DataLinkState::Up);
 
     // Lease weg, Interface noch da.
     be.dhcp_gives_address = false;
     c.t += 1000;
-    TCHECK(l.tick(healthy_status()).state == EcmState::Addressing);
+    TCHECK(l.tick(healthy_status()).state == DataLinkState::Addressing);
 
     // Interface weg: das ist mehr als ein verlorener Lease.
     be.iface_present = false;
     c.t += 1000;
     l.tick(healthy_status());
-    TCHECK(l.state().state == EcmState::Failed);
+    TCHECK(l.state().state == DataLinkState::Failed);
     TCHECK(l.state().detail.find("verschwunden") != std::string::npos);
 }
 
@@ -485,7 +485,7 @@ void test_disconnect_cleans_up_and_is_idempotent()
     run(l, healthy_status(), c);
 
     l.disconnect();
-    TCHECK(l.state().state == EcmState::Disabled);
+    TCHECK(l.state().state == DataLinkState::Disabled);
     TCHECK(!l.is_up());
     TCHECK(be.dhcp_stops == 1);
     TCHECK(be.teardowns == 1);
@@ -539,7 +539,7 @@ void test_an_apn_is_required_before_anything_is_configured()
     l.set_config(cfg);
     l.connect();
     l.tick(healthy_status());
-    TCHECK(l.state().state == EcmState::Failed);
+    TCHECK(l.state().state == DataLinkState::Failed);
     TCHECK(l.state().detail.find("APN") != std::string::npos);
     TCHECK(t.count_sent("AT+CGDCONT") == 0);
 }
@@ -561,7 +561,7 @@ void test_a_rejected_apn_is_reported_not_retried_immediately()
     l.set_config(telekom_config());
     l.connect();
     l.tick(healthy_status());
-    TCHECK(l.state().state == EcmState::Failed);
+    TCHECK(l.state().state == DataLinkState::Failed);
     TCHECK(l.state().detail.find("CGDCONT") != std::string::npos);
     TCHECK(t.count_sent("AT+QNETDEVCTL") == 0);     // nicht weitergemacht
 }

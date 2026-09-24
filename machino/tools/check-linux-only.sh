@@ -3,7 +3,7 @@
 # sockets, so only CI ever sees them). It does not try to be a compiler - it
 # catches exactly the two mistakes that have already cost CI round trips.
 set -e
-FILES="src/app/linux_watchdog.cpp src/app/http/http_server.cpp src/app/log_reader.cpp src/app/http/setup.cpp src/app/onvif/soap.cpp src/app/onvif/onvif_service.cpp src/app/onvif/discovery.cpp src/app/onvif/discovery_server.cpp src/app/rtsp/rtsp_server.cpp src/app/rtsp/rtsp_auth.cpp src/app/webrtc/peer.cpp src/app/main.cpp src/adapters/linux/sysfs_gpio.cpp src/adapters/linux/linux_usb_host.cpp src/adapters/linux/wpa_ctrl.cpp src/adapters/linux/linux_route_backend.cpp"
+FILES="src/app/linux_watchdog.cpp src/app/http/http_server.cpp src/app/log_reader.cpp src/app/http/setup.cpp src/app/onvif/soap.cpp src/app/onvif/onvif_service.cpp src/app/onvif/discovery.cpp src/app/onvif/discovery_server.cpp src/app/rtsp/rtsp_server.cpp src/app/rtsp/rtsp_auth.cpp src/app/webrtc/peer.cpp src/app/main.cpp src/adapters/linux/sysfs_gpio.cpp src/adapters/linux/linux_usb_host.cpp src/adapters/linux/wpa_ctrl.cpp src/adapters/linux/linux_route_backend.cpp src/adapters/linux/linux_ppp_backend.cpp"
 bad=0
 
 # 0. 64-bit atomics anywhere in the tree: MIPS32 has no lock-free 64-bit
@@ -33,14 +33,20 @@ for f in $FILES; do
             if (substr($0, RSTART + RLENGTH, 2) == "//") next
 
             line = $0
-            gsub(/\\\\/, "", line)      # escaped backslashes first
-            gsub(/\\"/, "", line)       # then escaped quotes
-            for (;;) {                  # character literals, e.g. the quote char
-                p = index(line, "\x27")
-                if (p == 0 || p + 2 > length(line)) break
-                if (substr(line, p + 2, 1) != "\x27") break
-                line = substr(line, 1, p - 1) substr(line, p + 3)
-            }
+            # Zeichenliterale ZUERST, und zwar auch die mit Escape.
+            #
+            # Die erste Fassung lief von links durch und erwartete genau ein
+            # Zeichen zwischen den Hochkommas. Damit brach sie beim ersten
+            # '\n' ab -- und alles danach blieb stehen, also auch ein '"'.
+            # Eine Zeile wie
+            #     if (c == '\n' || c == '"' || c == '\\')
+            # zaehlte dann ein einzelnes Anfuehrungszeichen und wurde als
+            # offenes String-Literal gemeldet. Ein Pruefer, der gueltigen Code
+            # anmeckert, wird abgeschaltet, und dann faengt er den echten Fall
+            # auch nicht mehr.
+            gsub(/\x27(\\.|[^\\\x27])\x27/, "", line)
+            gsub(/\\\\/, "", line)      # escaped backslashes
+            gsub(/\\"/, "", line)       # escaped quotes
             n = gsub(/"/, "&", line)
             if (n % 2 == 1) {
                 printf "%s:%d: odd number of quotes - string literal not closed on this line\n", file, NR

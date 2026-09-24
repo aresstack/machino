@@ -19,7 +19,7 @@ struct EcmInterface {
     bool        up = false;
 };
 
-struct EcmAddress {
+struct LinkAddress {
     std::string ipv4;
     std::string netmask;
     std::string gateway;
@@ -49,12 +49,12 @@ public:
 
     // Was der Kernel ueber das Interface sagt. Im NIC-Modus wird die Adresse
     // nicht hierher kommen, sondern vom Modem -- dann setzt der Aufrufer sie.
-    virtual bool read_address(const std::string& ifname, EcmAddress& out) = 0;
+    virtual bool read_address(const std::string& ifname, LinkAddress& out) = 0;
 
     // Adresse statisch setzen. Der NIC-Modus des EC200A reicht die oeffentliche
     // Adresse direkt durch und beantwortet KEIN DHCP; die Werte kommen dann aus
     // AT+CGCONTRDP.
-    virtual bool set_address(const std::string& ifname, const EcmAddress& a) = 0;
+    virtual bool set_address(const std::string& ifname, const LinkAddress& a) = 0;
 
     // Alles wieder abraeumen, was zu diesem Interface gehoert -- und nur das.
     virtual void teardown(const std::string& ifname) = 0;

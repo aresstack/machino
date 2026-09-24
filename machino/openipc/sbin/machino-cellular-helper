@@ -22,6 +22,8 @@
 #                                         Modem beantwortet kein DHCP)
 #   up <iface> | down <iface>             Interface administrativ schalten
 #   stop <iface>                          alles zu diesem Interface abraeumen
+#   ppp-start <optionsdatei>              pppd mit diesen Optionen starten
+#   ppp-stop                              pppd beenden
 #
 # Dieser Helfer schreibt nach $STATE, was tatsaechlich konfiguriert ist:
 #
@@ -92,6 +94,65 @@ stop_iface() {
 	ip link set "$iface" down 2>/dev/null
 	clear_state
 	log "$iface abgeraeumt"
+}
+
+# ------------------------------------------------------------------- PPP ----
+#
+# Der Alternativpfad aus AP-M7. ECM bleibt der Normalfall; PPP ist fuer Modems
+# und Netze, in denen ECM nicht geht.
+#
+# machino schreibt die pppd-Optionen (samt Chat-Skript) selbst und schickt hier
+# nur den Pfad. Dieser Prozess startet pppd und merkt sich, WIE er aufgehoert
+# hat -- der Exit-Code ist der einzige Unterschied zwischen "Passwort falsch",
+# "kein CONNECT" und "Gegenstelle hat aufgelegt", und ohne ihn sieht in der
+# Oberflaeche alles gleich aus.
+PPP_PIDFILE=/var/run/pppd.pid
+PPP_STATUS=/var/run/machino-ppp.status
+
+write_ppp_status() {
+	tmp="$PPP_STATUS.new"
+	{
+		echo "running=$1"
+		[ -n "${2:-}" ] && echo "exit=$2"
+		[ -n "${3:-}" ] && echo "detail=$3"
+	} > "$tmp" 2>/dev/null && mv -f "$tmp" "$PPP_STATUS" 2>/dev/null || rm -f "$tmp"
+}
+
+stop_ppp() {
+	kill_pidfile "$PPP_PIDFILE"
+	# Der Zustand wird hier NICHT auf "beendet mit Fehler" gesetzt: wir haben
+	# beendet, und das ist kein Fehlschlag. Der wartende Subshell schreibt
+	# gleich exit=5 (SIGTERM), was machino als "ok" liest.
+	clear_state
+}
+
+start_ppp() {
+	opts=$1
+	command -v pppd >/dev/null 2>&1 || {
+		log "kein pppd im Image"
+		write_ppp_status 0 127 "pppd ist auf diesem Image nicht installiert"
+		return 1
+	}
+	[ -r "$opts" ] || { log "$opts fehlt"; write_ppp_status 0 2 "keine pppd-Optionen"; return 1; }
+	stop_ppp
+
+	write_ppp_status 1
+	# Die Subshell ist pppds ELTERNPROZESS, und nur deshalb kann sie seinen
+	# Exit-Code lesen: `wait` funktioniert ausschliesslich fuer eigene Kinder.
+	# Ein Geschwisterprozess koennte nur mit `kill -0` pollen und wuesste am
+	# Ende nur DASS, nicht WARUM.
+	#
+	# In die PID-Datei kommt pppds echte PID, nicht die der Subshell -- sonst
+	# beendete kill_pidfile die Huelle und liesse pppd auf dem Modem-Port
+	# stehen.
+	(
+		pppd file "$opts" nodetach >>"$LOGFILE" 2>&1 &
+		_p=$!
+		echo "$_p" > "$PPP_PIDFILE"
+		wait "$_p"
+		write_ppp_status 0 "$?"
+	) &
+	log "pppd gestartet (Optionen: $opts)"
 }
 
 start_dhcp() {
@@ -170,6 +231,11 @@ while :; do
 			up)     [ -n "$iface" ] && { ip link set "$iface" up 2>/dev/null; log "$iface up"; } ;;
 			down)   [ -n "$iface" ] && { ip link set "$iface" down 2>/dev/null; log "$iface down"; } ;;
 			stop)   [ -n "$iface" ] && stop_iface "$iface" ;;
+			# Beim PPP-Pfad ist das zweite Wort kein Interface, sondern der
+			# Pfad der Optionsdatei -- das Interface heisst dort pppX und
+			# entsteht erst, wenn die Aushandlung durch ist.
+			ppp-start) [ -n "$iface" ] && start_ppp "$iface" ;;
+			ppp-stop)  stop_ppp ;;
 			"")     ;;
 			*)      log "unbekannter Wunsch '$verb' - ignoriert" ;;
 		esac

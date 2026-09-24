@@ -26,7 +26,7 @@ public:
     bool        iface_present = false;
     std::string iface_name = "usb0";
     int         teardowns = 0;
-    EcmAddress assigned;
+    LinkAddress assigned;
 
     bool find_interface(EcmInterface& out) override
     {
@@ -37,19 +37,19 @@ public:
     bool set_up(const std::string&, bool up) override { up_ = up; return true; }
     bool dhcp_start(const std::string&) override { running_ = true; return true; }
     bool dhcp_stop(const std::string&) override { running_ = false; return true; }
-    bool read_address(const std::string&, EcmAddress& out) override
+    bool read_address(const std::string&, LinkAddress& out) override
     {
         if (assigned.has_address()) { out = assigned; return true; }
         if (!running_) return false;
         out.ipv4 = "192.168.43.100"; out.gateway = "192.168.43.1"; out.dns1 = "192.168.43.1";
         return true;
     }
-    bool set_address(const std::string&, const EcmAddress& a) override
+    bool set_address(const std::string&, const LinkAddress& a) override
     {
         assigned = a;
         return true;
     }
-    void teardown(const std::string&) override { ++teardowns; assigned = EcmAddress{}; }
+    void teardown(const std::string&) override { ++teardowns; assigned = LinkAddress{}; }
 
 private:
     bool up_ = false;

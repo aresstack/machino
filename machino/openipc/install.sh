@@ -492,6 +492,33 @@ if [ "$WITH_CELL_PAYLOAD" = "1" ] &&
     [ -r "$HERE/udhcpc-cellular.script" ] &&
         { put 0755 "$HERE/udhcpc-cellular.script" "$STATE_DIR/udhcpc-cellular.script" ||
           warn "could not install the cellular udhcpc hook - the modem route would have no metric"; }
+
+    # PPP. Die Hooks muessen nach /etc/ppp -- pppd sucht dort und nirgends
+    # sonst, der Pfad ist fest einkompiliert. Auf diesem Image benutzt sonst
+    # nichts PPP; der Uninstaller raeumt sie wieder weg.
+    #
+    # ip-up sagt machino, wie das Interface heisst und welche Adresse es
+    # bekommen hat -- ppp0 ist der haeufige Fall und nicht der einzige, und ein
+    # geratener Name zeigte auf eine fremde Verbindung.
+    if [ -r "$HERE/ppp-ip-up.script" ]; then
+        put 0755 "$HERE/ppp-ip-up.script"   "$ROOT/etc/ppp/ip-up" ||
+            warn "could not install /etc/ppp/ip-up - a PPP call would come up without machino noticing"
+        put 0755 "$HERE/ppp-ip-down.script" "$ROOT/etc/ppp/ip-down" ||
+            warn "could not install /etc/ppp/ip-down - a dropped PPP call would keep reporting an address"
+    fi
+    # pppd selbst, falls das Bundle es mitbringt. Viele OpenIPC-Images haben
+    # keines, und dann ist die PPP-Auswahl eine Attrappe -- also wird es
+    # mitgeliefert und hier abgelegt.
+    _ppp=0
+    if [ -r "$HERE/cellular/pppd" ]; then
+        put 0755 "$HERE/cellular/pppd" "$ROOT/usr/sbin/pppd" || die "cannot install pppd"
+        _ppp=1
+    fi
+    # chat(8) fuehrt die Wahl-Unterhaltung. Ohne es kommt pppd nie bis zum
+    # CONNECT, und der Fehler saehe aus wie ein totes Modem.
+    if [ -r "$HERE/cellular/chat" ]; then
+        put 0755 "$HERE/cellular/chat" "$ROOT/usr/sbin/chat" || die "cannot install chat"
+    fi
     _cmods=0
     for _cko in "$HERE"/cellular/modules/*.ko; do
         [ -r "$_cko" ] || continue
@@ -499,7 +526,7 @@ if [ "$WITH_CELL_PAYLOAD" = "1" ] &&
             die "cannot install $(basename "$_cko")"
         _cmods=$((_cmods + 1))
     done
-    say "installed the cellular payload: $_cmods module(s)"
+    say "installed the cellular payload: $_cmods module(s), pppd $([ "$_ppp" = 1 ] && echo yes || echo "no - PPP will say so")"
     if [ "$_cmods" = "0" ]; then
         warn "no modem kernel modules in the bundle - selecting cellular will find nothing to load."
         warn "they must be built against this exact kernel; see the build-modem-modules-t40 workflow"

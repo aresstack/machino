@@ -109,7 +109,7 @@ jobs:
         run: |
           set -u
           mkdir -p wifi-payload
-          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml; do
+          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml; do
             id=$(gh run list --workflow "$wf" --status success --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
             if [ -z "${id:-}" ] || [ "$id" = "null" ]; then
               echo "::warning::no successful run of $wf to take a payload from"
@@ -163,7 +163,20 @@ jobs:
           # abgelaufenes Artefakt darf den Hauptbuild nicht rot machen.
           cp -f machino/openipc/sbin/machino-cellular-helper "$O/sbin/machino-cellular-helper"
           cp -f machino/openipc/udhcpc-cellular.script       "$O/udhcpc-cellular.script"
+          # Die pppd-Hooks. Sie landen bei der Installation unter /etc/ppp --
+          # pppd sucht dort und nirgends sonst, der Pfad ist fest
+          # einkompiliert. ip-up sagt machino, wie das Interface heisst.
+          cp -f machino/openipc/ppp-ip-up.script             "$O/ppp-ip-up.script"
+          cp -f machino/openipc/ppp-ip-down.script           "$O/ppp-ip-down.script"
           mkdir -p "$O/cellular/modules"
+          # pppd und chat, best effort wie die uebrigen Nutzlasten: ein
+          # abgelaufenes Artefakt darf den Hauptbuild nicht rot machen. Fehlen
+          # sie, sagt install.sh das -- und die PPP-Auswahl meldet ehrlich,
+          # dass nichts zu starten da ist.
+          for b in pppd chat; do
+            f=$(find wifi-payload -name "$b" -type f 2>/dev/null | head -1)
+            if [ -n "$f" ]; then cp -f "$f" "$O/cellular/$b"; chmod 0755 "$O/cellular/$b"; fi
+          done
           for m in option usb_wwan usbnet cdc_ether; do
             f=$(find wifi-payload -name "$m.ko" 2>/dev/null | head -1)
             if [ -n "$f" ]; then cp -f "$f" "$O/cellular/modules/"; fi
@@ -240,6 +253,7 @@ jobs:
             echo "| WLAN-Firmware | $(kb "$O/wifi/firmware") |"
             echo "| hostapd | $(kb "$O/wifi/hostapd") |"
             echo "| Modem-Module | $(kb "$O/cellular/modules") |"
+            echo "| pppd + chat | $(kb "$O/cellular/pppd" "$O/cellular/chat") |"
             echo "| Helfer und Skripte | $(kb "$O/sbin" "$O/init" "$O"/*.script "$O"/*.sh) |"
             echo "| **Gesamt (entpackt)** | **$(kb "$O")** |"
             echo "| Archiv | $(kb bundle/machino-openipc-t40nn.tar.gz) |"
@@ -281,6 +295,7 @@ jobs:
             echo "| Kernel-Module vermagic | ${vm:-(keine Module im Bundle)} |"
             echo "| WLAN mitgeliefert | $([ -n "$(ls "$O/wifi/modules" 2>/dev/null)" ] && echo ja || echo NEIN) |"
             echo "| Mobilfunk mitgeliefert | $([ -n "$(ls "$O/cellular/modules" 2>/dev/null)" ] && echo ja || echo NEIN) |"
+            echo "| PPP mitgeliefert | $([ -f "$O/cellular/pppd" ] && echo ja || echo "NEIN - die PPP-Auswahl bliebe wirkungslos") |"
             echo "| Boot-Helfer | $([ -f "$O/sbin/machino-usb-helper" ] && echo ja || echo NEIN) |"
             echo "| Veraltetes S41hostapd im Bundle | $([ -f "$O/init/S41hostapd" ] && echo JA || echo nein) |"
             echo "| Veraltetes S42wifi im Bundle | $([ -f "$O/init/S42wifi" ] && echo JA || echo nein) |"

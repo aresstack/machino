@@ -51,6 +51,39 @@ der Rueckfall fuer ein Boot-Skript, das ein halbes Upgrade stehengelassen hat.
 Die Mobilfunk-Konfiguration (APN, PDP-Typ, Auth, SIM-PIN) haengt **nicht** am
 Modus. `usb.mode = wifi` loescht keinen gespeicherten APN.
 
+### Datenverbindung: ECM oder PPP
+
+Innerhalb von `usb.mode = cellular` gibt es noch eine Wahl:
+
+    cellular.data_link = ecm        Default
+    cellular.data_link = ppp
+
+**ECM** ist der Normalfall: das Modem meldet sich als Netzwerkkarte, der Kernel
+legt ein `usb0`/`eth1` an, die Adresse kommt per DHCP oder aus `AT+CGCONTRDP`.
+
+**PPP** ist die Ausweichmoeglichkeit fuer Modems und Netze, in denen das nicht
+geht. Die Strecke laeuft dann ueber den seriellen Modem-Port; `pppd` waehlt mit
+`ATD*99***1#` und handelt die Adresse per IPCP aus.
+
+Es wird **nicht** automatisch gewechselt. Scheitert ECM, bleibt es bei ECM und
+sagt warum. Ein stiller Fallback haette zur Folge, dass die Kamera auf einem
+Weg laeuft, den niemand gewaehlt hat -- und dass der Fehler im gewaehlten Weg
+nie auffaellt.
+
+Der Bootpfad bereitet nur den gewaehlten Link vor: bei `ppp` werden `usbnet`
+und `cdc_ether` nicht geladen. Ein Wechsel wirkt deshalb erst nach einem
+Neustart, wie beim USB-Modus selbst.
+
+Die gemeinsame Control Plane bleibt dieselbe -- SIM, PIN, Registrierung, APN
+und PDP-Kontext laufen bei beiden ueber denselben AT-Port und denselben
+SimManager. Die PIN wird also auch beim Wechsel des Datenlinks je Lebenszyklus
+hoechstens einmal gesendet.
+
+`pppd` und `chat` liegen im Bundle (Workflow `build-ppp-t40`) und werden nach
+`/usr/sbin` installiert; die Hooks gehen nach `/etc/ppp/ip-up` und
+`/etc/ppp/ip-down`, weil pppd genau dort sucht. Bringt das Bundle kein `pppd`
+mit, sagt der Installer das, statt eine Auswahl anzubieten, die nichts tut.
+
 ### Optionen
 
     ./install.sh                             beide Nutzlasten, usb.mode unveraendert
@@ -86,7 +119,21 @@ Besitzer von wlan0: `/usr/sbin/machino-wifi-role`. machino schreibt seine
 Absicht nach `/etc/machino/wifi-role` (`station` | `ap` | `off`), der
 Supervisor setzt sie um. So startet der Prozess mit der grossen IMP-Pipeline
 niemals selbst ein Programm.
- selected; survives a reboot |
+
+### What gets installed
+
+| Path | What it is |
+|---|---|
+| `/usr/bin/machino` | the daemon |
+| `/usr/sbin/streamerctl` | the selector — the only thing that switches services |
+| `/usr/sbin/machino-usb-helper` | reads `usb.mode` at boot and brings up the selected stack |
+| `/usr/sbin/machino-wifi-role` | owns wlan0 and switches between station and access point |
+| `/usr/sbin/machino-cellular-helper` | starts the modem's data path (DHCP or pppd) |
+| `/etc/machino/machino.conf` | your configuration (kept on upgrades) |
+| `/etc/machino/modules/` | the WiFi and modem kernel modules |
+| `/etc/machino/ppp/` | generated pppd options and chat script (0600 — carries the APN password) |
+| `/etc/ppp/ip-up`, `/etc/ppp/ip-down` | tell machino which interface a PPP call got |
+| `/etc/machino/streamer` | which service is selected; survives a reboot |
 | `/etc/machino/streamer.preinstall` | what the camera looked like before, used by the uninstaller |
 | `/etc/machino/backup/` | untouched copies of the files the installer modified |
 | `/etc/init.d/machino` | start/stop for Machino |

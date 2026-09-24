@@ -764,6 +764,38 @@ n_opt=$(grep -n "option.ko"    "$WORK/actions.log" | head -1 | cut -d: -f1)
 if [ -n "$n_cdc" ] && [ -n "$n_opt" ] && [ "$n_cdc" -lt "$n_opt" ]; then ok
 else bad "option was loaded before cdc_ether (cdc=$n_cdc option=$n_opt)"; fi
 
+# --- cellular + PPP: nur der gewaehlte Datenlink wird vorbereitet.
+#
+# Bei PPP traegt die Strecke pppd ueber den seriellen Modem-Port. Ein
+# cdc_ether daneben legte ein usb0 an, das niemand benutzt -- und haette
+# ausserdem das Interface belegt, das `option` im Notfall braucht.
+usb_tree
+printf 'usb.mode = cellular\ncellular.data_link = ppp\n' > "$U/etc/machino/machino.conf"
+USB_ACTIONS="$WORK/actions.log"; : > "$USB_ACTIONS"; export USB_ACTIONS
+PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" start > "$WORK/usbout" 2>&1
+did   "ppp still loads the serial drivers" "option.ko"
+did   "ppp still loads usb_wwan"           "usb_wwan.ko"
+did   "ppp starts the cellular helper"     "started machino-cellular-helper"
+didnt "ppp does not load usbnet"           "usbnet.ko"
+didnt "ppp does not load cdc_ether"        "cdc_ether.ko"
+didnt "ppp loads no wifi driver"           "aic8800"
+
+# Und andersherum: bei ECM (auch ohne den Schluessel) kommt das Netzwerkpaar.
+usb_tree
+printf 'usb.mode = cellular\n' > "$U/etc/machino/machino.conf"
+USB_ACTIONS="$WORK/actions.log"; : > "$USB_ACTIONS"; export USB_ACTIONS
+PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" start > "$WORK/usbout" 2>&1
+did "a missing data_link means ecm" "cdc_ether.ko"
+
+# Unsinn im Datenlink faellt auf ECM zurueck -- der Normalfall, nicht die
+# Ausweichmoeglichkeit. Ein Tippfehler darf nicht in den selteneren Pfad
+# schicken.
+usb_tree
+printf 'usb.mode = cellular\ncellular.data_link = pppoe\n' > "$U/etc/machino/machino.conf"
+USB_ACTIONS="$WORK/actions.log"; : > "$USB_ACTIONS"; export USB_ACTIONS
+PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" start > "$WORK/usbout" 2>&1
+did "an unknown data link falls back to ecm" "cdc_ether.ko"
+
 # Ein unbekannter Modus faellt geschlossen aus -- nicht auf WLAN, nicht auf
 # Mobilfunk, sondern auf gar nichts.
 usb_tree

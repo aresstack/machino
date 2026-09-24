@@ -186,10 +186,34 @@ stop_wifi() {
 # `option` es nicht mehr nehmen.
 #
 # usbserial ist im Image vorhanden; die uebrigen vier kommen aus dem Bundle.
+# Welcher Datenlink: ecm (Vorgabe) oder ppp. Dieselbe stumpfe Leseweise wie
+# bei usb.mode, und aus demselben Grund -- diese Zeile entscheidet, welche
+# Kernelmodule geladen werden.
+read_data_link() {
+	[ -f "$CONF" ] || { echo ecm; return; }
+	v=$(tr -d ' \t\r' < "$CONF" | sed -n 's/^cellular\.data_link=//p' | tail -1)
+	case "$v" in
+		ppp) echo ppp ;;
+		*)   echo ecm ;;      # auch bei Unsinn: ECM ist der Normalfall
+	esac
+}
+
 start_cellular() {
-	# usbnet vor cdc_ether: cdc_ether haengt an dessen Symbolen.
-	load_module usbnet   || say "usbnet fehlt - ohne das kein ECM-Interface"
-	load_module cdc_ether || say "cdc_ether fehlt - ohne das kein ECM-Interface"
+	dl=$(read_data_link)
+
+	# Das Netzwerkpaar NUR fuer ECM.
+	#
+	# Bei PPP traegt die Strecke pppd ueber den seriellen Modem-Port; ein
+	# cdc_ether daneben legte ein usb0 an, das niemand benutzt, und haette
+	# ausserdem das Interface belegt, das `option` im Notfall braucht. AP-M7
+	# sagt es ausdruecklich: nur den gewaehlten Datenpfad vorbereiten.
+	if [ "$dl" = "ecm" ]; then
+		# usbnet vor cdc_ether: cdc_ether haengt an dessen Symbolen.
+		load_module usbnet   || say "usbnet fehlt - ohne das kein ECM-Interface"
+		load_module cdc_ether || say "cdc_ether fehlt - ohne das kein ECM-Interface"
+	else
+		say "Datenlink: ppp - kein usbnet, kein cdc_ether"
+	fi
 
 	modprobe usbserial 2>/dev/null || load_module usbserial
 	load_module usb_wwan || say "usb_wwan fehlt - option braucht dessen Symbole"

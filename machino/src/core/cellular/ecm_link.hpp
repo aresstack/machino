@@ -37,49 +37,94 @@
 
 namespace machino { namespace cellular {
 
-enum class EcmState {
+// Die Zustaende eines Mobilfunk-Datenlinks -- EINE Skala fuer ECM und PPP.
+//
+// Zwei Aufzaehlungen waeren die naheliegende Loesung und die falsche: der
+// Anfang ist bei beiden derselbe (Geraet, AT-Port, SIM, Registrierung, PDP),
+// weil beide dieselbe Control Plane benutzen und sich nur im Datenlink
+// unterscheiden. Zwei Enums hiessen zwei Namensfunktionen, zwei Uebersetzungen
+// in der Oberflaeche und zwei Stellen, an denen "nicht im Netz" verschieden
+// heissen kann.
+//
+// Ein paar Werte gehoeren nur einer Seite, und das steht dran. Sie sind
+// trotzdem hier und nicht in einem Unterenum: ein Zustand, den die andere
+// Seite nie annimmt, kostet nichts, und die Alternative ist eine Fallunter-
+// scheidung in jedem switch.
+enum class DataLinkState {
     Disabled,            // niemand will Mobilfunk
     WaitDevice,          // kein AT-Port
     WaitAt,              // Port da, Modem antwortet nicht
     WaitSim,             // SIM nicht bereit
     WaitRegistration,    // nicht im Netz
-    EnsureEcmMode,       // usbnet/nat pruefen, ggf. umstellen
-    WaitReenumeration,   // Modem startet neu, das ist erwartet
-    ConfigurePdp,        // CGDCONT + QICSGP
-    StartData,           // QNETDEVCTL
-    WaitNetif,           // Interface erscheint
-    Addressing,          // DHCP oder statisch aus CGCONTRDP
+    EnsureEcmMode,       // ECM: usbnet/nat pruefen, ggf. umstellen
+    WaitReenumeration,   // ECM: Modem startet neu, das ist erwartet
+    ConfigurePdp,        // CGDCONT (+ QICSGP bei ECM)
+    StartData,           // ECM: QNETDEVCTL
+    WaitNetif,           // ECM: Interface erscheint
+    Addressing,          // ECM: DHCP oder statisch aus CGCONTRDP
+    Dial,                // PPP: ATD laeuft, CONNECT steht aus
+    Negotiating,         // PPP: pppd verhandelt LCP/IPCP
+    Disconnecting,       // PPP: Abbau laeuft
     Up,
     Failed,              // gibt nicht von selbst auf, aber versucht es langsamer
 };
 
-const char* ecm_state_name(EcmState s);
+const char* data_link_state_name(DataLinkState s);
+
+// Welcher Datenlink. Der Benutzer waehlt "Mobilfunk"; das hier ist die
+// technische Auspraegung darunter, und sie steht im Status, weil eine
+// Fehlersuche ohne sie im Dunkeln stochert.
+enum class DataLinkKind { Ecm, Ppp };
+const char* data_link_kind_name(DataLinkKind k);
+bool        data_link_kind_parse(const std::string& s, DataLinkKind& out);
 
 struct CellularLinkState {
-    EcmState     state = EcmState::Disabled;
-    std::string  interface_name;
-    EcmAddress   address;
-    std::string  modem_pdp_address;   // was das Modem sagt; kann abweichen
-    bool         nic_mode = false;    // true = oeffentliche IP direkt am Host
-    std::string  detail;              // Klartext, ohne Geheimnisse
-    int          attempts = 0;        // Fehlversuche seit dem letzten Erfolg
+    DataLinkState state = DataLinkState::Disabled;
+    DataLinkKind  kind = DataLinkKind::Ecm;
+    std::string   interface_name;
+    LinkAddress   address;
+    std::string   modem_pdp_address;   // was das Modem sagt; kann abweichen
+    bool          nic_mode = false;    // ECM: oeffentliche IP direkt am Host
+    std::string   detail;              // Klartext, ohne Geheimnisse
+    int           attempts = 0;        // Fehlversuche seit dem letzten Erfolg
 
-    bool is_up() const { return state == EcmState::Up; }
+    bool is_up() const { return state == DataLinkState::Up; }
 };
 
-class EcmLink {
+// Was ein Datenlink koennen muss, damit CellularUplink ihn benutzen kann.
+//
+// Es gibt genau zwei Implementierungen -- EcmLink und PppLink -- und beim Boot
+// wird EINE davon aufgebaut. Kein Umschalten zur Laufzeit: der ECM-Pfad
+// braucht cdc_ether, der PPP-Pfad einen freien Modem-Port, und beides
+// gleichzeitig vorzubereiten hiesse, Treiber fuer einen Weg zu laden, den
+// niemand geht.
+class ICellularDataLink {
+public:
+    virtual ~ICellularDataLink() = default;
+
+    virtual void connect() = 0;
+    virtual void disconnect() = 0;
+    virtual void set_config(const CellularConfig& c) = 0;
+
+    // Ein Schritt. `status` liefert SIM und Registrierung aus CellularService;
+    // der Datenlink fragt sie NICHT selbst ab.
+    virtual const CellularLinkState& tick(const CellularStatus& status) = 0;
+    virtual const CellularLinkState& state() const = 0;
+};
+
+class EcmLink : public ICellularDataLink {
 public:
     using ClockFn = std::function<uint64_t()>;
 
     EcmLink(IAtTransport& at, IEcmBackend& backend) : at_(at), be_(backend) {}
 
     void set_clock(ClockFn now) { now_ = std::move(now); }
-    void set_config(const CellularConfig& c) { cfg_ = c; }
+    void set_config(const CellularConfig& c) override { cfg_ = c; }
 
     // Die Absicht. connect() startet nichts sofort -- es sagt nur, wohin.
     // Gearbeitet wird in tick().
-    void connect();
-    void disconnect();
+    void connect() override;
+    void disconnect() override;
 
     // Ein Schritt. Der Aufrufer ruft das in seinem Takt; die Maschine
     // entscheidet selbst, ob sie etwas tut: nach einem Fehlschlag wartet sie
@@ -87,12 +132,12 @@ public:
     //
     // `status` liefert SIM und Registrierung -- die kommen aus CellularService
     // und werden hier nicht noch einmal abgefragt.
-    const CellularLinkState& tick(const CellularStatus& status);
+    const CellularLinkState& tick(const CellularStatus& status) override;
 
-    const CellularLinkState& state() const { return st_; }
+    const CellularLinkState& state() const override { return st_; }
     bool is_up() const { return st_.is_up(); }
     const std::string& interface_name() const { return st_.interface_name; }
-    const EcmAddress& address() const { return st_.address; }
+    const LinkAddress& address() const { return st_.address; }
 
     // Fuer den Test sichtbar: wie lange nach dem n-ten Fehlversuch gewartet
     // wird. Begrenzt, damit ein dauerhaft fehlendes Modem nicht alle paar
@@ -101,7 +146,7 @@ public:
 
 private:
     uint64_t now() const { return now_ ? now_() : 0; }
-    void enter(EcmState s, const std::string& detail);
+    void enter(DataLinkState s, const std::string& detail);
     void fail(const std::string& detail);
     bool due() const;
 

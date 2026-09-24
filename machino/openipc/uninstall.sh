@@ -122,6 +122,15 @@ rm -rf "$ROOT/lib/firmware/aic8800DC"
 run_live pkill -f machino-cellular-helper
 rm -f "$ROOT/usr/sbin/machino-cellular-helper"
 rm -f "$STATE_DIR/udhcpc-cellular.script" "$STATE_DIR/cellular-dhcp"
+# PPP: die Hooks in /etc/ppp und das, was machino dort erzeugt hat. Die
+# Optionsdatei traegt das APN-Passwort -- sie MUSS weg, auch bei
+# --keep-config: eine Konfiguration behalten heisst nicht, ein Geheimnis in
+# einem Verzeichnis zurueckzulassen, das machino nicht mehr verwaltet.
+run_live pkill -f "pppd file $STATE_DIR/ppp/options"
+rm -f "$ROOT/etc/ppp/ip-up" "$ROOT/etc/ppp/ip-down"
+rm -rf "$STATE_DIR/ppp"
+rm -f "$ROOT/usr/sbin/pppd" "$ROOT/usr/sbin/chat"
+rm -f "$ROOT/var/run/machino-ppp.status"
 if [ -d "$STATE_DIR/modules" ]; then
     for _m in option usb_wwan usbnet cdc_ether usbserial; do
         rm -f "$STATE_DIR/modules/$_m.ko"

@@ -34,8 +34,8 @@ public:
     bool set_up(const std::string& ifname, bool up) override;
     bool dhcp_start(const std::string& ifname) override;
     bool dhcp_stop(const std::string& ifname) override;
-    bool read_address(const std::string& ifname, EcmAddress& out) override;
-    bool set_address(const std::string& ifname, const EcmAddress& a) override;
+    bool read_address(const std::string& ifname, LinkAddress& out) override;
+    bool set_address(const std::string& ifname, const LinkAddress& a) override;
     void teardown(const std::string& ifname) override;
 
 private:

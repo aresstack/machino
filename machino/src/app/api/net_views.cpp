@@ -711,6 +711,12 @@ Json cellular_config_json(const cellular::CellularConfig& c)
     j.set("username", Json::string(c.username));
     j.set("autoConnect", Json::boolean(c.auto_connect));
     j.set("nicMode", Json::boolean(c.nic_mode));
+    // Welcher Datenlink gewaehlt IST -- was gerade laeuft, steht in dataLink.state
+    // des Statusdokuments. Die beiden fallen zwischen Umstellen und Neustart
+    // auseinander, und das ist der Punkt.
+    j.set("dataLink", Json::string(c.data_link));
+    j.set("dataLinkAppliesAt", Json::string("reboot"));
+    j.set("dial", Json::string(c.dial));
     // Weder Passwort noch PIN. Nur ob eines hinterlegt ist -- das braucht die
     // Oberflaeche, um "gespeichert" von "leer" zu unterscheiden.
     j.set("passwordSet", Json::boolean(!c.password.empty()));
@@ -740,13 +746,29 @@ Json cellular_network_json(const cellular::CellularStatus& s,
     j.set("internet", Json::boolean(internet));
 
     Json dl = Json::object();
-    // Die Art des Datenlinks steht ausdruecklich drin, weil sie sich aendern
-    // wird: AP-M7 bringt PPP, und dieselbe Mobilfunk-Konfiguration soll dann
-    // weiterverwendet werden. Eine Oberflaeche, die "cellular" mit "ECM"
-    // gleichsetzt, muesste dafuer angefasst werden.
-    dl.set("kind", Json::string("ecm"));
-    dl.set("state", Json::string(cellular::ecm_state_name(link.state)));
-    dl.set("nicMode", Json::boolean(link.nic_mode));
+    // Die Art des Datenlinks steht ausdruecklich drin, und zwar ZWEIMAL:
+    //
+    //   kind      was gerade laeuft
+    //   selected  was gewaehlt ist
+    //
+    // Die beiden fallen zwischen dem Umstellen und dem Neustart auseinander --
+    // dieselbe Lage wie bei usb.mode, und aus demselben Grund abgebildet: eine
+    // Oberflaeche, die nur eines von beiden kennt, sagt entweder "laeuft
+    // schon" oder "ist aus", und beides waere falsch.
+    //
+    // Frueher stand hier fest "ecm". Das war richtig, solange es nur einen
+    // Datenlink gab, und waere ab AP-M7 eine Behauptung: eine PPP-Verbindung
+    // haette sich als ECM ausgegeben.
+    dl.set("kind", Json::string(cellular::data_link_kind_name(link.kind)));
+    dl.set("selected", Json::string(c.data_link));
+    dl.set("rebootRequired",
+           Json::boolean(c.data_link != cellular::data_link_kind_name(link.kind)));
+    dl.set("state", Json::string(cellular::data_link_state_name(link.state)));
+    // nicMode gilt nur fuer ECM. Bei PPP kommt die Adresse aus der
+    // IPCP-Aushandlung, und "Routing-Modus" waere dort eine Angabe ueber
+    // etwas, das es nicht gibt.
+    dl.set("nicMode", link.kind == cellular::DataLinkKind::Ecm
+                          ? Json::boolean(link.nic_mode) : Json::null());
     dl.set("attempts", Json::integer(link.attempts));
     dl.set("detail", str_or_null(link.detail));
     j.set("dataLink", dl);
@@ -801,12 +823,24 @@ bool cellular_config_from_json(const Json& body, cellular::CellularConfig& cfg, 
         return false;
     }
     if (!reject_unknown(body, {"apn", "pdpType", "authMode", "username",
-                               "password", "autoConnect", "simPin", "nicMode"}, nullptr, err)) return false;
+                               "password", "autoConnect", "simPin", "nicMode",
+                               "dataLink", "dial"}, nullptr, err)) return false;
 
     cellular::CellularConfig next = cfg;
     if (!get_bool(body, "autoConnect", next.auto_connect, err)) return false;
     if (!get_bool(body, "nicMode", next.nic_mode, err)) return false;
     if (!get_string(body, "apn", next.apn, err, 100)) return false;
+    if (!get_string(body, "dial", next.dial, err, 32)) return false;
+    {
+        std::string dl = next.data_link;
+        if (!get_string(body, "dataLink", dl, err, 8)) return false;
+        cellular::DataLinkKind kind;
+        if (!cellular::data_link_kind_parse(dl, kind)) {
+            err = "dataLink must be ecm or ppp";
+            return false;
+        }
+        next.data_link = dl;
+    }
     if (!get_string(body, "username", next.username, err, 64)) return false;
 
     // Fehlendes Feld heisst "nicht anfassen", leerer String heisst "loeschen".
@@ -852,6 +886,8 @@ void cellular_config_to_settings(const cellular::CellularConfig& cfg,
     out.emplace_back("cellular.password", cfg.password);
     out.emplace_back("cellular.auto_connect", cfg.auto_connect ? "true" : "false");
     out.emplace_back("cellular.nic_mode", cfg.nic_mode ? "true" : "false");
+    out.emplace_back("cellular.data_link", cfg.data_link);
+    out.emplace_back("cellular.dial", cfg.dial);
     out.emplace_back("cellular.sim_pin", cfg.sim_pin);
 }
 
@@ -872,6 +908,18 @@ bool cellular_config_from_settings(const std::vector<std::pair<std::string, std:
         else if (k == "cellular.username")     next.username = v;
         else if (k == "cellular.password")     next.password = v;
         else if (k == "cellular.sim_pin")      next.sim_pin = v;
+        else if (k == "cellular.dial")         next.dial = v;
+        else if (k == "cellular.data_link") {
+            cellular::DataLinkKind kind;
+            if (!cellular::data_link_kind_parse(v, kind)) {
+                // Abgelehnt, nicht auf ecm zurueckgefallen. Ein stilles
+                // Zurueckfallen sieht aus wie "die Einstellung hat nicht
+                // gegriffen" -- und der Bootpfad laedt dann andere Module, als
+                // in der Datei steht.
+                err = "cellular.data_link is not ecm or ppp: " + v; return false;
+            }
+            next.data_link = v;
+        }
         else if (k == "cellular.pdp_type") {
             if (!cellular::pdp_type_parse(v, next.pdp)) {
                 err = "cellular.pdp_type is not IP or IPV4V6"; return false;

@@ -58,6 +58,32 @@ struct CellularConfig {
     // Modem-Neustart -- sie wird deshalb hoechstens einmal je Lebenszyklus
     // durchgesetzt.
     bool        nic_mode = true;
+
+    // Welcher Datenlink: ECM oder PPP.
+    //
+    // Der Benutzer waehlt "Mobilfunk" -- das hier ist die Auspraegung darunter
+    // und gehoert ausdruecklich NICHT in die Uplink-Auswahl. `ppp0` taucht in
+    // keiner Preference-Liste auf.
+    //
+    // Default ECM, und das bleibt so. PPP ist die Alternative fuer den Fall,
+    // dass ECM auf einem Modem oder in einem Netz nicht geht -- ein
+    // Kompatibilitaetsweg, kein gleichwertiger zweiter Hauptpfad. Die
+    // Referenzimplementierung sagt dasselbe: `modemDataMode = "ecm"` ist dort
+    // als "Standard/Produktion" markiert, PPP als "Kompatibilitaet".
+    //
+    // Es gibt KEINEN automatischen Wechsel. Scheitert ECM, bleibt es bei ECM
+    // und sagt warum. Ein stiller Fallback haette zur Folge, dass eine Kamera
+    // auf einem Weg laeuft, den niemand gewaehlt hat, und dass der Fehler im
+    // gewaehlten Weg nie auffaellt.
+    //
+    // Wirkt beim naechsten Neustart: die beiden Wege brauchen verschiedene
+    // Kernelmodule, und die tauscht machino nicht bei laufender IMP-Pipeline.
+    std::string data_link = "ecm";      // "ecm" | "ppp"
+
+    // Die Einwahlnummer fuer PPP. *99***1# ist die GPRS/LTE-Standardnummer und
+    // der Default der Referenz (MODEM_DIAL_DEFAULT); konfigurierbar, weil ein
+    // paar Netze *99# oder eine kontextbezogene Variante wollen.
+    std::string dial = "*99***1#";
 };
 
 struct ApnPreset {

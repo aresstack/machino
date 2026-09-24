@@ -1,0 +1,8 @@
+#!/bin/sh
+# pppd-Hook: der Anruf ist weg.
+#
+# Der Zustand MUSS verschwinden. Bliebe er stehen, meldete machino nach dem
+# Verbindungsabbruch weiter eine Adresse -- und der ConnectivityManager
+# hielte einen toten Uplink fuer den besten.
+rm -f /var/run/machino-cellular.state
+exit 0

@@ -2,9 +2,9 @@
 
 namespace machino { namespace net {
 
-using cellular::EcmState;
+using cellular::DataLinkState;
 
-CellularUplink::CellularUplink(cellular::CellularService& svc, cellular::EcmLink& link,
+CellularUplink::CellularUplink(cellular::CellularService& svc, cellular::ICellularDataLink& link,
                                std::string id)
     : svc_(svc), link_(link), id_(std::move(id))
 {
@@ -139,32 +139,37 @@ LinkState CellularUplink::state_locked() const
     if (!st_.present) return LinkState::Absent;
 
     switch (ls_.state) {
-        case EcmState::Up:
+        case DataLinkState::Up:
             return LinkState::Connected;
 
-        case EcmState::Failed:
+        case DataLinkState::Failed:
             return LinkState::Failed;
 
-        case EcmState::Disabled:
+        case DataLinkState::Disabled:
+        case DataLinkState::Disconnecting:
             // Das Modem ist da, aber der Aufbau laeuft nicht. Vorhanden und
-            // traegt nicht -- genau das heisst Down.
+            // traegt nicht -- genau das heisst Down. Disconnecting gehoert
+            // dazu: ein Abbau, der laeuft, traegt keinen Verkehr mehr, und ihn
+            // als Connecting zu melden liesse das Failover darauf warten.
             return LinkState::Down;
 
-        case EcmState::WaitDevice:
-        case EcmState::WaitAt:
+        case DataLinkState::WaitDevice:
+        case DataLinkState::WaitAt:
             // Der Port ist da (st_.present), die Maschine wartet trotzdem noch
             // auf eine Antwort. Das ist das Modem, das enumeriert aber
             // schweigt: Hardware vorhanden, Control Plane nicht bereit.
             return st_.responsive ? LinkState::Connecting : LinkState::Down;
 
-        case EcmState::WaitSim:
-        case EcmState::WaitRegistration:
-        case EcmState::EnsureEcmMode:
-        case EcmState::WaitReenumeration:
-        case EcmState::ConfigurePdp:
-        case EcmState::StartData:
-        case EcmState::WaitNetif:
-        case EcmState::Addressing:
+        case DataLinkState::WaitSim:
+        case DataLinkState::WaitRegistration:
+        case DataLinkState::EnsureEcmMode:
+        case DataLinkState::WaitReenumeration:
+        case DataLinkState::ConfigurePdp:
+        case DataLinkState::StartData:
+        case DataLinkState::WaitNetif:
+        case DataLinkState::Addressing:
+        case DataLinkState::Dial:
+        case DataLinkState::Negotiating:
             // Unterwegs. Auch WaitSim: eine fehlende PIN ist kein Defekt des
             // Uplinks, sondern etwas, das der Benutzer nachreichen kann, und
             // Failed waere die falsche Farbe dafuer.
@@ -192,10 +197,16 @@ NetworkInfo CellularUplink::info() const
     n.dns     = ls_.address.dns1;
     if (!ls_.address.dns2.empty())
         n.dns += n.dns.empty() ? ls_.address.dns2 : (" " + ls_.address.dns2);
-    // Im NIC-Modus beantwortet das Modem KEIN DHCP; die Adresse kommt aus
-    // AT+CGCONTRDP. Das als dhcp=true zu melden waere schlicht falsch und
-    // wuerde jede Fehlersuche in die falsche Richtung schicken.
-    n.dhcp    = !ls_.nic_mode;
+    // Woher die Adresse kommt, und das ist bei jedem der drei Wege anders:
+    //
+    //   ECM/Routing  DHCP vom Modem (192.168.43.x)
+    //   ECM/NIC      statisch aus AT+CGCONTRDP, das Modem beantwortet KEIN DHCP
+    //   PPP          aus der IPCP-Aushandlung, also auch kein DHCP
+    //
+    // Eine erste Fassung fragte nur nach nic_mode -- und weil PppLink das Feld
+    // nie setzt, meldete jeder PPP-Anruf dhcp=true. Wer dann sucht, warum
+    // "kein Lease" kommt, sucht nach einem DHCP-Server, den es nie gab.
+    n.dhcp    = (ls_.kind == cellular::DataLinkKind::Ecm) && !ls_.nic_mode;
     // Diese Server kommen aus CGCONTRDP bzw. aus dem eigenen DHCP-Lease des
     // Modems. Der Uplink WEISS sie, er liest sie nicht aus resolv.conf zurueck
     // -- und nur deshalb darf er die Datei besitzen.
@@ -207,7 +218,7 @@ UplinkMetrics CellularUplink::metrics() const
 {
     std::lock_guard<std::mutex> g(m_);
     UplinkMetrics m;
-    m.carrier = (ls_.state == EcmState::Up);
+    m.carrier = (ls_.state == DataLinkState::Up);
 
     // RSRP zuerst, CSQ als Rueckfall. RSRP ist die Messung, die bei LTE etwas
     // bedeutet; CSQ ist ein aus GSM-Zeiten geerbter Index, den das Modem selbst

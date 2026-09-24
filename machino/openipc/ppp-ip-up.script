@@ -1,0 +1,42 @@
+#!/bin/sh
+# pppd-Hook: was der Anruf bekommen hat, fuer machino aufschreiben.
+#
+# WARUM DIESE DATEI UEBERHAUPT EXISTIERT
+#
+# machino darf den Namen des PPP-Interface nicht raten. "ppp0" ist der
+# haeufigste Fall und nicht der einzige: laeuft schon ein anderer PPP-Anruf,
+# heisst dieser ppp1, und ein hartkodiertes ppp0 zeigte dann auf eine fremde
+# Verbindung. pppd weiss den Namen und gibt ihn hier als $1 mit.
+#
+# pppd ruft dieses Skript unter genau /etc/ppp/ip-up auf -- der Pfad ist fest
+# einkompiliert und laesst sich nicht verschieben. Auf diesem Image benutzt
+# sonst nichts PPP; der Uninstaller raeumt die Datei wieder weg.
+#
+# Argumente von pppd:
+#   $1 Interface   $2 tty   $3 Baud   $4 lokale IP   $5 Gegenstelle   $6 ipparam
+# Aus usepeerdns kommen ausserdem DNS1 und DNS2 in der Umgebung.
+
+STATE=/var/run/machino-cellular.state
+
+# Dieselbe Datei wie beim ECM-Pfad, und dasselbe Format. Das ist Absicht: es
+# gibt EIN Mobilfunkgeraet, und genau ein Datenlink ist zur Zeit aktiv. Zwei
+# Dateien hiessen zwei Leser und die Frage, welcher recht hat.
+tmp="$STATE.new"
+{
+	echo "iface=$1"
+	echo "ipv4=$4"
+	# Die Gegenstelle IST das Gateway. Eine Netzmaske gibt es bei PPP nicht --
+	# die Strecke hat genau zwei Enden, und /32 waere eine Zahl ohne Aussage.
+	[ -n "$5" ] && echo "gateway=$5"
+	[ -n "${DNS1:-}" ] && echo "dns1=$DNS1"
+	[ -n "${DNS2:-}" ] && echo "dns2=$DNS2"
+} > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp"
+
+# KEIN Eintrag in /etc/resolv.conf und KEINE Default-Route.
+#
+# Beides entscheidet machino zentral fuer alle Uplinks zusammen
+# (core/net/route_plan). pppd laeuft hier mit nodefaultroute, und usepeerdns
+# schreibt nur /etc/ppp/resolv.conf -- die Server stehen oben im Zustand, und
+# ob sie gelten, sagt der aktive Uplink.
+
+exit 0

@@ -173,6 +173,21 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
     </div>
   </div>
 
+  <div class="card" id="cell-linkcard">
+    <h2>Datenverbindung</h2>
+    <label><input type="radio" name="celldl" value="ecm" style="width:auto"> ECM (Standard)</label>
+    <label><input type="radio" name="celldl" value="ppp" style="width:auto"> PPP</label>
+    <p class="note" id="celldl-note">Änderung wird nach einem Neustart wirksam.</p>
+    <button class="act" id="celldlsave">Übernehmen (mit Bestätigungsfrist)</button>
+    <div class="msg" id="m-celldl" hidden></div>
+    <p class="note">ECM ist der normale Weg: das Modem meldet sich als
+      Netzwerkkarte. PPP ist die Ausweichmöglichkeit für Modems oder Netze, in
+      denen das nicht geht &mdash; die Strecke läuft dann über den seriellen
+      Modem-Port. Es wird <b>nicht</b> automatisch gewechselt: scheitert ECM,
+      bleibt es bei ECM und sagt warum. Ein stiller Wechsel hieße, dass die
+      Kamera auf einem Weg läuft, den niemand gewählt hat.</p>
+  </div>
+
   <div class="card" id="cell-apncard">
     <h2>Zugangsdaten</h2>
     <div class="grid">
@@ -782,7 +797,7 @@ async function loadCellularPresets() {
 
 async function loadCellular() {
   const res = await api("GET", "/api/v1/network/cellular");
-  const cards = ["cell-statuscard", "cell-apncard", "cell-simcard", "cell-diagcard"];
+  const cards = ["cell-statuscard", "cell-linkcard", "cell-apncard", "cell-simcard", "cell-diagcard"];
   if (res.status !== 200) {
     // Kein Mobilfunk-Backend in diesem Build. Gesagt, nicht angedeutet.
     cards.forEach((id) => { $(id).hidden = true; });
@@ -825,7 +840,8 @@ async function loadCellular() {
   row(tb, "RSRP", num(rf.rsrpDbm, " dBm"));
   row(tb, "RSRQ", num(rf.rsrqDb, " dB"));
   row(tb, "SINR", num(rf.sinrDb, " dB"));
-  row(tb, "Datenlink", txt(dl.kind) + " / " + txt(dl.state));
+  row(tb, "Datenlink", txt(dl.kind) + " / " + txt(dl.state)
+      + (dl.rebootRequired ? " — gewählt ist " + txt(dl.selected) + ", Neustart erforderlich" : ""));
   row(tb, "Interface", txt(c.interface));
   row(tb, "IPv4", txt(ad.ipv4));
   row(tb, "Internet", c.internet ? "erreichbar" : "nicht bestätigt");
@@ -842,6 +858,12 @@ async function loadCellular() {
     $("cellauth").value = cfg.authMode || "none";
     $("celluser").value = cfg.username || "";
     $("cellauto").checked = !!cfg.autoConnect;
+    const dlr = document.querySelector('input[name=celldl][value="' + (cfg.dataLink || "ecm") + '"]');
+    if (dlr) dlr.checked = true;
+    $("celldl-note").textContent = dl.rebootRequired
+        ? "Gespeichert: " + txt(dl.selected) + ". Aktiv ist noch " + txt(dl.kind)
+          + " — ein Neustart ist erforderlich."
+        : "Änderung wird nach einem Neustart wirksam.";
     $("cellnic").checked  = !!cfg.nicMode;
     $("cellpw").placeholder = cfg.passwordSet ? "gespeichert — leer lassen für unverändert" : "";
   }
@@ -907,6 +929,18 @@ $("cellsave").onclick = async () => {
     await loadNetwork();
   } else {
     msg($("m-cell"), reason(res, "Speichern fehlgeschlagen"), "bad");
+  }
+};
+
+$("celldlsave").onclick = async () => {
+  const r = document.querySelector('input[name=celldl]:checked');
+  if (!r) return;
+  const res = await api("PATCH", "/api/v1/network/cellular", { dataLink: r.value });
+  if (res.status === 202) {
+    msg($("m-celldl"), "Übernommen — bitte oben bestätigen. Wirksam nach einem Neustart.", "ok");
+    await loadNetwork();
+  } else {
+    msg($("m-celldl"), reason(res, "Speichern fehlgeschlagen"), "bad");
   }
 };
 

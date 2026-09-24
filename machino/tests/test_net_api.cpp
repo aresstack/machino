@@ -130,8 +130,8 @@ struct AbsentEcmBackend : IEcmBackend {
     bool set_up(const std::string&, bool) override { return false; }
     bool dhcp_start(const std::string&) override { return false; }
     bool dhcp_stop(const std::string&) override { return true; }
-    bool read_address(const std::string&, EcmAddress&) override { return false; }
-    bool set_address(const std::string&, const EcmAddress&) override { return false; }
+    bool read_address(const std::string&, LinkAddress&) override { return false; }
+    bool set_address(const std::string&, const LinkAddress&) override { return false; }
     void teardown(const std::string&) override {}
 };
 

@@ -1,0 +1,133 @@
+# pppd und chat fuer die T40, gegen dieselbe musl-Toolchain wie machino.
+#
+# WARUM DAS HIER GEBAUT WIRD
+#
+# Der PPP-Pfad aus AP-M7 ist die Ausweichmoeglichkeit fuer Modems und Netze, in
+# denen ECM nicht geht. Ob ein OpenIPC-Image ein pppd mitbringt, ist von Image
+# zu Image verschieden -- und eine Auswahl in der Oberflaeche, die auf der
+# einen Kamera funktioniert und auf der naechsten stumm nichts tut, ist keine
+# Auswahl. Also wird es mitgeliefert.
+#
+# KEIN OpenIPC-Patch. ppp ist ein eigenstaendiges Projekt; hier wird es
+# uebersetzt und in die Machino-Nutzlast gelegt, mehr nicht.
+#
+# WAS BEWUSST NICHT MITKOMMT
+#
+#   pppd-Plugins   rp-pppoe, radius, winbind: nichts davon waehlt ein Modem an
+#   pppstats       ein Diagnosewerkzeug, das niemand aufruft
+#   pppdump        dito
+#
+# Auf einem 8,7-MB-Overlay ist jedes Kilobyte fuer ein Werkzeug, das nie
+# gestartet wird, eine schlechte Entscheidung. `chat` kommt mit, weil pppd
+# ohne die Wahl-Unterhaltung nie bis zum CONNECT kaeme.
+#
+# WAS DIESER BUILD NICHT BEWEIST: dass pppd auf der Kamera laeuft, dass das
+# EC200A den Anruf annimmt oder dass eine Aushandlung durchgeht. Das braucht
+# Hardware und steht als PENDING_PHYSICAL in machino/docs/pending-physical.md.
+name: build-ppp-t40
+
+on:
+  workflow_dispatch:
+    inputs:
+      ppp_version:
+        description: "ppp release tag to build"
+        required: false
+        default: "ppp-2.4.9"
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/build-ppp-t40.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SOC: T40
+      PPP_VERSION: ${{ github.event.inputs.ppp_version || 'ppp-2.4.9' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Fetch the same musl toolchain machino is built with"
+        run: |
+          set -eux
+          ./build.sh deps "$SOC" --libc-musl
+          TC=$(ls -d toolchain/xburst2-musl/*/bin | head -1)
+          test -n "$TC" || { echo "::error::no toolchain"; exit 1; }
+          echo "TC=$PWD/$TC" >> "$GITHUB_ENV"
+          "$PWD/$TC/mipsel-linux-gcc" --version | head -1
+
+      - name: "Fetch ppp"
+        run: |
+          set -eux
+          curl -fsSL "https://github.com/ppp-project/ppp/archive/refs/tags/${PPP_VERSION}.tar.gz" -o ppp.tar.gz
+          mkdir -p ppp && tar xzf ppp.tar.gz -C ppp --strip-components=1
+          ( cd ppp && git init -q 2>/dev/null || true )
+
+      - name: "Configure and build pppd + chat"
+        run: |
+          set -eux
+          cd ppp
+          export PATH="$TC:$PATH"
+          export CC=mipsel-linux-gcc
+          export AR=mipsel-linux-ar
+          export RANLIB=mipsel-linux-ranlib
+          export STRIP=mipsel-linux-strip
+          # --disable-* haelt die Nutzlast klein; siehe Kopfkommentar.
+          #
+          # Ohne OpenSSL/PAM, weil auf dieser Kamera weder das eine noch das
+          # andere liegt -- ein pppd, das gegen eine fehlende Bibliothek
+          # gelinkt ist, startet gar nicht erst, und der Fehler saehe aus wie
+          # ein Modemproblem.
+          ./configure --host=mipsel-linux \
+                      --prefix=/usr \
+                      --sysconfdir=/etc \
+                      --disable-eaptls \
+                      --disable-peap \
+                      --disable-systemd \
+                      --without-openssl \
+                      --without-pam \
+                      --without-libpcap \
+                      || { echo "::error::configure failed"; exit 1; }
+          make -j"$(nproc)" || { echo "::error::build failed"; exit 1; }
+
+      - name: "Collect, strip and report"
+        run: |
+          set -eux
+          export PATH="$TC:$PATH"
+          mkdir -p out
+          PPPD=$(find ppp -name pppd -type f -perm -u+x | head -1)
+          CHAT=$(find ppp -name chat -type f -perm -u+x | head -1)
+          test -n "$PPPD" || { echo "::error::no pppd binary was produced"; exit 1; }
+          test -n "$CHAT" || { echo "::error::no chat binary was produced"; exit 1; }
+          cp "$PPPD" out/pppd
+          cp "$CHAT" out/chat
+          mipsel-linux-strip out/pppd out/chat
+
+          # Dynamisch gelinkt gegen etwas, das die Kamera nicht hat, waere ein
+          # Binary, das nur im Log auffaellt. Also wird nachgesehen, WAS es
+          # braucht -- musl libc ist da, alles andere ist ein Fund.
+          for b in out/pppd out/chat; do
+            echo "== $b"
+            mipsel-linux-readelf -d "$b" | grep NEEDED || echo "(statisch)"
+            file "$b" || true
+          done
+
+          {
+            echo "## ppp payload"
+            echo
+            echo "| | |"
+            echo "|--|--|"
+            echo "| Version | ${PPP_VERSION} |"
+            echo "| pppd | $(stat -c %s out/pppd) bytes |"
+            echo "| chat | $(stat -c %s out/chat) bytes |"
+            echo
+            echo "Gebaut, nicht erprobt. Dass pppd auf der Kamera startet und"
+            echo "das EC200A den Anruf annimmt, braucht Hardware und steht als"
+            echo "PENDING_PHYSICAL in machino/docs/pending-physical.md."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: "Upload"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppp-t40
+          path: out/

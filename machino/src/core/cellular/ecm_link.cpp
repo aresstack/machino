@@ -24,22 +24,37 @@ const int kQnetdevType = 3;   // auto-connect + persistent, siehe Kopfkommentar
 
 } // namespace
 
-const char* ecm_state_name(EcmState s)
+const char* data_link_kind_name(DataLinkKind k)
+{
+    return k == DataLinkKind::Ppp ? "ppp" : "ecm";
+}
+
+bool data_link_kind_parse(const std::string& s, DataLinkKind& out)
+{
+    if (s == "ecm") { out = DataLinkKind::Ecm; return true; }
+    if (s == "ppp") { out = DataLinkKind::Ppp; return true; }
+    return false;
+}
+
+const char* data_link_state_name(DataLinkState s)
 {
     switch (s) {
-        case EcmState::Disabled:          return "disabled";
-        case EcmState::WaitDevice:        return "wait_device";
-        case EcmState::WaitAt:            return "wait_at";
-        case EcmState::WaitSim:           return "wait_sim";
-        case EcmState::WaitRegistration:  return "wait_registration";
-        case EcmState::EnsureEcmMode:     return "ensure_ecm_mode";
-        case EcmState::WaitReenumeration: return "wait_reenumeration";
-        case EcmState::ConfigurePdp:      return "configure_pdp";
-        case EcmState::StartData:         return "start_data";
-        case EcmState::WaitNetif:         return "wait_netif";
-        case EcmState::Addressing:        return "addressing";
-        case EcmState::Up:                return "up";
-        case EcmState::Failed:            return "failed";
+        case DataLinkState::Disabled:          return "disabled";
+        case DataLinkState::WaitDevice:        return "wait_device";
+        case DataLinkState::WaitAt:            return "wait_at";
+        case DataLinkState::WaitSim:           return "wait_sim";
+        case DataLinkState::WaitRegistration:  return "wait_registration";
+        case DataLinkState::EnsureEcmMode:     return "ensure_ecm_mode";
+        case DataLinkState::WaitReenumeration: return "wait_reenumeration";
+        case DataLinkState::ConfigurePdp:      return "configure_pdp";
+        case DataLinkState::StartData:         return "start_data";
+        case DataLinkState::WaitNetif:         return "wait_netif";
+        case DataLinkState::Addressing:        return "addressing";
+        case DataLinkState::Dial:              return "dial";
+        case DataLinkState::Negotiating:       return "negotiating";
+        case DataLinkState::Disconnecting:     return "disconnecting";
+        case DataLinkState::Up:                return "up";
+        case DataLinkState::Failed:            return "failed";
     }
     return "?";
 }
@@ -55,7 +70,7 @@ uint32_t EcmLink::backoff_ms(int attempts)
     return (s > 30 ? 30u : s) * 1000u;
 }
 
-void EcmLink::enter(EcmState s, const std::string& detail)
+void EcmLink::enter(DataLinkState s, const std::string& detail)
 {
     st_.state = s;
     st_.detail = detail;
@@ -65,7 +80,7 @@ void EcmLink::fail(const std::string& detail)
 {
     ++st_.attempts;
     next_due_ms_ = now() + backoff_ms(st_.attempts);
-    enter(EcmState::Failed, detail);
+    enter(DataLinkState::Failed, detail);
 }
 
 bool EcmLink::due() const
@@ -83,7 +98,7 @@ void EcmLink::connect()
     // hat etwas getan, und vielleicht war es genau die Aenderung, die fehlte.
     usbnet_switch_tried_ = false;
     nat_switch_tried_ = false;
-    enter(EcmState::WaitDevice, "Verbindung angefordert");
+    enter(DataLinkState::WaitDevice, "Verbindung angefordert");
 }
 
 void EcmLink::disconnect()
@@ -108,17 +123,17 @@ void EcmLink::disconnect()
         // Mal nichts mehr passiert.
         st_.interface_name.clear();
     }
-    st_.address = EcmAddress{};
+    st_.address = LinkAddress{};
     st_.modem_pdp_address.clear();
     st_.attempts = 0;
     next_due_ms_ = 0;
-    enter(EcmState::Disabled, "getrennt");
+    enter(DataLinkState::Disabled, "getrennt");
 }
 
 const CellularLinkState& EcmLink::tick(const CellularStatus& status)
 {
     if (!want_up_) {
-        if (st_.state != EcmState::Disabled) disconnect();
+        if (st_.state != DataLinkState::Disabled) disconnect();
         return st_;
     }
 
@@ -127,41 +142,41 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
     // Re-Enumeration sogar der Normalfall.
     if (!status.present || !status.responsive) {
         if (dhcp_running_) { be_.dhcp_stop(dhcp_iface_); dhcp_running_ = false; }
-        st_.address = EcmAddress{};
-        if (st_.state == EcmState::WaitReenumeration) {
+        st_.address = LinkAddress{};
+        if (st_.state == DataLinkState::WaitReenumeration) {
             if (now() > reenum_deadline_ms_)
                 fail("Modem kam nach dem Moduswechsel nicht zurueck");
             return st_;
         }
-        enter(status.present ? EcmState::WaitAt : EcmState::WaitDevice,
+        enter(status.present ? DataLinkState::WaitAt : DataLinkState::WaitDevice,
               status.present ? "Modem antwortet nicht" : "kein Modem");
         return st_;
     }
 
     // Es ist wieder da. Eine laufende Re-Enumeration ist damit beendet.
-    if (st_.state == EcmState::WaitReenumeration)
-        enter(EcmState::EnsureEcmMode, "Modem ist zurueck");
+    if (st_.state == DataLinkState::WaitReenumeration)
+        enter(DataLinkState::EnsureEcmMode, "Modem ist zurueck");
 
-    if (st_.state == EcmState::Failed && !due()) return st_;
+    if (st_.state == DataLinkState::Failed && !due()) return st_;
 
     if (status.sim != SimState::Ready) {
-        enter(EcmState::WaitSim, status.sim_detail.empty()
+        enter(DataLinkState::WaitSim, status.sim_detail.empty()
               ? std::string("SIM nicht bereit") : status.sim_detail);
         return st_;
     }
     if (!reg_is_registered(status.registration)) {
         // Kein Datenkanal ohne Registrierung. Es hier trotzdem zu versuchen
         // kostet nur AT-Runden und liefert einen Fehler, der nichts erklaert.
-        enter(EcmState::WaitRegistration,
+        enter(DataLinkState::WaitRegistration,
               std::string("nicht im Netz: ") + reg_state_name(status.registration));
         return st_;
     }
 
     // ---- ECM-Modus sicherstellen -----------------------------------------
-    if (st_.state != EcmState::ConfigurePdp && st_.state != EcmState::StartData &&
-        st_.state != EcmState::WaitNetif && st_.state != EcmState::Addressing &&
-        st_.state != EcmState::Up) {
-        enter(EcmState::EnsureEcmMode, "pruefe Betriebsart");
+    if (st_.state != DataLinkState::ConfigurePdp && st_.state != DataLinkState::StartData &&
+        st_.state != DataLinkState::WaitNetif && st_.state != DataLinkState::Addressing &&
+        st_.state != DataLinkState::Up) {
+        enter(DataLinkState::EnsureEcmMode, "pruefe Betriebsart");
 
         const MaybeInt usbnet = parse_qcfg_int(at_.command("AT+QCFG=\"usbnet\"").raw, "usbnet");
         if (!usbnet.has) {
@@ -181,7 +196,7 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
             at_.command("AT+QCFG=\"usbnet\",1");
             at_.command("AT+CFUN=1,1", 10000);
             reenum_deadline_ms_ = now() + kReenumWaitMs;
-            enter(EcmState::WaitReenumeration, "auf ECM umgestellt, Modem startet neu");
+            enter(DataLinkState::WaitReenumeration, "auf ECM umgestellt, Modem startet neu");
             return st_;
         }
 
@@ -194,7 +209,7 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
                 at_.command("AT+QCFG=\"nat\"," + std::to_string(want_nat));
                 at_.command("AT+CFUN=1,1", 10000);
                 reenum_deadline_ms_ = now() + kReenumWaitMs;
-                enter(EcmState::WaitReenumeration, "Betriebsart umgestellt, Modem startet neu");
+                enter(DataLinkState::WaitReenumeration, "Betriebsart umgestellt, Modem startet neu");
                 return st_;
             }
             // Nicht umstellbar: weitermachen mit dem, was das Modem tut, und
@@ -202,11 +217,11 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
             st_.detail = "Betriebsart liess sich nicht umstellen";
         }
         st_.nic_mode = nat.has ? (nat.value == 1) : cfg_.nic_mode;
-        enter(EcmState::ConfigurePdp, "Betriebsart in Ordnung");
+        enter(DataLinkState::ConfigurePdp, "Betriebsart in Ordnung");
     }
 
     // ---- PDP-Kontext ------------------------------------------------------
-    if (st_.state == EcmState::ConfigurePdp) {
+    if (st_.state == DataLinkState::ConfigurePdp) {
         if (cfg_.apn.empty()) {
             fail("kein APN konfiguriert");
             return st_;
@@ -224,11 +239,11 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
         const int auth = (cfg_.auth == AuthMode::Chap) ? 2 : (cfg_.auth == AuthMode::Pap) ? 1 : 0;
         at_.command("AT+QICSGP=1," + std::to_string(ctx_type) + ",\"" + cfg_.apn + "\",\"" +
                     cfg_.username + "\",\"" + cfg_.password + "\"," + std::to_string(auth));
-        enter(EcmState::StartData, "PDP-Kontext gesetzt");
+        enter(DataLinkState::StartData, "PDP-Kontext gesetzt");
     }
 
     // ---- Datenkanal -------------------------------------------------------
-    if (st_.state == EcmState::StartData) {
+    if (st_.state == DataLinkState::StartData) {
         const AtExchange qn = at_.command(
             "AT+QNETDEVCTL=" + std::to_string(kQnetdevType) + ",1", 10000);
         if (!qn.ok()) {
@@ -236,11 +251,11 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
             return st_;
         }
         netif_deadline_ms_ = now() + kNetifWaitMs;
-        enter(EcmState::WaitNetif, "Datenkanal an, warte auf das Interface");
+        enter(DataLinkState::WaitNetif, "Datenkanal an, warte auf das Interface");
     }
 
     // ---- Netzwerkinterface ------------------------------------------------
-    if (st_.state == EcmState::WaitNetif) {
+    if (st_.state == DataLinkState::WaitNetif) {
         EcmInterface iface;
         if (!be_.find_interface(iface)) {
             if (now() > netif_deadline_ms_) {
@@ -252,11 +267,11 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
         st_.interface_name = iface.name;
         be_.set_up(iface.name, true);
         dhcp_deadline_ms_ = now() + kDhcpWaitMs;
-        enter(EcmState::Addressing, "Interface " + iface.name + " da");
+        enter(DataLinkState::Addressing, "Interface " + iface.name + " da");
     }
 
     // ---- Adresse ----------------------------------------------------------
-    if (st_.state == EcmState::Addressing) {
+    if (st_.state == DataLinkState::Addressing) {
         // Verschwindet das Interface WAEHREND der Adressvergabe, hat das
         // Warten keinen Sinn mehr: DHCP laeuft dann auf etwas, das es nicht
         // mehr gibt, und CGCONTRDP beschreibt einen Kontext ohne Traeger. Ohne
@@ -285,7 +300,7 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
                 }
                 return st_;
             }
-            EcmAddress a;
+            LinkAddress a;
             a.ipv4 = rdp.ipv4;
             a.netmask = rdp.netmask;
             a.gateway = rdp.gateway;
@@ -297,7 +312,7 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
             }
             st_.address = a;
             st_.attempts = 0;
-            enter(EcmState::Up, "verbunden (NIC-Modus, Adresse vom Modem)");
+            enter(DataLinkState::Up, "verbunden (NIC-Modus, Adresse vom Modem)");
             return st_;
         }
 
@@ -309,11 +324,11 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
             dhcp_running_ = true;
             dhcp_iface_ = st_.interface_name;
         }
-        EcmAddress a;
+        LinkAddress a;
         if (be_.read_address(st_.interface_name, a) && a.has_address()) {
             st_.address = a;
             st_.attempts = 0;
-            enter(EcmState::Up, "verbunden (DHCP)");
+            enter(DataLinkState::Up, "verbunden (DHCP)");
             return st_;
         }
         if (now() > dhcp_deadline_ms_) {
@@ -325,22 +340,22 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
     }
 
     // ---- oben halten ------------------------------------------------------
-    if (st_.state == EcmState::Up) {
+    if (st_.state == DataLinkState::Up) {
         EcmInterface iface;
         if (!be_.find_interface(iface) || iface.name != st_.interface_name) {
             if (dhcp_running_) { be_.dhcp_stop(dhcp_iface_); dhcp_running_ = false; }
-            st_.address = EcmAddress{};
+            st_.address = LinkAddress{};
             st_.interface_name.clear();
             fail("Interface verschwunden");
             return st_;
         }
-        EcmAddress a;
+        LinkAddress a;
         if (!be_.read_address(st_.interface_name, a) || !a.has_address()) {
             // Adresse weg, Interface noch da: Lease abgelaufen oder Link
             // gefallen. Zurueck in die Adressvergabe, nicht gleich alles
             // abreissen -- udhcpc erneuert von selbst.
             dhcp_deadline_ms_ = now() + kDhcpWaitMs;
-            enter(EcmState::Addressing, "Adresse verloren, hole neue");
+            enter(DataLinkState::Addressing, "Adresse verloren, hole neue");
             return st_;
         }
         st_.address = a;

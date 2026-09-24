@@ -307,3 +307,34 @@ hostseitig festgenagelt (`test_switched_off_is_absent_and_sends_nothing`).
 | M6-8 | Die Auswahl *USB-Nutzung* in einem Browser: drei Radios, Speichern, und der Hinweis muss danach „Aktiv ist noch …" sagen und nicht „Gespeichert" allein |
 | M6-9 | Die Mobilfunkseite mit einem echten Modem: dass „–" wirklich dort steht, wo nichts gemessen wurde, und keine 0 |
 | M6-10 | Die Seite bei `usb.mode != cellular`: der Hinweis oben muss erscheinen, die Zugangsdaten aber weiter ausfuellbar sein |
+
+---
+
+## AP-M7 — PPP als Alternativpfad
+
+ECM bleibt der Hauptweg. PPP ist hostseitig fertig und am Geraet vollstaendig
+ungeprueft — mehr als bei den vorigen Paketen, denn hier haengt fast alles an
+einem fremden Programm (pppd) auf einem Port, den noch nie jemand belegt hat.
+
+### `PENDING_PHYSICAL`
+
+| Nr | Was |
+|----|-----|
+| M7-1 | **Laeuft das gebaute pppd auf der Kamera ueberhaupt?** Es ist gegen dieselbe musl-Toolchain gebaut wie machino und im CI auf `NEEDED` geprueft, aber gestartet hat es dort niemand |
+| M7-2 | **Welcher `ttyUSB` ist der Modem-Port?** Die Zuordnung MI_03 = AT, MI_04 = Modem stammt aus der Reuse-Map und ist am EC200A nicht nachgemessen. Zeigt `p.modem` auf den falschen Port, waehlt pppd auf einem AT-Kanal und bekommt nie ein CONNECT |
+| M7-3 | **Das Chat-Skript.** `\d\d+++\d\d` / `ATH` / `AT` / `ATD*99***1#` / `CONNECT` — jede Zeile davon ist aus der Referenz uebernommen, keine an diesem Modem mit chat(8) gelaufen. Insbesondere: braucht dieses Modem die Escape-Sequenz ueberhaupt, und antwortet es danach mit OK? |
+| M7-4 | **Die Exit-Code-Tabelle.** `8 = kein CONNECT`, `11/19 = Authentifizierung`, `10 = Aushandlung`, `15/16 = Gegenstelle` stammen aus pppd(8). Dass dieses pppd sie in genau diesen Faellen liefert, ist Papier |
+| M7-5 | **`AT+CGACT=0,1` auf dem AT-Port loest wirklich eine haengende Datensitzung.** Das ist der Kniff, mit dem die Referenz das "vorher half nur Neu-Anstecken" beseitigt hat — an ihrer Hardware, nicht an dieser |
+| M7-6 | **`/etc/ppp/ip-up` wird aufgerufen und bekommt `DNS1`/`DNS2`.** Beides haengt daran, wie dieses pppd gebaut ist. Ohne den Hook sieht machino nie ein Interface, und der Anruf laeuft ins Aushandlungs-Timeout |
+| M7-7 | **`nodefaultroute` haelt pppd wirklich von der Default-Route fern.** Tut es das nicht, uebernimmt der Mobilfunk den Management-Pfad, sobald jemand PPP waehlt |
+| M7-8 | **Der Moduswechsel ECM → PPP ueber einen echten Neustart**, samt der Frage, ob `cdc_ether` danach wirklich nicht geladen ist und `option` alle Interfaces bekommt |
+| M7-9 | **Die Rechte der Optionsdatei am Geraet.** Sie traegt das APN-Passwort und wird mit 0600 angelegt; dass das ueber dem overlayfs dieser Box so bleibt, ist ungeprueft |
+| M7-10 | **Bundle-Groesse mit pppd.** Der Report misst sie im CI, sobald `build-ppp-t40` einmal gelaufen ist. Bis dahin ist die Zeile leer, und ob beide Nutzlasten plus pppd noch ins Overlay passen, ist eine Rechnung ohne die Zahl |
+
+### Was hostseitig festgenagelt ist
+
+Der Datenlink wird **nicht** automatisch gewechselt: scheitert ECM, bleibt es
+bei ECM. Bei `dataLink=ppp` startet kein DHCP-Client, bei `ecm` kein pppd; der
+Uplink heisst in beiden Faellen `cellular`; kein `QNETDEVCTL` und kein
+`QCFG="usbnet"` verlaesst den PPP-Pfad; und weder PIN noch APN-Passwort stehen
+in einem Dokument, einem Log oder einer Kommandozeile.

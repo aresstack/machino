@@ -113,7 +113,7 @@ bool LinuxEcmBackend::dhcp_stop(const std::string& ifname)
     return write_request("stop " + ifname + "\n");
 }
 
-bool LinuxEcmBackend::set_address(const std::string& ifname, const EcmAddress& a)
+bool LinuxEcmBackend::set_address(const std::string& ifname, const LinkAddress& a)
 {
     // NIC-Modus: die Adresse kommt vom Modem, nicht per DHCP.
     std::string line = "static " + ifname + " " + a.ipv4 + " " +
@@ -129,7 +129,7 @@ void LinuxEcmBackend::teardown(const std::string& ifname)
     write_request("stop " + ifname + "\n");
 }
 
-bool LinuxEcmBackend::read_address(const std::string& ifname, EcmAddress& out)
+bool LinuxEcmBackend::read_address(const std::string& ifname, LinkAddress& out)
 {
     // Der Helfer schreibt, was er konfiguriert hat. Die Adresse aus sysfs zu
     // lesen ginge auch, aber Gateway und DNS stehen dort nicht, und zwei
@@ -142,7 +142,7 @@ bool LinuxEcmBackend::read_address(const std::string& ifname, EcmAddress& out)
     buf[n] = 0;
 
     // Zeilen "key=value", eine davon "iface=<name>".
-    EcmAddress a;
+    LinkAddress a;
     std::string iface;
     const char* p = buf;
     while (*p) {

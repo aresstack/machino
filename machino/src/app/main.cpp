@@ -12,6 +12,7 @@
 #include "app/api/net_api.hpp"
 #include "adapters/linux/at_transport.hpp"
 #include "adapters/linux/linux_ecm_backend.hpp"
+#include "adapters/linux/linux_ppp_backend.hpp"
 #include "adapters/linux/linux_ethernet_uplink.hpp"
 #include "adapters/linux/linux_route_backend.hpp"
 #include "adapters/linux/linux_serial_scan.hpp"
@@ -20,6 +21,7 @@
 #include "adapters/linux/wifi_station_uplink.hpp"
 #include "adapters/linux/hostapd_ap.hpp"
 #include "adapters/linux/wpa_supplicant_wifi.hpp"
+#include "core/cellular/ppp_link.hpp"
 #include "core/net/cellular_uplink.hpp"
 #include "core/net/route_manager.hpp"
 #include "core/net/route_plan.hpp"
@@ -543,10 +545,34 @@ int main(int argc, char** argv) {
         // daemon -- this camera's documented hardlock trigger.
         linuxsys::AtTransport     modem_at("");
         linuxsys::LinuxEcmBackend ecm_backend;
+        linuxsys::LinuxPppBackend ppp_backend;
         cellular::CellularService cell_service(modem_at);
-        cellular::EcmLink         cell_link(modem_at, ecm_backend);
+        cellular::EcmLink         cell_ecm(modem_at, ecm_backend);
+        cellular::PppLink         cell_ppp(modem_at, ppp_backend);
         cell_service.set_clock([] { return (uint64_t)now_ms(); });
-        cell_link.set_clock([] { return (uint64_t)now_ms(); });
+        cell_ecm.set_clock([] { return (uint64_t)now_ms(); });
+        cell_ppp.set_clock([] { return (uint64_t)now_ms(); });
+
+        // EINER von beiden, und die Wahl faellt HIER -- einmal, beim Start.
+        //
+        // Beide Objekte existieren; das kostet nichts, weil ein Konstruktor
+        // hier nichts tut. Was NICHT passiert, ist beide zu betreiben: nur der
+        // gewaehlte bekommt tick(), also spricht nur einer mit dem Modem. Zwei
+        // Zustandsmaschinen auf einem AT-Port waeren zwei Sprecher, und die
+        // Antwort der einen landete in der anderen.
+        //
+        // Der Wert kommt aus der Datei und nicht aus einer spaeteren
+        // Konfiguration: ECM und PPP brauchen verschiedene Kernelmodule, und
+        // die hat der Boot-Helfer schon geladen. Ein Wechsel ist ein Neustart.
+        const bool want_ppp = [&store] {
+            const std::string v = store.get("cellular.data_link");
+            return v == "ppp";
+        }();
+        cellular::ICellularDataLink& cell_link =
+            want_ppp ? static_cast<cellular::ICellularDataLink&>(cell_ppp)
+                     : static_cast<cellular::ICellularDataLink&>(cell_ecm);
+        LOGI(MOD, "cellular: data link is %s", want_ppp ? "ppp" : "ecm");
+
         net::CellularUplink cell_uplink(cell_service, cell_link);
 
         // The stored cellular configuration is the SOURCE OF TRUTH.
@@ -590,13 +616,25 @@ int main(int argc, char** argv) {
         // config file works until the first time it does not, and then it
         // looks like a dead modem. Rediscovery is cheap and only runs while
         // the port we have is gone.
-        auto rediscover_modem_port = [&modem_at] {
+        auto rediscover_modem_port = [&modem_at, &cell_ppp, want_ppp] {
             if (modem_at.available()) return;
             const cellular::ModemPorts p =
                 cellular::map_modem_ports(linuxsys::scan_usb_serial_ports());
             if (p.at.empty() || p.at == modem_at.device()) return;
             LOGI(MOD, "cellular: AT port is %s", p.at.c_str());
             modem_at.set_device(p.at);
+            // Der DATEN-Port ist ein anderer als der AT-Port: MI_03 spricht AT,
+            // MI_04 traegt PPP. Beide aus derselben Zuordnung, beide nicht
+            // hartkodiert -- nach einer Re-Enumeration heissen sie anders, und
+            // ein festes /dev/ttyUSB4 waere genau so lange richtig, bis es das
+            // nicht mehr ist.
+            if (want_ppp) {
+                if (p.modem.empty())
+                    LOGW(MOD, "cellular: no modem port found - PPP has nothing to dial on");
+                else
+                    LOGI(MOD, "cellular: modem port is %s", p.modem.c_str());
+                cell_ppp.set_modem_port(p.modem);
+            }
         };
 
         const net::WifiCapabilities wcaps = wifi.capabilities();
