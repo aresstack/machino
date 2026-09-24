@@ -28,7 +28,7 @@ public:
     bool        dhcp_gives_address = true;
     bool        set_address_fails = false;
 
-    int dhcp_starts = 0, dhcp_stops = 0, teardowns = 0;
+    int dhcp_starts = 0, dhcp_stops = 0, teardowns = 0, set_down_calls = 0;
     std::vector<std::string> dhcp_started_on;
     EcmAddress assigned;
 
@@ -38,7 +38,7 @@ public:
         out.name = iface_name; out.up = up_; out.carrier = true;
         return true;
     }
-    bool set_up(const std::string&, bool up) override { up_ = up; return true; }
+    bool set_up(const std::string&, bool up) override { if (!up) ++set_down_calls; up_ = up; return true; }
     bool dhcp_start(const std::string& ifname) override
     {
         ++dhcp_starts; dhcp_started_on.push_back(ifname);
@@ -490,6 +490,16 @@ void test_disconnect_cleans_up_and_is_idempotent()
     TCHECK(be.dhcp_stops == 1);
     TCHECK(be.teardowns == 1);
     TCHECK(l.address().ipv4.empty());
+
+    // GENAU EIN Wunsch an den Helfer, nicht zwei.
+    //
+    // Der Weg dorthin ist eine einzelne Zeile in einer Datei, die der Helfer
+    // im Sekundentakt liest. Wer teardown() und danach set_up(false) ruft,
+    // ueberschreibt das "stop" mit einem "down", bevor es jemand gesehen hat --
+    // der DHCP-Client liefe weiter und holte sich beim naechsten Lease die
+    // Adresse zurueck, die hier gerade abgeraeumt wurde. Der Helfer nimmt das
+    // Interface im stop selbst herunter; hier darf nichts mehr nachkommen.
+    TCHECK(be.set_down_calls == 0);
 
     l.disconnect();                 // zweimal ist kein Fehler
     l.disconnect();

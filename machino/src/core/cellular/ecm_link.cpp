@@ -94,8 +94,14 @@ void EcmLink::disconnect()
         dhcp_running_ = false;
     }
     if (!st_.interface_name.empty()) {
+        // NUR teardown, kein zusaetzliches set_up(false).
+        //
+        // Das Protokoll zum Helfer ist EINE Zeile, und der Helfer liest sie im
+        // Sekundentakt. Zwei Wuensche direkt hintereinander heissen, dass er
+        // den ersten nie sieht -- hier haette das "down" das "stop"
+        // ueberschrieben und der DHCP-Client waere weitergelaufen. teardown
+        // nimmt das Interface selbst herunter.
         be_.teardown(st_.interface_name);
-        be_.set_up(st_.interface_name, false);
         // Den Namen VERGESSEN, sonst raeumt ein zweites disconnect() dasselbe
         // Interface noch einmal ab. "Zweimal trennen ist kein Fehler" heisst
         // nicht nur, dass es nicht abstuerzt, sondern auch, dass beim zweiten
@@ -340,10 +346,10 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
         st_.address = a;
     }
 
-    // Aus Failed heraus wird beim naechsten faelligen Tick neu angefangen.
-    if (st_.state == EcmState::Failed && due())
-        enter(EcmState::EnsureEcmMode, "neuer Versuch");
-
+    // Kein "aus Failed heraus neu anfangen" mehr an dieser Stelle: der Block
+    // war unerreichbar. Wer Failed und faellig ist, kommt oben gar nicht bis
+    // hierher -- die Pruefung am Anfang laesst ihn durch, und der grosse
+    // if-Block faengt dann direkt wieder bei EnsureEcmMode an.
     return st_;
 }
 

@@ -86,6 +86,10 @@ stop_iface() {
 	kill_pidfile "$(pidfile_for "$iface")"
 	del_own_default "$iface"
 	ip addr flush dev "$iface" 2>/dev/null
+	# Auch herunternehmen. machino schickt dafuer KEINEN eigenen Wunsch: das
+	# Protokoll ist eine Zeile, und ein "down" direkt nach einem "stop" haette
+	# das "stop" ueberschrieben, bevor dieser Prozess es gelesen haette.
+	ip link set "$iface" down 2>/dev/null
 	clear_state
 	log "$iface abgeraeumt"
 }

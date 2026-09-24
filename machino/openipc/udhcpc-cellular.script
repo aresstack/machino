@@ -14,10 +14,45 @@ CELL_METRIC=300
 
 RESOLV=/etc/resolv.conf
 
+# Was machino liest, um zu wissen, ob eine Adresse da ist.
+#
+# DIESES Skript schreibt sie, nicht der Helfer: nur hier ist der Lease bekannt,
+# samt Gateway und DNS, und nur hier weiss jemand, wann er sich aendert. Der
+# Helfer fuellt die Datei nur im NIC-Modus, wo es gar kein DHCP gibt.
+#
+# Das fehlte zuerst -- und damit haette der DHCP-Pfad NIE eine Adresse gemeldet.
+# Die Hosttests sahen es nicht: die Attrappe dort erfindet eine Adresse, sobald
+# DHCP laeuft, und war damit gutmuetiger als die Wirklichkeit.
+STATE=/var/run/machino-cellular.state
+
+write_state() {
+	tmp="$STATE.new"
+	{
+		echo "iface=$interface"
+		echo "ipv4=$ip"
+		# KEIN netmask: udhcpc liefert in $mask die Praefixlaenge ("24"), das
+		# Feld traegt aber sonst die gepunktete Maske aus CGCONTRDP. Zwei
+		# Formate unter einem Namen sind eine Falle, und im DHCP-Pfad braucht
+		# die Maske ohnehin niemand -- udhcpc hat das Interface schon
+		# konfiguriert, bevor dieses Skript laeuft.
+		[ -n "$router" ] && echo "gateway=${router%% *}"
+		set -- $dns
+		[ -n "${1:-}" ] && echo "dns1=$1"
+		[ -n "${2:-}" ] && echo "dns2=$2"
+		[ -n "$mtu" ]    && echo "mtu=$mtu"
+	} > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp"
+	# KEIN chmod: der Helfer laeuft mit umask 077 und schreibt dieselbe Datei
+	# mit 0600. Zwei Schreiber mit verschiedenen Rechten waeren ein Zustand,
+	# der davon abhaengt, wer zuletzt dran war.
+}
+
 case "$1" in
 	deconfig)
 		ip addr flush dev "$interface" 2>/dev/null
 		ip link set "$interface" up
+		# Keine Adresse mehr -- und machino soll das sehen, statt die alte
+		# weiterzumelden.
+		rm -f "$STATE"
 		;;
 
 	renew|bound)
@@ -56,6 +91,11 @@ case "$1" in
 			chmod 0644 "$tmp" 2>/dev/null
 			mv "$tmp" "$RESOLV" || rm -f "$tmp"
 		fi
+
+		# ZULETZT: erst wenn Adresse, Route und DNS wirklich stehen, darf
+		# machino "verbunden" lesen. Andersherum meldete der Zustand eine
+		# Verbindung, waehrend die Route noch fehlte.
+		write_state
 		;;
 
 	leasefail|nak)
