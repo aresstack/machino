@@ -37,6 +37,21 @@ struct NetworkInfo {
     std::string gateway;
     std::string dns;
     bool        dhcp = true;
+
+    // Does this uplink KNOW these servers, or is it just reading the system
+    // resolver file back?
+    //
+    // The distinction is not pedantry. LinuxNetif answers dns() by parsing
+    // /etc/resolv.conf, because that is the DNS the interface's traffic will
+    // actually use -- true, and useless as an ANSWER to "what did this uplink
+    // hand us". Once machino started writing that file, an Ethernet uplink
+    // would report whatever machino last wrote there as its own, so after a
+    // failover from cellular back to Ethernet the carrier's resolvers would
+    // look like Ethernet's and stay for good.
+    //
+    // Only an uplink that got its servers from its own lease or its own modem
+    // sets this.
+    bool        dns_is_own = false;
 };
 
 struct UplinkMetrics {

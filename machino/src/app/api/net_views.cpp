@@ -672,6 +672,58 @@ Json cellular_config_json(const cellular::CellularConfig& c)
     return j;
 }
 
+Json cellular_network_json(const cellular::CellularStatus& s,
+                           const cellular::CellularConfig& c,
+                           const cellular::CellularLinkState& link,
+                           net::LinkState uplink_state,
+                           bool internet)
+{
+    // Die Modemhaelfte kommt unveraendert aus cellular_status_json. Sie hier
+    // noch einmal zusammenzubauen hiesse, dass zwei Dokumente dasselbe Modem
+    // verschieden beschreiben koennen, sobald jemand nur eines davon pflegt.
+    Json j = cellular_status_json(s);
+
+    j.set("enabled", Json::boolean(c.enabled));
+    // "available" ist die HARDWARE-Frage und nicht die Zustimmungsfrage: ein
+    // Modem steckt oder es steckt nicht, unabhaengig davon, ob jemand den
+    // Haken gesetzt hat. Beides in ein Feld zu falten hiesse, dass eine
+    // Oberflaeche "kein Modem" anzeigt, wo "eingeschaltet werden muesste"
+    // richtig waere.
+    j.set("available", Json::boolean(s.present));
+    j.set("state", Json::string(net::link_state_name(uplink_state)));
+    j.set("internet", Json::boolean(internet));
+
+    Json dl = Json::object();
+    // Die Art des Datenlinks steht ausdruecklich drin, weil sie sich aendern
+    // wird: AP-M7 bringt PPP, und dieselbe Mobilfunk-Konfiguration soll dann
+    // weiterverwendet werden. Eine Oberflaeche, die "cellular" mit "ECM"
+    // gleichsetzt, muesste dafuer angefasst werden.
+    dl.set("kind", Json::string("ecm"));
+    dl.set("state", Json::string(cellular::ecm_state_name(link.state)));
+    dl.set("nicMode", Json::boolean(link.nic_mode));
+    dl.set("attempts", Json::integer(link.attempts));
+    dl.set("detail", str_or_null(link.detail));
+    j.set("dataLink", dl);
+
+    j.set("interface", str_or_null(link.interface_name));
+
+    Json addr = Json::object();
+    addr.set("ipv4", str_or_null(link.address.ipv4));
+    addr.set("netmask", str_or_null(link.address.netmask));
+    addr.set("gateway", str_or_null(link.address.gateway));
+    Json dns = Json::array();
+    if (!link.address.dns1.empty()) dns.push(Json::string(link.address.dns1));
+    if (!link.address.dns2.empty()) dns.push(Json::string(link.address.dns2));
+    addr.set("dns", dns);
+    addr.set("mtu", link.address.mtu > 0 ? Json::integer(link.address.mtu) : Json::null());
+    j.set("address", addr);
+
+    // Ohne PIN und ohne Passwort -- cellular_config_json gibt beide nicht
+    // heraus, sondern nur, ob eines hinterlegt ist.
+    j.set("config", cellular_config_json(c));
+    return j;
+}
+
 Json cellular_presets_json()
 {
     Json a = Json::array();

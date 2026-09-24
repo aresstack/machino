@@ -8,6 +8,7 @@
 //   * a feature that is not wired answers 404 rather than crashing or lying
 //   * a change that can lock the user out is staged, never applied outright
 #include "app/api/net_api.hpp"
+#include "scripted_at_transport.hpp"
 #include <cstdio>
 #include <map>
 #include <string>
@@ -121,6 +122,19 @@ struct MemStore : IStateStore {
 
 // ------------------------------------------------------------------- rig
 
+// A modem that is not there. Enough for the API surface: what is being pinned
+// here is the document shape, the staging and the secrets -- not the state
+// machine, which has its own file.
+struct AbsentEcmBackend : IEcmBackend {
+    bool find_interface(EcmInterface&) override { return false; }
+    bool set_up(const std::string&, bool) override { return false; }
+    bool dhcp_start(const std::string&) override { return false; }
+    bool dhcp_stop(const std::string&) override { return true; }
+    bool read_address(const std::string&, EcmAddress&) override { return false; }
+    bool set_address(const std::string&, const EcmAddress&) override { return false; }
+    void teardown(const std::string&) override {}
+};
+
 // Everything wired, so a test only has to say what it wants to be different.
 struct Rig {
     FakeUsbBackend     backend;
@@ -135,8 +149,35 @@ struct Rig {
     FakeUplink eth{net::UplinkType::Ethernet, "eth0"};
     FakeUplink wlan{net::UplinkType::Wifi, "wlan0"};
 
+    machino::test::ScriptedAtTransport at;
+    AbsentEcmBackend          ecm;
+    cellular::CellularService cell_svc{at};
+    cellular::EcmLink         cell_link{at, ecm};
+    net::CellularUplink       cell{cell_svc, cell_link};
+
+    // The stand-in for the configuration store. Written ONLY on confirm, which
+    // is the invariant main.cpp depends on: a staged change deviates from it
+    // live, and every apply -- the rollback's included -- resets to it first.
+    cellular::CellularConfig stored;
+
     net::NetworkTxn txn{store, [this](const std::string& c) {
-                            ++applies; applied = c; return Result::ok();
+                            ++applies; applied = c;
+                            // Mirrors the apply lambda in main.cpp, including
+                            // the reset. Writing a different one here would
+                            // test a runtime that does not exist.
+                            cell.set_config(stored);
+                            Json j; std::string e;
+                            if (!Json::parse(c, j, e)) return Result::error();
+                            const Json* kind = j.get("kind");
+                            if (!kind || !kind->is_string()) return Result::error();
+                            if (kind->as_string() == "cellular") {
+                                const Json* conf = j.get("config");
+                                cellular::CellularConfig cc = cell.config();
+                                if (!conf || !cellular_config_from_json(*conf, cc, e))
+                                    return Result::error();
+                                cell.set_config(cc);
+                            }
+                            return Result::ok();
                         }};
 
     Rig()
@@ -145,6 +186,7 @@ struct Rig {
         wifi.caps = full_radio();
         conn.add(&eth);
         conn.add(&wlan);
+        conn.add(&cell);
         std::string e;
         txn.seed_confirmed("{\"kind\":\"boot\"}", e);
     }
@@ -156,10 +198,21 @@ struct Rig {
         d.conn = &conn;
         d.wifi = &wifi;
         d.txn  = &txn;
+        d.cellular = &cell;
         d.now_ms = [this] { return now; };
         d.confirm_window_ms = 60000;
+        d.on_confirmed = [this](const std::string& candidate) {
+            confirmed.push_back(candidate);
+            Json j; std::string e;
+            if (!Json::parse(candidate, j, e)) return;
+            const Json* kind = j.get("kind");
+            if (kind && kind->is_string() && kind->as_string() == "cellular")
+                stored = cell.config();
+        };
         return d;
     }
+
+    std::vector<std::string> confirmed;
 };
 
 struct Call {
@@ -559,8 +612,209 @@ void test_a_staged_change_without_a_known_good_baseline_is_refused()
 
 } // namespace
 
+// ------------------------------------------------------------- Mobilfunk
+
+void test_the_cellular_document_never_carries_the_pin_or_the_password()
+{
+    Rig r;
+    cellular::CellularConfig c;
+    c.enabled = true;
+    c.apn = "internet.t-d1.de";
+    c.username = "user";
+    c.password = "hunter2-apn-password";
+    c.sim_pin = "4711";
+    r.cell.set_config(c);
+    NetApiService api(r.deps());
+
+    for (const char* path : {"/api/v1/network/cellular", "/api/v1/network"}) {
+        const Call g = call(api, "GET", path);
+        TCHECK(g.routed && g.r.status == 200);
+        const std::string doc = dumped(g.r);
+        TCHECK(!contains(doc, "hunter2-apn-password"));
+        TCHECK(!contains(doc, "4711"));
+        // What a UI actually needs: whether something is stored.
+        TCHECK(contains(doc, "\"simPinSet\":true"));
+        TCHECK(contains(doc, "\"passwordSet\":true"));
+    }
+}
+
+void test_the_cellular_document_separates_the_modem_from_the_link()
+{
+    // A modem can be registered beautifully and still move no traffic. A page
+    // that only shows one of the two halves cannot name that case.
+    Rig r;
+    NetApiService api(r.deps());
+    const Call g = call(api, "GET", "/api/v1/network/cellular");
+    TCHECK(g.routed && g.r.status == 200);
+    const std::string doc = dumped(g.r);
+    TCHECK(contains(doc, "\"dataLink\""));
+    TCHECK(contains(doc, "\"kind\":\"ecm\""));      // named, because AP-M7 brings PPP
+    TCHECK(contains(doc, "\"modem\""));
+    TCHECK(contains(doc, "\"sim\""));
+    TCHECK(contains(doc, "\"interface\""));
+    TCHECK(contains(doc, "\"address\""));
+    TCHECK(contains(doc, "\"internet\":false"));
+    // No modem: absent, not failed. Nothing is broken, there is just nothing
+    // there.
+    TCHECK(contains(doc, "\"state\":\"absent\""));
+}
+
+void test_the_network_document_carries_cellular_as_one_uplink_of_three()
+{
+    Rig r;
+    NetApiService api(r.deps());
+    const std::string doc = dumped(call(api, "GET", "/api/v1/network").r);
+    TCHECK(contains(doc, "\"id\":\"eth0\""));
+    TCHECK(contains(doc, "\"id\":\"wlan0\""));
+    // The logical name, not usb0 -- that is what a preference list has to be
+    // able to say and what survives an interface rename.
+    TCHECK(contains(doc, "\"id\":\"cellular\""));
+    TCHECK(contains(doc, "\"type\":\"cellular\""));
+}
+
+void test_a_cellular_change_is_staged_and_not_applied_outright()
+{
+    Rig r;
+    NetApiService api(r.deps());
+    const Call p = call(api, "PATCH", "/api/v1/network/cellular",
+                        "{\"enabled\":true,\"apn\":\"internet.t-d1.de\"}");
+    TCHECK(p.routed && p.r.status == 202);
+    TCHECK(contains(dumped(p.r), "\"pending\":true"));
+    // Live already -- that is what staging means. Not yet permanent.
+    TCHECK(r.cell.config().apn == "internet.t-d1.de");
+    TCHECK(r.stored.apn.empty());
+    TCHECK(r.confirmed.empty());
+}
+
+void test_a_confirmed_cellular_change_becomes_permanent()
+{
+    Rig r;
+    NetApiService api(r.deps());
+    const Call p = call(api, "PATCH", "/api/v1/network/cellular",
+                        "{\"enabled\":true,\"apn\":\"netpublic\"}");
+    const std::string token = p.r.body.get("token")->as_string();
+
+    const Call c = call(api, "POST", "/api/v1/network/change/" + token + "/confirm");
+    TCHECK(c.routed && c.r.status == 200);
+    TCHECK(r.confirmed.size() == 1);
+    TCHECK(r.stored.apn == "netpublic");
+    TCHECK(r.stored.enabled);
+}
+
+void test_an_unconfirmed_cellular_change_is_undone()
+{
+    // The point of staging, and the reason it applies to cellular at all:
+    // switching the modem on can move the default route off Ethernet, and
+    // whoever administers the camera through that route is then the one who
+    // can no longer confirm anything.
+    Rig r;
+    r.stored.apn = "internet.t-d1.de";
+    r.cell.set_config(r.stored);
+    NetApiService api(r.deps());
+
+    call(api, "PATCH", "/api/v1/network/cellular", "{\"apn\":\"wrong.example\"}");
+    TCHECK(r.cell.config().apn == "wrong.example");
+
+    r.now += 60001;
+    TCHECK(api.tick());
+    TCHECK(r.cell.config().apn == "internet.t-d1.de");   // really back
+    TCHECK(r.stored.apn == "internet.t-d1.de");
+    TCHECK(r.confirmed.empty());                          // never became permanent
+}
+
+void test_a_rolled_back_change_cannot_be_confirmed_afterwards()
+{
+    Rig r;
+    NetApiService api(r.deps());
+    const Call p = call(api, "PATCH", "/api/v1/network/cellular", "{\"apn\":\"wrong.example\"}");
+    const std::string token = p.r.body.get("token")->as_string();
+
+    r.now += 60001;
+    TCHECK(api.tick());
+
+    const Call c = call(api, "POST", "/api/v1/network/change/" + token + "/confirm");
+    TCHECK(c.r.status == 409);
+    TCHECK(r.confirmed.empty());
+    TCHECK(r.stored.apn.empty());
+}
+
+void test_a_partial_cellular_patch_does_not_clear_the_pin()
+{
+    // A PATCH is partial. A missing simPin means "leave it alone", and getting
+    // that backwards would wipe the PIN every time somebody edited the APN.
+    Rig r;
+    cellular::CellularConfig c;
+    c.sim_pin = "4711";
+    c.apn = "old.example";
+    r.stored = c;
+    r.cell.set_config(c);
+    NetApiService api(r.deps());
+
+    call(api, "PATCH", "/api/v1/network/cellular", "{\"apn\":\"new.example\"}");
+    TCHECK(r.cell.config().apn == "new.example");
+    TCHECK(r.cell.config().sim_pin == "4711");
+}
+
+void test_an_unknown_cellular_field_changes_nothing()
+{
+    Rig r;
+    NetApiService api(r.deps());
+    const Call p = call(api, "PATCH", "/api/v1/network/cellular",
+                        "{\"apn\":\"x\",\"turbo\":true}");
+    TCHECK(p.r.status == 422);
+    TCHECK(r.cell.config().apn.empty());
+    TCHECK(!r.txn.pending());
+}
+
+void test_cellular_presets_are_offered_with_their_reason()
+{
+    Rig r;
+    NetApiService api(r.deps());
+    const Call g = call(api, "GET", "/api/v1/network/cellular/presets");
+    TCHECK(g.routed && g.r.status == 200);
+    const std::string doc = dumped(g.r);
+    TCHECK(contains(doc, "internet.t-d1.de"));
+    TCHECK(contains(doc, "netpublic"));
+    // Suggestions, not automation -- the note says why each one is there.
+    TCHECK(contains(doc, "\"note\""));
+}
+
+void test_cellular_routes_answer_404_when_no_modem_support_is_wired()
+{
+    Rig r;
+    NetApiService::Deps d = r.deps();
+    d.cellular = nullptr;
+    NetApiService api(d);
+    TCHECK(call(api, "GET", "/api/v1/network/cellular").r.status == 404);
+    TCHECK(call(api, "PATCH", "/api/v1/network/cellular", "{}").r.status == 404);
+    // And the network document leaves the section out entirely rather than
+    // reporting an empty one, so a page can tell "this build has no cellular"
+    // from "the modem is quiet".
+    TCHECK(!contains(dumped(call(api, "GET", "/api/v1/network").r), "\"dataLink\""));
+}
+
+void test_cellular_rejects_the_wrong_method()
+{
+    Rig r;
+    NetApiService api(r.deps());
+    TCHECK(call(api, "POST", "/api/v1/network/cellular", "{}").r.status == 405);
+    TCHECK(call(api, "DELETE", "/api/v1/network/cellular/presets").r.status == 405);
+}
+
 void run_net_api_tests()
 {
+    test_the_cellular_document_never_carries_the_pin_or_the_password();
+    test_the_cellular_document_separates_the_modem_from_the_link();
+    test_the_network_document_carries_cellular_as_one_uplink_of_three();
+    test_a_cellular_change_is_staged_and_not_applied_outright();
+    test_a_confirmed_cellular_change_becomes_permanent();
+    test_an_unconfirmed_cellular_change_is_undone();
+    test_a_rolled_back_change_cannot_be_confirmed_afterwards();
+    test_a_partial_cellular_patch_does_not_clear_the_pin();
+    test_an_unknown_cellular_field_changes_nothing();
+    test_cellular_presets_are_offered_with_their_reason();
+    test_cellular_routes_answer_404_when_no_modem_support_is_wired();
+    test_cellular_rejects_the_wrong_method();
     test_paths_outside_our_prefixes_are_not_claimed();
     test_a_typo_under_our_prefix_is_our_404();
     test_usb_get_reports_status_and_config();

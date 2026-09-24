@@ -100,12 +100,43 @@ ReconcileReport RouteManager::reconcile(const RoutePlan& plan)
         // redundant write, and the alternative is leaving the wrong resolvers
         // in place because the file could not be parsed.
         const bool known = be_.dns(current);
+
+        // Snapshot BEFORE the first overwrite, and only then. Re-snapshotting
+        // later would capture machino's own servers and make the restore a
+        // no-op -- which is the same as having no restore at all.
+        if (!owns_dns_ && known) dns_before_ = current;
+
         if (!known || current != plan.dns) {
             const Result rc = be_.set_dns(plan.dns);
             if (rc.is_ok()) {
                 rep.dns_written = true;
+                owns_dns_ = true;
             } else if (rep.error.empty()) {
                 rep.error = "the resolver configuration could not be written";
+            }
+        } else {
+            owns_dns_ = true;       // already exactly what we would have written
+        }
+    } else if (owns_dns_) {
+        // Nobody owns DNS any more -- the active uplink cannot name its own
+        // servers, or there is no active uplink. Put back what was there
+        // before machino took over.
+        owns_dns_ = false;
+        if (dns_before_.empty()) {
+            // Nothing to restore. Leaving machino's servers is wrong; writing
+            // an empty file is worse -- it takes name resolution away from the
+            // whole camera. The DHCP hooks rewrite the file on their next
+            // lease, so this corrects itself; saying nothing about it would
+            // not.
+            rep.error = "the previous resolvers are unknown - the file keeps the "
+                        "ones the last uplink supplied until a lease renews";
+        } else {
+            const Result rc = be_.set_dns(dns_before_);
+            if (rc.is_ok()) {
+                rep.dns_restored = true;
+                dns_before_.clear();
+            } else if (rep.error.empty()) {
+                rep.error = "the previous resolver configuration could not be restored";
             }
         }
     }

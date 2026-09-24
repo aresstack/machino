@@ -121,6 +121,13 @@ RoutePlan plan_routes(const std::vector<UplinkStatus>& uplinks,
     // resolvers, no matter that every packet is leaving through Ethernet.
     for (const UplinkStatus& u : uplinks) {
         if (active_id.empty() || u.id != active_id) continue;
+        // Nur ein Uplink, der seine Server SELBST kennt, darf die Datei
+        // besitzen. Wer sie blos aus resolv.conf zurueckliest, wuerde
+        // bestaetigen, was ohnehin dort steht -- auch wenn es die Server des
+        // Mobilfunkanbieters sind und der Verkehr laengst wieder ueber
+        // Ethernet geht. Genau so blieben die Resolver des Anbieters nach
+        // einem Rueckfall fuer immer stehen.
+        if (!u.info.dns_is_own) break;
         std::vector<std::string> servers = split_dns(u.info.dns);
         if (!servers.empty()) {
             plan.dns = std::move(servers);

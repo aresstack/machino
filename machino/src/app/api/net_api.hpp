@@ -20,6 +20,7 @@
 #pragma once
 #include "app/api/api_service.hpp"
 #include "app/api/net_views.hpp"
+#include "core/net/cellular_uplink.hpp"
 #include "core/net/connectivity.hpp"
 #include "core/net/network_txn.hpp"
 #include "core/usb/usb_host_service.hpp"
@@ -46,12 +47,27 @@ public:
     // Persist the uplink policy. Same contract.
     using SavePolicyFn = std::function<bool(const net::UplinkPolicy&, std::string& err)>;
 
+
     struct Deps {
         usb::UsbHostService*      usb = nullptr;
         net::ConnectivityManager* conn = nullptr;
         net::IWifiAdapter*        wifi = nullptr;
+        net::CellularUplink*      cellular = nullptr;
         net::NetworkTxn*          txn = nullptr;
         ClockFn                   now_ms;
+
+        // Called AFTER a staged change has been confirmed, with the candidate
+        // that was confirmed.
+        //
+        // This is where a change becomes permanent. It matters for the cellular
+        // configuration and it is the difference between a rollback that works
+        // and one that only looks like it: the stored configuration is the
+        // source of truth, an unconfirmed change deviates from it live, and
+        // every apply -- including the rollback's -- resets to it first. If the
+        // store were written when the change was APPLIED instead, there would
+        // be nothing left to roll back to.
+        using ConfirmedFn = std::function<void(const std::string& candidate)>;
+        ConfirmedFn               on_confirmed;
         SaveUsbFn                 save_usb;
         SavePolicyFn              save_policy;
 
@@ -85,6 +101,9 @@ private:
     Response wifi_scan();
     Response wifi_station(const std::string& body);
     Response wifi_ap(const std::string& body);
+    Response cellular_get() const;
+    Response cellular_patch(const std::string& body);
+    Response cellular_presets() const;
     Response change_get() const;
     Response change_confirm(const std::string& token_text);
 
@@ -94,6 +113,11 @@ private:
 
     Deps       d_;
     std::mutex m_;          // one network change at a time, like the media PATCH
+
+    // The candidate currently staged. NetworkTxn allows exactly one at a
+    // time, so this is unambiguous -- and it saves reading the pending record
+    // back out of the store just to learn what was confirmed.
+    std::string staged_candidate_;
 };
 
 }} // namespace machino::api

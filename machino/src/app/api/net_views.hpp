@@ -14,6 +14,7 @@
 #include "core/net/connectivity.hpp"
 #include "core/cellular/cellular_config.hpp"
 #include "core/cellular/cellular_status.hpp"
+#include "core/cellular/ecm_link.hpp"
 #include "core/usb/usb_host_service.hpp"
 #include <string>
 #include <vector>
@@ -80,6 +81,24 @@ Json cellular_config_json(const cellular::CellularConfig& c);
 
 // Die bekannten Anbieterkonfigurationen als Vorschlaege, mit dem Grund dabei.
 Json cellular_presets_json();
+
+// Mobilfunk so, wie die Netzwerkseite ihn braucht: Modemzustand UND Uplink in
+// einem Dokument.
+//
+// Zwei Sichten, die auseinanderzuhalten der ganze Punkt ist. `modem`, `sim`,
+// `network` und `radio` beschreiben das Geraet; `dataLink`, `interface`,
+// `address` und `internet` beschreiben die Verbindung. Ein Modem kann
+// hervorragend eingebucht sein und trotzdem kein Byte transportieren, und wer
+// nur eine der beiden Haelften anzeigt, kann diesen Fall nicht benennen.
+//
+// `state` ist dabei der UPLINK-Zustand, nicht der des Modems -- dieselbe
+// Skala wie bei Ethernet und WLAN, damit eine Oberflaeche die drei
+// nebeneinander darstellen kann, ohne Mobilfunk gesondert zu behandeln.
+Json cellular_network_json(const cellular::CellularStatus& s,
+                           const cellular::CellularConfig& c,
+                           const cellular::CellularLinkState& link,
+                           net::LinkState uplink_state,
+                           bool internet);
 
 // Ein unbekanntes Feld ist ein Fehler. Ein leerer String bei password/simPin
 // heisst "loeschen"; ein FEHLENDES Feld heisst "nicht anfassen" -- sonst

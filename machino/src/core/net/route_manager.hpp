@@ -26,10 +26,11 @@ struct ReconcileReport {
     int  added = 0;
     int  removed = 0;
     bool dns_written = false;
+    bool dns_restored = false;    // ownership given back, the old servers are in place
     bool read_failed = false;     // the table could not be read: nothing was touched
     std::string error;            // the first failure, in plain words
 
-    bool changed() const { return added > 0 || removed > 0 || dns_written; }
+    bool changed() const { return added > 0 || removed > 0 || dns_written || dns_restored; }
 };
 
 class RouteManager {
@@ -45,6 +46,18 @@ public:
 
 private:
     IRouteBackend& be_;
+
+    // What the resolver file said before machino first took it over, and
+    // whether it currently holds it.
+    //
+    // Taking ownership without being able to give it back is the failure this
+    // exists to prevent. Cellular becomes active, machino writes the carrier's
+    // resolvers, Ethernet comes back -- and Ethernet cannot name its own
+    // servers, because on Linux it learns them from the very file machino just
+    // overwrote. Without a snapshot there is nothing to go back to, and the
+    // camera resolves names through a modem it is no longer using.
+    bool                     owns_dns_ = false;
+    std::vector<std::string> dns_before_;
 };
 
 }} // namespace machino::net

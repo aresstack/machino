@@ -47,6 +47,12 @@ void CellularUplink::tick()
     link_.tick(svc_.poll());
 }
 
+void CellularUplink::set_config(const cellular::CellularConfig& c)
+{
+    svc_.set_config(c);
+    link_.set_config(c);
+}
+
 bool CellularUplink::enabled() const
 {
     return svc_.config().enabled;
@@ -119,6 +125,10 @@ NetworkInfo CellularUplink::info() const
     // AT+CGCONTRDP. Das als dhcp=true zu melden waere schlicht falsch und
     // wuerde jede Fehlersuche in die falsche Richtung schicken.
     n.dhcp    = !ls.nic_mode;
+    // Diese Server kommen aus CGCONTRDP bzw. aus dem eigenen DHCP-Lease des
+    // Modems. Der Uplink WEISS sie, er liest sie nicht aus resolv.conf zurueck
+    // -- und nur deshalb darf er die Datei besitzen.
+    n.dns_is_own = !ls.address.dns1.empty() || !ls.address.dns2.empty();
     return n;
 }
 

@@ -10,12 +10,19 @@
 #include "adapters/ingenic/ingenic_platform.hpp"
 #include "app/api/api_service.hpp"
 #include "app/api/net_api.hpp"
+#include "adapters/linux/at_transport.hpp"
+#include "adapters/linux/linux_ecm_backend.hpp"
 #include "adapters/linux/linux_ethernet_uplink.hpp"
+#include "adapters/linux/linux_route_backend.hpp"
+#include "adapters/linux/linux_serial_scan.hpp"
 #include "adapters/linux/linux_usb_host.hpp"
 #include "adapters/linux/sysfs_gpio.hpp"
 #include "adapters/linux/wifi_station_uplink.hpp"
 #include "adapters/linux/hostapd_ap.hpp"
 #include "adapters/linux/wpa_supplicant_wifi.hpp"
+#include "core/net/cellular_uplink.hpp"
+#include "core/net/route_manager.hpp"
+#include "core/net/route_plan.hpp"
 #include "app/compat/majestic_migrate.hpp"
 #include "app/http/http_server.hpp"
 #include "app/onvif/discovery_server.hpp"
@@ -499,6 +506,64 @@ int main(int argc, char** argv) {
         // usable. The honest answer arrives when the hardware does.
         conn.add(&wifi_uplink);
 
+        // AP-M5: cellular, the third uplink.
+        //
+        // Registered unconditionally for exactly the reason the WiFi one is.
+        // The modem hangs off the same USB port, its power is a GPIO and its
+        // kernel modules are loaded by hand, so it appears minutes after boot
+        // if it appears at all. A snapshot taken here would decide there is no
+        // modem, and the only way to revisit that would be restarting the
+        // daemon -- this camera's documented hardlock trigger.
+        linuxsys::AtTransport     modem_at("");
+        linuxsys::LinuxEcmBackend ecm_backend;
+        cellular::CellularService cell_service(modem_at);
+        cellular::EcmLink         cell_link(modem_at, ecm_backend);
+        cell_service.set_clock([] { return (uint64_t)now_ms(); });
+        cell_link.set_clock([] { return (uint64_t)now_ms(); });
+        net::CellularUplink cell_uplink(cell_service, cell_link);
+
+        // The stored cellular configuration is the SOURCE OF TRUTH.
+        //
+        // A staged change deviates from it live; the store is written only
+        // when the change is confirmed, and every apply below re-reads it
+        // first. That is what makes a rollback actually restore something
+        // instead of just removing the pending record.
+        auto stored_cellular = [&read_settings] {
+            cellular::CellularConfig cc;
+            KeyValues keys; api::cellular_config_to_settings(cc, keys);
+            std::string e;
+            if (!api::cellular_config_from_settings(read_settings(keys), cc, e))
+                LOGW(MOD, "cellular: %s - using defaults", e.c_str());
+            return cc;
+        };
+        {
+            const cellular::CellularConfig cc = stored_cellular();
+            cell_uplink.set_config(cc);
+            // The APN is printed; the PIN and the password are not, here or
+            // anywhere else.
+            const std::string apn_note =
+                (cc.enabled && !cc.apn.empty()) ? (", apn " + cc.apn) : std::string();
+            LOGI(MOD, "cellular: %s%s", cc.enabled ? "enabled" : "off", apn_note.c_str());
+        }
+        conn.add(&cell_uplink);
+
+        // The AT port is found, not configured.
+        //
+        // ttyUSB numbering is not stable: it depends on the order the kernel
+        // enumerated the interfaces, and the modem re-enumerates on its own
+        // whenever its USB composition changes. Pinning /dev/ttyUSB3 in a
+        // config file works until the first time it does not, and then it
+        // looks like a dead modem. Rediscovery is cheap and only runs while
+        // the port we have is gone.
+        auto rediscover_modem_port = [&modem_at] {
+            if (modem_at.available()) return;
+            const cellular::ModemPorts p =
+                cellular::map_modem_ports(linuxsys::scan_usb_serial_ports());
+            if (p.at.empty() || p.at == modem_at.device()) return;
+            LOGI(MOD, "cellular: AT port is %s", p.at.c_str());
+            modem_at.set_device(p.at);
+        };
+
         const net::WifiCapabilities wcaps = wifi.capabilities();
         LOGI(MOD, "wifi at start-up: %s (re-evaluated on every request)",
              wcaps.present
@@ -515,16 +580,57 @@ int main(int argc, char** argv) {
             conn.set_policy(p);
         }
 
+        // The damping needs a clock. Without one the manager switches on the
+        // first evaluation that disagrees, and with three uplinks in the list
+        // a marginal link would keep telling every live RTSP and WebRTC
+        // session that the path changed.
+        conn.set_clock([] { return (uint32_t)now_ms(); });
+
+        // Routing and DNS, decided in one place.
+        //
+        // Before AP-M5 three shell scripts decided it independently: the boot
+        // script gave eth0 metric 0, udhcpc-wlan 200, udhcpc-cellular 300.
+        // That is a preference order hard-coded across three files, and it
+        // contradicted the uplink policy -- setting the policy to "cellular
+        // first" changed the status page and nothing about where packets went.
+        // The scripts keep their metrics as a bootstrap for the window before
+        // this has converged; from here on the plan wins.
+        linuxsys::LinuxRouteBackend route_backend;
+        net::RouteManager route_manager(route_backend);
+        auto apply_routes = [&conn, &route_manager] {
+            const net::RoutePlan plan =
+                net::plan_routes(conn.status(), conn.policy(), conn.active_id());
+            const net::ReconcileReport r = route_manager.reconcile(plan);
+            if (!r.error.empty())
+                LOGW(MOD, "network: %s", r.error.c_str());
+            else if (r.changed())
+                LOGI(MOD, "network: %d default route(s) installed, %d removed%s",
+                     r.added, r.removed, r.dns_written ? ", resolvers updated" : "");
+        };
+
         // The staged-change record lives next to the config, on the same
         // overlay, and IStateStore writes it 0600 -- a WiFi candidate carries
         // a passphrase.
         FileStateStore net_state("/etc/machino/state");
-        net::NetworkTxn net_txn(net_state, [&wifi](const std::string& blob) -> Result {
+        net::NetworkTxn net_txn(net_state, [&wifi, &cell_uplink, &stored_cellular]
+                                           (const std::string& blob) -> Result {
             Json j; std::string e;
             if (!Json::parse(blob, j, e)) return Result::error();
             const Json* kind = j.get("kind");
             const Json* conf = j.get("config");
             if (!kind || !kind->is_string()) return Result::error();
+
+            // EVERY apply starts by putting the cellular configuration back to
+            // what is stored, whatever kind of change is being applied.
+            //
+            // That single rule is what makes a cellular rollback work. There
+            // is one confirmed record for the whole network, so the record a
+            // cellular change rolls back TO may well be a WiFi one -- and
+            // without this line the modem would simply keep the configuration
+            // nobody confirmed. Applying the stored configuration is a no-op
+            // in every other case, because the store is only written on
+            // confirm.
+            cell_uplink.set_config(stored_cellular());
 
             // The baseline. "Whatever the boot scripts set" is a real
             // configuration and restoring it means changing nothing -- the
@@ -532,6 +638,12 @@ int main(int argc, char** argv) {
             if (kind->as_string() == "boot") return Result::ok();
 
             if (!conf) return Result::error();
+            if (kind->as_string() == "cellular") {
+                cellular::CellularConfig cc = cell_uplink.config();
+                if (!api::cellular_config_from_json(*conf, cc, e)) return Result::error();
+                cell_uplink.set_config(cc);
+                return Result::ok();
+            }
             if (kind->as_string() == "wifi-station") {
                 net::WifiStationConfig sc;
                 if (!api::wifi_station_from_json(*conf, sc, e)) return Result::error();
@@ -594,6 +706,20 @@ int main(int argc, char** argv) {
             KeyValues kv; api::policy_to_settings(p, kv);
             return store.commit(kv, e);
         };
+        nd.cellular = &cell_uplink;
+        // A confirmed change is the only thing that writes the store. Writing
+        // it when the change was APPLIED would leave the rollback with nothing
+        // to go back to -- see the note on ConfirmedFn.
+        nd.on_confirmed = [&store, &cell_uplink](const std::string& candidate) {
+            Json j; std::string e;
+            if (!Json::parse(candidate, j, e)) return;
+            const Json* kind = j.get("kind");
+            if (!kind || !kind->is_string() || kind->as_string() != "cellular") return;
+            KeyValues kv; api::cellular_config_to_settings(cell_uplink.config(), kv);
+            if (!store.commit(kv, e))
+                LOGE(MOD, "cellular: the confirmed configuration could not be saved (%s) - "
+                          "it is live now and will be gone after a reboot", e.c_str());
+        };
         api::NetApiService net_api(nd);
 
         // Transports hear about an uplink switch; the media pipeline never
@@ -604,6 +730,7 @@ int main(int argc, char** argv) {
                  from.empty() ? "(none)" : from.c_str(), to.empty() ? "(none)" : to.c_str());
         });
         conn.evaluate();
+        apply_routes();
 
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
@@ -866,7 +993,19 @@ int main(int argc, char** argv) {
                         // restored configuration, not the one being undone.
                         if (net_api.tick())
                             LOGW(MOD, "network: an unconfirmed change was rolled back");
+                        // The modem before the selection: tick() is what makes
+                        // the ECM link advance, and a selection run on last
+                        // tick's state would be one round behind for the whole
+                        // bring-up.
+                        if (cell_uplink.enabled()) rediscover_modem_port();
+                        cell_uplink.tick();
                         conn.evaluate();
+                        // Routes AFTER the selection, always -- not only when
+                        // evaluate() reported a change. An uplink can get a new
+                        // gateway from a DHCP renewal without the ACTIVE uplink
+                        // changing at all, and that new gateway still has to
+                        // reach the kernel.
+                        apply_routes();
                     }
                 }
             }

@@ -97,6 +97,15 @@ bool NetApiService::handle(const std::string& method, const std::string& path,
         if (method == "POST") { out = wifi_ap(body); return true; }
         return wrong_method("POST");
     }
+    if (path == "/api/v1/network/cellular") {
+        if (method == "GET")   { out = cellular_get(); return true; }
+        if (method == "PATCH") { out = cellular_patch(body); return true; }
+        return wrong_method("GET or PATCH");
+    }
+    if (path == "/api/v1/network/cellular/presets") {
+        if (method == "GET") { out = cellular_presets(); return true; }
+        return wrong_method("GET");
+    }
     if (path == "/api/v1/network/change") {
         if (method == "GET") { out = change_get(); return true; }
         return wrong_method("GET");
@@ -191,6 +200,16 @@ Response NetApiService::network_get() const
     if (!d_.conn) return not_wired("/api/v1/network", "connectivity management");
     Json j = network_json(d_.conn->status(), d_.conn->policy(), d_.conn->active_id());
     j.set("change", change_get().body);
+    // The uplink list already carries cellular as one entry among three; this
+    // is the detail a modem has and a cable does not -- operator, band, SIM.
+    // Absent rather than null when there is no modem support in this build, so
+    // a page can tell "this camera has no cellular" from "the modem is quiet".
+    if (d_.cellular)
+        j.set("cellular", cellular_network_json(d_.cellular->modem_status(),
+                                                d_.cellular->config(),
+                                                d_.cellular->link_state(),
+                                                d_.cellular->state(),
+                                                d_.cellular->has_internet()));
     return ok(j);
 }
 
@@ -315,6 +334,60 @@ Response NetApiService::wifi_ap(const std::string& body)
     return stage(path, cand.dump());
 }
 
+// ------------------------------------------------------------- Mobilfunk
+
+Response NetApiService::cellular_get() const
+{
+    const std::string path = "/api/v1/network/cellular";
+    if (!d_.cellular) return not_wired(path, "cellular");
+    return ok(cellular_network_json(d_.cellular->modem_status(),
+                                    d_.cellular->config(),
+                                    d_.cellular->link_state(),
+                                    d_.cellular->state(),
+                                    d_.cellular->has_internet()));
+}
+
+Response NetApiService::cellular_presets() const
+{
+    Json j = Json::object();
+    j.set("presets", cellular_presets_json());
+    return ok(j);
+}
+
+Response NetApiService::cellular_patch(const std::string& body)
+{
+    const std::string path = "/api/v1/network/cellular";
+    if (!d_.cellular) return not_wired(path, "cellular");
+
+    Json j; Response err;
+    if (!parse_body(body, path, j, err)) return err;
+
+    // Validated against the CURRENT configuration, because a PATCH is partial:
+    // a missing simPin means "leave it alone", not "clear it". Getting that
+    // backwards would erase the PIN every time the user changed the APN.
+    cellular::CellularConfig next = d_.cellular->config();
+    std::string e;
+    if (!cellular_config_from_json(j, next, e))
+        return ApiService::fail(422, "invalid_value", path, e);
+
+    // Staged like every other network change, and for a reason that only
+    // arrived with AP-M5: cellular now takes part in uplink selection, so
+    // switching it on can move the default route off Ethernet -- and whoever
+    // is administering the camera through that route would be the one who can
+    // no longer confirm anything.
+    //
+    // What the rollback does NOT do is re-drive the modem. It restores a
+    // configuration; AT+CPIN is sent by SimManager, which refuses a second
+    // attempt for a PIN value it has already had rejected, and that note is
+    // keyed to the value and survives the round trip. So an undone change
+    // cannot spend a SIM attempt, which is the one thing a rollback here must
+    // never cost.
+    Json cand = Json::object();
+    cand.set("kind", Json::string("cellular"));
+    cand.set("config", j);
+    return stage(path, cand.dump());
+}
+
 // ------------------------------------------------------- staged changes
 
 Response NetApiService::stage(const std::string& path, const std::string& candidate)
@@ -327,11 +400,13 @@ Response NetApiService::stage(const std::string& path, const std::string& candid
     uint64_t token = 0;
     std::string e;
     if (!d_.txn->begin(candidate, d_.now_ms(), d_.confirm_window_ms, token, e)) {
+        staged_candidate_.clear();
         // 409, not 500: every reason begin() refuses is a state the caller can
         // see and act on -- something else is pending, or there is no
         // known-good configuration to fall back to yet.
         return ApiService::fail(409, "conflict", path, e);
     }
+    staged_candidate_ = candidate;
 
     Json j = Json::object();
     j.set("pending", Json::boolean(true));
@@ -368,6 +443,12 @@ Response NetApiService::change_confirm(const std::string& token_text)
     if (!d_.txn->confirm(token, e))
         return ApiService::fail(409, "conflict", path, e);
 
+    // Only NOW does the change become permanent. Persisting it when it was
+    // applied would leave nothing for a rollback to go back to.
+    const std::string confirmed = staged_candidate_;
+    staged_candidate_.clear();
+    if (d_.on_confirmed && !confirmed.empty()) d_.on_confirmed(confirmed);
+
     Json j = Json::object();
     j.set("pending", Json::boolean(false));
     j.set("confirmed", Json::boolean(true));
@@ -377,7 +458,12 @@ Response NetApiService::change_confirm(const std::string& token_text)
 bool NetApiService::tick()
 {
     if (!d_.txn || !d_.now_ms) return false;
-    return d_.txn->tick(d_.now_ms());
+    const bool rolled_back = d_.txn->tick(d_.now_ms());
+    if (rolled_back) {
+        std::lock_guard<std::mutex> g(m_);
+        staged_candidate_.clear();   // it was undone, it must not be confirmable
+    }
+    return rolled_back;
 }
 
 }} // namespace machino::api

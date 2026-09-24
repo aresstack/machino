@@ -92,6 +92,21 @@ public:
     // nichts zu erklaeren gibt.
     std::string detail() const;
 
+    // EIN Weg, die Konfiguration zu setzen.
+    //
+    // Sie gehoert zwei Komponenten -- dem Statusdienst (wegen der PIN) und der
+    // Zustandsmaschine (wegen APN und Betriebsart). Zwei Aufrufer, die sich
+    // beide an beide erinnern muessen, sind eine Falle: wer nur den Dienst
+    // setzt, aendert die angezeigte Konfiguration, ohne dass sich am Aufbau
+    // etwas aendert.
+    void set_config(const cellular::CellularConfig& c);
+
+    // Fuer die Statusseite. Roh und ungefiltert; das Weglassen der Geheimnisse
+    // passiert in den JSON-Sichten, nicht hier.
+    const cellular::CellularConfig&    config() const { return svc_.config(); }
+    const cellular::CellularStatus&    modem_status() const { return svc_.status(); }
+    const cellular::CellularLinkState& link_state() const { return link_.state(); }
+
 private:
     cellular::CellularService& svc_;
     cellular::EcmLink&         link_;

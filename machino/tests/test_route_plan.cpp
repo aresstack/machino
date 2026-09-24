@@ -28,6 +28,10 @@ UplinkStatus up(const char* id, UplinkType t, const char* ifname, const char* ip
     u.id = id; u.type = t; u.state = st; u.active = active;
     u.internet = (st == LinkState::Connected);
     u.info.ifname = ifname; u.info.ipv4 = ip; u.info.gateway = gw; u.info.dns = dns;
+    // The fixtures describe uplinks that KNOW their servers. The case where an
+    // uplink only reads resolv.conf back has its own test, because it is the
+    // interesting one.
+    u.info.dns_is_own = (dns[0] != '\0');
     return u;
 }
 
@@ -286,6 +290,115 @@ void test_dns_is_written_when_the_active_uplink_changes()
     TCHECK(be.resolv.size() == 2 && be.resolv[0] == "10.74.210.210" && be.resolv[1] == "10.74.210.211");
 }
 
+void test_an_uplink_that_only_reads_resolv_conf_back_does_not_own_dns()
+{
+    // LinuxNetif answers dns() by parsing /etc/resolv.conf -- true as a
+    // statement about the traffic, useless as an answer to "what did this
+    // uplink hand us". Once machino writes that file, Ethernet would report
+    // machino's own servers as its own.
+    UplinkStatus eth = up("eth0", UplinkType::Ethernet, "eth0", "192.168.1.10",
+                          "192.168.1.1", "10.74.210.210", true);
+    eth.info.dns_is_own = false;                 // read back, not learned
+    const RoutePlan p = plan_routes({eth}, UplinkPolicy{}, "eth0");
+    TCHECK(p.dns_owner.empty());
+    TCHECK(p.dns.empty());
+    // The route is unaffected -- only DNS ownership is in question here.
+    TCHECK(p.routes.size() == 1);
+}
+
+void test_failing_back_to_ethernet_puts_the_old_resolvers_back()
+{
+    // The whole reason ownership is tracked. Cellular becomes active, machino
+    // writes the carrier's resolvers; Ethernet comes back, and it cannot name
+    // its own servers because on Linux it learns them from the very file
+    // machino just overwrote. Without a snapshot the camera would resolve
+    // names through a modem it is no longer using -- for good, because the
+    // wrong answer keeps matching itself.
+    FakeRouteBackend be;
+    be.resolv = {"192.168.1.1"};
+    RouteManager rm(be);
+
+    UplinkStatus eth = up("eth0", UplinkType::Ethernet, "eth0", "192.168.1.10",
+                          "192.168.1.1", "192.168.1.1");
+    eth.info.dns_is_own = false;
+    UplinkStatus cell = up("cellular", UplinkType::Cellular, "usb0", "10.5.6.7",
+                           "10.5.6.1", "10.74.210.210 10.74.210.211", true);
+
+    const ReconcileReport a = rm.reconcile(plan_routes({eth, cell}, UplinkPolicy{}, "cellular"));
+    TCHECK(a.dns_written);
+    TCHECK(be.resolv.size() == 2 && be.resolv[0] == "10.74.210.210");
+
+    cell.active = false;
+    eth.active = true;
+    const ReconcileReport b = rm.reconcile(plan_routes({eth, cell}, UplinkPolicy{}, "eth0"));
+    TCHECK(b.dns_restored);
+    TCHECK(be.resolv.size() == 1 && be.resolv[0] == "192.168.1.1");
+}
+
+void test_the_snapshot_is_taken_once_and_not_overwritten_with_our_own()
+{
+    // Re-snapshotting on every write would capture machino's own servers, and
+    // the restore would put back exactly what it was meant to undo -- the same
+    // as having no restore at all.
+    FakeRouteBackend be;
+    be.resolv = {"192.168.1.1"};
+    RouteManager rm(be);
+
+    UplinkStatus cell = up("cellular", UplinkType::Cellular, "usb0", "10.5.6.7",
+                           "10.5.6.1", "10.74.210.210", true);
+    rm.reconcile(plan_routes({cell}, UplinkPolicy{}, "cellular"));
+
+    // The modem renews and hands out a different resolver.
+    cell.info.dns = "10.74.210.211";
+    rm.reconcile(plan_routes({cell}, UplinkPolicy{}, "cellular"));
+    TCHECK(be.resolv.size() == 1 && be.resolv[0] == "10.74.210.211");
+
+    // Cellular goes away entirely.
+    const ReconcileReport r = rm.reconcile(plan_routes({}, UplinkPolicy{}, ""));
+    TCHECK(r.dns_restored);
+    TCHECK(be.resolv.size() == 1 && be.resolv[0] == "192.168.1.1");
+}
+
+void test_giving_up_ownership_never_empties_the_file()
+{
+    // No snapshot, because resolv.conf could not be read when ownership was
+    // taken. Leaving machino's servers is wrong; writing an empty file takes
+    // name resolution away from the whole camera, which is worse. It says so
+    // rather than doing either quietly.
+    FakeRouteBackend be;
+    be.dns_read_ok = false;
+    RouteManager rm(be);
+
+    UplinkStatus cell = up("cellular", UplinkType::Cellular, "usb0", "10.5.6.7",
+                           "10.5.6.1", "10.74.210.210", true);
+    TCHECK(rm.reconcile(plan_routes({cell}, UplinkPolicy{}, "cellular")).dns_written);
+
+    be.dns_read_ok = true;
+    const ReconcileReport r = rm.reconcile(plan_routes({}, UplinkPolicy{}, ""));
+    TCHECK(!r.dns_restored);
+    TCHECK(!r.error.empty());
+    TCHECK(!be.resolv.empty());        // not emptied
+}
+
+void test_ownership_is_not_given_back_twice()
+{
+    FakeRouteBackend be;
+    be.resolv = {"192.168.1.1"};
+    RouteManager rm(be);
+    UplinkStatus cell = up("cellular", UplinkType::Cellular, "usb0", "10.5.6.7",
+                           "10.5.6.1", "10.74.210.210", true);
+    rm.reconcile(plan_routes({cell}, UplinkPolicy{}, "cellular"));
+    TCHECK(rm.reconcile(plan_routes({}, UplinkPolicy{}, "")).dns_restored);
+
+    const size_t ops = be.ops.size();
+    for (int i = 0; i < 3; ++i) {
+        const ReconcileReport r = rm.reconcile(plan_routes({}, UplinkPolicy{}, ""));
+        TCHECK(!r.dns_restored);
+        TCHECK(r.error.empty());
+    }
+    TCHECK(be.ops.size() == ops);
+}
+
 void test_dns_is_not_rewritten_when_it_already_matches()
 {
     // reconcile() runs on a timer. A version that wrote unconditionally would
@@ -486,6 +599,11 @@ void run_route_plan_tests()
     test_an_inactive_cellular_lease_cannot_hijack_dns();
     test_an_active_uplink_with_no_dns_leaves_the_file_alone();
     test_dns_is_written_when_the_active_uplink_changes();
+    test_an_uplink_that_only_reads_resolv_conf_back_does_not_own_dns();
+    test_failing_back_to_ethernet_puts_the_old_resolvers_back();
+    test_the_snapshot_is_taken_once_and_not_overwritten_with_our_own();
+    test_giving_up_ownership_never_empties_the_file();
+    test_ownership_is_not_given_back_twice();
     test_dns_is_not_rewritten_when_it_already_matches();
     test_split_dns_drops_rubbish_and_duplicates();
 
