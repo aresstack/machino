@@ -183,13 +183,20 @@ UplinkPolicy ConnectivityManager::policy() const
     return policy_;
 }
 
+bool ConnectivityManager::usable(const INetworkUplink* u)
+{
+    if (!u) return false;
+    // const_cast because the port is written for a caller that may query
+    // hardware; nothing here modifies anything.
+    INetworkUplink* p = const_cast<INetworkUplink*>(u);
+    return p->state() == LinkState::Connected && p->has_internet();
+}
+
 INetworkUplink* ConnectivityManager::select(const std::vector<INetworkUplink*>& uplinks,
                                             const UplinkPolicy& policy,
                                             INetworkUplink* current)
 {
-    auto usable = [](INetworkUplink* u) {
-        return u && u->state() == LinkState::Connected && u->has_internet();
-    };
+    auto usable = [](INetworkUplink* u) { return ConnectivityManager::usable(u); };
 
     // A selector is an uplink id or a type name. Ids win: they are the precise
     // answer, and a board with two modems needs them.
@@ -246,14 +253,53 @@ bool ConnectivityManager::evaluate()
 
     INetworkUplink* chosen = select(snapshot, policy, current);
 
+    // ---- damping ----------------------------------------------------------
+    //
+    // A candidate has to stay the answer for a while before it is acted on.
+    // Three cases skip the wait entirely, and each for its own reason:
+    //
+    //   no clock       the caller did not ask for damping
+    //   nothing active the camera has no route at all; waiting three seconds
+    //                  at boot buys nothing and costs three seconds
+    //   pinned         the user named this uplink. Making them wait for a
+    //                  choice they made explicitly would look like a bug.
+    if (now_ && current && !policy.pinned && chosen != current) {
+        const uint32_t now = now_();
+        // Leaving a dead uplink is urgent; going back to a preferred one that
+        // has recovered is not. usable() is asked about the CURRENT uplink,
+        // because that is what decides whether anything works right now.
+        const uint32_t window = usable(current) ? policy.return_debounce_ms
+                                                : policy.failover_debounce_ms;
+        bool ready;
+        {
+            std::lock_guard<std::mutex> g(m_);
+            if (pending_ != chosen) {
+                // A new answer. The clock starts now -- an uplink that keeps
+                // flickering in and out never accumulates time this way,
+                // which is the whole point.
+                pending_ = chosen;
+                pending_since_ms_ = now;
+            }
+            // Unsigned compare that survives the 32-bit wrap the rest of the
+            // runtime uses for monotonic milliseconds.
+            ready = window == 0 ||
+                    (int32_t)(now - pending_since_ms_) >= (int32_t)window;
+        }
+        if (!ready) return false;
+    }
+
     std::vector<std::pair<uint64_t, PathChangeFn>> notify;
     std::string from, to;
     {
         std::lock_guard<std::mutex> g(m_);
-        if (chosen == active_) return false;    // unchanged: nobody is told
+        if (chosen == active_) {
+            pending_ = nullptr;                 // no pending change any more
+            return false;                       // unchanged: nobody is told
+        }
         from = active_ ? active_->id() : std::string();
         to   = chosen  ? chosen->id()  : std::string();
         active_ = chosen;
+        pending_ = nullptr;
         notify = subscribers_;                  // copied, so a subscriber may
     }                                           // unsubscribe from inside its own callback
     // Outside the lock: a transport reacting to this may tear down sessions,

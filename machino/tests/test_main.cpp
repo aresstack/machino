@@ -55,6 +55,8 @@ void run_random_tests();
 void run_watchdog_tests();
 void run_usb_tests();
 void run_connectivity_tests();
+void run_route_plan_tests();
+void run_cellular_uplink_tests();
 void run_pin_tests();
 void run_network_txn_tests();
 void run_state_store_tests();
@@ -399,6 +401,8 @@ int main() {
     run_cellular_ports_tests();
     run_cellular_tests();
     run_ecm_link_tests();
+    run_cellular_uplink_tests();
+    run_route_plan_tests();
     run_net_api_tests();
     run_proc_net_tests();
     run_hostapd_conf_tests();

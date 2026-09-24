@@ -92,6 +92,185 @@ void test_connected_without_internet_is_not_usable()
     TCHECK(m.active_type(t) && t == UplinkType::Cellular);
 }
 
+// ------------------------------------------------------------- damping ----
+//
+// AP-M5: cellular joins the failover, and with three uplinks instead of two a
+// marginal link produces a lot more switching. Every switch tells every live
+// RTSP and WebRTC session the path changed; a link that comes and goes once a
+// second would turn that into a permanent stream of reconnects.
+
+void test_a_brief_outage_does_not_move_the_traffic()
+{
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink cell(UplinkType::Cellular, "wwan0");
+    uint32_t now = 100000;
+    ConnectivityManager m;
+    m.set_clock([&now] { return now; });
+    m.add(&eth); m.add(&cell);
+    m.evaluate();
+    TCHECK(m.active_id() == "eth0");
+
+    // The cable twitches for one evaluation and comes back.
+    eth.st = LinkState::Down; eth.inet = false;
+    now += 500;
+    TCHECK(!m.evaluate());
+    TCHECK(m.active_id() == "eth0");
+    eth.st = LinkState::Connected; eth.inet = true;
+    now += 500;
+    TCHECK(!m.evaluate());
+    TCHECK(m.active_id() == "eth0");
+}
+
+void test_a_real_outage_does_move_the_traffic()
+{
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink cell(UplinkType::Cellular, "wwan0");
+    uint32_t now = 100000;
+    ConnectivityManager m;
+    m.set_clock([&now] { return now; });
+    m.add(&eth); m.add(&cell);
+    m.evaluate();
+
+    eth.st = LinkState::Down; eth.inet = false;
+    now += 1000; TCHECK(!m.evaluate());
+    now += 1000; TCHECK(!m.evaluate());
+    // Die Uhr laeuft ab dem ERSTEN evaluate nach dem Ausfall, nicht ab dem
+    // Ausfall: vorher hat niemand hingesehen.
+    now += 2000; TCHECK(m.evaluate());          // past failover_debounce_ms
+    TCHECK(m.active_id() == "wwan0");
+}
+
+void test_going_back_to_a_preferred_uplink_waits_much_longer()
+{
+    // Leaving a dead uplink is urgent -- nothing works until it happens. Going
+    // back to one that has just recovered is not urgent at all, and a
+    // preferred uplink that recovers and dies in a loop is the classic flap
+    // source.
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink cell(UplinkType::Cellular, "wwan0");
+    eth.st = LinkState::Down; eth.inet = false;
+    uint32_t now = 100000;
+    ConnectivityManager m;
+    m.set_clock([&now] { return now; });
+    m.add(&eth); m.add(&cell);
+    m.evaluate();
+    TCHECK(m.active_id() == "wwan0");
+
+    eth.st = LinkState::Connected; eth.inet = true;
+    now += 5000;  TCHECK(!m.evaluate());        // longer than the failover window
+    now += 5000;  TCHECK(!m.evaluate());
+    TCHECK(m.active_id() == "wwan0");
+    now += 11000; TCHECK(m.evaluate());         // past return_debounce_ms
+    TCHECK(m.active_id() == "eth0");
+}
+
+void test_a_flapping_candidate_never_accumulates_time()
+{
+    // The failure a naive implementation has: a candidate that is up on every
+    // other evaluation still gets there, because the timer was started once
+    // and never reset.
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink cell(UplinkType::Cellular, "wwan0");
+    eth.st = LinkState::Down; eth.inet = false;
+    uint32_t now = 100000;
+    ConnectivityManager m;
+    m.set_clock([&now] { return now; });
+    m.add(&eth); m.add(&cell);
+    m.evaluate();
+    TCHECK(m.active_id() == "wwan0");
+
+    for (int i = 0; i < 40; ++i) {
+        eth.st = (i % 2) ? LinkState::Connected : LinkState::Down;
+        eth.inet = (i % 2) != 0;
+        now += 1000;
+        TCHECK(!m.evaluate());
+    }
+    TCHECK(m.active_id() == "wwan0");
+}
+
+void test_the_first_uplink_is_taken_immediately()
+{
+    // At boot there is no route at all. Waiting three seconds for the first
+    // one buys nothing and costs three seconds.
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    uint32_t now = 100000;
+    ConnectivityManager m;
+    m.set_clock([&now] { return now; });
+    m.add(&eth);
+    TCHECK(m.evaluate());
+    TCHECK(m.active_id() == "eth0");
+}
+
+void test_a_pinned_uplink_is_switched_to_without_waiting()
+{
+    // The user named this one. Making them wait for a choice they made
+    // explicitly looks like a bug, not like caution.
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink cell(UplinkType::Cellular, "wwan0");
+    uint32_t now = 100000;
+    ConnectivityManager m;
+    m.set_clock([&now] { return now; });
+    m.add(&eth); m.add(&cell);
+    m.evaluate();
+    TCHECK(m.active_id() == "eth0");
+
+    UplinkPolicy p;
+    p.pinned = true;
+    p.pinned_uplink = "cellular";
+    m.set_policy(p);
+    TCHECK(m.evaluate());
+    TCHECK(m.active_id() == "wwan0");
+}
+
+void test_without_a_clock_there_is_no_damping()
+{
+    // The default for every existing caller and every test written before
+    // AP-M5: no clock, immediate answers, unchanged behaviour.
+    FakeUplink eth(UplinkType::Ethernet, "eth0");
+    FakeUplink cell(UplinkType::Cellular, "wwan0");
+    ConnectivityManager m;
+    m.add(&eth); m.add(&cell);
+    m.evaluate();
+    eth.st = LinkState::Down; eth.inet = false;
+    TCHECK(m.evaluate());
+    TCHECK(m.active_id() == "wwan0");
+}
+
+// --------------------------------------------------------- AP is not WAN ----
+
+void test_an_access_point_is_never_a_wan_candidate()
+{
+    // The WiFi station uplink reports Absent while the radio is in AP mode, so
+    // a camera serving its own WLAN for the setup page is not a failed uplink
+    // and failover has no reason to tear the AP down. Pinned to a test here
+    // because it is a property of the whole selection path, not of one
+    // adapter, and AP-M5 adds a third uplink that could have been made to
+    // compete with it.
+    FakeUplink ap(UplinkType::Wifi, "wlan0");
+    ap.st = LinkState::Absent;      // what WifiStationUplink answers in AP mode
+    ap.inet = false;
+    FakeUplink cell(UplinkType::Cellular, "wwan0");
+
+    ConnectivityManager m;
+    m.add(&ap); m.add(&cell);
+    UplinkPolicy p;
+    p.order = {"wifi", "cellular"};     // WiFi is PREFERRED and still not chosen
+    m.set_policy(p);
+
+    m.evaluate();
+    TCHECK(m.active_id() == "wwan0");
+    TCHECK(ap.connects == 0 && ap.disconnects == 0);    // nothing was done to the AP
+
+    // And it stays that way when cellular dies too: no uplink at all is the
+    // honest answer. Selecting the AP would claim internet the camera has not
+    // got, and disconnecting it would take the setup page away from whoever is
+    // standing in front of the camera trying to fix exactly this.
+    cell.st = LinkState::Down; cell.inet = false;
+    m.evaluate();
+    TCHECK(m.active_id().empty());
+    TCHECK(ap.disconnects == 0);
+}
+
 void test_return_to_preferred()
 {
     FakeUplink eth(UplinkType::Ethernet, "eth0");
@@ -482,6 +661,14 @@ void run_connectivity_tests()
     test_prefers_the_first_usable_in_order();
     test_failover_when_the_active_uplink_dies();
     test_connected_without_internet_is_not_usable();
+    test_a_brief_outage_does_not_move_the_traffic();
+    test_a_real_outage_does_move_the_traffic();
+    test_going_back_to_a_preferred_uplink_waits_much_longer();
+    test_a_flapping_candidate_never_accumulates_time();
+    test_the_first_uplink_is_taken_immediately();
+    test_a_pinned_uplink_is_switched_to_without_waiting();
+    test_without_a_clock_there_is_no_damping();
+    test_an_access_point_is_never_a_wan_candidate();
     test_return_to_preferred();
     test_no_return_to_preferred_keeps_the_working_one();
     test_auto_failover_off_stays_on_the_dead_uplink();

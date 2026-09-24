@@ -40,6 +40,20 @@ struct UplinkPolicy {
     bool auto_failover = true;         // drop to the next one when the active dies
     bool return_to_preferred = true;   // go back up when a better one recovers
 
+    // How long a candidate has to stay the answer before it is acted on.
+    // Without this, one dropped ping flips the default route, every live RTSP
+    // and WebRTC session is told the path changed, and the next tick flips it
+    // back -- an uplink that is merely marginal then produces a permanent
+    // stream of reconnects rather than a slightly worse picture.
+    //
+    // The two windows are different on purpose. Leaving a dead uplink is
+    // urgent: nothing works until it happens. Going BACK to a preferred one
+    // that has just recovered is not urgent at all, and a preferred uplink
+    // that recovers and dies in a loop is the classic flap source -- so it
+    // has to prove itself for considerably longer.
+    uint32_t failover_debounce_ms = 3000;
+    uint32_t return_debounce_ms = 15000;
+
     // When set, only this uplink is ever used and failover is off. This is the
     // "I know what I want" switch; it must be honoured even if it means no
     // connectivity, otherwise the UI lies.
@@ -99,6 +113,16 @@ private:
 
 class ConnectivityManager {
 public:
+    // Monotonic milliseconds, the same source the rest of the runtime uses.
+    //
+    // Optional, and its absence is not a degraded mode -- it switches the
+    // debounce off entirely. A host test that wants to see the selection
+    // logic and nothing else installs no clock and gets an immediate answer;
+    // a test that wants to see the damping installs one it controls. Guessing
+    // a time here instead would make both kinds of test depend on wall clock.
+    using ClockFn = std::function<uint32_t()>;
+    void set_clock(ClockFn now) { now_ = std::move(now); }
+
     // Uplinks are borrowed; the caller owns them and outlives this.
     void add(INetworkUplink* u);
     void set_policy(const UplinkPolicy& p);
@@ -136,6 +160,12 @@ public:
                                   const UplinkPolicy& policy,
                                   INetworkUplink* current);
 
+    // "Connected AND actually reaching something." The one definition, shared
+    // by selection and by the route plan -- two definitions of usable would
+    // mean the uplink the manager picks and the route the kernel gets could
+    // be for different uplinks.
+    static bool usable(const INetworkUplink* u);
+
 private:
     mutable std::mutex m_;
     std::vector<INetworkUplink*> uplinks_;
@@ -143,6 +173,13 @@ private:
     std::vector<std::pair<uint64_t, PathChangeFn>> subscribers_;
     uint64_t next_sub_ = 1;
     INetworkUplink* active_ = nullptr;
+    ClockFn         now_;
+
+    // The candidate that is currently serving its waiting period, and since
+    // when. Reset whenever the answer changes, so a candidate that keeps
+    // appearing and disappearing never accumulates time.
+    INetworkUplink* pending_ = nullptr;
+    uint32_t        pending_since_ms_ = 0;
 };
 
 }} // namespace machino::net
