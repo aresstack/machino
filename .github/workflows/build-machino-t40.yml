@@ -266,7 +266,19 @@ jobs:
             echo "| | |"
             echo "|--|--|"
             echo "| Commit | ${GITHUB_SHA} |"
-            echo "| Kernel-Module vermagic | $(grep -ah -m1 -o 'vermagic=[^ ]*' "$O"/wifi/modules/*.ko "$O"/cellular/modules/*.ko 2>/dev/null || echo '(keine Module im Bundle)') |"
+            # Dieselbe Quelle, aus der das Makefile -DMACHINO_VERSION speist.
+            # Aus BUILDINFO zu raten waere eine zweite Wahrheit.
+            echo "| Version | $(git describe --tags --always --dirty 2>/dev/null || echo dev) |"
+            # EINE Zeile, und die ganze. `grep -o 'vermagic=[^ ]*'` bricht am
+            # ersten Leerzeichen ab und liefert "4.4.94" -- der Rest ist aber
+            # genau der Teil, der zaehlt: bei CONFIG_MODVERSIONS=n IST der
+            # vermagic-String der komplette ABI-Vertrag, inklusive
+            # "SMP preempt mod_unload MIPS32_R2 32BIT".
+            vm=$(for f in "$O"/wifi/modules/*.ko "$O"/cellular/modules/*.ko; do
+                   [ -f "$f" ] || continue
+                   strings "$f" | grep -m1 '^vermagic=' && break
+                 done)
+            echo "| Kernel-Module vermagic | ${vm:-(keine Module im Bundle)} |"
             echo "| WLAN mitgeliefert | $([ -n "$(ls "$O/wifi/modules" 2>/dev/null)" ] && echo ja || echo NEIN) |"
             echo "| Mobilfunk mitgeliefert | $([ -n "$(ls "$O/cellular/modules" 2>/dev/null)" ] && echo ja || echo NEIN) |"
             echo "| Boot-Helfer | $([ -f "$O/sbin/machino-usb-helper" ] && echo ja || echo NEIN) |"
