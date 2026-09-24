@@ -48,29 +48,96 @@ Nein. Nachgesehen in `drivers/usb/serial/option.c` dieses Kernels:
     0x6005                                 NICHT vorhanden
 
 Und der Punkt, den man beim Abschreiben falsch machen wuerde: die EC21/EC25-
-Eintraege benutzen `net_intf4_blacklist` mit `.reserved = BIT(4)`. `.reserved`
-laesst `option_probe` fuer dieses Interface `-ENODEV` zurueckgeben, es bleibt
-also fuer den Netzwerktreiber frei. Beim EC200A ist das Netzwerk-Interface laut
-Repo aber **MI_00**, nicht 4. Ein kopierter EC25-Eintrag wuerde Interface 4
-reservieren und Interface 0 an `option` binden -- damit koennte `cdc_ether` das
-Netzwerkinterface nie uebernehmen.
+Eintraege benutzen `net_intf4_blacklist` mit `.reserved = BIT(4)`.
 
-`net_intf0_blacklist` mit `.reserved = BIT(0)` existiert in diesem Kernel
-bereits. Der passende Eintrag waere also vermutlich:
+Dass `.reserved` wirklich das Binden verhindert (und nicht nur `send_setup`
+beeinflusst, wie das zweite Feld der Struktur), ist am Quelltext geprueft --
+`option_probe` hat **keinen Klassenfilter** ausser Mass Storage:
 
-    { USB_DEVICE(QUECTEL_VENDOR_ID, 0x6005),
-      .driver_info = (kernel_ulong_t)&net_intf0_blacklist },
+```c
+/* Never bind to the CD-Rom emulation interface */
+if (iface_desc->bInterfaceClass == 0x08)
+        return -ENODEV;
+/*
+ * Don't bind reserved interfaces (like network ones) which often have
+ * the same class/subclass/protocol as the serial interfaces.
+ */
+blacklist = (void *)id->driver_info;
+if (blacklist && test_bit(iface_desc->bInterfaceNumber, &blacklist->reserved))
+        return -ENODEV;
+```
 
-"vermutlich", weil die Interfacenummer am lebenden Descriptor zu bestaetigen
-ist und sich zwischen RNDIS- und ECM-Modus unterscheiden kann. Siehe UNKNOWN 1.
+Ein blanker `USB_DEVICE(0x2c7c, 0x6005)`-Eintrag ohne `.reserved` wuerde also
+auch die Netzwerk-Interfaces beanspruchen -- CDC-Klassen 0x02 und 0x0A werden
+nirgends ausgesiebt. Der Kernelkommentar sagt genau das.
+
+Beim EC200A ist das Netzwerk **MI_00**. Belegt in `README.md` Zeile 7:
+"Interfaces: MI_00 ECM, MI_02 Diag, MI_03 AT, MI_04 Modem", und Zeile 89
+bestaetigt, dass auch nach der Umstellung auf RNDIS dasselbe MI_00 bindet --
+die Nummer scheint also ueber beide usbnet-Modi stabil.
+
+Ein kopierter EC25-Eintrag wuerde Interface 4 reservieren und Interface 0 an
+`option` binden. `net_intf0_blacklist` mit `.reserved = BIT(0)` existiert in
+diesem Kernel bereits.
+
+**Aber vermutlich reicht BIT(0) nicht.** Eine CDC-ECM-Funktion belegt ZWEI
+Interfaces -- Communication (0x02/0x06) und Data (0x0A) -- und das Repo nennt
+nur MI_00, MI_02, MI_03, MI_04 ("damit haben alle 4 Interfaces einen Treiber").
+MI_01 taucht nirgends auf, was gut dazu passt, dass Windows das ECM-Paar als
+ein Geraet fuehrt. Ist das so, muss der Eintrag beide reservieren:
+
+    .reserved = BIT(0) | BIT(1)
+
+Praezedenz dafuer steht in derselben Datei (`telit_le922_blacklist_usbcfg3`
+reserviert BIT(0)|BIT(1)|BIT(3)). Das ist eine begruendete Vermutung aus der
+CDC-Konvention, kein Messwert -- der Descriptor entscheidet. Siehe UNKNOWN 1.
 
 Die Alternative aus `doc/linux.md` -- `echo 2c7c 6005 > .../option1/new_id` --
-braucht keinen Patch, hat aber genau dieses Problem: `new_id` kennt keine
-Reservierung und bindet **alle** Interfaces, auch das Netzwerkinterface.
+braucht keinen Patch, hat aber genau dieses Problem in verschaerfter Form:
+`new_id` transportiert kein `driver_info`, also gibt es keine Reservierung, und
+`option` nimmt jedes Interface.
 
 `cdc_ether` dagegen braucht keinen geraetespezifischen Eintrag: es matcht
 generisch ueber `USB_CLASS_COMM / USB_CDC_SUBCLASS_ETHERNET / PROTO_NONE`.
 Sobald das Modem im ECM-Modus ist, bindet es von allein.
+
+### Die Modulliste ist vollstaendig -- nachgerechnet
+
+`USB_USBNET` hat in der Kconfig dieses Kernels ein `select MII`. Damit waere
+`mii.ko` ein fuenftes Modul gewesen. Ist es nicht: MII ist in diesen Kernel
+**eingebaut**, es gibt kein `mii.ko`, und die Symbole stehen als globaler
+Kerneltext bereit:
+
+    8026df78 T mii_ethtool_gset
+    8026e19c T mii_ethtool_sset
+    8026e4d4 T mii_link_ok
+
+`usbnet.ko` findet sie also beim Laden. Vier Module reichen. Das stand hier
+zuerst als Annahme und ist jetzt geprueft -- `select` in einer Kconfig heisst
+nicht, dass das Ergebnis ein Modul ist.
+
+Die Kconfig-Symbole, die AP-M2 im Build aktivieren muss:
+
+    CONFIG_USB_SERIAL=m          (usbserial.ko existiert bereits im Image)
+    CONFIG_USB_SERIAL_WWAN=m
+    CONFIG_USB_SERIAL_OPTION=m
+    CONFIG_USB_USBNET=m
+    CONFIG_USB_NET_CDCETHER=m
+
+Offen und in AP-M2 zu entscheiden: ob wir das vorhandene `usbserial.ko` des
+Images benutzen oder ein eigenes mitliefern. Der vermagic passt, und
+`CONFIG_MODVERSIONS=n` heisst, dass es keine Symbol-CRCs gibt -- unser
+`option.ko` wuerde also gegen das Image-Modul laden. Verlassen wuerde man sich
+damit darauf, dass das Image-Modul aus derselben Quellversion stammt, und das
+ist wahrscheinlich, aber nicht geprueft.
+
+### Referenzdaten zum Wiedererkennen des Geraets
+
+Aus dem Repo, am echten Modem abgelesen:
+
+    ATI          EC200A
+    Firmware     EC200AEUV1HAR02A07M16
+    VID:PID      2c7c:6005
 
 ### Das Modem steht aktuell nicht auf ECM
 
@@ -242,11 +309,20 @@ jetzt und nicht spaeter. Die Migration ist trivial (`usb.wifi.enabled = true`
 
 Nicht geraten, nicht gefuellt.
 
-1. **Welche Interfacenummer traegt das Netzwerk beim EC200A -- in RNDIS und in
-   ECM?** Das Repo dokumentiert MI_00 Netzwerk, MI_02 DIAG, MI_03 AT, MI_04
-   Modem. Bestaetigt ist das am Windows-Treiber, nicht am Linux-Descriptor, und
-   der usbnet-Modus kann die Nummerierung verschieben. Davon haengt der
-   `.reserved`-Eintrag in `option.c` ab.
+1. **Wieviele Interfaces belegt die Netzwerkfunktion, und welche Nummern?**
+   Das Repo dokumentiert MI_00 ECM, MI_02 Diag, MI_03 AT, MI_04 Modem und
+   spricht von "allen 4 Interfaces". Eine CDC-ECM-Funktion braucht aber zwei
+   (Communication + Data), was MI_01 nahelegt -- nur nennt es niemand. Belegt
+   ist das Ganze ausserdem am WINDOWS-Treiber, nicht am Linux-Descriptor. Davon
+   haengt ab, ob der `option.c`-Eintrag `BIT(0)` oder `BIT(0)|BIT(1)` (oder
+   etwas anderes) reservieren muss -- und ein falscher Wert heisst entweder
+   "kein AT-Port" oder "kein Netzwerk". Erste Handlung in AP-M2: den
+   Config-Descriptor auslesen, in BEIDEN usbnet-Modi.
+
+   Nebenbefund fuer die Reihenfolge: die V1.4-INF deckt MI_02/03/**06**/**20**
+   ab. Es gibt also Konfigurationen mit mehr Interfaces (MI_06 ist der
+   NMEA/GNSS-Port). In der aktuellen Konfiguration des Geraets treten sie nicht
+   auf, aber die Interfacenummern sind nichts, worauf man sich blind verlaesst.
 
 2. **Braucht `option` fuer diesen ASR-Chip ueberhaupt einen Eintrag, oder
    genuegt `usb_wwan` generisch?** Nicht geprueft.
