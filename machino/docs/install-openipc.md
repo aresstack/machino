@@ -1,81 +1,56 @@
-# Installing Machino on an OpenIPC camera
 
-This guide starts at a camera that is already running OpenIPC and reachable
-over the network. It installs Machino **next to** Majestic, so you can switch
-between them and switch back.
+## USB-WLAN
 
-Installing does not take your camera off the air: whatever is streaming keeps
-streaming until you switch on purpose.
+Das Paket bringt alles mit, was das WLAN braucht -- Treiber, Firmware, hostapd
+und den Rollen-Supervisor -- und `install.sh` legt es per Default ab. **WLAN
+selbst ist aus.**
 
-> **Read this first if you only read one thing.** Majestic is not only the
-> video daemon — it is also the web server that serves the OpenIPC WebUI on
-> port 80. Switching to Machino therefore stops the process that serves the
-> page you are looking at. Machino handles this by serving the same WebUI with
-> busybox `httpd` while it is the active service, so the switch page stays
-> reachable in both directions. The [Recovery](#recovery) section at the end
-> tells you what to do if something goes wrong anyway.
+Beides zusammen ist Absicht. Der Schalter sitzt in der Machino-Oberflaeche
+unter *Netzwerk & USB → USB-WLAN*, und ein Schalter, der erst wirkt, nachdem
+jemand per SSH Kernelmodule nachkopiert hat, waere keiner. Gleichzeitig hat die
+Kamera genau EINEN USB-Port, und eingeschaltetes WLAN belegt ihn: cfg80211,
+aic_load_fw, aic8800, Portstrom auf PB18. Wer dort ein Modem betreiben will,
+soll dafuer nichts bezahlen muessen.
 
----
+    usb.wifi.enabled = false      Default. In machino.conf.
 
-## Supported hardware
+Bei **aus** tut `S42wifi` beim Boot nichts: kein Modul, kein Portstrom, kein
+wpa_supplicant, kein hostapd, kein DHCP auf wlan0. Der Port bleibt frei.
 
-| SoC | Sensor | Status |
-|---|---|---|
-| Ingenic T40NN | Sony IMX307 | tested on real hardware (board profile `t40nn-imx307-board-a`) |
+Bei **an** laeuft die auf Hardware erarbeitete Reihenfolge:
 
-Everything else is untested. Machino refuses to start rather than guess an
-I²C bus, an address or a reset pin, so an unknown board will stop with a clear
-message instead of doing something unpredictable.
+    cfg80211 -> aic_load_fw -> aic8800 -> GPIO 50 (PB18) -> wlan0 -> Supervisor
 
-You need:
+Eine Aenderung wirkt beim **naechsten Neustart**, und die Seite sagt das auch
+so. Kernelmodule bei laufender IMP-Pipeline nachzuladen ist genau der Weg, den
+dieser Entwurf vermeidet.
 
-* an OpenIPC camera with the WebUI installed (`/var/www/cgi-bin` exists)
-* SSH access as `root`
-* about 1.5 MB free on the overlay filesystem — check with `df -h /`
+### Optionen
 
----
+    ./install.sh                          Nutzlast installieren, WLAN aus
+    ./install.sh --with-wifi              zusaetzlich usb.wifi.enabled=true
+    ./install.sh --without-wifi-payload   Treiber/Firmware/hostapd weglassen
 
-## 1. Download the bundle
+`--without-wifi-payload` spart rund 2 MB des 8,7-MB-Overlays (aic8800.ko 550 K,
+aic_load_fw.ko 87 K, Firmware 362 K, hostapd 996 K) und macht den Schalter
+wirkungslos -- die Seite sagt dann, dass nichts zu schalten da ist, statt etwas
+anzubieten, das nicht funktionieren kann. `--with-wifi` zusammen mit
+`--without-wifi-payload` wird abgelehnt: das waere ein Funkmodul einschalten,
+dessen Treiber nicht installiert ist.
 
-Get the bundle matching your SoC from the releases page, for example:
+`--with-access-point` wird noch angenommen und ignoriert; hostapd gehoert jetzt
+zur Standard-Nutzlast. `hostapd_cli` wird nicht mitgeliefert -- machino spricht
+den ctrl-Socket selbst.
 
-```sh
-machino-openipc-t40nn.tar.gz
-```
+### Station und Access Point
 
-## 2. Copy it to the camera
-
-```sh
-scp machino-openipc-t40nn.tar.gz root@CAMERA:/tmp/
-```
-
-Replace `CAMERA` with your camera's IP address.
-
-## 3. Install
-
-```sh
-ssh root@CAMERA
-cd /tmp
-gzip -dc machino-openipc-t40nn.tar.gz | tar xf -
-cd machino-openipc-t40nn
-./install.sh
-```
-
-> `tar xzf` does **not** work here: the camera has BusyBox tar, which has no
-> `-z`. Pipe it through `gzip -dc` as above (`tar xaf ...` works on newer
-> BusyBox builds too).
-
-The installer prints what it did and finishes with the current status. It
-does **not** start Machino and does **not** stop Majestic.
-
-### What gets installed
-
-| Path | What it is |
-|---|---|
-| `/usr/bin/machino` | the daemon |
-| `/usr/sbin/streamerctl` | the selector — the only thing that switches services |
-| `/etc/machino/machino.conf` | your configuration (kept on upgrades) |
-| `/etc/machino/streamer` | which service is selected; survives a reboot |
+Beides sind ROLLEN desselben Funkmoduls, keine gleichzeitigen Betriebsarten.
+Der AIC8800 macht daraus im Treiber einen `change_if`, und es gibt genau einen
+Besitzer von wlan0: `/usr/sbin/machino-wifi-role`. machino schreibt seine
+Absicht nach `/etc/machino/wifi-role` (`station` | `ap` | `off`), der
+Supervisor setzt sie um. So startet der Prozess mit der grossen IMP-Pipeline
+niemals selbst ein Programm.
+ selected; survives a reboot |
 | `/etc/machino/streamer.preinstall` | what the camera looked like before, used by the uninstaller |
 | `/etc/machino/backup/` | untouched copies of the files the installer modified |
 | `/etc/init.d/machino` | start/stop for Machino |
