@@ -72,23 +72,29 @@ jobs:
           export AR=mipsel-linux-ar
           export RANLIB=mipsel-linux-ranlib
           export STRIP=mipsel-linux-strip
-          # --disable-* haelt die Nutzlast klein; siehe Kopfkommentar.
+          # ppp 2.4.9 hat KEIN autoconf. Sein configure ist ein Shell-Skript,
+          # das unbekannte Optionen stillschweigend schluckt -- ein
+          # `--without-libpcap` sieht deshalb aus, als haette es gewirkt, und
+          # der Build scheitert erst Minuten spaeter an einem fehlenden
+          # pcap.h. Genau so ist dieser Workflow beim ersten Lauf rot geworden.
           #
-          # Ohne OpenSSL/PAM, weil auf dieser Kamera weder das eine noch das
-          # andere liegt -- ein pppd, das gegen eine fehlende Bibliothek
-          # gelinkt ist, startet gar nicht erst, und der Fehler saehe aus wie
-          # ein Modemproblem.
-          ./configure --host=mipsel-linux \
-                      --prefix=/usr \
-                      --sysconfdir=/etc \
-                      --disable-eaptls \
-                      --disable-peap \
-                      --disable-systemd \
-                      --without-openssl \
-                      --without-pam \
-                      --without-libpcap \
+          # Die Schalter liegen in pppd/Makefile, und dort werden sie gesetzt.
+          ./configure --prefix=/usr --sysconfdir=/etc \
                       || { echo "::error::configure failed"; exit 1; }
-          make -j"$(nproc)" || { echo "::error::build failed"; exit 1; }
+
+          # FILTER=y zieht libpcap herein, fuer die Demand-Dialling-Filter.
+          # Die braucht hier niemand: machino entscheidet selbst, wann gewaehlt
+          # wird, und eine Bibliothek, die auf der Kamera nicht liegt, macht
+          # aus einem fehlenden Filter einen pppd, der gar nicht erst startet.
+          #
+          # Dasselbe fuer PAM: auf dieser Box gibt es keines, und das Netz
+          # authentifiziert sich ohnehin nicht bei uns (`noauth`).
+          sed -i 's/^FILTER=y/#FILTER=y/; s/^USE_PAM=y/#USE_PAM=y/' pppd/Makefile
+
+          # Nur pppd und chat. pppstats und pppdump sind Diagnosewerkzeuge, die
+          # niemand aufruft, und jedes Kilobyte auf dem Overlay ist gezaehlt.
+          make -C pppd -j"$(nproc)" FILTER= USE_PAM= || { echo "::error::pppd build failed"; exit 1; }
+          make -C chat -j"$(nproc)"                  || { echo "::error::chat build failed"; exit 1; }
 
       - name: "Collect, strip and report"
         run: |
