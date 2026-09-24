@@ -103,9 +103,31 @@ jobs:
           #
           # Nur pppd und chat. pppstats und pppdump sind Diagnosewerkzeuge, die
           # niemand aufruft, und jedes Kilobyte auf dem Overlay ist gezaehlt.
-          MK="CC=mipsel-linux-gcc AR=mipsel-linux-ar RANLIB=mipsel-linux-ranlib"
-          make -C pppd -j"$(nproc)" $MK FILTER= USE_PAM= || { echo "::error::pppd build failed"; exit 1; }
-          make -C chat -j"$(nproc)" $MK                  || { echo "::error::chat build failed"; exit 1; }
+          # -std=gnu17, weil ppp 2.4.9 aelter ist als C23.
+          #
+          # pppd.h macht `typedef unsigned char bool;`. In C23 ist `bool` ein
+          # Schluesselwort, und die Toolchain hier ist gcc 15, das per Vorgabe
+          # gnu23 spricht -- jede Uebersetzungseinheit bricht an derselben
+          # Zeile ab. Das ist keine Warnung, die man wegdrueckt: die Sprache
+          # hat sich unter dem Quelltext geaendert.
+          #
+          # Die Alternative waere ppp 2.5.x, das den Typedef los ist. Es bringt
+          # aber ein anderes Buildsystem und eine andere Plugin-ABI mit, und
+          # beides fuer eine Zeile einzutauschen ist die groessere Aenderung.
+          #
+          # COPTS steht ausgeschrieben auf jeder make-Zeile und nicht in einer
+          # Variablen: ein unquotiertes "$MK" wuerde "COPTS=-O2 -std=gnu17" in
+          # zwei Woerter zerlegen, und -std=gnu17 landete als make-Argument
+          # statt im Compiler-Aufruf. Das saehe wieder nach einem erfolgreichen
+          # Build aus.
+          make -C pppd -j"$(nproc)" \
+               CC=mipsel-linux-gcc AR=mipsel-linux-ar RANLIB=mipsel-linux-ranlib \
+               COPTS="-O2 -std=gnu17" FILTER= USE_PAM= \
+               || { echo "::error::pppd build failed"; exit 1; }
+          make -C chat -j"$(nproc)" \
+               CC=mipsel-linux-gcc AR=mipsel-linux-ar RANLIB=mipsel-linux-ranlib \
+               COPTS="-O2 -std=gnu17" \
+               || { echo "::error::chat build failed"; exit 1; }
 
       - name: "Collect, strip and report"
         run: |
