@@ -205,7 +205,14 @@ Result LinuxPppBackend::start(const cellular::PppRequest& req)
         // erlaubt, nicht auf der Kommandozeile -- genau aus dem Grund, aus dem
         // es hier steht: in argv waere es in `ps` sichtbar.
         o += "password \"" + req.password + "\"\n";
-        if (req.auth == cellular::AuthMode::Pap)  o += "refuse-chap\nrefuse-mschap\nrefuse-mschap-v2\n";
+        // Nur refuse-pap und refuse-chap, nicht refuse-mschap.
+        //
+        // MS-CHAP ist in diesem pppd nicht einkompiliert (CHAPMS=n): es ist ein
+        // Microsoft-Einwahlverfahren, und Mobilfunk-APNs verlangen PAP oder
+        // CHAP-MD5. Ein pppd, der eine Option nicht kennt, beendet sich mit
+        // einem Optionsfehler -- die Einwahl scheiterte dann an der
+        // Konfiguration, die sie absichern sollte.
+        if (req.auth == cellular::AuthMode::Pap)  o += "refuse-chap\n";
         if (req.auth == cellular::AuthMode::Chap) o += "refuse-pap\n";
     }
     if (!write_file(conf_dir_ + "/options", o, 0600)) return Result::error();

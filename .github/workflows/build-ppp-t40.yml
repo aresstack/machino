@@ -92,18 +92,20 @@ jobs:
           #   USE_EAPTLS  OpenSSL
           #   USE_PAM     libpam
           #   USE_SRP     libsrp
+          #   CHAPMS      des.h aus OpenSSL, fuer MS-CHAP; MPPE haengt daran
           #
           # Keine davon wird hier gebraucht: machino entscheidet selbst, wann
           # gewaehlt wird, und das Netz authentifiziert sich nicht bei uns
-          # (`noauth`). Eine Bibliothek, die auf der Kamera nicht liegt, macht
-          # ausserdem aus einem ungenutzten Feature einen pppd, der gar nicht
-          # erst startet.
+          # (`noauth`). Mobilfunk-APNs verlangen PAP oder CHAP-MD5, nie
+          # MS-CHAP -- das ist ein Microsoft-Einwahlverfahren. Eine Bibliothek,
+          # die auf der Kamera nicht liegt, macht ausserdem aus einem
+          # ungenutzten Feature einen pppd, der gar nicht erst startet.
           #
           # Einzeln abzuschalten hiesse eine CI-Runde je Abhaengigkeit, und
-          # zwei davon haben wir schon verbraucht.
-          sed -i 's/^\(FILTER\|USE_EAPTLS\|USE_PAM\|USE_SRP\|USE_SYSTEMD\|USE_LIBUTIL\)=y/#&/' \
+          # davon sind schon mehrere verbraucht.
+          sed -i 's/^\(FILTER\|USE_EAPTLS\|USE_PAM\|USE_SRP\|USE_SYSTEMD\|USE_LIBUTIL\|CHAPMS\|MPPE\|MSLANMAN\)=y/#&/' \
               pppd/Makefile
-          grep -E '^#?(FILTER|USE_EAPTLS|USE_PAM|USE_SRP)' pppd/Makefile || true
+          grep -E '^#?(FILTER|USE_EAPTLS|USE_PAM|USE_SRP|CHAPMS|MPPE)' pppd/Makefile || true
 
           # CC MUSS auf der Kommandozeile stehen, nicht in der Umgebung.
           #
@@ -138,6 +140,7 @@ jobs:
                CC=mipsel-linux-gcc AR=mipsel-linux-ar RANLIB=mipsel-linux-ranlib \
                COPTS="-O2 -std=gnu17" \
                FILTER= USE_EAPTLS= USE_PAM= USE_SRP= USE_SYSTEMD= USE_LIBUTIL= \
+               CHAPMS= MPPE= MSLANMAN= \
                || { echo "::error::pppd build failed"; exit 1; }
           make -C chat -j"$(nproc)" \
                CC=mipsel-linux-gcc AR=mipsel-linux-ar RANLIB=mipsel-linux-ranlib \
