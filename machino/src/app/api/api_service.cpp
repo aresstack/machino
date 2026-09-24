@@ -254,10 +254,10 @@ Json ApiService::state_json() {
     ExposureReadback ex; Result er = tuning_.exposure(ex);
     Json ae = Json::object();
     ae.set("available", Json::boolean((bool)er && ex.available));
-    ae.set("luma", ex.available ? Json::integer(ex.luma) : Json::null()); ae.set("target", ex.available ? Json::integer(ex.target) : Json::null());
-    ae.set("stable", ex.available ? Json::boolean(ex.stable) : Json::null()); ae.set("integration_time", ex.available ? Json::integer(ex.integration_time) : Json::null());
-    ae.set("analog_gain", ex.available ? Json::integer(ex.again) : Json::null()); ae.set("digital_gain", ex.available ? Json::integer(ex.dgain) : Json::null());
-    ae.set("isp_digital_gain", ex.available ? Json::integer(ex.isp_dgain) : Json::null()); ae.set("total_gain_db", ex.available ? Json::integer(ex.total_gain_db) : Json::null());
+    ae.set("luma", ex.have_scene ? Json::integer(ex.luma) : Json::null()); ae.set("target", ex.have_scene ? Json::integer(ex.target) : Json::null());
+    ae.set("stable", ex.have_scene ? Json::boolean(ex.stable) : Json::null()); ae.set("integration_time", ex.have_expr ? Json::integer(ex.integration_time) : Json::null());
+    ae.set("analog_gain", ex.have_expr ? Json::integer(ex.again) : Json::null()); ae.set("digital_gain", ex.have_expr ? Json::integer(ex.dgain) : Json::null());
+    ae.set("isp_digital_gain", ex.have_expr ? Json::integer(ex.isp_dgain) : Json::null()); ae.set("total_gain_db", ex.have_expr ? Json::integer(ex.total_gain_db) : Json::null());
     image.set("exposure", ae); j.set("image", image);
     if (detection_) {
         detection::AiTelemetry ai = detection_->telemetry();
@@ -442,10 +442,10 @@ Json ApiService::telemetry_json() {
     lat.set("discontinuities", Json::integer(ls.discontinuities)); j.set("latency", lat);
     ExposureReadback ex; Result xr = tuning_.exposure(ex);
     Json ae = Json::object(); ae.set("available", Json::boolean((bool)xr && ex.available));
-    ae.set("luma", ex.available ? Json::integer(ex.luma) : Json::null()); ae.set("target", ex.available ? Json::integer(ex.target) : Json::null());
-    ae.set("stable", ex.available ? Json::boolean(ex.stable) : Json::null()); ae.set("integration_time", ex.available ? Json::integer(ex.integration_time) : Json::null());
-    ae.set("analog_gain", ex.available ? Json::integer(ex.again) : Json::null()); ae.set("digital_gain", ex.available ? Json::integer(ex.dgain) : Json::null());
-    ae.set("isp_digital_gain", ex.available ? Json::integer(ex.isp_dgain) : Json::null()); ae.set("total_gain_db", ex.available ? Json::integer(ex.total_gain_db) : Json::null());
+    ae.set("luma", ex.have_scene ? Json::integer(ex.luma) : Json::null()); ae.set("target", ex.have_scene ? Json::integer(ex.target) : Json::null());
+    ae.set("stable", ex.have_scene ? Json::boolean(ex.stable) : Json::null()); ae.set("integration_time", ex.have_expr ? Json::integer(ex.integration_time) : Json::null());
+    ae.set("analog_gain", ex.have_expr ? Json::integer(ex.again) : Json::null()); ae.set("digital_gain", ex.have_expr ? Json::integer(ex.dgain) : Json::null());
+    ae.set("isp_digital_gain", ex.have_expr ? Json::integer(ex.isp_dgain) : Json::null()); ae.set("total_gain_db", ex.have_expr ? Json::integer(ex.total_gain_db) : Json::null());
     j.set("exposure", ae);
     Json pw = Json::object(); pw.set("sensor_fps", opt(t.effective_sensor_fps)); pw.set("sensor_fps_requested", Json::integer(t.requested_sensor_fps));
     pw.set("isp_clock_hz", opt(t.isp_clock_hz)); pw.set("encoder_clock_hz", opt(t.encoder_clock_hz));

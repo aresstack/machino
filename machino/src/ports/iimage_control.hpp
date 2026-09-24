@@ -54,8 +54,18 @@ struct ImageCaps {
 };
 
 // Auto-exposure read-back (what the ISP is actually doing).
+// Two groups, because they come from two independent reads and one of them can
+// fail on its own. On the T40NN that is not hypothetical: the scene read
+// answers (luma 53, target 50, converged) while the exposure read gives
+// nothing. With a single `available` flag the caller could not tell the
+// difference, so it published the untouched zeros -- and `isp_exptime 0` is a
+// statement about the sensor, not an absence of one. Majestic reports 78964
+// there. A number nobody measured is worse than no number: the reader cannot
+// see that it is missing.
 struct ExposureReadback {
-    bool     available = false;
+    bool     available = false;   // either group answered
+    bool     have_scene = false;  // luma / target / stable are real
+    bool     have_expr = false;   // gains and integration time are real
     uint32_t luma = 0;           // current scene luma as seen by AE
     uint32_t target = 0;         // AE target luma
     bool     stable = false;     // AE converged

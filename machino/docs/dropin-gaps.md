@@ -1,72 +1,74 @@
-# Machino as a drop-in for Majestic — what is still missing
 
-> **VERALTET (AP28, 2026-09-23).** Dieses Dokument beschreibt den Stand vor
-> AP10–AP24 und wird als Analyse aufgehoben, nicht als Lagebericht.
->
-> Was sich geändert hat:
->
-> * **`/api/v1/image` ist implementiert** (AP10). Unten steht noch, es sei „the
->   only gap that today's Machino configuration actively walks into" — das gilt
->   nicht mehr. Auf der Kamera ist es noch nicht aktiv, weil der laufende
->   Prozess älter ist; siehe `pending-physical.md`.
-> * `video1` wird seit AP9 im Schema geführt (`x-reload: "pipeline"`).
-> * `nightMode`, `audio` und `jpeg` werden inzwischen ausdrücklich gemeldet
->   und beim Schreiben mit **403 und Begründung** abgelehnt statt verschwiegen.
->
-> **Der aktuelle Stand steht in `dropin-matrix.md`** — 58 Endpunkte, jeder
-> klassifiziert.
+## isp_* Gauges: machino hat Nullen veroeffentlicht, die niemand gemessen hat
 
-Final verification, no implementation. The question is narrow: with the
-**unmodified** OpenIPC/majestic-webui installed, what does it ask for that
-Machino does not answer?
+Aufgefallen ueber eine falsche Black-Frame-Warnung der unveraenderten
+OpenIPC-WebUI auf einem Android-Telefon, waehrend das Livebild sichtbar lief
+und sich bewegte.
 
-## Method
+### Was die WebUI tut, und warum sie NICHT der Fehler ist
 
-Three sources, no recollection:
+`/var/www/a/video-check.js` hat fuer "die Kamera sieht nichts" zwei
+Beweisquellen. Die ISP-Quelle:
 
-1. Every endpoint the WebUI fetches, extracted from the upstream oracle clone
-   (`/c/tmp/majestic-webui`, `www/**`): `apiFetch(`/`fetch(` call sites plus the
-   `new WebSocket(...)` paths.
-2. Every route Machino serves natively, extracted from `http_server.cpp`.
-3. **Which pages are actually installed on this camera** (`/var/www`, read over
-   SSH). This matters more than it looks: a gap nobody's page can reach is not
-   a gap, and the camera turns out to carry the *full* enhanced WebUI —
-   `cameras.html`, `recordings.cgi`, `sdcard.cgi`, `mj-pins.js`,
-   `analytics-overlay.js` and the rest are all present.
+    ispBlind(v): braucht isp_avelum UND isp_exposureismax.
+                 Fehlt eines, ist die Antwort null -- "weiss nicht".
 
-Anything Machino does not serve natively falls through to the front-door relay
-and reaches busybox httpd. The CGIs (`/cgi-bin/**`) live there and are answered.
-**`/api/v1/**` is majestic's own surface** — the CGIs do not implement it, so a
-relayed `/api/v1/...` is a 404.
+Und eine bildbasierte aus einem Luma-Histogramm, das im Browser per
+`drawImage(video)` + `getImageData` gewonnen wird. Gefeuert hat allein die
+zweite; der Meldungstext sagt das sogar selbst ("This camera does not report
+its own exposure").
 
-## What already works
+### Der Punkt, der die Sache entscheidet
 
-`/api/v1/config`, `config.json`, `config.schema.json`, `reset`, `get`,
-`sources`, `osd`, `osd/image`, `/metrics`, `/login`, `/logout`, `/setup`,
-`/setup.html`, `/ws/video`, `/ws/webrtc`, `/ws/logs`, plus the native
-`/snapshot` and the ONVIF surface. The Live page, the session login, the
-settings save path and the unclaimed/first-run flow are covered.
+**Majestic liefert `isp_exposureismax` auf Ingenic ebenfalls nicht.** Nachgesehen
+im Fixture des Upstream-Klons, `tests/fixtures/metrics-ingenic.txt`: die Datei
+enthaelt isp_exptime, isp_again, isp_dgain, isp_bgain, isp_rgain, isp_avelum,
+isp_afmetrics, isp_tgain -- und kein isp_exposureismax. Nur die HiSilicon- und
+SigmaStar-Fixtures haben es. Der Kommentar in video-check.js nennt den Ingenic
+T40 sogar ausdruecklich als Kamera, die diese Frage nicht beantworten kann.
 
----
+Daraus folgt zweierlei, und das zweite ist unbequem:
 
-## Gaps
+  * `isp_exposureismax` in machino zu implementieren wuerde vom Majestic-
+    Verhalten ABWEICHEN, nicht zu ihm hin. Es bleibt draussen.
+  * Diese Fehlwarnung ist KEINE Drop-in-Luecke. Mit dem originalen Majestic auf
+    dieser Kamera erschiene sie genauso. Sie ist ein Fall der Browser-
+    Heuristik auf einem Android-Geraet, dessen Compositor den dekodierten
+    Frame nicht in ein Canvas zurueckgibt.
 
-Severity is about what an operator sees, not about how much code is missing.
+### Was dabei aber WIRKLICH gefunden wurde
 
-### A. Reachable today, and visible
+Mit laufender Pipeline auf der Kamera gemessen (RTSP-Zug, 301 Frames):
 
-| Endpoint | Page that calls it | What happens now |
-|---|---|---|
-| `POST /api/v1/image?…` | Image / "Live adjustments" (`mj-settings.js`) | **No live preview.** The page pushes slider values while you drag so the picture follows; Machino 404s, the push resolves to `false`, nothing is shown. The values still apply on **Save** through `/api/v1/config`. |
+    exposure.available  true
+    luma 53   target 50   stable true          <- IMP_ISP_Tuning_GetAeScenceAttr
+    integration_time 0   analog_gain 0
+    digital_gain 0   total_gain_db 0           <- IMP_ISP_Tuning_GetAeExprInfo
+    /metrics: isp_avelum 52  isp_again 0  isp_dgain 0  isp_exptime 0
 
-This is the only gap that today's Machino configuration actively walks into,
-because it is the one place where Machino advertises a section (`image`,
-`x-reload: live`) whose page then reaches for an endpoint that is not there.
-It degrades quietly — no error, no retry storm — but the feature is gone.
+Der zweite IMP-Aufruf liefert auf dem T40NN nichts. `ExposureReadback` hatte
+aber nur EIN `available`-Flag fuer beide Aufrufe, also wurden die
+uninitialisierten Nullen als Messwerte veroeffentlicht.
 
-### B. Reachable, on pages that are installed but whose feature Machino has no backend for
+`isp_exptime 0` ist eine Aussage ueber den Sensor. Majestic sagt dort 78964.
+Eine Null, die niemand gemessen hat, ist schlimmer als ein fehlender Wert:
+dem Leser ist nicht anzusehen, dass sie fehlt. Der Compat-Layer hatte das
+sogar schon richtig vorgesehen -- "an absent value must not print as 0" steht
+woertlich ueber `tel_num` -- nur kam die Null bereits aus der Serialisierung.
 
-| Endpoint(s) | Page | Feature |
+Behoben: `have_scene` und `have_expr` getrennt. Was nicht gelesen wurde, ist
+jetzt `null` in der Telemetrie und fehlt in `/metrics`, genau wie bei Majestic.
+
+### Weiterhin offen
+
+Majestic liefert auf Ingenic vier Gauges, die machino gar nicht kennt:
+
+    isp_bgain   isp_rgain   isp_tgain   isp_afmetrics
+
+Und warum `GetAeExprInfo` auf dem T40NN leer zurueckkommt, ist nicht geklaert.
+Beides sind echte Drop-in-Luecken, beide beruehren den ISP-Lesepfad und keine
+davon hat mit der Black-Frame-Warnung zu tun.
+ature |
 |---|---|---|
 | `/api/v1/records/resume`, `/api/v1/records/standdown`, `/metrics/records` | `sdcard.cgi`, `recordings.cgi` (`sdcard.js`, `recordings.js`) | SD recording control and counters |
 | `/api/v1/analytics/day`, `/ws/analytics` | `recordings.cgi`, `analytics-overlay.js` | recording timeline and the live detection overlay |

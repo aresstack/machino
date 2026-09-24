@@ -174,6 +174,8 @@ Result IngenicImageControl::exposure(ExposureReadback& out) {
     int32_t r2 = IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, &e);
     if (r1 != 0 && r2 != 0) return Result::error((int)r1);
     out.available = true;
+    out.have_scene = (r1 == 0);
+    out.have_expr  = (r2 == 0);
     if (r1 == 0) { out.luma = s.luma; out.target = s.target; out.stable = s.stable; }
     if (r2 == 0) { out.total_gain_db = e.TotalGainDb; out.exposure_value = e.ExposureValue; out.integration_time = e.AeShortIntegrationTime;
                    out.again = e.AeShortAGain; out.dgain = e.AeShortDGain; out.isp_dgain = e.AeShortIspDGain; }
