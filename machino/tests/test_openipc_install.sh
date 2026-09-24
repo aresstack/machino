@@ -552,6 +552,71 @@ hasnt "driver removed again"        "$WORK/root/etc/machino/modules/aic8800.ko"
 hasnt "loader removed again"        "$WORK/root/etc/machino/modules/aic_load_fw.ko"
 hasnt "firmware removed again"      "$WORK/root/lib/firmware/aic8800DC/fmacfw.bin"
 
+# ---------- 12e) zwei Shell-Funktionen, bei denen ein Fehler stumm ist -------
+#
+# Der Supervisor und S42wifi wurden bisher nur darauf geprueft, ob sie
+# INSTALLIERT werden. Was sie tun, stand nirgends. Das sind aber die beiden
+# Stellen, an denen ein Fehler nicht auffaellt und teuer ist: ein Geheimnis im
+# Log, und ein Treiber, der laedt obwohl er nicht soll.
+#
+# Die Funktionen werden aus der echten Datei herausgeschnitten und ausgefuehrt,
+# nicht nachgebaut -- eine Kopie im Test wuerde mitaltern, ohne es zu merken.
+
+# redact(): wpa_supplicant druckt die beanstandete Passphrase im Klartext,
+# nachgemessen auf der Kamera:
+#   Line 4: Invalid passphrase length 4 (expected: 8..63) 'kurz"'.
+eval "$(sed -n '/^redact() {/,/^}/p' "$PKG/sbin/machino-wifi-role")"
+cat > "$WORK/leak.in" <<'LEAK'
+Successfully initialized wpa_supplicant
+Line 4: Invalid passphrase length 4 (expected: 8..63) 'Sparkasse2000"'.
+Line 4: failed to parse psk '"Sparkasse2000"'.
+Line 7: invalid WPA passphrase 'nochEinGeheimnis'
+wlan0: SME: Trying to authenticate with 06:61:1d:a3:5c:19
+LEAK
+red=$(redact "$WORK/leak.in")
+case "$red" in
+    *Sparkasse2000*|*nochEinGeheimnis*) bad "the supervisor log filter let a passphrase through" ;;
+    *) ok ;;
+esac
+# Und der Filter darf nicht so grob sein, dass die Diagnose verschwindet -- der
+# Grund, warum ueberhaupt geloggt wird.
+case "$red" in
+    *"Invalid passphrase length 4 (expected: 8..63)"*) ok ;;
+    *) bad "the filter destroyed the diagnosis it exists to preserve" ;;
+esac
+case "$red" in
+    *"SME: Trying to authenticate with 06:61:1d:a3:5c:19"*) ok ;;
+    *) bad "the filter mangled a line that has nothing to do with secrets" ;;
+esac
+
+# wifi_enabled(): entscheidet, ob beim Boot ein Kernelmodul geladen und der
+# USB-Port bestromt wird. Fail-closed in jedem Zweifelsfall.
+eval "$(sed -n '/^wifi_enabled() {/,/^}/p' "$PKG/init/S42wifi")"
+gate() { CONF="$WORK/gate.conf"; printf '%s' "$1" > "$CONF"; if wifi_enabled; then echo AN; else echo AUS; fi; }
+for case_ in \
+    'usb.wifi.enabled = true|AN' \
+    'usb.wifi.enabled=1|AN' \
+    'board = t40nn
+usb.wifi.enabled = true|AN' \
+    'usb.wifi.enabled = false|AUS' \
+    'board = t40nn|AUS' \
+    '|AUS' \
+    '#usb.wifi.enabled = true|AUS' \
+    'xusb.wifi.enabled = true|AUS' \
+    'usb.wifi.enabledx = true|AUS' \
+    'usb.wifi.enabled = TRUE|AUS' \
+    'usb.wifi.enabled = true
+usb.wifi.enabled = false|AUS' \
+; do
+    body=${case_%|*}; want=${case_##*|}
+    got=$(gate "$body")
+    if [ "$got" = "$want" ]; then ok
+    else bad "wifi gate: expected $want, got $got for [$(echo "$body" | tr '\n' ';')]"; fi
+done
+# Eine fehlende Datei ist kein "vielleicht".
+CONF="$WORK/does-not-exist.conf"
+if wifi_enabled; then bad "the wifi gate opened with no config file at all"; else ok; fi
+
 # MACHINO_ROOT darf NICHTS am echten System anfassen.
 #
 # Das war es naemlich nicht: ein Sandbox-Uninstall hat auf der Kamera den

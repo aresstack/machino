@@ -46,6 +46,8 @@ DHCPCPID=/var/run/udhcpc.wlan0.pid
 # Nicht auf das Overlay: das hier ist Diagnose, kein Zustand, und Flash-Schreiben
 # fuer Logzeilen ist auf einer Kamera mit 4,3 MB frei die falsche Entscheidung.
 LOGFILE=/tmp/machino-wifi-role.log
+# Zwischenpuffer fuer die Daemon-Ausgabe, bevor sie gefiltert ins Log geht.
+OUTTMP=/tmp/.machino-wifi-role.out
 POLL=2
 
 # Auch in die Datei. S42wifi startet den Supervisor mit >/dev/null, und bei
@@ -145,11 +147,38 @@ claim_interface() {
 # Interface, das gerade umgebaut wird. Deshalb wird der Start wiederholt
 # statt einmalig versucht -- eine feste Wartezeit waere entweder zu kurz oder
 # verschenkte Sekunden bei jedem Wechsel.
+#
+# Die Ausgabe geht NICHT direkt ins Log, sondern durch einen Filter.
+#
+# wpa_supplicant druckt die beanstandete Passphrase im Klartext, wenn es die
+# Konfiguration nicht parsen kann. Auf dieser Kamera nachgemessen:
+#
+#     Line 4: Invalid passphrase length 4 (expected: 8..63) 'kurz"'.
+#     Line 4: failed to parse psk '"kurz"'.
+#
+# machino prueft 8..63 Zeichen, bevor es schreibt, also trifft das den
+# Normalfall nicht -- aber eine von Hand bearbeitete Datei, ein bei
+# Stromausfall abgeschnittenes Schreiben oder eine spaetere Aenderung reichen.
+# Ein Geheimnis darf nicht davon abhaengen, dass ein anderer Codepfad sauber
+# bleibt.
+#
+# Der Wert wird ersetzt, nicht die Zeile geworfen: "Invalid passphrase length
+# 4 (expected: 8..63)" ist genau die Diagnose, die man dann braucht.
+redact() {
+	sed -e "/[Pp][Ss][Kk]/s/'[^']*'/'<redigiert>'/g" \
+	    -e "/[Pp]assphrase/s/'[^']*'/'<redigiert>'/g" \
+	    -e "/[Pp]assword/s/'[^']*'/'<redigiert>'/g" "$1"
+}
+
 retry_start() {
 	what=$1; shift
 	n=0
 	while [ $n -lt 10 ]; do
-		if "$@" >>"$LOGFILE" 2>&1; then
+		"$@" > "$OUTTMP" 2>&1
+		rc=$?
+		redact "$OUTTMP" >> "$LOGFILE" 2>/dev/null
+		: > "$OUTTMP"
+		if [ $rc -eq 0 ]; then
 			[ $n -gt 0 ] && log "$what kam im Versuch $((n + 1)) hoch"
 			return 0
 		fi
