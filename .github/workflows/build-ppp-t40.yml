@@ -91,10 +91,21 @@ jobs:
           # authentifiziert sich ohnehin nicht bei uns (`noauth`).
           sed -i 's/^FILTER=y/#FILTER=y/; s/^USE_PAM=y/#USE_PAM=y/' pppd/Makefile
 
+          # CC MUSS auf der Kommandozeile stehen, nicht in der Umgebung.
+          #
+          # ppps Makefiles setzen `CC = gcc` fest. Eine Zuweisung im Makefile
+          # schlaegt die Umgebung, aber nicht die Kommandozeile -- mit
+          # `export CC=...` baut make also munter mit dem Host-gcc weiter. Der
+          # Build lief dann sauber durch und lieferte x86-Binaries; aufgefallen
+          # ist es erst, weil mipsel-linux-strip sie nicht lesen konnte. Ein
+          # Zufall, auf den sich niemand verlassen sollte -- deshalb steht
+          # unten zusaetzlich eine Architekturpruefung.
+          #
           # Nur pppd und chat. pppstats und pppdump sind Diagnosewerkzeuge, die
           # niemand aufruft, und jedes Kilobyte auf dem Overlay ist gezaehlt.
-          make -C pppd -j"$(nproc)" FILTER= USE_PAM= || { echo "::error::pppd build failed"; exit 1; }
-          make -C chat -j"$(nproc)"                  || { echo "::error::chat build failed"; exit 1; }
+          MK="CC=mipsel-linux-gcc AR=mipsel-linux-ar RANLIB=mipsel-linux-ranlib"
+          make -C pppd -j"$(nproc)" $MK FILTER= USE_PAM= || { echo "::error::pppd build failed"; exit 1; }
+          make -C chat -j"$(nproc)" $MK                  || { echo "::error::chat build failed"; exit 1; }
 
       - name: "Collect, strip and report"
         run: |
@@ -107,6 +118,20 @@ jobs:
           test -n "$CHAT" || { echo "::error::no chat binary was produced"; exit 1; }
           cp "$PPPD" out/pppd
           cp "$CHAT" out/chat
+
+          # Ist das ueberhaupt MIPS? Ein Build, der still mit dem Host-gcc
+          # durchlief, liefert lauffaehige x86-Binaries und faellt sonst
+          # nirgends auf -- bis jemand sie auf die Kamera legt und "cannot
+          # execute binary file" liest. Genau so ist dieser Workflow beim
+          # zweiten Lauf rot geworden, und zwar nur, weil strip stolperte.
+          for b in out/pppd out/chat; do
+            arch=$(file -b "$b")
+            case "$arch" in
+              *MIPS*) ;;
+              *) echo "::error::$b is not a MIPS binary: $arch"; exit 1 ;;
+            esac
+          done
+
           mipsel-linux-strip out/pppd out/chat
 
           # Dynamisch gelinkt gegen etwas, das die Kamera nicht hat, waere ein
