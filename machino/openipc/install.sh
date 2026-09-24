@@ -14,6 +14,20 @@ ROOT="${MACHINO_ROOT:-}"
 WITH_AP=0
 WITH_NETPAGE=0
 WITH_WIFI=0
+# Die WLAN-Nutzlast (Treiber, Firmware, hostapd, Supervisor) wird per DEFAULT
+# mitinstalliert, das WLAN selbst bleibt aber AUS.
+#
+# Das klingt widerspruechlich und ist es nicht. Der Schalter sitzt in der
+# Machino-UI, und ein Schalter, der erst wirkt, nachdem sich jemand per SSH
+# Dateien nachkopiert hat, ist kein Schalter. Also liegen die Dateien bereit
+# und tun nichts: S42wifi liest usb.wifi.enabled und laedt ohne ein "true"
+# kein einziges Modul.
+#
+# Der Preis sind rund 2 MB Overlay (aic8800.ko 550 K, aic_load_fw.ko 87 K,
+# Firmware 362 K, hostapd 996 K) von 8,7 MB. Wer die braucht, nimmt
+# --without-wifi-payload; dann fehlt der Schalter nicht, er meldet nur
+# ehrlich, dass nichts zu schalten da ist.
+WITH_WIFI_PAYLOAD=1
 STATE_DIR="$ROOT/etc/machino"
 WWW="$ROOT/var/www"
 CGI="$WWW/cgi-bin"
@@ -33,20 +47,28 @@ usage: ./install.sh [--with-wifi] [--with-access-point] [--with-network-page]
 The WebUI login is Machino's Majestic drop-in session login against the
 camera's root account - there is nothing to configure here.
 
-  --with-wifi           install S42wifi, which brings the USB WiFi up at boot:
-                        the AIC8800 modules, the port power on PB18, then
-                        wpa_supplicant and udhcpc. Off by default, because it
-                        needs modules built for this exact kernel in
-                        /etc/machino/modules. Everything that starts a process
-                        happens here, before machinod -- machino itself never
-                        forks while the media pipeline is live.
+The USB WiFi payload -- AIC8800 modules, firmware, hostapd and the role
+supervisor -- is installed BY DEFAULT and is inert until switched on. WiFi
+itself defaults to OFF (usb.wifi.enabled=false): no module is loaded, PB18
+stays down and no daemon runs, so the USB port is free for whatever else is
+plugged into it. The switch lives on the Machino network page and takes effect
+at the next boot.
 
-  --with-access-point   install the hostapd binary, so the access point role
-                        becomes selectable. This image ships no hostapd at all,
-                        which is why the API reports "hostapd is not in this
-                        image" until this is used. Needs --with-wifi as well:
-                        the supervisor installed there is what switches the
-                        radio between station and AP.
+  --with-wifi           additionally set usb.wifi.enabled=true right away, so
+                        the radio comes up at the next boot without anyone
+                        visiting the web page. The files are installed either
+                        way; this only pre-sets the switch.
+
+  --without-wifi-payload
+                        do not install the driver, firmware or hostapd. Saves
+                        about 2 MB of the 8.7 MB overlay and makes the WiFi
+                        switch inoperable -- the page then says so rather than
+                        offering something that cannot work. For cameras where
+                        the USB port is spoken for and the space is needed.
+
+  --with-access-point   accepted and ignored; hostapd is part of the default
+                        payload now. Kept so existing install commands and
+                        scripts do not break.
 
   --with-network-page   add a "Netzwerk & USB (machino)" entry to the stock
                         WebUI menu, pointing at /machino/net. Off by default:
@@ -59,6 +81,7 @@ EOF
         --with-access-point) WITH_AP=1 ;;
         --with-network-page) WITH_NETPAGE=1 ;;
         --with-wifi) WITH_WIFI=1 ;;
+        --without-wifi-payload) WITH_WIFI_PAYLOAD=0 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -102,6 +125,30 @@ put() {
     rm -f "$_t"
     say "atomic replace unavailable for $_d - writing in place"
     cp "$_s" "$_d" && chmod "$_m" "$_d"
+}
+
+# Einen Schluessel in machino.conf setzen, ohne den Rest anzufassen.
+#
+# Idempotent: ist der Schluessel schon da, wird seine Zeile ersetzt, sonst
+# angehaengt. Geschrieben wird ueber eine temporaere Datei und mv, damit ein
+# Stromausfall mitten im Schreiben keine halbe Konfiguration hinterlaesst --
+# dieselbe Regel wie ueberall sonst hier.
+#
+# Bewusst KEIN sed -i: BusyBox sed -i schreibt die Datei in place, und genau
+# dann ist sie waehrend des Schreibens kaputt.
+set_conf() {
+    _k=$1; _v=$2
+    _f="$STATE_DIR/machino.conf"
+    [ -f "$_f" ] || : > "$_f" || return 1
+    _t="$_f.machino-new.$$"
+    {
+        grep -v "^[[:space:]]*$(echo "$_k" | sed 's/\./\\./g')[[:space:]]*=" "$_f" 2>/dev/null
+        echo "$_k = $_v"
+    } > "$_t" || { rm -f "$_t"; return 1; }
+    chmod 0644 "$_t" || { rm -f "$_t"; return 1; }
+    mv -f "$_t" "$_f" 2>/dev/null && return 0
+    rm -f "$_t"
+    return 1
 }
 
 # mv can fail with EINVAL on this kernel's overlayfs when the source still
@@ -305,48 +352,80 @@ if [ -f "$INITD/S95majestic" ]; then
 fi
 put 0755 "$HERE/init/S95streamer" "$INITD/S95streamer" || die "cannot install S95streamer"
 
-# Opt-in only, and it needs the driver modules to already be in place: they
-# have to be built against this exact kernel (vermagic), which the bundle
-# cannot do for an arbitrary camera. Installing the script without them would
-# produce a boot that reports a missing module on every start.
-if [ "$WITH_WIFI" = "1" ]; then
-    if [ ! -r "$HERE/init/S42wifi" ]; then
-        die "--with-wifi given but the bundle has no init/S42wifi"
-    fi
+# ------------------------------------------------------------- USB WiFi ---
+#
+# Alles wird installiert, nichts wird eingeschaltet. S42wifi liest
+# usb.wifi.enabled aus machino.conf und kehrt ohne ein "true" sofort zurueck --
+# kein Modul, kein Portstrom, kein Daemon. Der Schalter sitzt in der UI.
+#
+# Die Module muessen gegen genau diesen Kernel gebaut sein (vermagic, und
+# CONFIG_MODVERSIONS=n macht vermagic zum ganzen ABI-Vertrag). Das Bundle
+# bringt die Fassung mit, die CI fuer den OpenIPC-T40-Kernel gebaut hat.
+if [ "$WITH_WIFI_PAYLOAD" = "1" ]; then
+    [ -r "$HERE/init/S42wifi" ] || die "the bundle has no init/S42wifi"
+    [ -r "$HERE/sbin/machino-wifi-role" ] || die "the bundle has no sbin/machino-wifi-role"
     put 0755 "$HERE/init/S42wifi" "$INITD/S42wifi" || die "cannot install S42wifi"
     put 0755 "$HERE/sbin/machino-wifi-role" "$ROOT/usr/sbin/machino-wifi-role" ||
         die "cannot install machino-wifi-role"
     [ -r "$HERE/udhcpc-wlan.script" ] &&
         { put 0755 "$HERE/udhcpc-wlan.script" "$STATE_DIR/udhcpc-wlan.script" ||
           warn "could not install the udhcpc hook - the WiFi default route will have no metric"; }
-    if [ -f "$ROOT/etc/machino/modules/aic8800.ko" ]; then
-        say "installed S42wifi (WiFi comes up at boot)"
-    else
-        warn "installed S42wifi, but /etc/machino/modules/aic8800.ko is not there -"
-        warn "build the modules for this kernel first, or the boot will report them missing"
-    fi
-fi
 
-# Opt-in only.
-if [ "$WITH_AP" = "1" ]; then
-    # What is missing on this image is the BINARY, not an init script: the AP
-    # is a role of the wifi supervisor, and the supervisor starts hostapd when
-    # machino asks for that role. Installing a second boot script that also
-    # wants wlan0 is exactly the conflict the supervisor exists to prevent.
-    if [ ! -r "$HERE/hostapd" ]; then
-        die "--with-access-point given but the bundle has no hostapd (see the build-hostapd-t40 workflow)"
+    _mods=0
+    for _ko in "$HERE"/wifi/modules/*.ko; do
+        [ -r "$_ko" ] || continue
+        put 0644 "$_ko" "$STATE_DIR/modules/$(basename "$_ko")" ||
+            die "cannot install $(basename "$_ko")"
+        _mods=$((_mods + 1))
+    done
+
+    # Ohne Firmware bindet der Treiber und scheitert danach: der Chip laedt
+    # sein Image beim Probe. Ein Modul ohne Blobs ist schlimmer als keines,
+    # weil es wie ein Hardwarefehler aussieht.
+    _fw=0
+    if [ -d "$HERE/wifi/firmware" ]; then
+        for _d in "$HERE"/wifi/firmware/*; do
+            [ -d "$_d" ] || continue
+            for _f in "$_d"/*; do
+                [ -f "$_f" ] || continue
+                put 0644 "$_f" "$ROOT/lib/firmware/$(basename "$_d")/$(basename "$_f")" ||
+                    die "cannot install firmware $(basename "$_f")"
+                _fw=$((_fw + 1))
+            done
+        done
     fi
-    put 0755 "$HERE/hostapd" "$ROOT/usr/sbin/hostapd" || die "cannot install hostapd"
+
+    _ap=0
+    if [ -r "$HERE/wifi/hostapd" ]; then
+        put 0755 "$HERE/wifi/hostapd" "$ROOT/usr/sbin/hostapd" || die "cannot install hostapd"
+        _ap=1
+    elif [ -r "$HERE/hostapd" ]; then
+        # Aeltere Bundles legten es flach ab.
+        put 0755 "$HERE/hostapd" "$ROOT/usr/sbin/hostapd" || die "cannot install hostapd"
+        _ap=1
+    fi
     # Kein hostapd_cli. machino spricht den ctrl-Socket ueber wpa_ctrl.cpp
     # selbst an, und der Rollen-Supervisor startet hostapd frisch, statt es
-    # fernzusteuern. Auf einem Overlay mit 4,3 MB frei sind 150 KB fuer ein
-    # Werkzeug, das niemand aufruft, keine gute Entscheidung.
-    if [ "$WITH_WIFI" = "1" ] || [ -f "$INITD/S42wifi" ]; then
-        say "installed hostapd (access point selectable from the web page)"
-    else
-        warn "installed hostapd, but without --with-wifi nothing brings wlan0 up -"
-        warn "the access point stays unreachable until S42wifi is installed too"
+    # fernzusteuern. Auf einem 8,7-MB-Overlay sind 150 KB fuer ein Werkzeug,
+    # das niemand aufruft, keine gute Entscheidung.
+
+    say "installed the WiFi payload: $_mods module(s), $_fw firmware file(s), hostapd $([ "$_ap" = 1 ] && echo yes || echo no)"
+    if [ "$_mods" = "0" ]; then
+        warn "no kernel modules in the bundle - the WiFi switch will have nothing to load."
+        warn "they must be built against this exact kernel; see the build-aic8800-t40 workflow"
     fi
+else
+    say "skipped the WiFi payload (--without-wifi-payload)"
+fi
+
+# --with-wifi stellt den Schalter gleich auf AN. Ohne die Nutzlast waere das
+# eine Einstellung, die beim naechsten Boot nur eine Fehlermeldung erzeugt.
+if [ "$WITH_WIFI" = "1" ]; then
+    if [ "$WITH_WIFI_PAYLOAD" != "1" ]; then
+        die "--with-wifi together with --without-wifi-payload: that would switch on a radio whose driver is not installed"
+    fi
+    set_conf usb.wifi.enabled true || die "cannot set usb.wifi.enabled"
+    say "usb.wifi.enabled = true (the radio comes up at the next boot)"
 fi
 
 # ------------------------------------------------------- initial selection ---

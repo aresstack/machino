@@ -225,6 +225,21 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   </div>
 </section>
 
+<section id="t-usbwifi" hidden>
+  <div class="card">
+    <h2>USB-WLAN</h2>
+    <label><input type="checkbox" id="wifien" style="width:auto"> WLAN-Unterstützung aktivieren</label>
+    <p class="note" id="wifien-note">Änderung wird nach einem Neustart wirksam.</p>
+    <button class="act" id="wifiensave">Übernehmen</button>
+    <div class="msg" id="m-wifien" hidden></div>
+    <p class="note">Solange dies aus ist, wird beim Start kein Treiber geladen,
+      der Portstrom auf PB18 bleibt unten und es läuft kein WLAN-Dienst. Der
+      USB-Port steht dann vollständig für ein anderes Gerät zur Verfügung.
+      Das ist der Grund für den Neustart: Kernelmodule bei laufender
+      Medien-Pipeline nachzuladen wäre der unsichere Weg.</p>
+  </div>
+</section>
+
 <section id="t-usbdev" hidden>
   <div class="card">
     <h2>Angeschlossene Geräte</h2>
@@ -241,7 +256,8 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
 const TABS = [
   ["t-overview","Übersicht"],["t-ethernet","Ethernet"],["t-wifi","WLAN"],
   ["t-cellular","Mobilfunk"],["t-routing","Routing"],
-  ["t-usbhost","USB-Host"],["t-usbpower","Stromversorgung"],["t-usbdev","Geräte"]
+  ["t-usbhost","USB-Host"],["t-usbpower","Stromversorgung"],
+  ["t-usbwifi","USB-WLAN"],["t-usbdev","Geräte"]
 ];
 const $ = (id) => document.getElementById(id);
 
@@ -384,6 +400,15 @@ async function loadWifi() {
     return;
   }
   const w = res.body, c = w.capabilities || {};
+  // Ein abgeschaltetes WLAN sieht von hier aus genau wie ein fehlendes
+  // Funkmodul aus -- kein wlan0, keine Faehigkeiten. Der Unterschied ist fuer
+  // den Bedienenden aber alles: das eine ist ein Haken, den er selbst gesetzt
+  // hat, das andere ein Hardwareproblem. Also wird er benannt.
+  if (!c.present && wifiSaved === false) {
+    row(tb, "Funkmodul", "aus (USB-WLAN ist nicht aktiviert)");
+    $("c-station").hidden = true; $("c-ap").hidden = true;
+    return;
+  }
   row(tb, "Funkmodul", c.present ? (c.driver || "vorhanden") : "nicht vorhanden");
   row(tb, "Schnittstelle", c.interface);
   row(tb, "Modus", w.mode);
@@ -414,6 +439,25 @@ async function loadWifi() {
   $("ap-unavail").hidden = !!ap;
   $("ap-unavail").textContent = c.apUnavailableReason || "Access-Point-Modus ist nicht verfügbar.";
   $("ap-unverified").hidden = !(ap && !apSure);
+}
+
+// Was zuletzt GESPEICHERT war, nicht was im Kasten steht. Ohne den
+// Unterschied kann die Seite nicht sagen, ob der Neustart noch aussteht --
+// und "Neustart erforderlich" dauerhaft anzuzeigen waere genauso falsch wie
+// es nie anzuzeigen.
+let wifiSaved = null;
+
+function markWifiPending() {
+  const n = $("wifien-note");
+  if (wifiSaved === null) { n.textContent = "Änderung wird nach einem Neustart wirksam."; return; }
+  const want = $("wifien").checked;
+  if (want !== wifiSaved) {
+    n.textContent = "Nicht gespeichert. Übernehmen, dann neu starten.";
+  } else {
+    n.textContent = wifiSaved
+      ? "WLAN ist eingeschaltet. Nach einem Neustart lädt die Kamera Treiber und Firmware und bringt wlan0 hoch."
+      : "WLAN ist aus. Es wird kein Treiber geladen und kein Portstrom geschaltet; der USB-Port bleibt frei.";
+  }
 }
 
 async function loadUsb() {
@@ -447,6 +491,13 @@ async function loadUsb() {
   $("usb-unavail").textContent = c.hostSupported
       ? "Dieses Board hat keinen schaltbaren Port-Strom; es gibt nichts einzustellen."
       : "Dieses Board hat keinen USB-Host.";
+  // Der WLAN-Schalter haengt NICHT an cp.switchable: ein Board ohne
+  // schaltbaren Portstrom kann trotzdem ein WLAN-Modul tragen.
+  const wifiOn = !!(cfg.wifi && cfg.wifi.enabled);
+  $("wifien").checked = wifiOn;
+  wifiSaved = wifiOn;
+  markWifiPending();
+
   $("usben").checked = !!cfg.enabled;
   $("usbboot").checked = !!cfgp.enableAtBoot;
   $("usbexpert").checked = !!cfgp.expert;
@@ -582,6 +633,26 @@ $("savepolicy").onclick = async () => {
   else msg($("m-policy"), reason(res, "Speichern fehlgeschlagen"), "bad");
 };
 
+$("wifien").addEventListener("change", markWifiPending);
+
+$("wifiensave").onclick = async () => {
+  const want = $("wifien").checked;
+  const res = await api("PATCH", "/api/v1/usb", { wifi: { enabled: want } });
+  if (res.status === 200) {
+    wifiSaved = !!(res.body && res.body.config && res.body.config.wifi
+                   && res.body.config.wifi.enabled);
+    markWifiPending();
+    // Kein "Übernommen." allein: uebernommen ist die EINSTELLUNG, nicht der
+    // Zustand des Funkmoduls. Wer hier nur Erfolg meldet, laesst jemanden auf
+    // ein WLAN warten, das erst nach einem Neustart existiert.
+    msg($("m-wifien"), wifiSaved
+        ? "Gespeichert. WLAN wird beim nächsten Neustart geladen — jetzt ist es noch aus."
+        : "Gespeichert. Nach dem nächsten Neustart wird kein WLAN mehr geladen.", "ok");
+  } else {
+    msg($("m-wifien"), reason(res, "Speichern fehlgeschlagen"), "bad");
+  }
+};
+
 $("usbsave").onclick = async () => {
   const body = {
     enabled: $("usben").checked,
@@ -604,8 +675,10 @@ $("usbsave").onclick = async () => {
 async function refresh() {
   try {
     await loadNetwork();
-    await loadWifi();
+    // loadUsb ZUERST: es setzt wifiSaved, und loadWifi braucht das, um ein
+    // abgeschaltetes WLAN von einem fehlenden Funkmodul zu unterscheiden.
     await loadUsb();
+    await loadWifi();
   } catch (e) { /* a 401 already navigated away */ }
 }
 

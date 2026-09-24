@@ -56,8 +56,14 @@ FAKE
     cp "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$B/sbin/"
     cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42wifi" "$B/init/"
     mkdir -p "$B/sbin"; cp "$PKG/sbin/machino-wifi-role" "$B/sbin/"
-    printf "fake-hostapd
-" > "$B/hostapd"
+    # Die WLAN-Nutzlast so, wie das Release-Artefakt sie traegt: Treiber,
+    # Firmware und hostapd unter wifi/. Sie wird per Default installiert und
+    # ist ohne usb.wifi.enabled=true wirkungslos.
+    mkdir -p "$B/wifi/modules" "$B/wifi/firmware/aic8800DC"
+    printf 'fake-hostapd\n'   > "$B/wifi/hostapd"
+    printf 'fake-aic8800\n'   > "$B/wifi/modules/aic8800.ko"
+    printf 'fake-loadfw\n'    > "$B/wifi/modules/aic_load_fw.ko"
+    printf 'fake-blob\n'      > "$B/wifi/firmware/aic8800DC/fmacfw.bin"
     cp "$PKG/udhcpc-wlan.script" "$B/"
     cp "$PKG/install.sh" "$PKG/uninstall.sh" "$B/"
     chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/sbin/machino-manager" "$B/init/"*
@@ -446,58 +452,91 @@ make_bundle; make_camera auto; add_buildinfo; mk_dt ingenic,shark0ingenic,t400
 run_install || bad "a t40 device tree was refused: $(cat "$WORK/out")"
 has "installed on a t40" "$WORK/root/usr/bin/machino"
 
-# ---------- 12b) the access point script is opt-in and reversible ----------
-# Installing it unconditionally would start a daemon on every camera, and most
-# of them will never serve their own WLAN.
+# ---------- 12b) the WiFi payload ships by default and stays switched off ---
+#
+# Beides zusammen ist der Punkt. Die Dateien muessen da sein, sonst waere der
+# Schalter in der UI eine Attrappe: niemand kann per Web-Klick ein Kernelmodul
+# nachliefern. Und das Radio muss trotzdem aus sein, weil es genau einen
+# USB-Port gibt und der spaeter ein Modem tragen soll.
 make_bundle; make_camera auto
 run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
-hasnt "no hostapd without the flag" "$WORK/root/usr/sbin/hostapd"
+has "wifi boot script installed by default" "$WORK/root/etc/init.d/S42wifi"
+has "role supervisor installed by default"  "$WORK/root/usr/sbin/machino-wifi-role"
+has "hostapd installed by default"          "$WORK/root/usr/sbin/hostapd"
+has "driver installed by default"           "$WORK/root/etc/machino/modules/aic8800.ko"
+has "firmware loader installed by default"  "$WORK/root/etc/machino/modules/aic_load_fw.ko"
+has "firmware blob installed by default"    "$WORK/root/lib/firmware/aic8800DC/fmacfw.bin"
+has "udhcpc hook installed by default"      "$WORK/root/etc/machino/udhcpc-wlan.script"
+hasnt "no separate AP boot script"          "$WORK/root/etc/init.d/S41hostapd"
+hasnt "no hostapd_cli"                      "$WORK/root/usr/sbin/hostapd_cli"
 
-# What this image lacks is the BINARY, not an init script: the AP is a role of
-# the wifi supervisor, so a second boot script wanting wlan0 would be the very
-# conflict the supervisor exists to prevent.
+# Nothing switched it on, so nothing may claim it is on.
+if grep -q "^usb.wifi.enabled = true" "$WORK/root/etc/machino/machino.conf" 2>/dev/null; then
+    bad "a default install switched WiFi on"
+else ok; fi
+
+# The boot script itself has to agree: with the key absent it must do nothing
+# at all. This is the guard that keeps the USB port free for the modem.
+out=$(MACHINO_CONF="$WORK/root/etc/machino/machino.conf" sh -c '
+    CONF="$MACHINO_CONF"
+    v=$(tr -d " \t\r" < "$CONF" | sed -n "s/^usb\.wifi\.enabled=//p" | tail -1)
+    if [ "$v" = "true" ] || [ "$v" = "1" ]; then echo ON; else echo OFF; fi')
+if [ "$out" = "OFF" ]; then ok; else bad "the boot script would have started WiFi on a default install"; fi
+
+# --with-wifi only pre-sets the switch; the files were already there.
 make_bundle; make_camera auto
-run_install --with-wifi --with-access-point || bad "--with-access-point was refused: $(cat "$WORK/out")"
-has "hostapd installed on request"  "$WORK/root/usr/sbin/hostapd"
-has "role supervisor installed"     "$WORK/root/usr/sbin/machino-wifi-role"
-hasnt "no separate AP boot script"  "$WORK/root/etc/init.d/S41hostapd"
+run_install --with-wifi || bad "--with-wifi was refused: $(cat "$WORK/out")"
+if grep -q "^usb.wifi.enabled = true" "$WORK/root/etc/machino/machino.conf"; then ok
+else bad "--with-wifi did not set usb.wifi.enabled"; fi
+if grep -q "next boot" "$WORK/out"; then ok; else bad "the reboot requirement was not stated"; fi
 
-# hostapd without anything to bring wlan0 up is useless, and the installer has
-# to say so rather than leaving a silently dead feature.
+# Setting it twice must not produce two lines: the boot script takes the last
+# one, but a file that accumulates duplicates is a file nobody can read.
+run_install --with-wifi || bad "a second --with-wifi run failed: $(cat "$WORK/out")"
+n=$(grep -c "usb.wifi.enabled" "$WORK/root/etc/machino/machino.conf")
+if [ "$n" = "1" ]; then ok; else bad "usb.wifi.enabled appears $n times after two installs"; fi
+
+# The escape hatch, for a camera whose overlay is needed elsewhere.
 make_bundle; make_camera auto
-run_install --with-access-point
-if grep -q "without --with-wifi" "$WORK/out"; then ok; else bad "the missing --with-wifi was not reported"; fi
+run_install --without-wifi-payload || bad "--without-wifi-payload was refused: $(cat "$WORK/out")"
+hasnt "no driver when the payload is declined"  "$WORK/root/etc/machino/modules/aic8800.ko"
+hasnt "no hostapd when the payload is declined" "$WORK/root/usr/sbin/hostapd"
+hasnt "no boot script when declined"            "$WORK/root/etc/init.d/S42wifi"
 
-run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
-hasnt "hostapd removed again" "$WORK/root/usr/sbin/hostapd"
+# Switching the radio on while refusing its driver is not a configuration,
+# it is a boot that fails. It has to be refused up front.
+make_bundle; make_camera auto
+if run_install --with-wifi --without-wifi-payload; then
+    bad "--with-wifi with no payload was accepted"
+else ok; fi
 
-# An unknown flag must still be an error -- adding one option is not a licence
+# A bundle with no modules must say so rather than leaving a switch that
+# cannot work.
+make_bundle; rm -f "$WORK/bundle/wifi/modules/"*.ko; make_camera auto
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
+if grep -q "nothing to load" "$WORK/out"; then ok; else bad "the missing modules were not reported"; fi
+
+# --with-access-point is still accepted so nobody's install command breaks.
+make_bundle; make_camera auto
+run_install --with-access-point || bad "--with-access-point was refused: $(cat "$WORK/out")"
+has "hostapd there either way" "$WORK/root/usr/sbin/hostapd"
+
+# An unknown flag must still be an error -- adding options is not a licence
 # to accept anything.
 make_bundle; make_camera auto
 if run_install --with-acces-point; then bad "a misspelled flag was accepted"; else ok; fi
 
-# ----------- 12d) the WiFi boot script is opt-in and warns honestly ---------
+# ----------- 12d) uninstall takes the payload with it -----------------------
+# It is our megabyte now, so we give it back.
 make_bundle; make_camera auto
 run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
-hasnt "no wifi script without the flag" "$WORK/root/etc/init.d/S42wifi"
-
-make_bundle; make_camera auto
-run_install --with-wifi || bad "--with-wifi was refused: $(cat "$WORK/out")"
-has "wifi script installed on request" "$WORK/root/etc/init.d/S42wifi"
-has "udhcpc hook installed"            "$WORK/root/etc/machino/udhcpc-wlan.script"
-# No modules in this fixture, and the installer must say so rather than
-# leaving a boot that reports a missing file on every start.
-if grep -q "aic8800.ko is not there" "$WORK/out"; then ok; else bad "the missing modules were not reported"; fi
-
-# With modules present it installs quietly.
-make_bundle; make_camera auto
-mkdir -p "$WORK/root/etc/machino/modules"
-printf 'not-a-real-module\n' > "$WORK/root/etc/machino/modules/aic8800.ko"
-run_install --with-wifi
-if grep -q "WiFi comes up at boot" "$WORK/out"; then ok; else bad "the ready case was not reported"; fi
-
 run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
-hasnt "wifi script removed again" "$WORK/root/etc/init.d/S42wifi"
+hasnt "wifi script removed again"   "$WORK/root/etc/init.d/S42wifi"
+hasnt "supervisor removed again"    "$WORK/root/usr/sbin/machino-wifi-role"
+hasnt "hostapd removed again"       "$WORK/root/usr/sbin/hostapd"
+hasnt "driver removed again"        "$WORK/root/etc/machino/modules/aic8800.ko"
+hasnt "loader removed again"        "$WORK/root/etc/machino/modules/aic_load_fw.ko"
+hasnt "firmware removed again"      "$WORK/root/lib/firmware/aic8800DC/fmacfw.bin"
 
 # ------- 12c) the menu entry is opt-in and header.cgi stays byte-identical --
 # The installer must not edit p/header.cgi behind the user's back: a later

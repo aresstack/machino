@@ -95,6 +95,41 @@ void test_usb_patch_rejects_bad_values_and_changes_nothing()
     TCHECK(cfg.enabled && cfg.mode == UsbPowerMode::Gpio && !cfg.active_high);
 }
 
+// WLAN muss AUS sein, ohne dass irgendwer es abschaltet.
+//
+// Es gibt einen USB-Port. Ist WLAN an, laedt der Bootpfad cfg80211,
+// aic_load_fw und aic8800 und hebt PB18 -- und dieser Treiber hat die Kamera
+// beim Bring-up zweimal in den OOM getrieben. Eine Kamera, an der ein Modem
+// haengen soll, darf das nicht bezahlen, nur weil niemand an die Einstellung
+// gedacht hat. Deshalb steht der Default hier und nicht nur in einer Doku.
+void test_usb_wifi_is_off_until_someone_says_otherwise()
+{
+    const usb::UsbConfig fresh;
+    TCHECK(!fresh.wifi_enabled);
+
+    // Auch ueber die Einstellungen: ein Gerät ohne den Schluessel in seiner
+    // machino.conf -- also jede Kamera, die vor dieser Version installiert
+    // wurde -- bleibt aus.
+    usb::UsbConfig loaded;
+    loaded.wifi_enabled = true;                   // als waere etwas anderes gesetzt
+    std::string err;
+    TCHECK(usb_config_from_settings({{"usb.enabled", "true"}}, loaded, err));
+    TCHECK(loaded.wifi_enabled);                  // ein fehlender Schluessel aendert nichts
+    usb::UsbConfig from_scratch;
+    TCHECK(usb_config_from_settings({{"usb.enabled", "true"}}, from_scratch, err));
+    TCHECK(!from_scratch.wifi_enabled);           // und der Ausgangspunkt ist aus
+
+    TCHECK(usb_config_from_settings({{"usb.wifi.enabled", "true"}}, from_scratch, err));
+    TCHECK(from_scratch.wifi_enabled);
+
+    // Die Seite muss "Neustart erforderlich" sagen koennen, ohne es zu raten.
+    const Json j = usb_config_json(fresh);
+    const Json* w = j.get("wifi");
+    TCHECK(w && w->is_object());
+    TCHECK(w->get("enabled") && !w->get("enabled")->as_bool());
+    TCHECK(w->get("appliesAt") && w->get("appliesAt")->as_string() == "reboot");
+}
+
 void test_usb_config_survives_a_settings_round_trip()
 {
     usb::UsbConfig cfg;
@@ -104,6 +139,7 @@ void test_usb_config_survives_a_settings_round_trip()
     cfg.active_high = false;
     cfg.enable_at_boot = false;
     cfg.expert = true;
+    cfg.wifi_enabled = true;
 
     std::vector<std::pair<std::string, std::string>> kv;
     usb_config_to_settings(cfg, kv);
@@ -112,6 +148,7 @@ void test_usb_config_survives_a_settings_round_trip()
     std::string err;
     TCHECK(usb_config_from_settings(kv, back, err));
     TCHECK(back.enabled == cfg.enabled);
+    TCHECK(back.wifi_enabled == cfg.wifi_enabled);
     TCHECK(back.mode == cfg.mode);
     TCHECK(back.pin == cfg.pin);
     TCHECK(back.active_high == cfg.active_high);
@@ -245,8 +282,23 @@ void test_a_typo_is_an_error_not_a_silent_no_op()
     net::WifiApConfig a;
     TCHECK(!wifi_ap_from_json(parse("{\"ssid\":\"cam\",\"security\":\"open\",\"chanel\":6}"), a, err));
 
+    // Der WLAN-Schalter entscheidet, ob beim naechsten Boot ein Treiber
+    // geladen wird. Ein Tippfehler darf ihn nicht stillschweigend auf seinem
+    // Default stehen lassen und trotzdem 200 antworten.
+    TCHECK(!usb_config_from_json(parse("{\"wifi\":{\"enabledd\":true}}"), u, err));
+    TCHECK(!usb_config_from_json(parse("{\"wify\":{\"enabled\":true}}"), u, err));
+    TCHECK(!usb_config_from_json(parse("{\"wifi\":true}"), u, err));
+    TCHECK(!usb_config_from_json(parse("{\"wifi\":{\"enabled\":\"yes\"}}"), u, err));
+    // appliesAt wird BERICHTET, nicht angenommen: es ist eine Eigenschaft der
+    // Einstellung, keine Wahl des Aufrufers.
+    TCHECK(!usb_config_from_json(parse("{\"wifi\":{\"appliesAt\":\"now\"}}"), u, err));
+
     // The correctly spelled versions still work.
     TCHECK(usb_config_from_json(parse("{\"enabled\":true}"), u, err));
+    TCHECK(usb_config_from_json(parse("{\"wifi\":{\"enabled\":true}}"), u, err));
+    TCHECK(u.wifi_enabled);
+    TCHECK(usb_config_from_json(parse("{\"wifi\":{\"enabled\":false}}"), u, err));
+    TCHECK(!u.wifi_enabled);
     TCHECK(policy_from_json(parse("{\"autoFailover\":false}"), p, err));
     TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\",\"password\":\"x\"}"), w, err) == false);
     TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\",\"passphrase\":\"longenough\"}"), w, err));
@@ -423,6 +475,7 @@ void run_net_views_tests()
     test_unknown_power_state_is_not_reported_as_off();
     test_usb_patch_rejects_bad_values_and_changes_nothing();
     test_usb_config_survives_a_settings_round_trip();
+    test_usb_wifi_is_off_until_someone_says_otherwise();
     test_wifi_capabilities_separate_driver_from_tooling();
     test_an_unasked_driver_is_reported_as_unknown_not_as_no();
     test_no_document_ever_contains_a_passphrase();

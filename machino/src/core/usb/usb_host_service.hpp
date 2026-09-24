@@ -29,6 +29,22 @@ struct UsbConfig {
     // the rest of the GPIO space is the sensor reset, the PHY reset and the
     // flash -- we nearly drove one of those by accident while finding PB18.
     bool         expert = false;
+
+    // The USB WiFi radio, off by default and deliberately so.
+    //
+    // This is not a preference, it is a resource decision. There is ONE USB
+    // port. Switching WiFi on means loading cfg80211, aic_load_fw and aic8800,
+    // raising PB18 and handing wlan0 to a supervisor -- and the aic8800 driver
+    // is the component that pushed this camera into OOM twice during bring-up
+    // (it asks for 847 order-3 blocks where about 20 are free). A camera that
+    // is going to carry a 4G modem on that port must not pay any of that.
+    //
+    // Off means off at the source: with this false the init script loads no
+    // module, raises no rail and starts no daemon. It is therefore read before
+    // machino exists, straight out of machino.conf, which is why a change
+    // takes effect at the next boot rather than at once. "Restart required" is
+    // the honest thing to say; pretending it is live would be the lie.
+    bool         wifi_enabled = false;
 };
 
 // What the service resolved the request into, after consulting the backend.

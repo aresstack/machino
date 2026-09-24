@@ -61,15 +61,27 @@ fi
 # ---------------------------------------------------- restore the boot slot ---
 rm -f "$INITD/S95streamer"
 
-# The WiFi boot script, if --with-wifi installed one. Stopped first so no
-# supplicant or DHCP client is left running against a machino that is going
-# away. The MODULES stay: they are not ours to remove, someone may have put
-# them there deliberately, and a loaded driver is harmless on its own.
+# The WiFi boot script. Stopped first so no supplicant or DHCP client is left
+# running against a machino that is going away.
 if [ -f "$INITD/S42wifi" ]; then
     "$INITD/S42wifi" stop >/dev/null 2>&1
     rm -f "$INITD/S42wifi" "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
     rm -f "$ROOT/usr/sbin/machino-wifi-role"
 fi
+
+# Die Treiber und die Firmware. Die installiert machino jetzt selbst, also
+# raeumt machino sie auch wieder weg -- rund 1 MB auf einem Overlay, das
+# knapp ist, liegen zu lassen waere unhoeflich.
+#
+# Entfernt werden NUR die Dateien, die dieses Paket kennt. Ein anderes
+# aic8800.ko, das jemand von Hand dorthin gelegt hat, traegt denselben Namen;
+# das ist hinnehmbar, weil das Verzeichnis /etc/machino/modules uns gehoert.
+# /lib/firmware gehoert uns nicht, deshalb dort nur das eine Unterverzeichnis.
+if [ -d "$STATE_DIR/modules" ]; then
+    rm -f "$STATE_DIR/modules/aic8800.ko" "$STATE_DIR/modules/aic_load_fw.ko"
+    rmdir "$STATE_DIR/modules" 2>/dev/null || true
+fi
+rm -rf "$ROOT/lib/firmware/aic8800DC"
 
 # hostapd itself, if --with-access-point put one there. The role supervisor
 # has already been stopped above, so nothing is serving from it any more.

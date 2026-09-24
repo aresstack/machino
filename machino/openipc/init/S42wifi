@@ -30,6 +30,7 @@
 # Kamera hat rund 20 davon frei, der OOM-Killer trifft den Mediendaemon, und
 # der haelt /dev/watchdog. Ergebnis: Reboot.
 
+CONF=/etc/machino/machino.conf
 MODDIR=/etc/machino/modules
 WPACONF=/etc/machino/wpa-supplicant.conf
 CTRL=/var/run/wpa_supplicant
@@ -38,6 +39,34 @@ SUPERVISOR=/usr/sbin/machino-wifi-role
 ROLEFILE=/etc/machino/wifi-role
 IFACE=wlan0
 GPIO=50
+
+# WLAN ist optional und standardmaessig AUS.
+#
+# Die Einstellung steht in machino.conf, weil es genau EINE Wahrheit geben
+# soll: dieselbe Datei, die die API schreibt. Eine zweite Markierungsdatei
+# waere ein zweiter Zustand, und zwei Zustaende driften.
+#
+# Gelesen wird hier und nicht von machino, weil machino zu diesem Zeitpunkt
+# noch nicht laeuft -- und genau das ist der Sinn der Sache. Ist WLAN aus,
+# wird kein Modul geladen, keine Schiene hochgefahren und kein Daemon
+# gestartet. Der USB-Port bleibt unberuehrt fuer das, was sonst daran haengt;
+# beim T40 ist das spaeter das 4G-Modem, und der aic8800-Treiber ist die
+# Komponente, die diese Kamera beim Bring-up zweimal in den OOM getrieben hat.
+#
+# Der Preis ist ein Neustart beim Umschalten. Der ist ehrlich: das Gegenteil
+# waere, Module bei laufender IMP-Pipeline nachzuladen.
+# Erst alle Leerzeichen, Tabs und CR raus, dann exakt am Zeilenanfang
+# vergleichen. Das ist absichtlich stumpf: eine Variante mit mehreren
+# [[:space:]]-Klassen im selben Ausdruck hat sich beim Testen je nach
+# sed-Implementierung anders verhalten, und diese Zeile entscheidet, ob ein
+# Treiber geladen wird. Ein Kommentar (#usb...), ein Praefix (xusb...) und ein
+# Suffix (usb.wifi.enabledx) fallen hier alle korrekt durch. Bei mehrfacher
+# Angabe gewinnt die letzte, wie ueberall in dieser Datei.
+wifi_enabled() {
+	[ -f "$CONF" ] || return 1
+	v=$(tr -d ' \t\r' < "$CONF" | sed -n 's/^usb\.wifi\.enabled=//p' | tail -1)
+	[ "$v" = "true" ] || [ "$v" = "1" ]
+}
 
 load_modules() {
 	modprobe cfg80211 2>/dev/null
@@ -70,6 +99,10 @@ wait_for_iface() {
 }
 
 start() {
+	if ! wifi_enabled; then
+		echo "wifi: aus (usb.wifi.enabled ist nicht true) - kein Modul, kein Portstrom"
+		return 0
+	fi
 	load_modules || return 1
 	port_power_on || return 1
 	if ! wait_for_iface; then
@@ -121,6 +154,7 @@ case "$1" in
 	stop)  stop ;;
 	restart) stop; sleep 2; start ;;
 	status)
+		echo "enabled: $(wifi_enabled && echo ja || echo nein)"
 		echo "iface:   $([ -d /sys/class/net/$IFACE ] && echo vorhanden || echo fehlt)"
 		echo "modules: $(lsmod | grep -c '^aic') aic-Module geladen"
 		echo "role:    $(cat $ROLEFILE 2>/dev/null || echo '-')"

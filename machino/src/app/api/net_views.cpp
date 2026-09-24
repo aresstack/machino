@@ -156,6 +156,13 @@ Json usb_config_json(const usb::UsbConfig& cfg)
     p.set("enableAtBoot", Json::boolean(cfg.enable_at_boot));
     p.set("expert", Json::boolean(cfg.expert));
     j.set("power", p);
+    Json w = Json::object();
+    w.set("enabled", Json::boolean(cfg.wifi_enabled));
+    // The page has to be able to say "restart required" without hard-coding
+    // that knowledge, and a client that only reads the API should not have to
+    // know which settings are live and which are not.
+    w.set("appliesAt", Json::string("reboot"));
+    j.set("wifi", w);
     return j;
 }
 
@@ -212,8 +219,17 @@ bool usb_config_from_json(const Json& body, usb::UsbConfig& cfg, std::string& er
     if (!body.is_object()) { err = "body must be an object"; return false; }
 
     usb::UsbConfig next = cfg;
-    if (!reject_unknown(body, {"enabled", "power"}, nullptr, err)) return false;
+    if (!reject_unknown(body, {"enabled", "power", "wifi"}, nullptr, err)) return false;
     if (!get_bool(body, "enabled", next.enabled, err)) return false;
+
+    const Json* w = body.get("wifi");
+    if (w) {
+        if (!w->is_object()) { err = "wifi must be an object"; return false; }
+        // appliesAt is reported, not accepted: it is a property of the setting,
+        // not something a client gets to choose.
+        if (!reject_unknown(*w, {"enabled"}, "wifi", err)) return false;
+        if (!get_bool(*w, "enabled", next.wifi_enabled, err)) return false;
+    }
 
     const Json* p = body.get("power");
     if (p) {
@@ -249,6 +265,7 @@ void usb_config_to_settings(const usb::UsbConfig& cfg,
     out.emplace_back("usb.power.active_level", cfg.active_high ? "high" : "low");
     out.emplace_back("usb.power.enable_at_boot", cfg.enable_at_boot ? "true" : "false");
     out.emplace_back("usb.power.expert", cfg.expert ? "true" : "false");
+    out.emplace_back("usb.wifi.enabled", cfg.wifi_enabled ? "true" : "false");
 }
 
 bool usb_config_from_settings(const std::vector<std::pair<std::string, std::string>>& in,
@@ -259,6 +276,7 @@ bool usb_config_from_settings(const std::vector<std::pair<std::string, std::stri
         const std::string& k = kv.first;
         const std::string& v = kv.second;
         if      (k == "usb.enabled")               next.enabled = (v == "true" || v == "1");
+        else if (k == "usb.wifi.enabled")          next.wifi_enabled = (v == "true" || v == "1");
         else if (k == "usb.power.pin")             next.pin = v;
         else if (k == "usb.power.enable_at_boot")  next.enable_at_boot = (v == "true" || v == "1");
         else if (k == "usb.power.expert")          next.expert = (v == "true" || v == "1");
