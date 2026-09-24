@@ -72,7 +72,10 @@ FAKE
     printf 'fake-blob-1\n'    > "$B/wifi/firmware/aic8800DC/fmacfw.bin"
     printf 'fake-blob-2\n'    > "$B/wifi/firmware/aic8800DC/fmacfw_patch.bin"
     printf 'fake-blob-3\n'    > "$B/wifi/firmware/aic8800DC/fw_adid.bin"
-    cp "$PKG/udhcpc-wlan.script" "$B/"
+    cp "$PKG/udhcpc-wlan.script" "$PKG/udhcpc-cellular.script" "$B/"
+    cp "$PKG/sbin/machino-cellular-helper" "$B/sbin/"
+    mkdir -p "$B/cellular/modules"
+    for m in option usb_wwan usbnet cdc_ether; do echo "fake-$m" > "$B/cellular/modules/$m.ko"; done
     cp "$PKG/install.sh" "$PKG/uninstall.sh" "$B/"
     chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/sbin/machino-manager" "$B/init/"*
 }
@@ -483,6 +486,15 @@ if [ "$n" = "0" ]; then ok; else bad "$n firmware file(s) landed outside lib/fir
 has "udhcpc hook installed by default"      "$WORK/root/etc/machino/udhcpc-wlan.script"
 hasnt "no separate AP boot script"          "$WORK/root/etc/init.d/S41hostapd"
 hasnt "no hostapd_cli"                      "$WORK/root/usr/sbin/hostapd_cli"
+
+# Die Mobilfunk-Nutzlast liegt aus demselben Grund bereit wie die des WLAN:
+# ein Schalter, der erst nach einer Nachinstallation wirkt, ist keiner.
+has "cellular helper installed"             "$WORK/root/usr/sbin/machino-cellular-helper"
+has "cellular dhcp hook installed"          "$WORK/root/etc/machino/udhcpc-cellular.script"
+has "option.ko installed"                   "$WORK/root/etc/machino/modules/option.ko"
+has "cdc_ether.ko installed"                "$WORK/root/etc/machino/modules/cdc_ether.ko"
+# ... und tut nichts: es gibt keinen Wunsch, den der Helfer ausfuehren koennte.
+hasnt "no cellular request on install"      "$WORK/root/etc/machino/cellular-dhcp"
 
 # Nothing switched it on, so nothing may claim it is on.
 if grep -q "^usb.wifi.enabled = true" "$WORK/root/etc/machino/machino.conf" 2>/dev/null; then

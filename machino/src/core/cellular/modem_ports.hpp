@@ -75,4 +75,25 @@ bool usb_names_from_tty_link(const std::string& link_target,
                              std::string& interface_name,
                              std::string& device_name);
 
+// Ein Netzwerkinterface, wie der Scanner es aus /sys/class/net liest.
+struct NetDeviceInfo {
+    std::string name;       // "usb0", "eth1", ...
+    std::string driver;     // "cdc_ether", "rndis_host", "aic8800", ...
+    std::string vid, pid;   // des USB-Geraets dahinter, leer wenn keins
+};
+
+// Welches davon ist das Modem?
+//
+// NICHT "usb0". Der Name haengt daran, was der Kernel sonst noch vergeben hat,
+// und auf einer Kamera mit WLAN-Adapter ist usb0 womoeglich etwas ganz
+// anderes. Entschieden wird ueber VID:PID des Geraets und den gebundenen
+// Treiber -- und der Treiber muss ein ECM-Treiber sein: bindet `rndis_host`,
+// steht das Modem noch auf RNDIS, und das ist ein anderer Zustand als "kein
+// Interface da".
+//
+// Gibt den Namen zurueck, leer wenn keines passt.
+std::string find_ecm_interface(const std::vector<NetDeviceInfo>& devices,
+                               const std::string& want_vid = "2c7c",
+                               const std::string& want_pid = "6005");
+
 }} // namespace machino::cellular

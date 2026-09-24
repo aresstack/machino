@@ -109,6 +109,18 @@ if [ -d "$STATE_DIR/modules" ]; then
 fi
 rm -rf "$ROOT/lib/firmware/aic8800DC"
 
+# Mobilfunk: Helfer, DHCP-Hook und die Modem-Kernelmodule. Auch das haben wir
+# installiert, also raeumen wir es ab.
+run_live pkill -f machino-cellular-helper
+rm -f "$ROOT/usr/sbin/machino-cellular-helper"
+rm -f "$STATE_DIR/udhcpc-cellular.script" "$STATE_DIR/cellular-dhcp"
+if [ -d "$STATE_DIR/modules" ]; then
+    for _m in option usb_wwan usbnet cdc_ether usbserial; do
+        rm -f "$STATE_DIR/modules/$_m.ko"
+    done
+    rmdir "$STATE_DIR/modules" 2>/dev/null || true
+fi
+
 # hostapd itself, if --with-access-point put one there. The role supervisor
 # has already been stopped above, so nothing is serving from it any more.
 rm -f "$ROOT/usr/sbin/hostapd" "$ROOT/usr/sbin/hostapd_cli"

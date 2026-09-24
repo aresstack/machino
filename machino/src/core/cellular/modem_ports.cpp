@@ -52,6 +52,21 @@ bool usb_names_from_tty_link(const std::string& link_target,
     return false;
 }
 
+std::string find_ecm_interface(const std::vector<NetDeviceInfo>& devices,
+                               const std::string& want_vid,
+                               const std::string& want_pid)
+{
+    for (const NetDeviceInfo& d : devices) {
+        if (!iequal(d.vid, want_vid) || !iequal(d.pid, want_pid)) continue;
+        // cdc_ether ist der ECM-Treiber. cdc_ncm waere NCM und ebenfalls
+        // brauchbar; rndis_host dagegen heisst, dass das Modem noch auf RNDIS
+        // steht -- ein Interface, das wir NICHT als ECM ausgeben duerfen, weil
+        // die Zustandsmaschine dann glaubt, der Moduswechsel sei erledigt.
+        if (d.driver == "cdc_ether" || d.driver == "cdc_ncm") return d.name;
+    }
+    return std::string();
+}
+
 ModemPorts map_modem_ports(const std::vector<SerialPortInfo>& ports,
                            const std::string& want_vid,
                            const std::string& want_pid)

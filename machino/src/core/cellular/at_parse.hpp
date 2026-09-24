@@ -151,4 +151,29 @@ struct PdpAddress {
 };
 PdpAddress parse_cgpaddr(const std::string& raw);
 
+// +CGCONTRDP: <cid>,<bearer>,<apn>,<local_addr_and_subnet>,<gw>,<dns1>,<dns2>,...
+//
+// Die Feldindizes stammen aus dem Referenzprojekt (ec200a_ecm.cpp): 2 = lokale
+// Adresse, 3 = Gateway, 4/5 = DNS. Achtung, Feld 2 ist NICHT einfach eine
+// IP-Adresse: 3GPP 27.007 packt Adresse UND Maske in eine Punktliste mit acht
+// Oktetten, "10.1.2.3.255.255.255.0". Wer das als IPv4 liest, bekommt Unsinn.
+//
+// Das ist im NIC-Modus die EINZIGE Adressquelle -- dort gibt es kein DHCP, weil
+// das Modem nicht routet, sondern die oeffentliche Adresse direkt durchreicht.
+struct PdpContextParams {
+    std::string apn;
+    std::string ipv4;       // nur die Adresse, ohne die angehaengte Maske
+    std::string netmask;    // die zweiten vier Oktette, falls vorhanden
+    std::string gateway;
+    std::string dns1, dns2;
+};
+PdpContextParams parse_cgcontrdp(const std::string& raw);
+
+// Der Wert eines AT+QCFG="<name>"-Reports: +QCFG: "usbnet",1
+//
+// Abwesend, wenn die Antwort den Namen nicht nennt oder keine Zahl folgt. Ein
+// nicht gelesener Modus darf nicht als 0 durchgehen -- 0 ist bei "nat" ein
+// gueltiger Modus, und bei "usbnet" ebenfalls.
+MaybeInt parse_qcfg_int(const std::string& raw, const std::string& name);
+
 }} // namespace machino::cellular

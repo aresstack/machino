@@ -432,6 +432,30 @@ else
     say "skipped the WiFi payload (--without-wifi-payload)"
 fi
 
+# ------------------------------------------------------------- Mobilfunk ---
+#
+# Dieselbe Regel wie beim WLAN: die Dateien liegen bereit und tun nichts. Wer
+# Mobilfunk benutzt, waehlt es in AP-M6 ueber usb.function aus; bis dahin
+# startet diesen Helfer niemand. Ein Helfer, der nicht laeuft, kostet nichts
+# ausser dem Platz -- und ein Helfer, der erst nachinstalliert werden muss,
+# macht den spaeteren Schalter zur Attrappe.
+if [ -d "$HERE/cellular" ] || [ -r "$HERE/sbin/machino-cellular-helper" ]; then
+    [ -r "$HERE/sbin/machino-cellular-helper" ] &&
+        { put 0755 "$HERE/sbin/machino-cellular-helper" "$ROOT/usr/sbin/machino-cellular-helper" ||
+          die "cannot install machino-cellular-helper"; }
+    [ -r "$HERE/udhcpc-cellular.script" ] &&
+        { put 0755 "$HERE/udhcpc-cellular.script" "$STATE_DIR/udhcpc-cellular.script" ||
+          warn "could not install the cellular udhcpc hook - the modem route would have no metric"; }
+    _cmods=0
+    for _cko in "$HERE"/cellular/modules/*.ko; do
+        [ -r "$_cko" ] || continue
+        put 0644 "$_cko" "$STATE_DIR/modules/$(basename "$_cko")" ||
+            die "cannot install $(basename "$_cko")"
+        _cmods=$((_cmods + 1))
+    done
+    say "installed the cellular payload: $_cmods module(s)"
+fi
+
 # --with-wifi stellt den Schalter gleich auf AN. Ohne die Nutzlast waere das
 # eine Einstellung, die beim naechsten Boot nur eine Fehlermeldung erzeugt.
 if [ "$WITH_WIFI" = "1" ]; then

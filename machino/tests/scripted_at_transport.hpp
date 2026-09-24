@@ -27,6 +27,19 @@ public:
         script_[cmd].push_back(raw);
     }
 
+    // Ab jetzt antwortet das Modem anders -- alles Aufgestaute verfaellt.
+    //
+    // Der Unterschied zu reply() ist im Test leicht zu uebersehen und war
+    // einmal die Ursache eines Fehlschlags: nach einem Modem-Neustart soll
+    // AT+QCFG="usbnet" 1 liefern statt 3, und mit reply() stand die alte
+    // Antwort noch in der Warteschlange. Die Maschine sah nach dem Neustart
+    // erneut RNDIS und gab auf -- korrekt, aber die Situation gab es nur im
+    // Test.
+    void set_reply(const std::string& cmd, const std::string& raw)
+    {
+        script_[cmd].assign(1, raw);
+    }
+
     void set_available(bool a) { available_ = a; }
     void set_gone(bool g)      { gone_ = g; }
     void set_timeout(const std::string& cmd) { timeout_.insert(cmd); }

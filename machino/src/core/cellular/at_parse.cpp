@@ -289,4 +289,73 @@ PdpAddress parse_cgpaddr(const std::string& raw)
     return a;
 }
 
+// ------------------------------------------------------------- CGCONTRDP ---
+
+namespace {
+
+// "10.1.2.3.255.255.255.0" -> Adresse und Maske trennen.
+//
+// 3GPP 27.007 haengt bei IPv4 die Subnetzmaske als vier weitere Oktette an
+// dieselbe Punktliste. Acht Zahlen heissen also Adresse+Maske, vier nur
+// Adresse. Alles andere (IPv6 kommt als 16 oder 32 Oktette) lassen wir hier
+// stehen, statt daraus etwas Falsches zu machen.
+void split_addr_mask(const std::string& field, std::string& addr, std::string& mask)
+{
+    addr.clear(); mask.clear();
+    std::vector<std::string> parts;
+    std::string cur;
+    for (char c : field) {
+        if (c == '.') { parts.push_back(cur); cur.clear(); }
+        else cur += c;
+    }
+    if (!cur.empty()) parts.push_back(cur);
+
+    auto join = [&](size_t from, size_t to) {
+        std::string s;
+        for (size_t i = from; i < to; ++i) { if (!s.empty()) s += '.'; s += parts[i]; }
+        return s;
+    };
+    if (parts.size() == 8) { addr = join(0, 4); mask = join(4, 8); }
+    else if (parts.size() == 4) { addr = join(0, 4); }
+}
+
+} // namespace
+
+PdpContextParams parse_cgcontrdp(const std::string& raw)
+{
+    PdpContextParams p;
+    const std::string body = at_extract(raw, "+CGCONTRDP:");
+    if (body.empty()) return p;
+
+    // +CGCONTRDP: <cid>,<bearer>,<apn>,<addr+mask>,<gw>,<dns1>,<dns2>
+    //              0     1        2     3           4    5      6
+    //
+    // Das Referenzprojekt zaehlt hier ANFUEHRUNGSZEICHEN-Felder (atQuoted,
+    // 1-basiert), nicht Kommaspalten: dort ist die Adresse Nummer 2, weil cid
+    // und bearer unquotiert sind. Beim Uebertragen auf csv_field verschiebt
+    // sich das um zwei -- einmal falsch gezaehlt, und die Kamera liest den APN
+    // als ihre IP-Adresse.
+    p.apn = csv_field(body, 2);
+    std::string addr, mask;
+    split_addr_mask(csv_field(body, 3), addr, mask);
+    p.ipv4 = (addr == "0.0.0.0") ? std::string() : addr;
+    p.netmask = mask;
+    p.gateway = csv_field(body, 4);
+    p.dns1 = csv_field(body, 5);
+    p.dns2 = csv_field(body, 6);
+    if (p.gateway == "0.0.0.0") p.gateway.clear();
+    return p;
+}
+
+// ------------------------------------------------------------------ QCFG ---
+
+MaybeInt parse_qcfg_int(const std::string& raw, const std::string& name)
+{
+    const std::string body = at_extract(raw, "+QCFG:");
+    if (body.empty()) return MaybeInt();
+    // Feld 0 ist der Name, in Anfuehrungszeichen. csv_field entfernt sie.
+    if (csv_field(body, 0) != name) return MaybeInt();
+    return as_int(csv_field(body, 1));
+}
+
 }} // namespace machino::cellular

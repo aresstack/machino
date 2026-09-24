@@ -1,0 +1,174 @@
+#!/bin/sh
+# Der kleine Prozessstarter fuer den Mobilfunk-Datenpfad.
+#
+# WARUM ES IHN GIBT
+#
+# Dieselbe Begruendung wie beim WLAN-Rollen-Supervisor: machino darf bei
+# laufender IMP-Pipeline nicht fork+exec -- das ist auf dieser Kamera der
+# dokumentierte Ausloeser eines Out-of-Memory-Vorfalls, und der OOM-Killer
+# trifft den Mediendaemon, der /dev/watchdog haelt. Also schreibt machino einen
+# Wunsch in eine Datei, und dieser Prozess fuehrt ihn aus. Er hat ein paar
+# hundert Kilobyte RSS; ein fork() aus ihm heraus ist harmlos.
+#
+# Praezise gesagt: hier wird sehr wohl geforkt. Der Punkt ist, WER es tut.
+#
+# PROTOKOLL
+#
+# machino schreibt EINE Zeile nach $REQ (atomar ueber rename):
+#
+#   dhcp <iface>                          DHCP-Client starten
+#   static <iface> <ip> <mask> [gw] [dns1] [dns2]
+#                                         Adresse fest setzen (NIC-Modus: das
+#                                         Modem beantwortet kein DHCP)
+#   up <iface> | down <iface>             Interface administrativ schalten
+#   stop <iface>                          alles zu diesem Interface abraeumen
+#
+# Dieser Helfer schreibt nach $STATE, was tatsaechlich konfiguriert ist:
+#
+#   iface=usb0
+#   ipv4=...  netmask=...  gateway=...  dns1=...  dns2=...
+#
+# NUR das eigene Interface. Keine fremden Routen, keine fremden Prozesse.
+
+REQ=/etc/machino/cellular-dhcp
+STATE=/var/run/machino-cellular.state
+PIDDIR=/var/run
+DHCPSCRIPT=/etc/machino/udhcpc-cellular.script
+LOGFILE=/tmp/machino-cellular.log
+POLL=2
+
+log() { echo "cellular: $*"; echo "$(date '+%H:%M:%S') cellular: $*" >> "$LOGFILE" 2>/dev/null; }
+
+pidfile_for() { echo "$PIDDIR/udhcpc.$1.pid"; }
+
+# Nur den EIGENEN Prozess beenden, nie per killall, und auf sein Ende warten --
+# kill(1) kehrt zurueck, wenn das Signal zugestellt ist, nicht wenn der
+# Empfaenger fertig ist. Beim WLAN hat genau das einen Rollenwechsel zerlegt.
+kill_pidfile() {
+	[ -f "$1" ] || return 0
+	pid=$(cat "$1" 2>/dev/null)
+	rm -f "$1"
+	[ -n "$pid" ] || return 0
+	kill "$pid" 2>/dev/null || return 0
+	n=0
+	while kill -0 "$pid" 2>/dev/null; do
+		n=$((n + 1))
+		if [ $n -ge 50 ]; then kill -9 "$pid" 2>/dev/null; sleep 1; break; fi
+		usleep 100000 2>/dev/null || sleep 1
+	done
+}
+
+write_state() {
+	umask 077
+	tmp="$STATE.new"
+	{
+		echo "iface=$1"
+		[ -n "$2" ] && echo "ipv4=$2"
+		[ -n "$3" ] && echo "netmask=$3"
+		[ -n "$4" ] && echo "gateway=$4"
+		[ -n "$5" ] && echo "dns1=$5"
+		[ -n "$6" ] && echo "dns2=$6"
+	} > "$tmp" && mv -f "$tmp" "$STATE" || rm -f "$tmp"
+}
+
+clear_state() { rm -f "$STATE"; }
+
+# Die Default-Route dieses Interface, und nur diese. `ip route del default`
+# ohne dev loescht die erste gefundene -- das kann die von Ethernet sein, und
+# dann ist die Kamera weg.
+del_own_default() {
+	[ -n "$1" ] || return 0
+	ip route del default dev "$1" 2>/dev/null
+}
+
+stop_iface() {
+	iface=$1
+	kill_pidfile "$(pidfile_for "$iface")"
+	del_own_default "$iface"
+	ip addr flush dev "$iface" 2>/dev/null
+	clear_state
+	log "$iface abgeraeumt"
+}
+
+start_dhcp() {
+	iface=$1
+	command -v udhcpc >/dev/null 2>&1 || { log "kein udhcpc im Image"; return 1; }
+	kill_pidfile "$(pidfile_for "$iface")"
+	ip link set "$iface" up 2>/dev/null
+	# -f und selbst in den Hintergrund: mit -b zusammen mit -t 0 geht udhcpc
+	# NIE in den Hintergrund ("background if lease is not obtained" tritt bei
+	# unbegrenzten Versuchen nicht ein) und haengt den Aufrufer fest. Genau das
+	# hat beim WLAN den Supervisor lahmgelegt.
+	if [ -x "$DHCPSCRIPT" ]; then
+		udhcpc -f -i "$iface" -t 0 -S -s "$DHCPSCRIPT" >>"$LOGFILE" 2>&1 &
+	else
+		udhcpc -f -i "$iface" -t 0 -S >>"$LOGFILE" 2>&1 &
+	fi
+	echo "$!" > "$(pidfile_for "$iface")"
+	log "DHCP auf $iface gestartet (pid $!)"
+}
+
+set_static() {
+	iface=$1; ip4=$2; mask=$3; gw=$4; d1=$5; d2=$6
+	# Im NIC-Modus gibt es keinen DHCP-Server -- ein laufender Client haette
+	# hier nichts zu tun und wuerde nur die Adresse wieder abraeumen.
+	kill_pidfile "$(pidfile_for "$iface")"
+	ip link set "$iface" up 2>/dev/null
+	ip addr flush dev "$iface" 2>/dev/null
+	ip addr add "$ip4/$(mask_to_prefix "$mask")" dev "$iface" 2>/dev/null
+	if [ -n "$gw" ]; then
+		del_own_default "$iface"
+		# Metrik 300: hoeher als Ethernet (0) und WLAN (200). Mobilfunk ist der
+		# teuerste Weg ins Netz und soll nicht ungefragt der bevorzugte sein --
+		# die Reihenfolge entscheidet spaeter machinos Uplink-Politik, aber
+		# solange sie das nicht tut, ist die vorsichtige Metrik die richtige.
+		ip route add default via "$gw" dev "$iface" metric 300 2>/dev/null
+	fi
+	write_state "$iface" "$ip4" "$mask" "$gw" "$d1" "$d2"
+	log "$iface statisch: $ip4/$mask gw=$gw"
+}
+
+# 255.255.255.240 -> 28
+mask_to_prefix() {
+	[ -n "$1" ] || { echo 24; return; }
+	n=0
+	IFS=. read a b c d <<EOF
+$1
+EOF
+	for o in $a $b $c $d; do
+		case "$o" in
+			255) n=$((n + 8)) ;; 254) n=$((n + 7)) ;; 252) n=$((n + 6)) ;;
+			248) n=$((n + 5)) ;; 240) n=$((n + 4)) ;; 224) n=$((n + 3)) ;;
+			192) n=$((n + 2)) ;; 128) n=$((n + 1)) ;; 0) ;;
+			*) echo 24; return ;;
+		esac
+	done
+	echo $n
+}
+
+# ---------------------------------------------------------------- main loop
+umask 077
+: > "$LOGFILE"
+last=""
+while :; do
+	if [ -f "$REQ" ]; then
+		req=$(cat "$REQ" 2>/dev/null | tr -d '\r')
+	else
+		req=""
+	fi
+	if [ "$req" != "$last" ]; then
+		last="$req"
+		set -- $req
+		verb=$1; iface=$2
+		case "$verb" in
+			dhcp)   [ -n "$iface" ] && start_dhcp "$iface" ;;
+			static) [ -n "$iface" ] && set_static "$2" "$3" "$4" "$5" "$6" "$7" ;;
+			up)     [ -n "$iface" ] && { ip link set "$iface" up 2>/dev/null; log "$iface up"; } ;;
+			down)   [ -n "$iface" ] && { ip link set "$iface" down 2>/dev/null; log "$iface down"; } ;;
+			stop)   [ -n "$iface" ] && stop_iface "$iface" ;;
+			"")     ;;
+			*)      log "unbekannter Wunsch '$verb' - ignoriert" ;;
+		esac
+	fi
+	sleep $POLL
+done

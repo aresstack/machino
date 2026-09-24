@@ -664,6 +664,7 @@ Json cellular_config_json(const cellular::CellularConfig& c)
     j.set("authMode", Json::string(cellular::auth_mode_name(c.auth)));
     j.set("username", Json::string(c.username));
     j.set("autoConnect", Json::boolean(c.auto_connect));
+    j.set("nicMode", Json::boolean(c.nic_mode));
     // Weder Passwort noch PIN. Nur ob eines hinterlegt ist -- das braucht die
     // Oberflaeche, um "gespeichert" von "leer" zu unterscheiden.
     j.set("passwordSet", Json::boolean(!c.password.empty()));
@@ -691,11 +692,12 @@ bool cellular_config_from_json(const Json& body, cellular::CellularConfig& cfg, 
 {
     if (!body.is_object()) { err = "body must be an object"; return false; }
     if (!reject_unknown(body, {"enabled", "apn", "pdpType", "authMode", "username",
-                               "password", "autoConnect", "simPin"}, nullptr, err)) return false;
+                               "password", "autoConnect", "simPin", "nicMode"}, nullptr, err)) return false;
 
     cellular::CellularConfig next = cfg;
     if (!get_bool(body, "enabled", next.enabled, err)) return false;
     if (!get_bool(body, "autoConnect", next.auto_connect, err)) return false;
+    if (!get_bool(body, "nicMode", next.nic_mode, err)) return false;
     if (!get_string(body, "apn", next.apn, err, 100)) return false;
     if (!get_string(body, "username", next.username, err, 64)) return false;
 
@@ -738,6 +740,7 @@ void cellular_config_to_settings(const cellular::CellularConfig& cfg,
     out.emplace_back("cellular.username", cfg.username);
     out.emplace_back("cellular.password", cfg.password);
     out.emplace_back("cellular.auto_connect", cfg.auto_connect ? "true" : "false");
+    out.emplace_back("cellular.nic_mode", cfg.nic_mode ? "true" : "false");
     out.emplace_back("cellular.sim_pin", cfg.sim_pin);
 }
 
@@ -750,6 +753,7 @@ bool cellular_config_from_settings(const std::vector<std::pair<std::string, std:
         const std::string& v = kv.second;
         if      (k == "cellular.enabled")      next.enabled = (v == "true" || v == "1");
         else if (k == "cellular.auto_connect") next.auto_connect = (v == "true" || v == "1");
+        else if (k == "cellular.nic_mode")     next.nic_mode = (v == "true" || v == "1");
         else if (k == "cellular.apn")          next.apn = v;
         else if (k == "cellular.username")     next.username = v;
         else if (k == "cellular.password")     next.password = v;

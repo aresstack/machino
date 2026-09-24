@@ -41,6 +41,23 @@ struct CellularConfig {
     std::string password;      // GEHEIM: nie in Antworten, nie in Logs
     bool        auto_connect = false;
     std::string sim_pin;       // GEHEIM, dito
+
+    // Betriebsart des Modem-NIC (AT+QCFG="nat"). Entscheidet, WOHER die
+    // Adresse kommt, und das ist keine Feinheit:
+    //
+    //   true  = NIC     das Modem reicht die oeffentliche Adresse direkt
+    //                   durch und beantwortet KEIN DHCP; alles kommt aus
+    //                   AT+CGCONTRDP
+    //   false = Routing das Modem NATet, DHCP liefert 192.168.43.x, von
+    //                   aussen ist nichts erreichbar
+    //
+    // Default true, weil das Referenzprojekt ihn so hat (`modemNatMode = "nic"`
+    // in ec200a_modem.cpp). Nicht hier neu entschieden.
+    //
+    // Die Einstellung ist im Modem PERSISTENT und ein Wechsel braucht einen
+    // Modem-Neustart -- sie wird deshalb hoechstens einmal je Lebenszyklus
+    // durchgesetzt.
+    bool        nic_mode = true;
 };
 
 struct ApnPreset {

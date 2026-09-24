@@ -1,0 +1,68 @@
+#!/bin/sh
+# udhcpc-Hook fuer das Mobilfunk-Interface (usb0 oder wie der Kernel es nennt).
+#
+# Warum nicht das Standardskript des Images: dessen Default-Route bekommt keine
+# Metrik. Auf dieser Kamera ist das heute folgenlos, weil eth0 gar keine
+# Default-Route hat -- aber auf einem Board, das ueber Ethernet eine bekommt,
+# wuerde die Mobilfunk-Route den Management-Pfad uebernehmen, sobald jemand Mobilfunk
+# einschaltet. Das faellt dann niemandem auf, bis das Mobilfunk ausfaellt.
+#
+# Also: die Mobilfunk-Default-Route bekommt eine SCHLECHTERE Metrik als Ethernet.
+# Wer Mobilfunk bevorzugen will, sagt das ueber die Uplink-Policy in machino, nicht
+# durch einen Zufall in der Reihenfolge der DHCP-Antworten.
+CELL_METRIC=300
+
+RESOLV=/etc/resolv.conf
+
+case "$1" in
+	deconfig)
+		ip addr flush dev "$interface" 2>/dev/null
+		ip link set "$interface" up
+		;;
+
+	renew|bound)
+		ip addr flush dev "$interface" 2>/dev/null
+		ip addr add "$ip/$mask" ${broadcast:+broadcast $broadcast} dev "$interface"
+
+		if [ -n "$router" ]; then
+			# Nur die eigene loeschen, nicht jede: ein "ip route del default"
+			# ohne dev wuerde die Ethernet-Route mitnehmen, und genau das soll
+			# dieses Skript verhindern.
+			ip route del default dev "$interface" 2>/dev/null
+			for r in $router; do
+				ip route add default via "$r" dev "$interface" metric $CELL_METRIC 2>/dev/null
+			done
+		fi
+
+		# resolv.conf nur ergaenzen, wenn wir wirklich Server bekommen haben.
+		# Die Datei leer zu schreiben, weil eine Antwort keine DNS enthielt,
+		# nimmt dem Rest des Systems die Namensaufloesung.
+		if [ -n "$dns" ]; then
+			tmp="$RESOLV.cellular.$$"
+			{
+				grep -v '^# machino-cellular$' "$RESOLV" 2>/dev/null | grep -v '^nameserver'
+				for d in $dns; do echo "nameserver $d"; done
+				echo '# machino-cellular'
+			} > "$tmp" || { rm -f "$tmp"; exit 0; }
+			# Rechte AUSDRUECKLICH setzen, nicht dem umask ueberlassen.
+			#
+			# Der Rollen-Supervisor laeuft mit umask 077, damit die
+			# wpa_supplicant-Konfiguration mit ihrem PSK nicht lesbar entsteht.
+			# Dieses Skript ist sein Enkelkind und erbt das -- die Temp-Datei
+			# entstuende als 0600, und der mv wuerde eine 0644-Systemdatei
+			# heimlich auf root-only herabstufen. Auf dieser Kamera laeuft alles
+			# als root, es faellt also nicht auf; genau deshalb waere es spaeter
+			# nicht zu finden. resolv.conf ist kein Geheimnis.
+			chmod 0644 "$tmp" 2>/dev/null
+			mv "$tmp" "$RESOLV" || rm -f "$tmp"
+		fi
+		;;
+
+	leasefail|nak)
+		# Keine Adresse. Das Interface NICHT abraeumen -- der Supplicant kann
+		# gerade mitten in einer Re-Assoziation stecken (etwa nach einem
+		# Rollback), und udhcpc versucht es mit -t 0 ohnehin weiter.
+		;;
+esac
+
+exit 0

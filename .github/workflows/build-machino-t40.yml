@@ -91,7 +91,7 @@ jobs:
         with:
           name: machino-m2-t40
           path: bundle/machino-m2-t40
-      - name: "WiFi payload (driver, firmware, hostapd) from their own workflows"
+      - name: "USB payloads (WiFi driver+firmware+hostapd, modem kernel modules)"
         # Warum geholt und nicht hier gebaut: die Module brauchen einen
         # Kernelbaum und hostapd eine eigene libnl-Kette. Beides in jeden
         # machino-Build zu ziehen wuerde ihn um Groessenordnungen verlangsamen,
@@ -109,7 +109,7 @@ jobs:
         run: |
           set -u
           mkdir -p wifi-payload
-          for wf in build-aic8800-t40.yml build-hostapd-t40.yml; do
+          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml; do
             id=$(gh run list --workflow "$wf" --status success --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
             if [ -z "${id:-}" ] || [ "$id" = "null" ]; then
               echo "::warning::no successful run of $wf to take a payload from"
@@ -151,12 +151,39 @@ jobs:
           cp -f machino/openipc/sbin/machino-wifi-role "$O/sbin/machino-wifi-role"
           cp -f machino/openipc/udhcpc-wlan.script     "$O/udhcpc-wlan.script"
 
+          # Mobilfunk. Dieselbe Regel wie beim WLAN: mitgeliefert und
+          # ausgeschaltet. Die Kernelmodule kommen aus build-modem-modules-t40,
+          # und wie bei der WLAN-Nutzlast ist das best effort -- ein
+          # abgelaufenes Artefakt darf den Hauptbuild nicht rot machen.
+          cp -f machino/openipc/sbin/machino-cellular-helper "$O/sbin/machino-cellular-helper"
+          cp -f machino/openipc/udhcpc-cellular.script       "$O/udhcpc-cellular.script"
+          mkdir -p "$O/cellular/modules"
+          for m in option usb_wwan usbnet cdc_ether; do
+            f=$(find wifi-payload -name "$m.ko" 2>/dev/null | head -1)
+            if [ -n "$f" ]; then cp -f "$f" "$O/cellular/modules/"; fi
+          done
+          {
+            echo "# Cellular payload in this bundle"
+            echo "modules: $(ls "$O/cellular/modules" 2>/dev/null | tr '\n' ' ' || echo none)"
+            echo
+            echo "Installed by default and inert: nothing starts the helper"
+            echo "until the USB function is set to cellular."
+          } > "$O/cellular/PAYLOAD.txt"
+          cat "$O/cellular/PAYLOAD.txt"
+
           # Die WLAN-Nutzlast. install.sh legt sie per Default ab und laesst
           # sie ausgeschaltet -- ohne diese Dateien waere der Schalter in der
           # Machino-UI eine Attrappe, weil niemand per Web-Klick ein
           # Kernelmodul nachliefern kann.
           mkdir -p "$O/wifi/modules" "$O/wifi/firmware"
-          find wifi-payload -name '*.ko'     -exec cp -f {} "$O/wifi/modules/" \; 2>/dev/null || true
+          # NUR die WLAN-Module. Seit hier auch die Modem-Module heruntergeladen
+          # werden, faengt ein '*.ko'-Glob option.ko und cdc_ether.ko mit ein --
+          # die laegen dann unter wifi/modules und wuerden mitinstalliert,
+          # sobald jemand WLAN benutzt.
+          for m in aic8800 aic_load_fw; do
+            f=$(find wifi-payload -name "$m.ko" 2>/dev/null | head -1)
+            if [ -n "$f" ]; then cp -f "$f" "$O/wifi/modules/"; fi
+          done
           find wifi-payload -name 'hostapd'  -type f -exec cp -f {} "$O/wifi/hostapd" \; 2>/dev/null || true
           # NUR aic8800DC. Ein "aic8800*"-Glob hat hier zuerst das
           # ARTEFAKTVERZEICHNIS aic8800-t40 mitgenommen und das Bundle auf
