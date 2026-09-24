@@ -248,6 +248,57 @@ void test_the_pin_goes_out_exactly_once_and_never_again()
     TCHECK(sim.last().detail.find("PUK-Schutz") != std::string::npos);
 }
 
+// Der Fall, an dem der Schutz beim ersten Anlauf vorbeigegangen waere.
+//
+// Ein Modem, das AT+CPIN= mit OK beantwortet und trotzdem gesperrt bleibt, ist
+// keine Seltenheit. Solange die Notiz erst NACH einer Fehlerantwort gesetzt
+// wurde, sah die naechste Runde wieder "SIM PIN", fand keine Notiz und schickte
+// dieselbe PIN erneut -- in einer Schleife, bis die Karte den PUK verlangt.
+// Gezaehlt wird deshalb der Versuch, nicht sein Ausgang.
+void test_an_accepted_but_ineffective_pin_is_not_retried()
+{
+    ScriptedAtTransport t;
+    t.reply("AT+CPIN?", kCpinPin);                 // bleibt stehen: weiter gesperrt
+    t.reply("AT+CPIN=\"1234\"", kOk);              // Modem sagt OK ...
+    SimManager sim;
+
+    sim.ensure_ready(t, "1234");
+    TCHECK(t.count_sent("AT+CPIN=") == 1);
+    for (int i = 0; i < 50; ++i) sim.ensure_ready(t, "1234");
+    TCHECK(t.count_sent("AT+CPIN=") == 1);         // ... und trotzdem nur einmal
+}
+
+// Entsperren braucht Sekunden. Meldet erst eine spaetere Runde READY, muss die
+// Notiz trotzdem verschwinden -- sonst waere eine FUNKTIONIERENDE PIN fuer den
+// Rest des Lebenszyklus gesperrt.
+void test_a_slow_unlock_clears_the_note()
+{
+    ScriptedAtTransport t;
+    t.reply("AT+CPIN?", kCpinPin);       // 1. Runde: gesperrt
+    t.reply("AT+CPIN?", kCpinPin);       // direkt nach dem Entsperren: noch nicht
+    t.reply("AT+CPIN?", kCpinReady);     // 2. Runde: jetzt bereit
+    t.reply("AT+CPIN=\"1234\"", kOk);
+
+    SimManager sim;
+    const SimSnapshot first = sim.ensure_ready(t, "1234");
+    TCHECK(first.state == SimState::PinRequired);
+    TCHECK(t.count_sent("AT+CPIN=") == 1);
+
+    const SimSnapshot second = sim.ensure_ready(t, "1234");
+    TCHECK(second.state == SimState::Ready);
+    TCHECK(t.count_sent("AT+CPIN=") == 1);
+
+    // Und die Notiz ist weg: eine spaetere Sperre darf wieder einen Versuch
+    // bekommen. (Das Skript haelt die letzte Antwort fest, bis eine neue
+    // eingereiht ist -- die naechste Runde sieht also noch READY, erst die
+    // uebernaechste die neue Sperre.)
+    t.reply("AT+CPIN?", kCpinPin);
+    sim.ensure_ready(t, "1234");                 // verbraucht das verbliebene READY
+    TCHECK(t.count_sent("AT+CPIN=") == 1);
+    sim.ensure_ready(t, "1234");                 // jetzt die Sperre
+    TCHECK(t.count_sent("AT+CPIN=") == 2);
+}
+
 void test_a_corrected_pin_may_try_again()
 {
     ScriptedAtTransport t;
@@ -545,6 +596,8 @@ void run_cellular_tests()
     test_a_ready_sim_is_never_sent_a_pin();
     test_a_puk_locked_sim_is_never_sent_a_pin();
     test_the_pin_goes_out_exactly_once_and_never_again();
+    test_an_accepted_but_ineffective_pin_is_not_retried();
+    test_a_slow_unlock_clears_the_note();
     test_a_corrected_pin_may_try_again();
     test_the_block_survives_a_process_restart();
     test_the_persisted_note_does_not_contain_the_pin();

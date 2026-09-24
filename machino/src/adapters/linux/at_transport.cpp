@@ -5,6 +5,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -51,22 +52,27 @@ bool make_raw(int fd)
 
 } // namespace
 
-Result AtTransport::send(const std::string& cmd, AtReply& out, int timeout_ms)
+AtExchange AtTransport::command(const std::string& cmd, int timeout_ms)
 {
-    out = AtReply{};
+    AtExchange out;
 
     const int fd = ::open(device_.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (fd < 0) {
         // ENOENT/ENXIO heisst hier fast immer: das Modem ist weg. Das ist ein
         // Ergebnis, kein Fehler, auf den jemand warten muesste.
         out.device_gone = (errno == ENOENT || errno == ENXIO || errno == ENODEV);
-        return Result::error(errno);
+        return out;
     }
 
     if (!make_raw(fd)) {
+        // Ein Fehler beim Setzen der Leitungsparameter ist kein "keine
+        // Antwort". Meist ist der Port gerade verschwunden; alles andere
+        // bleibt Pending und liest sich beim Aufrufer als ausgebliebene
+        // Antwort, was es dann auch ist.
         const int e = errno;
+        out.device_gone = (e == EIO || e == ENODEV || e == ENXIO);
         ::close(fd);
-        return Result::error(e);
+        return out;
     }
 
     // Reste einer vorherigen Sitzung wegwerfen, sonst liest das erste Kommando
@@ -81,7 +87,7 @@ Result AtTransport::send(const std::string& cmd, AtReply& out, int timeout_ms)
         const ssize_t n = ::write(fd, line.data() + written, line.size() - written);
         if (n > 0) { written += (size_t)n; continue; }
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
-            if (now_ms() >= deadline) { ::close(fd); out.timed_out = true; return Result::timeout(); }
+            if (now_ms() >= deadline) { ::close(fd); out.timed_out = true; return out; }
             struct pollfd pfd = {fd, POLLOUT, 0};
             ::poll(&pfd, 1, 50);
             continue;
@@ -89,7 +95,7 @@ Result AtTransport::send(const std::string& cmd, AtReply& out, int timeout_ms)
         const int e = errno;
         out.device_gone = (e == EIO || e == ENODEV || e == ENXIO);
         ::close(fd);
-        return Result::error(e);
+        return out;
     }
 
     int empty_reads = 0;
@@ -102,8 +108,9 @@ Result AtTransport::send(const std::string& cmd, AtReply& out, int timeout_ms)
         if (pr < 0) {
             if (errno == EINTR) continue;
             const int e = errno;
+            out.device_gone = (e == EIO || e == ENODEV || e == ENXIO || e == EBADF);
             ::close(fd);
-            return Result::error(e);
+            return out;
         }
         if (pr == 0) { out.timed_out = true; break; }
 
@@ -157,10 +164,19 @@ Result AtTransport::send(const std::string& cmd, AtReply& out, int timeout_ms)
     ::close(fd);
     out.payload = cellular::at_payload(out.raw, cmd);
 
-    if (out.device_gone) return Result::error(EIO);
-    if (out.result == cellular::AtResult::Pending) return Result::timeout();
-    return Result::ok();      // auch bei AtResult::Error: die ANTWORT kam an,
-                              // was drinsteht, entscheidet der Aufrufer
+    // Auch bei AtResult::Error ist das ein Ergebnis: die ANTWORT kam an, und
+    // was drinsteht, entscheidet der Aufrufer.
+    return out;
+}
+
+bool AtTransport::available() const
+{
+    if (device_.empty()) return false;
+    // Nur schauen, ob der Knoten da ist. Ihn zu OEFFNEN waere schon zu viel:
+    // available() wird in jeder Statusrunde gefragt, und ein open() auf einem
+    // gerade verschwindenden Port kann haengen.
+    struct stat st;
+    return ::stat(device_.c_str(), &st) == 0 && S_ISCHR(st.st_mode);
 }
 
 }} // namespace machino::linuxsys

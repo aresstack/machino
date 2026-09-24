@@ -71,10 +71,10 @@ public:
 
 private:
     bool already_failed_for(const std::string& pin) const;
-    void remember_failure(const std::string& pin);
+    void remember_attempt(const std::string& pin);   // merkt den VERSUCH, nicht seinen Ausgang
 
     SimSnapshot last_;
-    std::string attempt_log_;    // "<len>:<hash>" der zuletzt abgelehnten PIN
+    std::string attempt_log_;    // "<len>:<hash>" der zuletzt versuchten PIN
     LoadFn      load_;
     StoreFn     store_;
     bool        loaded_ = false;

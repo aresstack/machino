@@ -8,8 +8,8 @@ namespace machino { namespace cellular {
 namespace {
 
 // FNV-1a. Es geht nicht um kryptografische Staerke, sondern darum, dass in der
-// Notizdatei kein Klartext steht: gespeichert wird, DASS ein Versuch mit einer
-// PIN dieses Inhalts fehlgeschlagen ist, nicht welche es war. Bei vierstelligen
+// Notizdatei kein Klartext steht: gespeichert wird, DASS mit einer PIN dieses
+// Inhalts bereits versucht wurde, nicht welche es war. Bei vierstelligen
 // PINs ist der Raum klein genug, dass jede Hashfunktion durchprobierbar bleibt
 // -- deshalb liegt die Notiz auch nicht dort, wo Konfiguration liegt, sondern
 // im fluechtigen Laufzeitverzeichnis.
@@ -43,7 +43,7 @@ bool SimManager::already_failed_for(const std::string& pin) const
     return !tok.empty() && tok == attempt_log_;
 }
 
-void SimManager::remember_failure(const std::string& pin)
+void SimManager::remember_attempt(const std::string& pin)
 {
     attempt_log_ = sim_attempt_token(pin);
     if (store_) store_(attempt_log_);
@@ -82,6 +82,12 @@ SimSnapshot SimManager::ensure_ready(IAtTransport& at, const std::string& pin)
 
     switch (s.state) {
         case SimState::Ready:
+            // Auch hier loeschen, nicht nur direkt nach einem Entsperren:
+            // Entsperren und Re-Attach brauchen Sekunden, und dann meldet
+            // erst eine spaetere Runde READY. Ohne das bliebe die Notiz
+            // stehen und eine funktionierende PIN waere fuer den Rest des
+            // Lebenszyklus gesperrt.
+            forget_attempt();
             s.detail = "SIM bereit";
             last_ = s;
             return s;
@@ -122,10 +128,22 @@ SimSnapshot SimManager::ensure_ready(IAtTransport& at, const std::string& pin)
         return s;
     }
 
+    // Die Notiz wird VOR dem Senden gesetzt, nicht danach.
+    //
+    // Sonst haengt der ganze Schutz daran, dass das Modem eine falsche PIN mit
+    // ERROR beantwortet. Tut es das nicht -- OK melden und trotzdem gesperrt
+    // bleiben ist bei Mobilfunkmodems keine Seltenheit --, dann wird nichts
+    // vermerkt, die naechste Runde sieht wieder "SIM PIN" und schickt dieselbe
+    // PIN erneut. Drei Runden, und die Karte will den PUK. Genau das soll hier
+    // nicht passieren koennen, also zaehlt der VERSUCH, nicht sein Ausgang.
+    //
+    // Und der Versuch ueberlebt damit auch einen Absturz zwischen Senden und
+    // Auswerten.
     s.pin_attempted = true;
+    remember_attempt(pin);
+
     const AtExchange unlock = at.command("AT+CPIN=\"" + pin + "\"", 10000);
     if (!unlock.ok()) {
-        remember_failure(pin);
         s.pin_rejected = true;
         // Der Rohtext der Antwort wird NICHT uebernommen: er kann die
         // gesendete PIN enthalten, wenn das Modem das Kommando echot.
