@@ -1,49 +1,46 @@
-# Offene physische Prüfungen — Stand 2026-09-23
 
-Erzeugt am Ende des Batchlaufs AP21–AP23, konsolidiert über AP0–AP23.
+## I — WLAN als Produkt (Batch WLAN/AP, 2026-09-24)
 
-Alles hier ist **nicht** durch Hosttests oder CI abzudecken. Vieles davon
-braucht nur einen Kaltstart; einiges braucht einen Menschen am Gerät.
+### Auf Hardware bewiesen
 
----
+  * Access Point: Telefon verbunden, DHCP-Adresse, WebUI ueber
+    `http://192.168.24.1/`, Live-H.264 ueber den AP. Im Kernel-Log als
+    assoziierte Station belegt (`Del sta 9 (be:43:e6:78:0b:63)`).
+  * `change_if: 2 to 3` und zurueck `3 to 2` -- der Treiber behandelt Station
+    und AP als Typwechsel eines Interface, nicht als zwei Betriebsarten.
+  * Rollenwechsel Station -> AP -> Station vollstaendig, ohne
+    Wiederholungsversuch, eth0 durchgehend unberuehrt (01:53:44 bis 00:54:40,
+    siehe aic8800-bringup.md).
+  * Boot-Gate in allen drei Zustaenden: Schluessel fehlt / `false` / `true`.
+    Bei den ersten beiden meldet S42wifi "aus" und laedt nichts.
+  * `claim_interface` beendet einen verwaisten Supplicant auf wlan0 und laesst
+    den udhcpc von eth0 in Ruhe.
 
-## Die Klammer um fast alles: der Daemon läuft noch auf `c1edd92`
+### `PENDING_PHYSICAL` — offen
 
-```
-laufender Prozess     machino c1edd92   (pid 992, uptime > 5 h)
-auf /usr/bin/machino  machino 341a8d4
-im Repo               alles bis 53b08f2 (AP21) ist NICHT deployt
-```
+  * **Assoziation an ein konkretes Netz nach dem Rollenwechsel.** Der
+    Test-Hotspot "Viva Espana" war abgeschaltet; `iwlist scan` zeigte zehn
+    andere Netze, dieses nicht. Der Supplicant steht korrekt auf
+    `wpa_state=SCANNING`. Bewiesen ist der Rollenwechsel, nicht das
+    Wiederfinden eines bestimmten Netzes.
+  * **Boot mit `usb.wifi.enabled=true` und leerem Zustand.** Alle Gate-Tests
+    liefen auf einer Kamera, deren Module bereits geladen waren. Dass
+    `load_modules` beim echten Kaltstart aus `/etc/machino/modules` laedt, ist
+    aus dem Bring-up bekannt, in dieser Fassung des Skripts aber nicht erneut
+    gemessen.
+  * **Installation aus dem Release-Artefakt heraus.** Die Nutzlast im Bundle
+    ist geprueft (2,09 MB, 2 Module, 19 Firmware-Dateien, hostapd), aber
+    `install.sh` wurde damit noch nicht auf der Kamera ausgefuehrt -- die
+    Kamera traegt die von Hand kopierten Dateien.
 
-Ein **Warmstart des Daemons ist der dokumentierte Hardlock-Auslöser**
-(`t40nn-freeze-nach-install`). Deshalb liegt seit AP14 ein neueres Binary auf
-der Platte, ohne dass der Prozess abgelöst wurde, und deshalb hängt fast jede
-offene Prüfung am nächsten **Cold Power-Cycle**.
+### `PENDING_BROWSER` — offen
 
-Die Reihenfolge nach dem Kaltstart ist nicht beliebig: erst die Dinge, die
-ohne Last messbar sind, dann Last, dann Browser.
-
----
-
-## A — Beim nächsten Kaltstart, ohne zusätzliches Risiko
-
-| Nr | Prüfung | Woher |
-|---|---|---|
-| A1 | `printk` steht nach dem Boot auf `3 3 1 3` (rc.local greift erst beim Start) | AP17 |
-| A2 | `/api/v1/telemetry`: `watchdog_available: true`, `watchdog_enabled: true` | AP4 |
-| A3 | `init_retries` ist **0** und bleibt es | Fix B |
-| A4 | Baseline-Messung AP0.4–0.6 (Boot, ein MAIN-Zyklus, Relay-Smoke) | AP0 |
-| A5 | `ws_video_*`-Zähler erscheinen in der Telemetrie und bewegen sich | AP15 |
-| A6 | Driftmessung `tools/mse-drift.ps1` gegen den **neuen** Build wiederholen | AP15 |
-| A7 | `/ws/upgrade` antwortet mit der Ablehnung, und die Update-Seite zeigt „Nothing was written to flash" | AP21 |
-| A8 | Dashboard-Kachel: eigene Snapshot-Meldung statt Schweigen (`jpeg`-Sektion) | AP14 |
-| A9 | Audio-Panel sagt „both … switched off" statt „has not said yet" | AP20 |
-
-## S — Sicherheit: die Fixes wirken erst nach der Ablösung (AP30)
-
-| Nr | Prüfung | Woher |
-|---|---|---|
-| S1 | Header-Smuggling: eine Headerzeile mit einem bare LF und einem zweiten `Content-Length` dahinter muss **400** ergeben, nicht 404. **Der Ausgangszustand ist seit dem Audit vom 2026-09-23 gemessen: `c1edd92` antwortet 401.** Der Test ist fernbedienbar (TCP-Socket, roher Request) und braucht niemanden am Gerät — nur den abgelösten Build | AP30 HIGH-1 |
+  * Die Registerkarte *USB-WLAN* auf `/machino/net`: Schalter, Hinweistext,
+    der Wechsel der Meldung zwischen "nicht gespeichert" und dem Zustandstext,
+    und dass Station/AP bei ausgeschaltetem WLAN "aus (USB-WLAN ist nicht
+    aktiviert)" zeigen statt "Funkmodul nicht vorhanden". Nur im Simulator
+    (test_netui) geprueft, nie in einem echten Browser gerendert.
+Request) und braucht niemanden am Gerät — nur den abgelösten Build | AP30 HIGH-1 |
 | S2 | RTSP: 8 KiB ohne Leerzeile schicken — die Verbindung muss fallen, RSS darf nicht wachsen | AP30 HIGH-2 |
 | S3 | `/cgi-bin/../../../etc/shadow` muss **400 von Machino** ergeben, nicht von busybox. Ausgangszustand gemessen: `%2e%2e`-Variante ergibt heute 401 | AP30 NORMAL |
 
