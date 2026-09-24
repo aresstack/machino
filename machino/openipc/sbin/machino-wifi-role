@@ -83,6 +83,57 @@ kill_pidfile() {
 	return 0
 }
 
+# Beim Start: alles beenden, was UNSER Interface haelt.
+#
+# Die PID-Datei allein reicht dafuer nicht, und der Grund ist unangenehm
+# genau: ein FEHLGESCHLAGENER wpa_supplicant-Start loescht beim Aufraeumen die
+# PID-Datei -- dieselbe Datei, die der noch laufende Supplicant geschrieben
+# hat. Danach zeigt kein Griff mehr auf ihn, und beim naechsten Start stehen
+# zwei Supplicants auf wlan0. Auf der Kamera gesehen, nachdem zehn
+# Startversuche gegen einen belegten ctrl-Socket gelaufen waren.
+#
+# Das ist ausdruecklich KEIN killall. Es muessen ZWEI Dinge zutreffen: der
+# Programmname aus /proc/<pid>/comm ist einer unserer Daemons, UND die
+# Kommandozeile nennt genau unser Interface (bzw. bei hostapd unsere
+# Konfigurationsdatei, weil hostapd das Interface nicht als Argument fuehrt).
+# Ein zweiter Supplicant auf einer anderen Schnittstelle -- der Fall, wegen dem
+# killall hier verboten ist -- bleibt unberuehrt.
+#
+# Nur beim Start. Im laufenden Betrieb reichen die PID-Dateien, weil dann wir
+# es sind, die sie geschrieben haben.
+claim_interface() {
+	for d in /proc/[0-9]*; do
+		p=${d#/proc/}
+		[ "$p" = "$$" ] && continue
+		# Der PROGRAMMNAME entscheidet, nicht der Text der Kommandozeile. Sonst
+		# trifft es jede Shell, in der zufaellig "wpa_supplicant" und "wlan0"
+		# vorkommen -- etwa eine, die gerade danach sucht.
+		pname=$(cat "$d/comm" 2>/dev/null) || continue
+		case "$pname" in
+			wpa_supplicant|hostapd|udhcpc|udhcpd) ;;
+			*) continue ;;
+		esac
+		# Und das Interface muss wirklich unseres sein. Ein Supplicant auf einer
+		# anderen Schnittstelle geht uns nichts an; hostapd nennt sein Interface
+		# nicht auf der Kommandozeile, also gilt dort unsere Konfigurationsdatei
+		# als Beleg.
+		c=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null) || continue
+		case "$c" in
+			*" $IFACE "*|*" $IFACE") ;;
+			*"$APCONF"*|*"$DHCPDCONF"*) ;;
+			*) continue ;;
+		esac
+		log "fremder Halter von $IFACE: $pname (pid $p) -- wird beendet"
+		kill "$p" 2>/dev/null
+		n=0
+		while kill -0 "$p" 2>/dev/null && [ $n -lt 30 ]; do
+			n=$((n + 1)); usleep 100000 2>/dev/null || sleep 1
+		done
+		kill -9 "$p" 2>/dev/null
+	done
+	rm -f "$WPACTRL/$IFACE" "$APCTRL/$IFACE"
+}
+
 # Nach einem Rollenwechsel braucht der AIC8800 einen Moment. Im Kernel-Log
 # steht der Grund wortwoertlich:
 #
@@ -147,16 +198,30 @@ start_station() {
 	# selbst neu, und ohne laufenden Client bliebe das Interface assoziiert
 	# und adresslos.
 	#
-	# -p ist nicht optional: ohne sie schreibt udhcpc keine PID-Datei, und
-	# stop_station() zielt dann auf eine Datei, die es nie gab. Derselbe Fehler
-	# wie bei udhcpd, nur in die andere Richtung -- der DHCP-Client des
-	# Hotspots haette den Wechsel nach AP ueberlebt.
+	# NICHT -b. Das hat den Supervisor auf der Kamera festgenagelt.
+	#
+	# BusyBox: "-b  Background if lease is not obtained" und "-t N  Send up to
+	# N discover packets". Mit -t 0 (unbegrenzt) tritt "not obtained" nie ein,
+	# also geht udhcpc nie in den Hintergrund und kehrt nie zurueck. Gemessen:
+	#
+	#     udhcpc  pid=13644 ppid=13632
+	#     superv  pid=13632 wchan=do_wait
+	#
+	# Der Supervisor stand seit dem Start der Station-Rolle in do_wait und
+	# konnte den Rollenwechsel nach AP nicht mehr sehen. Das ist genau der Weg,
+	# den jemand braucht, dessen WLAN verschwunden ist: "schalt auf Access
+	# Point, damit ich wieder drankomme" -- und der war tot.
+	#
+	# Also -f und selbst in den Hintergrund legen, wie bei udhcpd. Dann ist $!
+	# exakt der Prozess, kill_pidfile trifft ihn, und die Schleife laeuft
+	# weiter, waehrend udhcpc in Ruhe sucht.
 	if command -v udhcpc >/dev/null 2>&1; then
 		if [ -x "$DHCPSCRIPT" ]; then
-			udhcpc -i $IFACE -b -t 0 -S -p "$DHCPCPID" -s "$DHCPSCRIPT" >/dev/null 2>&1
+			udhcpc -f -i $IFACE -t 0 -S -s "$DHCPSCRIPT" >/dev/null 2>&1 &
 		else
-			udhcpc -i $IFACE -b -t 0 -S -p "$DHCPCPID" >/dev/null 2>&1
+			udhcpc -f -i $IFACE -t 0 -S >/dev/null 2>&1 &
 		fi
+		echo "$!" > "$DHCPCPID"
 	fi
 	log "Rolle station aktiv"
 }
@@ -207,6 +272,26 @@ apply_role() {
 umask 077
 : > "$LOGFILE"
 [ -f "$ROLE_FILE" ] || echo station > "$ROLE_FILE"
+
+# BESITZ UEBERNEHMEN, bevor irgendeine Rolle hergestellt wird.
+#
+# Ohne das kommt die Station-Rolle nach einem unsauberen Ende nicht mehr hoch.
+# apply_role station macht "stop_ap; start_station" -- stop_station wird also
+# gerade dann NICHT gerufen, wenn noch ein Supplicant aus einem frueheren
+# Leben laeuft. wpa_supplicant sagt dazu:
+#
+#     ctrl_iface exists and seems to be in use - cannot override it
+#
+# und das aendert sich von selbst nie; retry_start rennt zehnmal dagegen und
+# gibt auf. Auf der Kamera gesehen, nicht ausgedacht.
+#
+# Dieser Prozess ist der einzige Besitzer von wlan0. Dann muss er den Besitz
+# beim Start auch wirklich nehmen, statt anzunehmen, das Interface sei frei.
+log "uebernehme $IFACE"
+stop_ap
+stop_station
+claim_interface
+
 current=""
 while :; do
 	want=$(cat "$ROLE_FILE" 2>/dev/null | tr -d ' \t\r\n')
