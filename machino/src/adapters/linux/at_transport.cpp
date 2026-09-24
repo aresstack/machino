@@ -1,6 +1,7 @@
 #include "adapters/linux/at_transport.hpp"
 
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
