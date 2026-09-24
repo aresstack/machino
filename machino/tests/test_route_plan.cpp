@@ -84,6 +84,30 @@ public:
         return true;
     }
 
+    // Die Grundlinie liegt beim Backend und nicht im RouteManager -- ein
+    // Neustart des Daemons darf sie nicht mitnehmen. Hier steht sie deshalb
+    // in Feldern, die ein Test ueber einen neuen RouteManager hinweg behaelt.
+    bool baseline_set = false;
+    std::vector<std::string> baseline;
+    bool dns_baseline(std::vector<std::string>& out) const override
+    {
+        if (!baseline_set) return false;
+        out = baseline;
+        return true;
+    }
+    Result set_dns_baseline(const std::vector<std::string>& s) override
+    {
+        baseline_set = true; baseline = s;
+        ops.push_back("baseline-set");
+        return Result::ok();
+    }
+    Result clear_dns_baseline() override
+    {
+        baseline_set = false; baseline.clear();
+        ops.push_back("baseline-clear");
+        return Result::ok();
+    }
+
     bool has(const std::string& ifname, const std::string& gw, int metric) const
     {
         for (const DefaultRoute& r : table)
@@ -380,6 +404,82 @@ void test_giving_up_ownership_never_empties_the_file()
     TCHECK(!be.resolv.empty());        // not emptied
 }
 
+void test_dns_ownership_survives_a_daemon_restart()
+{
+    // Die Luecke, die AP-M5 dokumentiert und nicht geschlossen hat: die
+    // Momentaufnahme lag im RouteManager. Ein Neustart nur des Daemons -- ein
+    // Absturz, ein Upgrade -- nahm sie mit, und der naechste Rueckfall auf
+    // Ethernet hatte nichts zurueckzuschreiben. Die Kamera loeste Namen
+    // weiter ueber ein Modem auf, das sie nicht mehr benutzte, und der falsche
+    // Zustand bestaetigte sich selbst.
+    FakeRouteBackend be;
+    be.resolv = {"192.168.1.1"};
+
+    UplinkStatus eth = up("eth0", UplinkType::Ethernet, "eth0", "192.168.1.10",
+                          "192.168.1.1", "192.168.1.1");
+    eth.info.dns_is_own = false;
+    UplinkStatus cell = up("cellular", UplinkType::Cellular, "usb0", "10.5.6.7",
+                           "10.5.6.1", "10.74.210.210", true);
+
+    {
+        RouteManager rm(be);      // der Daemon von vorhin
+        TCHECK(rm.reconcile(plan_routes({eth, cell}, UplinkPolicy{}, "cellular")).dns_written);
+        TCHECK(be.resolv.size() == 1 && be.resolv[0] == "10.74.210.210");
+        TCHECK(be.baseline_set);
+    }
+    // machino startet neu: NEUER RouteManager, kein Gedaechtnis. Das Backend --
+    // also die Datei unter /var/run -- ueberlebt.
+    RouteManager fresh(be);
+
+    cell.active = false;
+    eth.active = true;
+    const ReconcileReport r = fresh.reconcile(plan_routes({eth, cell}, UplinkPolicy{}, "eth0"));
+    TCHECK(r.dns_restored);
+    TCHECK(be.resolv.size() == 1 && be.resolv[0] == "192.168.1.1");
+    TCHECK(!be.baseline_set);
+}
+
+void test_a_restarted_daemon_does_not_snapshot_its_own_servers()
+{
+    // Der andere Weg, dasselbe zu verlieren: der neue Prozess sieht eine
+    // resolv.conf, die machino selbst geschrieben hat, und nimmt sie als
+    // "vorher" auf. Die Rueckgabe schriebe dann die Resolver des Anbieters
+    // zurueck -- formal erfolgreich und inhaltlich genau falsch.
+    FakeRouteBackend be;
+    be.resolv = {"192.168.1.1"};
+    UplinkStatus cell = up("cellular", UplinkType::Cellular, "usb0", "10.5.6.7",
+                           "10.5.6.1", "10.74.210.210", true);
+    {
+        RouteManager rm(be);
+        rm.reconcile(plan_routes({cell}, UplinkPolicy{}, "cellular"));
+    }
+    RouteManager fresh(be);
+    fresh.reconcile(plan_routes({cell}, UplinkPolicy{}, "cellular"));
+    // Die Grundlinie ist die ALTE geblieben, nicht die des Anbieters.
+    TCHECK(be.baseline_set);
+    TCHECK(be.baseline.size() == 1 && be.baseline[0] == "192.168.1.1");
+}
+
+void test_an_unreadable_resolv_conf_still_records_ownership()
+{
+    // Sonst gaebe niemand die Datei je wieder her: ohne Eintrag heisst es
+    // "besitzt nicht", und die Rueckgabe faende nichts zu tun.
+    FakeRouteBackend be;
+    be.dns_read_ok = false;
+    RouteManager rm(be);
+    UplinkStatus cell = up("cellular", UplinkType::Cellular, "usb0", "10.5.6.7",
+                           "10.5.6.1", "10.74.210.210", true);
+    rm.reconcile(plan_routes({cell}, UplinkPolicy{}, "cellular"));
+    TCHECK(be.baseline_set);          // besitzt
+    TCHECK(be.baseline.empty());      // und weiss nicht, was vorher da war
+
+    be.dns_read_ok = true;
+    const ReconcileReport r = rm.reconcile(plan_routes({}, UplinkPolicy{}, ""));
+    TCHECK(!r.dns_restored);
+    TCHECK(!r.error.empty());
+    TCHECK(!be.baseline_set);         // Besitz trotzdem abgegeben
+}
+
 void test_ownership_is_not_given_back_twice()
 {
     FakeRouteBackend be;
@@ -603,6 +703,9 @@ void run_route_plan_tests()
     test_failing_back_to_ethernet_puts_the_old_resolvers_back();
     test_the_snapshot_is_taken_once_and_not_overwritten_with_our_own();
     test_giving_up_ownership_never_empties_the_file();
+    test_dns_ownership_survives_a_daemon_restart();
+    test_a_restarted_daemon_does_not_snapshot_its_own_servers();
+    test_an_unreadable_resolv_conf_still_records_ownership();
     test_ownership_is_not_given_back_twice();
     test_dns_is_not_rewritten_when_it_already_matches();
     test_split_dns_drops_rubbish_and_duplicates();

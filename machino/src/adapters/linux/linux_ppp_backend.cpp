@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -53,10 +54,22 @@ std::string field(const std::string& text, const std::string& key)
 // beliebige pppd-Option an -- zum Beispiel "defaultroute", genau die, die hier
 // unterdrueckt wird. Deshalb wird nicht maskiert, sondern abgewiesen: was
 // hier nicht hineingehoert, hat auch keine sinnvolle maskierte Form.
+//
+// Das EINFACHE Anfuehrungszeichen gehoert mit in die Liste, und das war es
+// zuerst nicht. Die Einwahlnummer landet im Chat-Skript zwischen einfachen
+// Anfuehrungszeichen:
+//
+//     OK 'ATD*99***1#'
+//
+// Ein ' im Wert bricht dort aus und macht aus dem Rest eigene chat-Woerter --
+// also aus einem Konfigurationsfeld eine Anweisung an den Wahlvorgang. Die
+// Optionsdatei benutzt doppelte, das Chat-Skript einfache; verboten sind
+// deshalb beide.
 bool plain(const std::string& s)
 {
     for (char c : s)
-        if (c == '\n' || c == '\r' || c == '"' || c == '\\' || (unsigned char)c < 0x20)
+        if (c == '\n' || c == '\r' || c == '"' || c == '\'' || c == '\\' ||
+            (unsigned char)c < 0x20)
             return false;
     return true;
 }
@@ -89,19 +102,48 @@ cellular::PppExit LinuxPppBackend::exit_from_code(int code)
 bool LinuxPppBackend::write_file(const std::string& path, const std::string& text, int mode) const
 {
     const std::string tmp = path + ".machino-new";
-    FILE* f = fopen(tmp.c_str(), "wb");
-    if (!f) { LOGW(MOD, "%s: %s", tmp.c_str(), strerror(errno)); return false; }
-    // Die Rechte VOR dem Schreiben, nicht danach.
+
+    // Die Datei entsteht MIT den richtigen Rechten, nicht mit falschen und
+    // danach korrigiert.
     //
-    // Zwischen fopen und chmod liegt sonst ein Fenster, in dem die Datei mit
-    // den Rechten der umask existiert -- und in diese Datei geht gleich ein
-    // APN-Passwort. Ein Fenster von Mikrosekunden ist eines, das ein
-    // Angreifer mit einer Schleife trifft.
-    if (chmod(tmp.c_str(), mode) != 0)
-        LOGW(MOD, "%s: chmod: %s", tmp.c_str(), strerror(errno));
-    const bool ok = fwrite(text.data(), 1, text.size(), f) == text.size() &&
-                    fflush(f) == 0;
-    fclose(f);
+    // Eine frueher hier stehende Fassung machte fopen() und dann chmod(). Der
+    // Kommentar daneben behauptete, das Fenster sei geschlossen -- es war
+    // offen: fopen legt die Datei mit den Rechten der umask an, und in sie
+    // geht gleich ein APN-Passwort. Schlimmer noch, ein fehlgeschlagenes
+    // chmod war nur eine Warnung, und das Geheimnis wurde trotzdem
+    // geschrieben.
+    //
+    // O_EXCL, weil ein vorhandenes Temporaerstueck ein Symlink sein koennte,
+    // den jemand dorthin gelegt hat. Ein alter Rest wird vorher weggeraeumt;
+    // kann er das nicht, wird nicht geschrieben.
+    unlink(tmp.c_str());
+    const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, (mode_t)mode);
+    if (fd < 0) { LOGW(MOD, "%s: %s", tmp.c_str(), strerror(errno)); return false; }
+
+    // open() maskiert den Modus mit der umask -- 0600 kann dabei nur enger
+    // werden, nie weiter, aber "enger" ist bei 0644 fuer die Wunschdatei
+    // falsch herum. fchmod arbeitet auf dem bereits eigenen Deskriptor und ist
+    // damit rennfrei; SCHEITERT es, wird nichts geschrieben.
+    if (fchmod(fd, (mode_t)mode) != 0) {
+        LOGE(MOD, "%s: the file permissions could not be set (%s) - nothing was written",
+             tmp.c_str(), strerror(errno));
+        close(fd);
+        unlink(tmp.c_str());
+        return false;
+    }
+
+    size_t off = 0;
+    bool ok = true;
+    while (off < text.size()) {
+        const ssize_t n = write(fd, text.data() + off, text.size() - off);
+        if (n > 0) { off += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR) continue;
+        ok = false;
+        break;
+    }
+    if (ok) ok = (fsync(fd) == 0);
+    close(fd);
+
     if (!ok) { unlink(tmp.c_str()); return false; }
     if (rename(tmp.c_str(), path.c_str()) != 0) {
         LOGW(MOD, "%s: rename: %s", path.c_str(), strerror(errno));
@@ -154,7 +196,22 @@ Result LinuxPppBackend::start(const cellular::PppRequest& req)
     chat += "CONNECT ''\n";
     if (!write_file(conf_dir_ + "/chat", chat, 0600)) return Result::error();
 
-    const bool need_auth = (req.auth != cellular::AuthMode::None) && !req.username.empty();
+    // PAP oder CHAP OHNE Benutzernamen ist ein Konfigurationsfehler, kein
+    // Grund, still ohne Authentifizierung zu waehlen.
+    //
+    // Die erste Fassung schrieb `auth != None && !username.empty()` und fiel
+    // damit lautlos auf "keine Auth" zurueck. Der Anruf scheitert dann am Netz
+    // -- mit "kein CONNECT" oder einer Ablehnung, die nichts ueber die Ursache
+    // sagt. Die API weist das schon ab; hier steht die zweite Linie, denn
+    // dieser Pfad ist auch aus einer von Hand bearbeiteten machino.conf
+    // erreichbar.
+    if (req.auth != cellular::AuthMode::None && req.username.empty()) {
+        LOGW(MOD, "%s authentication is selected but no username is configured - "
+                  "not dialling without it",
+             req.auth == cellular::AuthMode::Pap ? "PAP" : "CHAP");
+        return Result::error();
+    }
+    const bool need_auth = (req.auth != cellular::AuthMode::None);
 
     // ---- die Optionen -----------------------------------------------------
     std::string o;

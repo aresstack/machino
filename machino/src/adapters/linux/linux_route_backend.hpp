@@ -23,8 +23,12 @@ public:
     // The paths are injectable so the read side can be pointed at a fixture
     // tree. The WRITE side talks to the kernel and has no such option, which
     // is why the reconciliation logic lives in core and is tested there.
+    // Die Grundlinie liegt unter /var/run, und das ist eine Entscheidung ueber
+    // die Lebensdauer: tmpfs ueberlebt einen Daemon-Neustart und stirbt beim
+    // Reboot. Genau so soll der Besitz an resolv.conf sich verhalten.
     explicit LinuxRouteBackend(std::string proc_root = "/proc",
-                               std::string resolv_path = "/etc/resolv.conf");
+                               std::string resolv_path = "/etc/resolv.conf",
+                               std::string baseline_path = "/var/run/machino-dns-baseline");
 
     bool default_routes(std::vector<net::DefaultRoute>& out) const override;
 
@@ -36,12 +40,17 @@ public:
     Result set_dns(const std::vector<std::string>& servers) override;
     bool   dns(std::vector<std::string>& out) const override;
 
+    bool   dns_baseline(std::vector<std::string>& out) const override;
+    Result set_dns_baseline(const std::vector<std::string>& servers) override;
+    Result clear_dns_baseline() override;
+
 private:
     Result route_op(int nlmsg_type, int flags, const std::string& ifname,
                     const std::string& gateway, int metric);
 
     std::string proc_;
     std::string resolv_;
+    std::string baseline_;
 };
 
 }} // namespace machino::linuxsys

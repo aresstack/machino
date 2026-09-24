@@ -48,8 +48,52 @@ bool put_attr(struct nlmsghdr* nh, size_t cap, int type, const void* data, size_
 
 } // namespace
 
-LinuxRouteBackend::LinuxRouteBackend(std::string proc_root, std::string resolv_path)
-    : proc_(std::move(proc_root)), resolv_(std::move(resolv_path)) {}
+LinuxRouteBackend::LinuxRouteBackend(std::string proc_root, std::string resolv_path,
+                                     std::string baseline_path)
+    : proc_(std::move(proc_root)), resolv_(std::move(resolv_path)),
+      baseline_(std::move(baseline_path)) {}
+
+bool LinuxRouteBackend::dns_baseline(std::vector<std::string>& out) const
+{
+    // Die EXISTENZ der Datei ist die Antwort auf "besitzen wir resolv.conf".
+    // Eine leere Datei heisst "ja, und was vorher dastand, war nicht lesbar" --
+    // das ist etwas anderes als "nein", und die beiden zu verwechseln hiesse,
+    // die Datei nie wieder herzugeben.
+    if (access(baseline_.c_str(), F_OK) != 0) return false;
+    out = net::parse_resolv_conf(read_file(baseline_));
+    return true;
+}
+
+Result LinuxRouteBackend::set_dns_baseline(const std::vector<std::string>& servers)
+{
+    // Dasselbe Format wie resolv.conf, damit ein Mensch, der beim Suchen
+    // darueber stolpert, sofort sieht, was er vor sich hat.
+    std::string text = "# machino: what /etc/resolv.conf held before the active "
+                       "uplink took it over\n";
+    for (const std::string& s : servers) text += "nameserver " + s + "\n";
+
+    const std::string tmp = baseline_ + ".new";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f) { LOGW(MOD, "%s: %s", tmp.c_str(), strerror(errno)); return Result::error(); }
+    const bool ok = fwrite(text.data(), 1, text.size(), f) == text.size() && fflush(f) == 0;
+    fclose(f);
+    if (!ok) { unlink(tmp.c_str()); return Result::error(); }
+    if (rename(tmp.c_str(), baseline_.c_str()) != 0) {
+        LOGW(MOD, "%s: rename: %s", baseline_.c_str(), strerror(errno));
+        unlink(tmp.c_str());
+        return Result::error();
+    }
+    return Result::ok();
+}
+
+Result LinuxRouteBackend::clear_dns_baseline()
+{
+    if (unlink(baseline_.c_str()) != 0 && errno != ENOENT) {
+        LOGW(MOD, "%s: %s", baseline_.c_str(), strerror(errno));
+        return Result::error();
+    }
+    return Result::ok();
+}
 
 bool LinuxRouteBackend::default_routes(std::vector<net::DefaultRoute>& out) const
 {

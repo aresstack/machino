@@ -778,6 +778,36 @@ did   "ppp still loads usb_wwan"           "usb_wwan.ko"
 did   "ppp starts the cellular helper"     "started machino-cellular-helper"
 didnt "ppp does not load usbnet"           "usbnet.ko"
 didnt "ppp does not load cdc_ether"        "cdc_ether.ko"
+
+# stop MUSS ein laufendes pppd beenden -- und auf sein Ende warten.
+#
+# Der Mobilfunk-Helfer startet pppd in einer Hintergrund-Subshell. Wer nur den
+# Helfer beendet, laesst die Subshell und damit pppd weiterleben; danach
+# besitzt ein verwaister pppd den Modem-Port, und der naechste Start findet
+# einen Port, der auf nichts antwortet. Das ist im Review aufgefallen und war
+# ein echter Defekt.
+#
+# Zwei Schlafprozesse als Statthalter: einer fuer pppd, einer fuer den Helfer.
+# Beide muessen weg sein, wenn stop zurueckkehrt.
+sleep 300 & _fake_pppd=$!
+sleep 300 & _fake_helper=$!
+echo "$_fake_pppd"   > "$U/var/run/pppd.pid"
+echo "$_fake_helper" > "$U/var/run/machino-cellular-helper.pid"
+: > "$U/var/run/machino-ppp.status"
+PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" stop > "$WORK/usbout" 2>&1
+
+if kill -0 "$_fake_pppd" 2>/dev/null; then
+    bad "stop left pppd running"; kill -9 "$_fake_pppd" 2>/dev/null
+else ok; fi
+if kill -0 "$_fake_helper" 2>/dev/null; then
+    bad "stop left the cellular helper running"; kill -9 "$_fake_helper" 2>/dev/null
+else ok; fi
+hasnt "stop removed the pppd pid file"    "$U/var/run/pppd.pid"
+hasnt "stop removed the ppp status file"  "$U/var/run/machino-ppp.status"
+
+# Und ohne laufendes PPP darf stop trotzdem sauber durchlaufen.
+PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" stop > "$WORK/usbout" 2>&1
+if [ $? = 0 ]; then ok; else bad "a second stop failed: $(cat "$WORK/usbout")"; fi
 didnt "ppp loads no wifi driver"           "aic8800"
 
 # Und andersherum: bei ECM (auch ohne den Schluessel) kommt das Netzwerkpaar.

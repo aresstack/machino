@@ -94,6 +94,17 @@ ReconcileReport RouteManager::reconcile(const RoutePlan& plan)
     // Only when the plan names an owner. An empty list means the active uplink
     // had nothing to say about DNS, and overwriting the file with that would
     // be the quiet way to break every outgoing connection on the camera.
+    // Ob machino resolv.conf besitzt, steht NICHT in diesem Objekt.
+    //
+    // Es stand dort einmal, und das war die Luecke: ein Neustart nur des
+    // Daemons -- ein Absturz, ein Upgrade -- nahm die Momentaufnahme mit, und
+    // der naechste Rueckfall auf Ethernet hatte nichts mehr zurueckzuschreiben.
+    // Der Besitz liegt jetzt beim Backend, in einer Datei unter /var/run: sie
+    // ueberlebt den Prozess und stirbt beim Reboot, und genau diese
+    // Lebensdauer ist die richtige.
+    std::vector<std::string> baseline;
+    const bool owned = be_.dns_baseline(baseline);
+
     if (!plan.dns_owner.empty() && !plan.dns.empty()) {
         std::vector<std::string> current;
         // A failed read is treated as "unknown, so write it": the cost is one
@@ -101,40 +112,51 @@ ReconcileReport RouteManager::reconcile(const RoutePlan& plan)
         // in place because the file could not be parsed.
         const bool known = be_.dns(current);
 
-        // Snapshot BEFORE the first overwrite, and only then. Re-snapshotting
-        // later would capture machino's own servers and make the restore a
-        // no-op -- which is the same as having no restore at all.
-        if (!owns_dns_ && known) dns_before_ = current;
+        // Die Momentaufnahme VOR dem ersten Ueberschreiben, und nur dann. Sie
+        // spaeter zu erneuern hiesse, machinos eigene Server aufzuzeichnen --
+        // und die Rueckgabe waere ein No-op, also dasselbe wie keine.
+        //
+        // Auch ein LEERER Eintrag wird geschrieben: er heisst "besitzt, aber
+        // was vorher dastand, war nicht lesbar". Ihn wegzulassen hiesse,
+        // "besitzt nicht" zu behaupten, und dann gaebe niemand die Datei je
+        // wieder her.
+        if (!owned) {
+            const Result rc = be_.set_dns_baseline(known ? current : std::vector<std::string>{});
+            if (!rc.is_ok() && rep.error.empty())
+                rep.error = "the previous resolvers could not be recorded - "
+                            "they will not be restored automatically";
+        }
 
         if (!known || current != plan.dns) {
             const Result rc = be_.set_dns(plan.dns);
             if (rc.is_ok()) {
                 rep.dns_written = true;
-                owns_dns_ = true;
             } else if (rep.error.empty()) {
                 rep.error = "the resolver configuration could not be written";
             }
-        } else {
-            owns_dns_ = true;       // already exactly what we would have written
         }
-    } else if (owns_dns_) {
+    } else if (owned) {
         // Nobody owns DNS any more -- the active uplink cannot name its own
         // servers, or there is no active uplink. Put back what was there
         // before machino took over.
-        owns_dns_ = false;
-        if (dns_before_.empty()) {
+        if (baseline.empty()) {
             // Nothing to restore. Leaving machino's servers is wrong; writing
             // an empty file is worse -- it takes name resolution away from the
             // whole camera. The DHCP hooks rewrite the file on their next
             // lease, so this corrects itself; saying nothing about it would
             // not.
+            be_.clear_dns_baseline();
             rep.error = "the previous resolvers are unknown - the file keeps the "
                         "ones the last uplink supplied until a lease renews";
         } else {
-            const Result rc = be_.set_dns(dns_before_);
+            const Result rc = be_.set_dns(baseline);
             if (rc.is_ok()) {
                 rep.dns_restored = true;
-                dns_before_.clear();
+                // Den Besitz ERST nach dem erfolgreichen Zurueckschreiben
+                // abgeben. Andersherum waere die Grundlinie weg und die
+                // fremden Server stuenden weiter in der Datei -- ohne dass
+                // noch jemand wuesste, dass sie dort nicht hingehoeren.
+                be_.clear_dns_baseline();
             } else if (rep.error.empty()) {
                 rep.error = "the previous resolver configuration could not be restored";
             }

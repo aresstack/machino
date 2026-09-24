@@ -562,6 +562,57 @@ void test_the_document_keeps_selection_and_reality_apart()
     TCHECK(same.find("\"nicMode\":null") != std::string::npos);
 }
 
+void test_pap_or_chap_without_a_username_is_a_configuration_error()
+{
+    // Nicht still auf "keine Auth" zurueckfallen. Der Anruf scheiterte dann am
+    // Netz, mit einer Meldung, die nichts ueber die Ursache sagt.
+    Json body; std::string e;
+    CellularConfig c;
+    c.apn = "netpublic";
+
+    TCHECK(Json::parse("{\"authMode\":\"pap\"}", body, e));
+    TCHECK(!api::cellular_config_from_json(body, c, e));
+    TCHECK(e.find("username") != std::string::npos);
+    TCHECK(c.auth == AuthMode::None);       // nichts uebernommen
+
+    TCHECK(Json::parse("{\"authMode\":\"chap\"}", body, e));
+    TCHECK(!api::cellular_config_from_json(body, c, e));
+
+    // Mit Benutzernamen geht es.
+    TCHECK(Json::parse("{\"authMode\":\"pap\",\"username\":\"u\"}", body, e));
+    TCHECK(api::cellular_config_from_json(body, c, e));
+    TCHECK(c.auth == AuthMode::Pap);
+}
+
+void test_a_dial_number_cannot_break_out_of_the_chat_script()
+{
+    // Die Einwahlnummer landet im Chat-Skript zwischen EINFACHEN
+    // Anfuehrungszeichen: OK 'ATD*99***1#'. Ein ' im Wert bricht dort aus und
+    // macht aus dem Rest eigene chat-Woerter -- aus einem Feld in einem
+    // Formular also eine Anweisung an den Wahlvorgang.
+    //
+    // Geprueft wird die Sperre selbst, nicht das Backend: LinuxPppBackend
+    // laesst sich auf diesem Host nicht uebersetzen. Die Validierung muss also
+    // schon greifen, bevor der Wert dorthin kommt.
+    Json body; std::string e;
+    CellularConfig c;
+    const char* bad[] = {
+        "{\"dial\":\"*99#' ; ATH ; '\"}",
+        "{\"dial\":\"*99#\\\"\"}",
+        "{\"dial\":\"*99#\\\\\"}",
+    };
+    for (const char* b : bad) {
+        TCHECK(Json::parse(b, body, e));
+        const std::string before = c.dial;
+        TCHECK(!api::cellular_config_from_json(body, c, e));
+        TCHECK(c.dial == before);
+    }
+    // Die normale Nummer bleibt erlaubt.
+    TCHECK(Json::parse("{\"dial\":\"*99***1#\"}", body, e));
+    TCHECK(api::cellular_config_from_json(body, c, e));
+    TCHECK(c.dial == "*99***1#");
+}
+
 void test_no_secret_reaches_the_cellular_document()
 {
     CellularStatus st; st.present = true;
@@ -613,5 +664,7 @@ void run_ppp_link_tests()
     test_the_data_link_survives_a_settings_round_trip();
     test_an_unknown_data_link_is_refused_not_defaulted();
     test_the_document_keeps_selection_and_reality_apart();
+    test_pap_or_chap_without_a_username_is_a_configuration_error();
+    test_a_dial_number_cannot_break_out_of_the_chat_script();
     test_no_secret_reaches_the_cellular_document();
 }

@@ -124,6 +124,32 @@ bool check_wifi_secret(const std::string& s, bool required, std::string& err)
     return true;
 }
 
+// Ein Wert, der spaeter in eine Konfigurationsdatei oder ein Chat-Skript geht,
+// darf dort keine Zeile beenden und kein eigenes Wort anfangen.
+//
+// Die Einwahlnummer landet zwischen EINFACHEN Anfuehrungszeichen im
+// Chat-Skript (`OK 'ATD*99***1#'`), APN und Benutzername zwischen DOPPELTEN in
+// der pppd-Optionsdatei. Ein Anfuehrungszeichen im Wert bricht dort aus, und
+// aus einem Formularfeld wird eine Anweisung -- zum Beispiel `defaultroute`,
+// genau die Option, die machino unterdrueckt, weil sie dem Failover die
+// Grundlage naehme.
+//
+// Abgewiesen statt maskiert: was hier nicht hineingehoert, hat auch keine
+// sinnvolle maskierte Form. Dieselbe Pruefung steht noch einmal im Backend --
+// dort als zweite Linie, weil dieser Pfad auch aus einer von Hand bearbeiteten
+// machino.conf erreichbar ist.
+bool config_safe(const std::string& s, const char* field, std::string& err)
+{
+    for (char c : s) {
+        if (c == '\n' || c == '\r' || c == '"' || c == '\'' || c == '\\' ||
+            (unsigned char)c < 0x20) {
+            err = std::string(field) + " must not contain quotes, backslashes or line breaks";
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 // ------------------------------------------------------------------ USB
@@ -867,6 +893,14 @@ bool cellular_config_from_json(const Json& body, cellular::CellularConfig& cfg, 
     if (next.auth != cellular::AuthMode::None && next.username.empty()) {
         err = "PAP or CHAP needs a username"; return false;
     }
+
+    // ZULETZT, ueber das Ergebnis und nicht ueber das Fragment: ein PATCH kann
+    // ein Feld unberuehrt lassen, und geprueft werden muss, was am Ende in der
+    // Konfigurationsdatei steht.
+    if (!config_safe(next.apn, "apn", err)) return false;
+    if (!config_safe(next.dial, "dial", err)) return false;
+    if (!config_safe(next.username, "username", err)) return false;
+    if (!config_safe(next.password, "password", err)) return false;
 
     cfg = next;
     return true;

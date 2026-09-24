@@ -46,18 +46,14 @@ public:
 
 private:
     IRouteBackend& be_;
-
-    // What the resolver file said before machino first took it over, and
-    // whether it currently holds it.
-    //
-    // Taking ownership without being able to give it back is the failure this
-    // exists to prevent. Cellular becomes active, machino writes the carrier's
-    // resolvers, Ethernet comes back -- and Ethernet cannot name its own
-    // servers, because on Linux it learns them from the very file machino just
-    // overwrote. Without a snapshot there is nothing to go back to, and the
-    // camera resolves names through a modem it is no longer using.
-    bool                     owns_dns_ = false;
-    std::vector<std::string> dns_before_;
 };
+
+// Der Besitz an resolv.conf und die Momentaufnahme davor liegen NICHT hier,
+// sondern beim Backend.
+//
+// Sie lagen einmal hier, und das war die Luecke: ein Neustart nur des Daemons
+// nahm die Momentaufnahme mit, und der naechste Rueckfall auf Ethernet hatte
+// nichts zurueckzuschreiben -- die Kamera loeste Namen weiter ueber ein Modem
+// auf, das sie nicht mehr benutzte. Siehe IRouteBackend::dns_baseline.
 
 }} // namespace machino::net

@@ -60,6 +60,9 @@ WIFI_PIDFILE=$RUNDIR/machino-wifi-role.pid
 # --- Mobilfunk ---
 CELL_HELPER=$ROOT/usr/sbin/machino-cellular-helper
 CELL_PIDFILE=$RUNDIR/machino-cellular-helper.pid
+# Dieselbe Datei, die machino-cellular-helper schreibt. Zwei Schreiber gibt es
+# nicht -- der Helfer legt sie an, dieses Skript raeumt sie beim stop ab.
+PPP_PIDFILE=$RUNDIR/pppd.pid
 CELL_VID=2c7c
 CELL_PID=6005
 
@@ -263,16 +266,49 @@ start_cellular() {
 	return 0
 }
 
+# Einen Prozess ueber SEINE PID-Datei beenden und auf sein Ende WARTEN.
+#
+# kill(1) kehrt zurueck, wenn das Signal zugestellt ist, nicht wenn der
+# Empfaenger fertig ist. Beim WLAN hat genau das einen Rollenwechsel zerlegt:
+# der Nachfolger startete, waehrend der Vorgaenger das Interface noch hielt.
+#
+# Nie killall. Auf dieser Kamera laeuft alles als root, und ein `killall pppd`
+# traefe auch ein pppd, das jemand anders gestartet hat.
+kill_and_wait() {
+	[ -f "$1" ] || return 0
+	_kw_pid=$(cat "$1" 2>/dev/null)
+	rm -f "$1"
+	[ -n "$_kw_pid" ] || return 0
+	kill "$_kw_pid" 2>/dev/null || return 0
+	_kw_n=0
+	while kill -0 "$_kw_pid" 2>/dev/null; do
+		_kw_n=$((_kw_n + 1))
+		if [ $_kw_n -ge 50 ]; then kill -9 "$_kw_pid" 2>/dev/null; sleep 1; break; fi
+		usleep 100000 2>/dev/null || sleep 1
+	done
+}
+
 stop_cellular() {
-	if [ -f "$CELL_PIDFILE" ]; then
-		kill "$(cat "$CELL_PIDFILE")" 2>/dev/null
-		rm -f "$CELL_PIDFILE"
-	fi
+	# pppd ZUERST, und zwar ueber seine eigene PID.
+	#
+	# Der Helfer startet pppd in einer Hintergrund-Subshell; ihn zu beenden
+	# laesst die Subshell und damit pppd weiterleben. Danach besitzt ein
+	# verwaister pppd den Modem-Port, und der naechste Start -- nach einem
+	# Moduswechsel oder einem restart -- findet einen Port, der auf nichts
+	# antwortet, und diagnostiziert eine alte Datensitzung, die er selbst
+	# hinterlassen hat. Genau dieser Fall ist im Review aufgefallen.
+	#
+	# Reihenfolge: erst pppd, dann der Helfer. Andersherum waere die Subshell
+	# schon tot, wenn pppd endet, und niemand schriebe den Exit-Code auf.
+	kill_and_wait "$PPP_PIDFILE"
+
+	kill_and_wait "$CELL_PIDFILE"
+
 	# Die DHCP-Clients des Helfers, falls er sie nicht mehr abraeumen konnte.
 	for p in $RUNDIR/udhcpc.usb0.pid $RUNDIR/udhcpc.eth1.pid $RUNDIR/udhcpc.wwan0.pid; do
-		[ -f "$p" ] && { kill "$(cat "$p")" 2>/dev/null; rm -f "$p"; }
+		kill_and_wait "$p"
 	done
-	rm -f $RUNDIR/machino-cellular.state
+	rm -f $RUNDIR/machino-cellular.state $RUNDIR/machino-ppp.status
 }
 
 # ------------------------------------------------------------------ main ----
