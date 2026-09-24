@@ -151,12 +151,14 @@ jobs:
           mkdir -p "$O/wifi/modules" "$O/wifi/firmware"
           find wifi-payload -name '*.ko'     -exec cp -f {} "$O/wifi/modules/" \; 2>/dev/null || true
           find wifi-payload -name 'hostapd'  -type f -exec cp -f {} "$O/wifi/hostapd" \; 2>/dev/null || true
-          # Firmware kommt als Verzeichnis (aic8800DC/...), Struktur bleibt.
-          for d in $(find wifi-payload -type d -name 'aic8800*' 2>/dev/null); do
-            case "$d" in *modules*) continue ;; esac
-            cp -r "$d" "$O/wifi/firmware/" 2>/dev/null || true
-          done
-          rmdir "$O/wifi/firmware" 2>/dev/null || true
+          # NUR aic8800DC. Ein "aic8800*"-Glob hat hier zuerst das
+          # ARTEFAKTVERZEICHNIS aic8800-t40 mitgenommen und das Bundle auf
+          # 9,4 MB aufgeblasen -- mehr als das Overlay der Kamera insgesamt hat.
+          # Der Upstream-Treiber bringt Firmware fuer D, DC, D80 und D80X2 mit;
+          # dieses Board ist ein DC, und die anderen drei waeren gut 3 MB, die
+          # nie gelesen werden.
+          fwsrc=$(find wifi-payload -type d -name aic8800DC | head -1)
+          if [ -n "$fwsrc" ]; then cp -r "$fwsrc" "$O/wifi/firmware/"; fi
           chmod 0755 "$O/wifi/hostapd" 2>/dev/null || true
           {
             echo "# WiFi payload in this bundle"
