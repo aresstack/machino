@@ -33,6 +33,32 @@ move_file() {
 # the full path). This is the safety/rollback path, so it must use the verified
 # matcher too.
 machino_running() { pgrep -f /usr/bin/machino >/dev/null 2>&1; }
+
+# MACHINO_ROOT heisst: Dateien in einen Wegwerfbaum, und sonst NICHTS anfassen.
+#
+# Das stand so schon in install.sh ("everything the installer touches goes
+# through it") und war fuer Prozesse schlicht falsch. Ein Sandbox-Uninstall hat
+# auf der Kamera den echten machino gestoppt und wlan0 heruntergefahren: die
+# Init-Skripte liegen zwar unter $ROOT, aber ihr stop() arbeitet mit absoluten
+# Pfaden -- /var/run/..., pgrep, ip link. Und der Zweig, der Majestics
+# Boot-Slot wiederherstellt, haette Majestic auf der echten Kamera GESTARTET,
+# neben einem laufenden machino. Zwei Besitzer der Medienhardware ist genau
+# das, was dieses Paket verhindern soll.
+#
+# Deshalb: kein Start, kein Stop, kein kill, solange MACHINO_ROOT gesetzt ist.
+# Dateien werden weiterhin vollstaendig behandelt, damit der Test etwas wert
+# bleibt.
+sandboxed() { [ -n "$ROOT" ]; }
+run_live() {
+    if sandboxed; then
+        say "sandbox ($ROOT): uebersprungen -- $*"
+        return 0
+    fi
+    # Die Ausgabe wird HIER unterdrueckt, nicht an der Aufrufstelle. Stuende
+    # dort ein >/dev/null, verschluckte es auch die Sandbox-Meldung, und der
+    # Test koennte nicht mehr pruefen, dass wirklich nichts passiert ist.
+    "$@" >/dev/null 2>&1
+}
 case "${1:-}" in --keep-config) KEEP_CONFIG=1 ;; esac
 
 preinstall=none
@@ -43,7 +69,7 @@ say "pre-install state was: $preinstall"
 # Do this first: the media hardware must be free before anything else may claim
 # it, and before the init script that knows how to stop it is removed.
 if [ -x "$INITD/machino" ]; then
-    "$INITD/machino" stop >/dev/null 2>&1
+    run_live "$INITD/machino" stop
 fi
 i=0
 while machino_running && [ $i -lt 15 ]; do i=$((i + 1)); sleep 1; done
@@ -64,7 +90,7 @@ rm -f "$INITD/S95streamer"
 # The WiFi boot script. Stopped first so no supplicant or DHCP client is left
 # running against a machino that is going away.
 if [ -f "$INITD/S42wifi" ]; then
-    "$INITD/S42wifi" stop >/dev/null 2>&1
+    run_live "$INITD/S42wifi" stop
     rm -f "$INITD/S42wifi" "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
     rm -f "$ROOT/usr/sbin/machino-wifi-role"
 fi
@@ -101,7 +127,7 @@ case "$preinstall" in
         say "Majestic auto-start restored (it was enabled before the install)"
         # Bring it back up now, so the camera is not left without a streamer.
         if ! pgrep -x majestic >/dev/null 2>&1 && [ -x "$INITD/S95majestic" ]; then
-            "$INITD/S95majestic" start >/dev/null 2>&1 || warn "majestic did not start - try: /etc/init.d/S95majestic start"
+            run_live "$INITD/S95majestic" start || warn "majestic did not start - try: /etc/init.d/S95majestic start"
         fi
         ;;
     majestic-disabled)
@@ -142,7 +168,9 @@ fi
 # Stop the WebUI host we may have started; Majestic serves port 80 itself.
 if [ -r "$ROOT/var/run/machino-httpd.pid" ]; then
     pid=$(cat "$ROOT/var/run/machino-httpd.pid" 2>/dev/null)
-    [ -n "${pid:-}" ] && kill "$pid" 2>/dev/null
+    # Auch das nicht in der Sandbox: die Zahl in der Datei ist eine PID auf dem
+    # ECHTEN System, egal unter welchem Wurzelverzeichnis die Datei liegt.
+    [ -n "${pid:-}" ] && ! sandboxed && kill "$pid" 2>/dev/null
     rm -f "$ROOT/var/run/machino-httpd.pid"
 fi
 

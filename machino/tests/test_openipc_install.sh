@@ -552,6 +552,21 @@ hasnt "driver removed again"        "$WORK/root/etc/machino/modules/aic8800.ko"
 hasnt "loader removed again"        "$WORK/root/etc/machino/modules/aic_load_fw.ko"
 hasnt "firmware removed again"      "$WORK/root/lib/firmware/aic8800DC/fmacfw.bin"
 
+# MACHINO_ROOT darf NICHTS am echten System anfassen.
+#
+# Das war es naemlich nicht: ein Sandbox-Uninstall hat auf der Kamera den
+# laufenden machino gestoppt und wlan0 heruntergefahren. Die Init-Skripte
+# liegen unter $ROOT, aber ihr stop() arbeitet mit absoluten Pfaden. Der
+# Uninstaller sagt jetzt fuer jede uebersprungene Aktion, dass er sie
+# uebersprungen hat -- und darauf wird hier bestanden.
+make_bundle; make_camera auto
+run_install >/dev/null 2>&1
+run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
+if grep -q "sandbox.*uebersprungen" "$WORK/out"; then ok
+else bad "the sandbox uninstall did not report skipping a live action - it may have performed one"; fi
+if grep -q "sandbox.*uebersprungen -- .*init.d/machino stop" "$WORK/out"; then ok
+else bad "stopping machino was not skipped in the sandbox"; fi
+
 # ------- 12c) the menu entry is opt-in and header.cgi stays byte-identical --
 # The installer must not edit p/header.cgi behind the user's back: a later
 # upgrade of the stock WebUI would then either revert the change or conflict
