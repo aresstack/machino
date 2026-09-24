@@ -474,6 +474,33 @@ int main(int argc, char** argv) {
                 LOGI(MOD, "usb: port power enabled at boot");
         }
 
+        // Was der Boot-Helfer WIRKLICH gestartet hat.
+        //
+        // Nicht dasselbe wie usb.mode in der Konfiguration: dazwischen liegt
+        // der Neustart. Die Marke schreibt machino-usb-helper beim Start, und
+        // sie liegt unter /var/run -- sie ueberlebt den Neustart absichtlich
+        // nicht, denn genau danach stimmen die beiden Werte wieder ueberein.
+        //
+        // Nicht lesbar heisst "off". Das ist die vorsichtige Richtung: es
+        // meldet einen noetigen Neustart zu viel, nie einen zu wenig.
+        usb::UsbFunction boot_usb_function = usb::UsbFunction::Off;
+        {
+            std::ifstream f("/var/run/machino-usb-mode");
+            std::string t;
+            if (f && std::getline(f, t)) {
+                while (!t.empty() && (t.back() == '\n' || t.back() == '\r' || t.back() == ' '))
+                    t.pop_back();
+                if (!t.empty() && !usb::usb_function_parse(t, boot_usb_function)) {
+                    LOGW(MOD, "usb: the boot helper recorded an unknown mode - assuming off");
+                    boot_usb_function = usb::UsbFunction::Off;
+                }
+            }
+            usb_service.set_boot_function(boot_usb_function);
+            LOGI(MOD, "usb: boot helper started '%s', configuration says '%s'",
+                 usb::usb_function_name(boot_usb_function),
+                 usb::usb_function_name(usb_service.config().function));
+        }
+
         linuxsys::LinuxEthernetUplink eth_uplink("eth0");
         linuxsys::WpaSupplicantWifi   wifi("wlan0");
         // hostapd is started by the init script, before this process and
@@ -528,12 +555,20 @@ int main(int argc, char** argv) {
         // when the change is confirmed, and every apply below re-reads it
         // first. That is what makes a rollback actually restore something
         // instead of just removing the pending record.
-        auto stored_cellular = [&read_settings] {
+        auto stored_cellular = [&read_settings, boot_usb_function] {
             cellular::CellularConfig cc;
             KeyValues keys; api::cellular_config_to_settings(cc, keys);
             std::string e;
             if (!api::cellular_config_from_settings(read_settings(keys), cc, e))
                 LOGW(MOD, "cellular: %s - using defaults", e.c_str());
+            // Ob Mobilfunk laeuft, steht NICHT in der Mobilfunkkonfiguration.
+            // Es haengt daran, was der Boot-Helfer geladen hat -- und zwar am
+            // GESTARTETEN Modus, nicht am gespeicherten. Wer gerade auf
+            // cellular umgestellt hat, hat noch keine Modem-Treiber im Kernel;
+            // hier trotzdem loszulaufen hiesse, einen AT-Port zu suchen, den
+            // niemand angelegt hat, und "kein Modem" zu melden statt "Neustart
+            // erforderlich".
+            cc.enabled = (boot_usb_function == usb::UsbFunction::Cellular);
             return cc;
         };
         {

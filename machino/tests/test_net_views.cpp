@@ -102,38 +102,87 @@ void test_usb_patch_rejects_bad_values_and_changes_nothing()
 // beim Bring-up zweimal in den OOM getrieben. Eine Kamera, an der ein Modem
 // haengen soll, darf das nicht bezahlen, nur weil niemand an die Einstellung
 // gedacht hat. Deshalb steht der Default hier und nicht nur in einer Doku.
-void test_usb_wifi_is_off_until_someone_says_otherwise()
+void test_usb_is_off_until_someone_says_otherwise()
 {
     const usb::UsbConfig fresh;
-    TCHECK(!fresh.wifi_enabled);
+    TCHECK(fresh.function == usb::UsbFunction::Off);
 
-    // Auch ueber die Einstellungen: ein Gerät ohne den Schluessel in seiner
+    // Auch ueber die Einstellungen: ein Geraet ohne den Schluessel in seiner
     // machino.conf -- also jede Kamera, die vor dieser Version installiert
     // wurde -- bleibt aus.
     usb::UsbConfig loaded;
-    loaded.wifi_enabled = true;                   // als waere etwas anderes gesetzt
+    loaded.function = usb::UsbFunction::Wifi;     // als waere etwas anderes gesetzt
     std::string err;
     TCHECK(usb_config_from_settings({{"usb.enabled", "true"}}, loaded, err));
-    TCHECK(loaded.wifi_enabled);                  // ein fehlender Schluessel aendert nichts
+    TCHECK(loaded.function == usb::UsbFunction::Wifi);   // ein fehlender Schluessel aendert nichts
     usb::UsbConfig from_scratch;
     TCHECK(usb_config_from_settings({{"usb.enabled", "true"}}, from_scratch, err));
-    TCHECK(!from_scratch.wifi_enabled);           // und der Ausgangspunkt ist aus
+    TCHECK(from_scratch.function == usb::UsbFunction::Off);
 
-    TCHECK(usb_config_from_settings({{"usb.wifi.enabled", "true"}}, from_scratch, err));
-    TCHECK(from_scratch.wifi_enabled);
+    TCHECK(usb_config_from_settings({{"usb.mode", "cellular"}}, from_scratch, err));
+    TCHECK(from_scratch.function == usb::UsbFunction::Cellular);
 
     // Die Seite muss "Neustart erforderlich" sagen koennen, ohne es zu raten.
     const Json j = usb_config_json(fresh);
-    const Json* w = j.get("wifi");
-    TCHECK(w && w->is_object());
-    TCHECK(w->get("enabled") && !w->get("enabled")->as_bool());
-    TCHECK(w->get("appliesAt") && w->get("appliesAt")->as_string() == "reboot");
+    TCHECK(j.get("mode") && j.get("mode")->as_string() == "off");
+    TCHECK(j.get("modeAppliesAt") && j.get("modeAppliesAt")->as_string() == "reboot");
+}
+
+// Ein Tippfehler in der Datei darf nicht still zu "off" werden.
+//
+// "Die Einstellung hat nicht gegriffen" und "die Einstellung ist aus" sehen
+// von aussen gleich aus, und der Unterschied entscheidet, wo jemand sucht.
+void test_an_unknown_usb_mode_is_refused_and_leaves_the_camera_off()
+{
+    usb::UsbConfig cfg;
+    std::string err;
+    TCHECK(!usb_config_from_settings({{"usb.mode", "wlan"}}, cfg, err));
+    TCHECK(!err.empty());
+    // Nichts uebernommen -- und der Ausgangspunkt einer frischen Konfiguration
+    // ist off, also faellt der Bootpfad trotzdem geschlossen aus.
+    TCHECK(cfg.function == usb::UsbFunction::Off);
+
+    // Ueber die API genauso: 422 statt stiller Annahme.
+    usb::UsbConfig j;
+    Json body; std::string e;
+    TCHECK(Json::parse("{\"mode\":\"lte\"}", body, e));
+    TCHECK(!usb_config_from_json(body, j, e));
+    TCHECK(j.function == usb::UsbFunction::Off);
+}
+
+// Die einmalige Migration von usb.wifi.enabled auf usb.mode.
+void test_the_old_wifi_switch_migrates_once()
+{
+    std::string err;
+
+    usb::UsbConfig on;
+    TCHECK(usb_config_from_settings({{"usb.wifi.enabled", "true"}}, on, err));
+    TCHECK(on.function == usb::UsbFunction::Wifi);
+
+    usb::UsbConfig off;
+    TCHECK(usb_config_from_settings({{"usb.wifi.enabled", "false"}}, off, err));
+    TCHECK(off.function == usb::UsbFunction::Off);
+
+    // Und sobald usb.mode da ist, gewinnt es -- sonst wuerde ein Rest aus der
+    // alten Installation die neue Auswahl dauerhaft ueberstimmen, und
+    // "ich habe Mobilfunk gewaehlt und es kam WLAN zurueck" findet niemand
+    // durch Hinsehen.
+    usb::UsbConfig both;
+    TCHECK(usb_config_from_settings({{"usb.wifi.enabled", "true"},
+                                     {"usb.mode", "cellular"}}, both, err));
+    TCHECK(both.function == usb::UsbFunction::Cellular);
+
+    // Auch in der anderen Reihenfolge in der Datei.
+    usb::UsbConfig both2;
+    TCHECK(usb_config_from_settings({{"usb.mode", "cellular"},
+                                     {"usb.wifi.enabled", "true"}}, both2, err));
+    TCHECK(both2.function == usb::UsbFunction::Cellular);
 }
 
 // Der Vertrag zwischen machino und dem Init-Skript, woertlich.
 //
-// S42wifi liest usb.wifi.enabled aus machino.conf, BEVOR machino laeuft -- es
-// gibt keine API, die es fragen koennte. Damit haengt das Laden eines
+// machino-usb-helper liest usb.mode aus machino.conf, BEVOR machino laeuft --
+// es gibt keine API, die es fragen koennte. Damit haengt das Laden eines
 // Kernelmoduls an der Textform einer Zeile, und die beiden Seiten sind in
 // verschiedenen Sprachen geschrieben und werden nie zusammen ausgefuehrt.
 //
@@ -141,30 +190,38 @@ void test_usb_wifi_is_off_until_someone_says_otherwise()
 // machino von vor diesem Feld, und bei den Hardwaretests wurde der Schluessel
 // von Hand geschrieben. Also wird hier die Zeile festgenagelt, die der
 // ConfigStore erzeugt, und drueben in test_openipc_install.sh dieselbe Zeile
-// durch den echten Parser des Init-Skripts geschickt. Treffen sich die beiden
+// durch den echten Parser des Boot-Helfers geschickt. Treffen sich die beiden
 // nicht mehr, faellt eine von beiden Seiten um.
-void test_the_wifi_switch_is_written_the_way_the_init_script_reads_it()
+void test_the_usb_mode_is_written_the_way_the_boot_helper_reads_it()
 {
-    usb::UsbConfig cfg;
-    cfg.wifi_enabled = true;
-    std::vector<std::pair<std::string, std::string>> kv;
-    usb_config_to_settings(cfg, kv);
+    auto value_of = [](const std::vector<std::pair<std::string, std::string>>& kv,
+                       const char* key) {
+        for (const auto& p : kv) if (p.first == key) return p.second;
+        return std::string("<missing>");
+    };
 
-    bool found = false;
-    for (const auto& p : kv) {
-        if (p.first != "usb.wifi.enabled") continue;
-        found = true;
-        // Kleingeschrieben: der Parser im Init-Skript akzeptiert bewusst kein
-        // "TRUE" (fail-closed), also darf hier auch keins entstehen.
-        TCHECK(p.second == "true");
+    for (auto f : {usb::UsbFunction::Off, usb::UsbFunction::Wifi, usb::UsbFunction::Cellular}) {
+        usb::UsbConfig cfg;
+        cfg.function = f;
+        std::vector<std::pair<std::string, std::string>> kv;
+        usb_config_to_settings(cfg, kv);
+        // Kleingeschrieben: der Parser im Boot-Helfer akzeptiert bewusst kein
+        // "WIFI" (fail-closed), also darf hier auch keins entstehen.
+        TCHECK(value_of(kv, "usb.mode") == usb::usb_function_name(f));
     }
-    TCHECK(found);
 
-    cfg.wifi_enabled = false;
-    kv.clear();
-    usb_config_to_settings(cfg, kv);
-    for (const auto& p : kv)
-        if (p.first == "usb.wifi.enabled") TCHECK(p.second == "false");
+    // Der Spiegel fuer ein Boot-Skript von vor AP-M6. Abgeleitet, nie gelesen:
+    // ein Upgrade, das das Init-Skript nicht ersetzt hat, faende sonst nach
+    // dem ersten Speichern kein "true" mehr und braechte WLAN stumm nicht mehr
+    // hoch.
+    usb::UsbConfig w; w.function = usb::UsbFunction::Wifi;
+    std::vector<std::pair<std::string, std::string>> kv;
+    usb_config_to_settings(w, kv);
+    TCHECK(value_of(kv, "usb.wifi.enabled") == "true");
+
+    usb::UsbConfig c; c.function = usb::UsbFunction::Cellular;
+    kv.clear(); usb_config_to_settings(c, kv);
+    TCHECK(value_of(kv, "usb.wifi.enabled") == "false");
 }
 
 void test_usb_config_survives_a_settings_round_trip()
@@ -176,7 +233,7 @@ void test_usb_config_survives_a_settings_round_trip()
     cfg.active_high = false;
     cfg.enable_at_boot = false;
     cfg.expert = true;
-    cfg.wifi_enabled = true;
+    cfg.function = usb::UsbFunction::Cellular;
 
     std::vector<std::pair<std::string, std::string>> kv;
     usb_config_to_settings(cfg, kv);
@@ -185,7 +242,7 @@ void test_usb_config_survives_a_settings_round_trip()
     std::string err;
     TCHECK(usb_config_from_settings(kv, back, err));
     TCHECK(back.enabled == cfg.enabled);
-    TCHECK(back.wifi_enabled == cfg.wifi_enabled);
+    TCHECK(back.function == cfg.function);
     TCHECK(back.mode == cfg.mode);
     TCHECK(back.pin == cfg.pin);
     TCHECK(back.active_high == cfg.active_high);
@@ -322,20 +379,19 @@ void test_a_typo_is_an_error_not_a_silent_no_op()
     // Der WLAN-Schalter entscheidet, ob beim naechsten Boot ein Treiber
     // geladen wird. Ein Tippfehler darf ihn nicht stillschweigend auf seinem
     // Default stehen lassen und trotzdem 200 antworten.
-    TCHECK(!usb_config_from_json(parse("{\"wifi\":{\"enabledd\":true}}"), u, err));
-    TCHECK(!usb_config_from_json(parse("{\"wify\":{\"enabled\":true}}"), u, err));
-    TCHECK(!usb_config_from_json(parse("{\"wifi\":true}"), u, err));
-    TCHECK(!usb_config_from_json(parse("{\"wifi\":{\"enabled\":\"yes\"}}"), u, err));
-    // appliesAt wird BERICHTET, nicht angenommen: es ist eine Eigenschaft der
-    // Einstellung, keine Wahl des Aufrufers.
-    TCHECK(!usb_config_from_json(parse("{\"wifi\":{\"appliesAt\":\"now\"}}"), u, err));
+    TCHECK(!usb_config_from_json(parse("{\"modee\":\"wifi\"}"), u, err));
+    TCHECK(!usb_config_from_json(parse("{\"mode\":true}"), u, err));
+    TCHECK(!usb_config_from_json(parse("{\"wifi\":{\"enabled\":true}}"), u, err));   // das alte Feld gibt es nicht mehr
+    // modeAppliesAt wird BERICHTET, nicht angenommen: es ist eine Eigenschaft
+    // der Einstellung, keine Wahl des Aufrufers.
+    TCHECK(!usb_config_from_json(parse("{\"modeAppliesAt\":\"now\"}"), u, err));
 
     // The correctly spelled versions still work.
     TCHECK(usb_config_from_json(parse("{\"enabled\":true}"), u, err));
-    TCHECK(usb_config_from_json(parse("{\"wifi\":{\"enabled\":true}}"), u, err));
-    TCHECK(u.wifi_enabled);
-    TCHECK(usb_config_from_json(parse("{\"wifi\":{\"enabled\":false}}"), u, err));
-    TCHECK(!u.wifi_enabled);
+    TCHECK(usb_config_from_json(parse("{\"mode\":\"wifi\"}"), u, err));
+    TCHECK(u.function == usb::UsbFunction::Wifi);
+    TCHECK(usb_config_from_json(parse("{\"mode\":\"off\"}"), u, err));
+    TCHECK(u.function == usb::UsbFunction::Off);
     TCHECK(policy_from_json(parse("{\"autoFailover\":false}"), p, err));
     TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\",\"password\":\"x\"}"), w, err) == false);
     TCHECK(wifi_station_from_json(parse("{\"ssid\":\"x\",\"passphrase\":\"longenough\"}"), w, err));
@@ -602,7 +658,12 @@ void test_cellular_settings_round_trip_including_the_secrets()
     cellular::CellularConfig back;
     std::string err;
     TCHECK(cellular_config_from_settings(kv, back, err));
-    TCHECK(back.enabled == c.enabled);
+    // `enabled` faehrt hier NICHT mit, und das ist der Punkt: ob Mobilfunk
+    // laeuft, sagt usb.mode. Stuende es auch hier, gaebe es zwei Schluessel
+    // fuer einen Port und damit zwei Wahrheiten, die auseinanderlaufen
+    // koennen.
+    for (const auto& p : kv) TCHECK(p.first != "cellular.enabled");
+    TCHECK(!back.enabled);
     TCHECK(back.apn == c.apn);
     TCHECK(back.pdp == c.pdp);
     TCHECK(back.auth == c.auth);
@@ -636,8 +697,10 @@ void run_net_views_tests()
     test_unknown_power_state_is_not_reported_as_off();
     test_usb_patch_rejects_bad_values_and_changes_nothing();
     test_usb_config_survives_a_settings_round_trip();
-    test_usb_wifi_is_off_until_someone_says_otherwise();
-    test_the_wifi_switch_is_written_the_way_the_init_script_reads_it();
+    test_usb_is_off_until_someone_says_otherwise();
+    test_an_unknown_usb_mode_is_refused_and_leaves_the_camera_off();
+    test_the_old_wifi_switch_migrates_once();
+    test_the_usb_mode_is_written_the_way_the_boot_helper_reads_it();
     test_wifi_capabilities_separate_driver_from_tooling();
     test_an_unasked_driver_is_reported_as_unknown_not_as_no();
     test_no_document_ever_contains_a_passphrase();

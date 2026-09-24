@@ -1,0 +1,14 @@
+#!/bin/sh
+# Der USB-Zusatzstack beim Boot. Duenne Huelle um machino-usb-helper.
+#
+# Warum getrennt: die Logik gehoert in eine Datei, die sich testen und einzeln
+# aufrufen laesst, und Buildroot erwartet hier ein SxxName-Skript mit
+# start/stop. Zwei Zeilen Weiterleitung sind billiger als dieselbe Logik in
+# zwei Formaten.
+#
+# S42 liegt hinter S41yt8512 (Ethernet) und weit vor S95streamer: alles, was
+# forkt oder Module laedt, muss vor machinod passiert sein.
+HELPER=/usr/sbin/machino-usb-helper
+
+[ -x "$HELPER" ] || { echo "usb: $HELPER fehlt"; exit 0; }
+exec "$HELPER" "${1:-start}"

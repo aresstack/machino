@@ -677,7 +677,7 @@ void test_a_cellular_change_is_staged_and_not_applied_outright()
     Rig r;
     NetApiService api(r.deps());
     const Call p = call(api, "PATCH", "/api/v1/network/cellular",
-                        "{\"enabled\":true,\"apn\":\"internet.t-d1.de\"}");
+                        "{\"apn\":\"internet.t-d1.de\"}");
     TCHECK(p.routed && p.r.status == 202);
     TCHECK(contains(dumped(p.r), "\"pending\":true"));
     // Live already -- that is what staging means. Not yet permanent.
@@ -691,14 +691,13 @@ void test_a_confirmed_cellular_change_becomes_permanent()
     Rig r;
     NetApiService api(r.deps());
     const Call p = call(api, "PATCH", "/api/v1/network/cellular",
-                        "{\"enabled\":true,\"apn\":\"netpublic\"}");
+                        "{\"apn\":\"netpublic\"}");
     const std::string token = p.r.body.get("token")->as_string();
 
     const Call c = call(api, "POST", "/api/v1/network/change/" + token + "/confirm");
     TCHECK(c.routed && c.r.status == 200);
     TCHECK(r.confirmed.size() == 1);
     TCHECK(r.stored.apn == "netpublic");
-    TCHECK(r.stored.enabled);
 }
 
 void test_an_unconfirmed_cellular_change_is_undone()

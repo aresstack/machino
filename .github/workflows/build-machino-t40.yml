@@ -133,9 +133,16 @@ jobs:
           cp -f machino/openipc/sbin/machino-manager   "$O/sbin/machino-manager"
           cp -f machino/openipc/init/S95streamer       "$O/init/S95streamer"
           cp -f machino/openipc/init/machino           "$O/init/machino"
+          # Der USB-Boot-Helfer. Gehoert zu KEINER der beiden Nutzlasten,
+          # sondern entscheidet zwischen ihnen: er liest usb.mode und laedt
+          # nur den gewaehlten Stack. Ohne ihn waere usb.mode ein Wert, den
+          # niemand liest.
+          cp -f machino/openipc/init/S42usb            "$O/init/S42usb"
+          cp -f machino/openipc/sbin/machino-usb-helper "$O/sbin/machino-usb-helper"
+
           # WLAN. install.sh legt das per Default ab und laesst es
-          # ausgeschaltet -- usb.wifi.enabled ist false, und S42wifi kehrt
-          # dann sofort zurueck, ohne ein Modul zu laden.
+          # ausgeschaltet -- usb.mode ist off, und der Helfer kehrt dann
+          # sofort zurueck, ohne ein Modul zu laden.
           #
           # S41hostapd stand hier frueher und gibt es nicht mehr. Der Access
           # Point ist keine eigene Init-Stufe, sondern eine ROLLE, die der
@@ -147,7 +154,6 @@ jobs:
           # Und der Supervisor fehlte: install.sh --with-wifi installiert ihn
           # zwingend und waere mit "cannot install machino-wifi-role"
           # gestorben. Das Bundle liefert ihn jetzt.
-          cp -f machino/openipc/init/S42wifi           "$O/init/S42wifi"
           cp -f machino/openipc/sbin/machino-wifi-role "$O/sbin/machino-wifi-role"
           cp -f machino/openipc/udhcpc-wlan.script     "$O/udhcpc-wlan.script"
 

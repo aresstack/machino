@@ -13,21 +13,26 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT="${MACHINO_ROOT:-}"
 WITH_AP=0
 WITH_NETPAGE=0
-WITH_WIFI=0
-# Die WLAN-Nutzlast (Treiber, Firmware, hostapd, Supervisor) wird per DEFAULT
-# mitinstalliert, das WLAN selbst bleibt aber AUS.
+# BEIDE USB-Nutzlasten werden per DEFAULT mitinstalliert, und beide bleiben AUS.
 #
 # Das klingt widerspruechlich und ist es nicht. Der Schalter sitzt in der
 # Machino-UI, und ein Schalter, der erst wirkt, nachdem sich jemand per SSH
 # Dateien nachkopiert hat, ist kein Schalter. Also liegen die Dateien bereit
-# und tun nichts: S42wifi liest usb.wifi.enabled und laedt ohne ein "true"
-# kein einziges Modul.
+# und tun nichts: machino-usb-helper liest usb.mode und laedt bei "off" kein
+# einziges Modul.
 #
-# Der Preis sind rund 2 MB Overlay (aic8800.ko 550 K, aic_load_fw.ko 87 K,
-# Firmware 362 K, hostapd 996 K) von 8,7 MB. Wer die braucht, nimmt
-# --without-wifi-payload; dann fehlt der Schalter nicht, er meldet nur
-# ehrlich, dass nichts zu schalten da ist.
+# Der Preis sind rund 2 MB Overlay fuer WLAN (aic8800.ko 550 K, aic_load_fw.ko
+# 87 K, Firmware 362 K, hostapd 996 K) und einige hundert KB fuer die
+# Modem-Module, von 8,7 MB. Wer den Platz braucht, nimmt
+# --without-wifi-payload bzw. --without-cellular-payload; dann fehlt der
+# Schalter nicht, er meldet nur ehrlich, dass nichts zu schalten da ist.
 WITH_WIFI_PAYLOAD=1
+WITH_CELL_PAYLOAD=1
+
+# Der eine Schalter fuer den einen Port. Leer heisst "nicht angefasst": eine
+# Neuinstallation ueber eine bestehende hinweg darf die Wahl des Betreibers
+# nicht auf off zuruecksetzen, nur weil niemand die Option mitgegeben hat.
+USB_MODE=""
 STATE_DIR="$ROOT/etc/machino"
 WWW="$ROOT/var/www"
 CGI="$WWW/cgi-bin"
@@ -42,29 +47,42 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             cat <<EOF
-usage: ./install.sh [--with-wifi] [--with-access-point] [--with-network-page]
+usage: ./install.sh [--usb-mode=off|wifi|cellular] [--with-network-page]
 
 The WebUI login is Machino's Majestic drop-in session login against the
 camera's root account - there is nothing to configure here.
 
-The USB WiFi payload -- AIC8800 modules, firmware, hostapd and the role
-supervisor -- is installed BY DEFAULT and is inert until switched on. WiFi
-itself defaults to OFF (usb.wifi.enabled=false): no module is loaded, PB18
-stays down and no daemon runs, so the USB port is free for whatever else is
-plugged into it. The switch lives on the Machino network page and takes effect
-at the next boot.
+BOTH USB payloads are installed BY DEFAULT and both are inert.
 
-  --with-wifi           additionally set usb.wifi.enabled=true right away, so
-                        the radio comes up at the next boot without anyone
-                        visiting the web page. The files are installed either
-                        way; this only pre-sets the switch.
+  WiFi      AIC8800 modules, firmware, hostapd, the role supervisor
+  cellular  option/usb_wwan/usbnet/cdc_ether modules and the data-path helper
+
+Installed is not the same as running. There is ONE USB port, so there is one
+setting -- usb.mode -- and it defaults to off: no module is loaded, PB18 stays
+down, no daemon runs, and the port is free for whatever is plugged into it.
+The selector lives on the Machino network page and takes effect at the next
+boot, because swapping kernel modules under a running IMP pipeline is how this
+camera hardlocks.
+
+Files are installed regardless so that the selector is a real switch. One that
+only works after someone has copied files over by SSH is not a switch.
+
+  --usb-mode=MODE       pre-set the selector to off, wifi or cellular, so the
+                        stack comes up at the next boot without anyone
+                        visiting the web page. Default: off. This only writes
+                        the setting; the files are installed either way.
+
+  --with-wifi           the old name for --usb-mode=wifi. Kept so existing
+                        install commands and scripts do not break.
 
   --without-wifi-payload
-                        do not install the driver, firmware or hostapd. Saves
-                        about 2 MB of the 8.7 MB overlay and makes the WiFi
-                        switch inoperable -- the page then says so rather than
-                        offering something that cannot work. For cameras where
-                        the USB port is spoken for and the space is needed.
+                        do not install the WiFi driver, firmware or hostapd.
+                        Saves about 2 MB of the 8.7 MB overlay and makes the
+                        WiFi selection inoperable -- the page then says so
+                        rather than offering something that cannot work.
+
+  --without-cellular-payload
+                        the same for the modem modules and the helper.
 
   --with-access-point   accepted and ignored; hostapd is part of the default
                         payload now. Kept so existing install commands and
@@ -79,9 +97,11 @@ at the next boot.
 EOF
             exit 0 ;;
         --with-access-point) WITH_AP=1 ;;
+        --usb-mode=*) USB_MODE="${1#--usb-mode=}" ;;
         --with-network-page) WITH_NETPAGE=1 ;;
-        --with-wifi) WITH_WIFI=1 ;;
+        --with-wifi) USB_MODE=wifi ;;          # Altname, siehe --help
         --without-wifi-payload) WITH_WIFI_PAYLOAD=0 ;;
+        --without-cellular-payload) WITH_CELL_PAYLOAD=0 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -362,17 +382,42 @@ put 0755 "$HERE/init/S95streamer" "$INITD/S95streamer" || die "cannot install S9
 
 # ------------------------------------------------------------- USB WiFi ---
 #
-# Alles wird installiert, nichts wird eingeschaltet. S42wifi liest
-# usb.wifi.enabled aus machino.conf und kehrt ohne ein "true" sofort zurueck --
-# kein Modul, kein Portstrom, kein Daemon. Der Schalter sitzt in der UI.
+# Alles wird installiert, nichts wird eingeschaltet. machino-usb-helper liest
+# usb.mode aus machino.conf und kehrt bei "off" sofort zurueck -- kein Modul,
+# kein Portstrom, kein Daemon. Der Schalter sitzt in der UI.
 #
 # Die Module muessen gegen genau diesen Kernel gebaut sein (vermagic, und
 # CONFIG_MODVERSIONS=n macht vermagic zum ganzen ABI-Vertrag). Das Bundle
 # bringt die Fassung mit, die CI fuer den OpenIPC-T40-Kernel gebaut hat.
+# Der Boot-Helfer zuerst, und zwar IMMER -- er gehoert zu keiner der beiden
+# Nutzlasten, sondern entscheidet zwischen ihnen. Ohne ihn waere usb.mode ein
+# Wert, den niemand liest.
+[ -r "$HERE/init/S42usb" ] || die "the bundle has no init/S42usb"
+[ -r "$HERE/sbin/machino-usb-helper" ] || die "the bundle has no sbin/machino-usb-helper"
+put 0755 "$HERE/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-usb-helper" ||
+    die "cannot install machino-usb-helper"
+put 0755 "$HERE/init/S42usb" "$INITD/S42usb" || die "cannot install S42usb"
+
+# Das Vorgaengerskript MUSS weg, und das ist kein Aufraeumen.
+#
+# S42wifi und S42usb liegen beide in /etc/init.d und werden beide gestartet.
+# Nach einem Upgrade liefen also zwei Skripte: eines liest usb.wifi.enabled,
+# das andere usb.mode. Steht dort "cellular", laedt das alte trotzdem den
+# AIC8800 -- und das Modem bekaeme einen Port, an dem schon ein WLAN-Treiber
+# haengt. Genau die widerspruechliche Doppelwahrheit, gegen die usb.mode
+# eingefuehrt wurde.
+#
+# Dasselbe fuer S41hostapd, einen Entwurf aus der AP-Vorarbeit: hostapd wird
+# heute vom Rollen-Supervisor gestartet, und ein zweites hostapd auf demselben
+# Interface ist ein AP, der hochkommt und sofort wieder wegbricht.
+for _stale in S42wifi S41hostapd; do
+    if [ -f "$INITD/$_stale" ]; then
+        rm -f "$INITD/$_stale" && say "removed the superseded $INITD/$_stale"
+    fi
+done
+
 if [ "$WITH_WIFI_PAYLOAD" = "1" ]; then
-    [ -r "$HERE/init/S42wifi" ] || die "the bundle has no init/S42wifi"
     [ -r "$HERE/sbin/machino-wifi-role" ] || die "the bundle has no sbin/machino-wifi-role"
-    put 0755 "$HERE/init/S42wifi" "$INITD/S42wifi" || die "cannot install S42wifi"
     put 0755 "$HERE/sbin/machino-wifi-role" "$ROOT/usr/sbin/machino-wifi-role" ||
         die "cannot install machino-wifi-role"
     [ -r "$HERE/udhcpc-wlan.script" ] &&
@@ -439,7 +484,8 @@ fi
 # startet diesen Helfer niemand. Ein Helfer, der nicht laeuft, kostet nichts
 # ausser dem Platz -- und ein Helfer, der erst nachinstalliert werden muss,
 # macht den spaeteren Schalter zur Attrappe.
-if [ -d "$HERE/cellular" ] || [ -r "$HERE/sbin/machino-cellular-helper" ]; then
+if [ "$WITH_CELL_PAYLOAD" = "1" ] &&
+   { [ -d "$HERE/cellular" ] || [ -r "$HERE/sbin/machino-cellular-helper" ]; }; then
     [ -r "$HERE/sbin/machino-cellular-helper" ] &&
         { put 0755 "$HERE/sbin/machino-cellular-helper" "$ROOT/usr/sbin/machino-cellular-helper" ||
           die "cannot install machino-cellular-helper"; }
@@ -454,16 +500,43 @@ if [ -d "$HERE/cellular" ] || [ -r "$HERE/sbin/machino-cellular-helper" ]; then
         _cmods=$((_cmods + 1))
     done
     say "installed the cellular payload: $_cmods module(s)"
+    if [ "$_cmods" = "0" ]; then
+        warn "no modem kernel modules in the bundle - selecting cellular will find nothing to load."
+        warn "they must be built against this exact kernel; see the build-modem-modules-t40 workflow"
+    fi
+elif [ "$WITH_CELL_PAYLOAD" != "1" ]; then
+    say "skipped the cellular payload (--without-cellular-payload)"
 fi
 
-# --with-wifi stellt den Schalter gleich auf AN. Ohne die Nutzlast waere das
-# eine Einstellung, die beim naechsten Boot nur eine Fehlermeldung erzeugt.
-if [ "$WITH_WIFI" = "1" ]; then
-    if [ "$WITH_WIFI_PAYLOAD" != "1" ]; then
-        die "--with-wifi together with --without-wifi-payload: that would switch on a radio whose driver is not installed"
+# ---------------------------------------------------------- USB-Auswahl ---
+#
+# Nur wenn ausdruecklich gewuenscht. Ohne --usb-mode bleibt stehen, was in der
+# Datei steht -- eine Neuinstallation ueber eine bestehende hinweg darf die
+# Wahl des Betreibers nicht zuruecksetzen, und eine Erstinstallation hat mit
+# "kein Schluessel" ohnehin off.
+if [ -n "$USB_MODE" ]; then
+    case "$USB_MODE" in
+        off) ;;
+        wifi)
+            [ "$WITH_WIFI_PAYLOAD" = "1" ] ||
+                die "--usb-mode=wifi together with --without-wifi-payload: that would select a radio whose driver is not installed"
+            ;;
+        cellular)
+            [ "$WITH_CELL_PAYLOAD" = "1" ] ||
+                die "--usb-mode=cellular together with --without-cellular-payload: that would select a modem whose driver is not installed"
+            ;;
+        *) die "--usb-mode must be off, wifi or cellular, not '$USB_MODE'" ;;
+    esac
+    set_conf usb.mode "$USB_MODE" || die "cannot set usb.mode"
+    # Der Spiegel fuer den Fall, dass jemand ein Bundle von vor AP-M6 darueber
+    # installiert: dessen S42wifi liest nur diesen Schluessel. Geschrieben,
+    # nie gelesen -- usb.mode entscheidet.
+    if [ "$USB_MODE" = "wifi" ]; then
+        set_conf usb.wifi.enabled true || die "cannot set usb.wifi.enabled"
+    else
+        set_conf usb.wifi.enabled false || die "cannot set usb.wifi.enabled"
     fi
-    set_conf usb.wifi.enabled true || die "cannot set usb.wifi.enabled"
-    say "usb.wifi.enabled = true (the radio comes up at the next boot)"
+    say "usb.mode = $USB_MODE (takes effect at the next boot)"
 fi
 
 # ------------------------------------------------------- initial selection ---

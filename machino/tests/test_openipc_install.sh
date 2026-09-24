@@ -54,8 +54,9 @@ FAKE
     chmod +x "$B/machino"
     printf 'board = t40nn-imx307-board-a\napi.port = 8080\n' > "$B/machino.conf"
     cp "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$B/sbin/"
-    cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42wifi" "$B/init/"
-    mkdir -p "$B/sbin"; cp "$PKG/sbin/machino-wifi-role" "$B/sbin/"
+    cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$B/init/"
+    mkdir -p "$B/sbin"
+    cp "$PKG/sbin/machino-wifi-role" "$PKG/sbin/machino-usb-helper" "$B/sbin/"
     # Die WLAN-Nutzlast so, wie das Release-Artefakt sie traegt: Treiber,
     # Firmware und hostapd unter wifi/. Sie wird per Default installiert und
     # ist ohne usb.wifi.enabled=true wirkungslos.
@@ -471,7 +472,8 @@ has "installed on a t40" "$WORK/root/usr/bin/machino"
 # USB-Port gibt und der spaeter ein Modem tragen soll.
 make_bundle; make_camera auto
 run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
-has "wifi boot script installed by default" "$WORK/root/etc/init.d/S42wifi"
+has "usb boot script installed by default" "$WORK/root/etc/init.d/S42usb"
+has "usb boot helper installed by default" "$WORK/root/usr/sbin/machino-usb-helper"
 has "role supervisor installed by default"  "$WORK/root/usr/sbin/machino-wifi-role"
 has "hostapd installed by default"          "$WORK/root/usr/sbin/hostapd"
 has "driver installed by default"           "$WORK/root/etc/machino/modules/aic8800.ko"
@@ -497,43 +499,86 @@ has "cdc_ether.ko installed"                "$WORK/root/etc/machino/modules/cdc_
 hasnt "no cellular request on install"      "$WORK/root/etc/machino/cellular-dhcp"
 
 # Nothing switched it on, so nothing may claim it is on.
-if grep -q "^usb.wifi.enabled = true" "$WORK/root/etc/machino/machino.conf" 2>/dev/null; then
-    bad "a default install switched WiFi on"
+if grep -q "^usb.mode = wifi" "$WORK/root/etc/machino/machino.conf" 2>/dev/null ||
+   grep -q "^usb.mode = cellular" "$WORK/root/etc/machino/machino.conf" 2>/dev/null; then
+    bad "a default install selected a USB function"
 else ok; fi
 
-# The boot script itself has to agree: with the key absent it must do nothing
-# at all. This is the guard that keeps the USB port free for the modem.
-out=$(MACHINO_CONF="$WORK/root/etc/machino/machino.conf" sh -c '
-    CONF="$MACHINO_CONF"
-    v=$(tr -d " \t\r" < "$CONF" | sed -n "s/^usb\.wifi\.enabled=//p" | tail -1)
-    if [ "$v" = "true" ] || [ "$v" = "1" ]; then echo ON; else echo OFF; fi')
-if [ "$out" = "OFF" ]; then ok; else bad "the boot script would have started WiFi on a default install"; fi
+# Und der Boot-Helfer muss zustimmen: ohne Schluessel laedt er NICHTS. Das ist
+# der Waechter, der den Port fuer das freihaelt, was daran haengt.
+eval "$(sed -n '/^read_mode() {/,/^}/p' "$PKG/sbin/machino-usb-helper")"
+out=$(CONF="$WORK/root/etc/machino/machino.conf"; read_mode)
+if [ "$out" = "off" ]; then ok; else bad "the boot helper would have started '$out' on a default install"; fi
 
-# --with-wifi only pre-sets the switch; the files were already there.
+# --usb-mode pre-sets the selector; the files were already there.
 make_bundle; make_camera auto
-run_install --with-wifi || bad "--with-wifi was refused: $(cat "$WORK/out")"
-if grep -q "^usb.wifi.enabled = true" "$WORK/root/etc/machino/machino.conf"; then ok
-else bad "--with-wifi did not set usb.wifi.enabled"; fi
+run_install --usb-mode=cellular || bad "--usb-mode=cellular was refused: $(cat "$WORK/out")"
+if grep -q "^usb.mode = cellular" "$WORK/root/etc/machino/machino.conf"; then ok
+else bad "--usb-mode=cellular did not set usb.mode"; fi
+# Der Spiegel fuer ein altes Boot-Skript muss dabei auf false stehen -- sonst
+# laedt es nach einem halben Upgrade den WLAN-Treiber auf einer Kamera, die
+# auf Mobilfunk gestellt wurde.
+if grep -q "^usb.wifi.enabled = false" "$WORK/root/etc/machino/machino.conf"; then ok
+else bad "the legacy mirror was not cleared when cellular was selected"; fi
 if grep -q "next boot" "$WORK/out"; then ok; else bad "the reboot requirement was not stated"; fi
 
-# Setting it twice must not produce two lines: the boot script takes the last
+# Der alte Name muss weiter funktionieren: bestehende Installationsbefehle
+# duerfen nicht brechen.
+make_bundle; make_camera auto
+run_install --with-wifi || bad "--with-wifi was refused: $(cat "$WORK/out")"
+if grep -q "^usb.mode = wifi" "$WORK/root/etc/machino/machino.conf"; then ok
+else bad "--with-wifi did not set usb.mode=wifi"; fi
+if grep -q "^usb.wifi.enabled = true" "$WORK/root/etc/machino/machino.conf"; then ok
+else bad "--with-wifi did not set the legacy mirror"; fi
+
+# Setting it twice must not produce two lines: the boot helper takes the last
 # one, but a file that accumulates duplicates is a file nobody can read.
 run_install --with-wifi || bad "a second --with-wifi run failed: $(cat "$WORK/out")"
-n=$(grep -c "usb.wifi.enabled" "$WORK/root/etc/machino/machino.conf")
-if [ "$n" = "1" ]; then ok; else bad "usb.wifi.enabled appears $n times after two installs"; fi
+n=$(grep -c "usb.mode" "$WORK/root/etc/machino/machino.conf")
+if [ "$n" = "1" ]; then ok; else bad "usb.mode appears $n times after two installs"; fi
+
+# Ohne --usb-mode bleibt die Wahl des Betreibers stehen. Eine Neuinstallation
+# ueber eine bestehende hinweg darf sie nicht auf off zuruecksetzen.
+run_install || bad "a plain reinstall failed: $(cat "$WORK/out")"
+if grep -q "^usb.mode = wifi" "$WORK/root/etc/machino/machino.conf"; then ok
+else bad "a reinstall without --usb-mode reset the selection"; fi
+
+# Unsinn wird abgelehnt, nicht stillschweigend zu off.
+make_bundle; make_camera auto
+if run_install --usb-mode=lte; then bad "--usb-mode=lte was accepted"; else ok; fi
+
+# Ein bereits installiertes S42wifi MUSS verschwinden.
+#
+# Sonst laufen nach einem Upgrade zwei Boot-Skripte: eines liest
+# usb.wifi.enabled, das andere usb.mode. Steht dort "cellular", laedt das alte
+# trotzdem den WLAN-Treiber -- genau die Doppelwahrheit, gegen die usb.mode
+# eingefuehrt wurde.
+make_bundle; make_camera auto
+mkdir -p "$WORK/root/etc/init.d"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/root/etc/init.d/S42wifi"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/root/etc/init.d/S41hostapd"
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
+hasnt "superseded S42wifi removed"   "$WORK/root/etc/init.d/S42wifi"
+hasnt "superseded S41hostapd removed" "$WORK/root/etc/init.d/S41hostapd"
 
 # The escape hatch, for a camera whose overlay is needed elsewhere.
 make_bundle; make_camera auto
 run_install --without-wifi-payload || bad "--without-wifi-payload was refused: $(cat "$WORK/out")"
 hasnt "no driver when the payload is declined"  "$WORK/root/etc/machino/modules/aic8800.ko"
 hasnt "no hostapd when the payload is declined" "$WORK/root/usr/sbin/hostapd"
-hasnt "no boot script when declined"            "$WORK/root/etc/init.d/S42wifi"
+# Der Boot-Helfer bleibt: er gehoert zu KEINER der beiden Nutzlasten, sondern
+# entscheidet zwischen ihnen. Ohne ihn waere usb.mode ein Wert, den niemand
+# liest -- auch nicht der, der auf Mobilfunk stellt.
+has "boot script stays when only the wifi payload is declined" "$WORK/root/etc/init.d/S42usb"
 
 # Switching the radio on while refusing its driver is not a configuration,
 # it is a boot that fails. It has to be refused up front.
 make_bundle; make_camera auto
 if run_install --with-wifi --without-wifi-payload; then
     bad "--with-wifi with no payload was accepted"
+else ok; fi
+if run_install --usb-mode=cellular --without-cellular-payload; then
+    bad "--usb-mode=cellular with no modem payload was accepted"
 else ok; fi
 
 # A bundle with no modules must say so rather than leaving a switch that
@@ -557,7 +602,8 @@ if run_install --with-acces-point; then bad "a misspelled flag was accepted"; el
 make_bundle; make_camera auto
 run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
 run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
-hasnt "wifi script removed again"   "$WORK/root/etc/init.d/S42wifi"
+hasnt "usb script removed again"    "$WORK/root/etc/init.d/S42usb"
+hasnt "usb helper removed again"    "$WORK/root/usr/sbin/machino-usb-helper"
 hasnt "supervisor removed again"    "$WORK/root/usr/sbin/machino-wifi-role"
 hasnt "hostapd removed again"       "$WORK/root/usr/sbin/hostapd"
 hasnt "driver removed again"        "$WORK/root/etc/machino/modules/aic8800.ko"
@@ -601,40 +647,65 @@ case "$red" in
     *) bad "the filter mangled a line that has nothing to do with secrets" ;;
 esac
 
-# wifi_enabled(): entscheidet, ob beim Boot ein Kernelmodul geladen und der
-# USB-Port bestromt wird. Fail-closed in jedem Zweifelsfall.
+# read_mode(): entscheidet, WELCHER Stack beim Boot geladen wird und ob der
+# USB-Port ueberhaupt bestromt wird. Fail-closed in jedem Zweifelsfall.
 #
 # Die andere Haelfte dieses Vertrags steht in test_net_views.cpp
-# (test_the_wifi_switch_is_written_the_way_the_init_script_reads_it): dort wird
-# festgenagelt, dass machino genau "usb.wifi.enabled" mit genau "true"
+# (test_the_usb_mode_is_written_the_way_the_boot_helper_reads_it): dort wird
+# festgenagelt, dass machino genau "usb.mode" mit genau "wifi"/"cellular"/"off"
 # schreibt. Hier wird geprueft, dass der Parser das liest. Die beiden Seiten
 # laufen nie zusammen -- C++ schreibt die Datei, Shell liest sie vor dem Start
 # von machino -- also muessen sie sich an einer woertlichen Zeile treffen.
-eval "$(sed -n '/^wifi_enabled() {/,/^}/p' "$PKG/init/S42wifi")"
-gate() { CONF="$WORK/gate.conf"; printf '%s' "$1" > "$CONF"; if wifi_enabled; then echo AN; else echo AUS; fi; }
+eval "$(sed -n '/^read_mode() {/,/^}/p' "$PKG/sbin/machino-usb-helper")"
+gate() { CONF="$WORK/gate.conf"; printf '%s' "$1" > "$CONF"; read_mode; }
 for case_ in \
-    'usb.wifi.enabled = true|AN' \
-    'usb.wifi.enabled=1|AN' \
+    'usb.mode = wifi|wifi' \
+    'usb.mode=cellular|cellular' \
+    'usb.mode = off|off' \
     'board = t40nn
-usb.wifi.enabled = true|AN' \
-    'usb.wifi.enabled = false|AUS' \
-    'board = t40nn|AUS' \
-    '|AUS' \
-    '#usb.wifi.enabled = true|AUS' \
-    'xusb.wifi.enabled = true|AUS' \
-    'usb.wifi.enabledx = true|AUS' \
-    'usb.wifi.enabled = TRUE|AUS' \
-    'usb.wifi.enabled = true
-usb.wifi.enabled = false|AUS' \
+usb.mode = cellular|cellular' \
+    'board = t40nn|off' \
+    '|off' \
+    '#usb.mode = wifi|off' \
+    'xusb.mode = wifi|off' \
+    'usb.modex = wifi|off' \
+    'usb.mode = WIFI|off' \
+    'usb.mode = lte|off' \
+    'usb.mode = cellular
+usb.mode = off|off' \
+    'usb.mode = off
+usb.mode = cellular|cellular' \
 ; do
     body=${case_%|*}; want=${case_##*|}
     got=$(gate "$body")
     if [ "$got" = "$want" ]; then ok
-    else bad "wifi gate: expected $want, got $got for [$(echo "$body" | tr '\n' ';')]"; fi
+    else bad "usb gate: expected $want, got $got for [$(echo "$body" | tr '\n' ';')]"; fi
 done
+
+# Die einmalige Migration, im SKRIPT und nicht nur in C++.
+#
+# Eine Kamera, die vor AP-M6 installiert wurde, hat kein usb.mode -- nur
+# usb.wifi.enabled. Ohne diese Ableitung waere ihr WLAN nach dem Upgrade
+# stumm aus, und "nach dem Update ist das WLAN weg" fuehrt niemanden zu einem
+# umbenannten Konfigurationsschluessel.
+for case_ in \
+    'usb.wifi.enabled = true|wifi' \
+    'usb.wifi.enabled=1|wifi' \
+    'usb.wifi.enabled = false|off' \
+    'usb.wifi.enabled = true
+usb.mode = cellular|cellular' \
+    'usb.mode = cellular
+usb.wifi.enabled = true|cellular' \
+; do
+    body=${case_%|*}; want=${case_##*|}
+    got=$(gate "$body")
+    if [ "$got" = "$want" ]; then ok
+    else bad "usb migration: expected $want, got $got for [$(echo "$body" | tr '\n' ';')]"; fi
+done
+
 # Eine fehlende Datei ist kein "vielleicht".
 CONF="$WORK/does-not-exist.conf"
-if wifi_enabled; then bad "the wifi gate opened with no config file at all"; else ok; fi
+if [ "$(read_mode)" = "off" ]; then ok; else bad "the usb gate opened with no config file at all"; fi
 
 # MACHINO_ROOT darf NICHTS am echten System anfassen.
 #
@@ -691,7 +762,7 @@ else ok; fi
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
 # check keeps the next such regression out.
-for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42wifi" "$PKG/sbin/machino-wifi-role" "$PKG/udhcpc-wlan.script"; do
+for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$PKG/sbin/machino-usb-helper" "$PKG/sbin/machino-wifi-role" "$PKG/udhcpc-wlan.script"; do
     if grep -nE '(^|[^-a-z_])install +-[dm]' "$f"; then bad "$(basename "$f") uses install(1), which BusyBox does not have"; else ok; fi
     if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
     if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi

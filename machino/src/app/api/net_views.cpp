@@ -156,13 +156,11 @@ Json usb_config_json(const usb::UsbConfig& cfg)
     p.set("enableAtBoot", Json::boolean(cfg.enable_at_boot));
     p.set("expert", Json::boolean(cfg.expert));
     j.set("power", p);
-    Json w = Json::object();
-    w.set("enabled", Json::boolean(cfg.wifi_enabled));
-    // The page has to be able to say "restart required" without hard-coding
-    // that knowledge, and a client that only reads the API should not have to
-    // know which settings are live and which are not.
-    w.set("appliesAt", Json::string("reboot"));
-    j.set("wifi", w);
+    // ONE selector for the one port. The page has to be able to say "restart
+    // required" without hard-coding that knowledge, and a client that only
+    // reads the API should not have to know which settings are live.
+    j.set("mode", Json::string(usb::usb_function_name(cfg.function)));
+    j.set("modeAppliesAt", Json::string("reboot"));
     return j;
 }
 
@@ -199,6 +197,13 @@ Json usb_status_json(const usb::UsbStatus& s)
     j.set("enabled", Json::boolean(s.enabled));
     j.set("hostActive", Json::boolean(s.host_active));
 
+    // Was gespeichert ist, was beim Boot tatsaechlich gestartet wurde, und ob
+    // das auseinanderfaellt. Genau dazwischen liegt der Neustart, und nur
+    // deshalb hat die Oberflaeche ueberhaupt etwas zu sagen.
+    j.set("mode", Json::string(usb::usb_function_name(s.function)));
+    j.set("bootMode", Json::string(usb::usb_function_name(s.boot_function)));
+    j.set("rebootRequired", Json::boolean(s.reboot_required));
+
     Json p = Json::object();
     p.set("mode", Json::string(usb_power_mode_name(s.resolved.mode)));
     p.set("pin", Json::string(s.resolved.pin));
@@ -219,16 +224,16 @@ bool usb_config_from_json(const Json& body, usb::UsbConfig& cfg, std::string& er
     if (!body.is_object()) { err = "body must be an object"; return false; }
 
     usb::UsbConfig next = cfg;
-    if (!reject_unknown(body, {"enabled", "power", "wifi"}, nullptr, err)) return false;
+    // modeAppliesAt is reported, not accepted: it is a property of the
+    // setting, not something a client gets to choose.
+    if (!reject_unknown(body, {"enabled", "power", "mode"}, nullptr, err)) return false;
     if (!get_bool(body, "enabled", next.enabled, err)) return false;
 
-    const Json* w = body.get("wifi");
-    if (w) {
-        if (!w->is_object()) { err = "wifi must be an object"; return false; }
-        // appliesAt is reported, not accepted: it is a property of the setting,
-        // not something a client gets to choose.
-        if (!reject_unknown(*w, {"enabled"}, "wifi", err)) return false;
-        if (!get_bool(*w, "enabled", next.wifi_enabled, err)) return false;
+    std::string mode_text;
+    if (!get_string(body, "mode", mode_text, err, 16)) return false;
+    if (!mode_text.empty() && !usb::usb_function_parse(mode_text, next.function)) {
+        err = "mode must be off, wifi or cellular";
+        return false;
     }
 
     const Json* p = body.get("power");
@@ -265,18 +270,55 @@ void usb_config_to_settings(const usb::UsbConfig& cfg,
     out.emplace_back("usb.power.active_level", cfg.active_high ? "high" : "low");
     out.emplace_back("usb.power.enable_at_boot", cfg.enable_at_boot ? "true" : "false");
     out.emplace_back("usb.power.expert", cfg.expert ? "true" : "false");
-    out.emplace_back("usb.wifi.enabled", cfg.wifi_enabled ? "true" : "false");
+    out.emplace_back("usb.mode", usb::usb_function_name(cfg.function));
+    // usb.wifi.enabled is written out as well, and ONLY as a mirror.
+    //
+    // It is what the boot helper of an older installation reads. Dropping it
+    // on the first save would leave such a camera with a mode nothing acts on:
+    // the new key is there, the old script does not know it, and WiFi silently
+    // stops coming up after an upgrade that did not replace the init script.
+    // The mirror is derived, never read back as truth -- see
+    // usb_config_from_settings.
+    out.emplace_back("usb.wifi.enabled",
+                     cfg.function == usb::UsbFunction::Wifi ? "true" : "false");
 }
 
 bool usb_config_from_settings(const std::vector<std::pair<std::string, std::string>>& in,
                               usb::UsbConfig& cfg, std::string& err)
 {
     usb::UsbConfig next = cfg;
+
+    // The migration, and it happens here because this is the only place that
+    // sees the file.
+    //
+    // usb.mode is the truth. usb.wifi.enabled is what an installation from
+    // before AP-M6 has instead, and it is honoured ONLY when usb.mode is
+    // absent -- otherwise an old mirror left in the file would keep
+    // overruling the new setting, and "I selected cellular and it came back
+    // as WiFi" is the kind of bug nobody finds by reading the UI.
+    //
+    // One-way and one-time: the next save writes usb.mode, and from then on
+    // the legacy key is a mirror nobody reads.
+    bool have_mode = false;
+    bool legacy_wifi = false, have_legacy = false;
+
     for (const auto& kv : in) {
         const std::string& k = kv.first;
         const std::string& v = kv.second;
         if      (k == "usb.enabled")               next.enabled = (v == "true" || v == "1");
-        else if (k == "usb.wifi.enabled")          next.wifi_enabled = (v == "true" || v == "1");
+        else if (k == "usb.wifi.enabled")          { legacy_wifi = (v == "true" || v == "1"); have_legacy = true; }
+        else if (k == "usb.mode") {
+            if (!usb::usb_function_parse(v, next.function)) {
+                // Refused, not defaulted. Silently reading usb.mode=wlan as
+                // "off" looks exactly like a setting that did not take, and
+                // sends the owner looking in the wrong place. The caller keeps
+                // what it had -- which on a fresh start is off, so the boot
+                // path still fails closed.
+                err = "usb.mode must be off, wifi or cellular, not: " + v;
+                return false;
+            }
+            have_mode = true;
+        }
         else if (k == "usb.power.pin")             next.pin = v;
         else if (k == "usb.power.enable_at_boot")  next.enable_at_boot = (v == "true" || v == "1");
         else if (k == "usb.power.expert")          next.expert = (v == "true" || v == "1");
@@ -288,6 +330,10 @@ bool usb_config_from_settings(const std::vector<std::pair<std::string, std::stri
         }
         // Unknown keys are someone else's; the config store keeps them.
     }
+
+    if (!have_mode && have_legacy)
+        next.function = legacy_wifi ? usb::UsbFunction::Wifi : usb::UsbFunction::Off;
+
     cfg = next;
     return true;
 }
@@ -743,11 +789,21 @@ Json cellular_presets_json()
 bool cellular_config_from_json(const Json& body, cellular::CellularConfig& cfg, std::string& err)
 {
     if (!body.is_object()) { err = "body must be an object"; return false; }
-    if (!reject_unknown(body, {"enabled", "apn", "pdpType", "authMode", "username",
+    // `enabled` ist hier KEIN Feld mehr, und die Ablehnung ist ausdruecklich.
+    //
+    // Ob Mobilfunk laeuft, entscheidet usb.mode -- es gibt einen USB-Port, und
+    // zwei Schalter dafuer waeren zwei Wahrheiten. Ein stilles Ignorieren
+    // waere hier die schlechteste Antwort: die Oberflaeche schickt "enabled",
+    // bekommt 200, und nichts passiert.
+    if (body.get("enabled")) {
+        err = "enabled is not set here - the USB port carries one device, "
+              "so it is chosen with usb.mode (off, wifi or cellular)";
+        return false;
+    }
+    if (!reject_unknown(body, {"apn", "pdpType", "authMode", "username",
                                "password", "autoConnect", "simPin", "nicMode"}, nullptr, err)) return false;
 
     cellular::CellularConfig next = cfg;
-    if (!get_bool(body, "enabled", next.enabled, err)) return false;
     if (!get_bool(body, "autoConnect", next.auto_connect, err)) return false;
     if (!get_bool(body, "nicMode", next.nic_mode, err)) return false;
     if (!get_string(body, "apn", next.apn, err, 100)) return false;
@@ -785,7 +841,10 @@ bool cellular_config_from_json(const Json& body, cellular::CellularConfig& cfg, 
 void cellular_config_to_settings(const cellular::CellularConfig& cfg,
                                  std::vector<std::pair<std::string, std::string>>& out)
 {
-    out.emplace_back("cellular.enabled", cfg.enabled ? "true" : "false");
+    // KEIN cellular.enabled mehr. Ob Mobilfunk laeuft, sagt usb.mode -- es gibt
+    // einen Port, und zwei Schluessel dafuer waeren zwei Wahrheiten, die
+    // auseinanderlaufen koennen. Das Feld im Struct bleibt, es wird jetzt
+    // abgeleitet.
     out.emplace_back("cellular.apn", cfg.apn);
     out.emplace_back("cellular.pdp_type", cellular::pdp_type_name(cfg.pdp));
     out.emplace_back("cellular.auth_mode", cellular::auth_mode_name(cfg.auth));
@@ -803,8 +862,11 @@ bool cellular_config_from_settings(const std::vector<std::pair<std::string, std:
     for (const auto& kv : in) {
         const std::string& k = kv.first;
         const std::string& v = kv.second;
-        if      (k == "cellular.enabled")      next.enabled = (v == "true" || v == "1");
-        else if (k == "cellular.auto_connect") next.auto_connect = (v == "true" || v == "1");
+        // cellular.enabled wird bewusst NICHT gelesen. Eine Datei aus der Zeit
+        // davor kann den Schluessel noch tragen; er wird ignoriert, weil
+        // usb.mode entscheidet. Ihn zu lesen hiesse, dass ein Rest aus einer
+        // alten Installation den USB-Modus ueberstimmt.
+        if      (k == "cellular.auto_connect") next.auto_connect = (v == "true" || v == "1");
         else if (k == "cellular.nic_mode")     next.nic_mode = (v == "true" || v == "1");
         else if (k == "cellular.apn")          next.apn = v;
         else if (k == "cellular.username")     next.username = v;

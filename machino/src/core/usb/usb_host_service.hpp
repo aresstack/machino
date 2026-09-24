@@ -18,6 +18,21 @@
 
 namespace machino { namespace usb {
 
+// What the single USB port is used for.
+//
+// Not a bitmask and not two flags: the port carries one device. An enum makes
+// "WiFi and cellular at the same time" unrepresentable rather than merely
+// discouraged.
+enum class UsbFunction : int { Off = 0, Wifi, Cellular };
+
+const char* usb_function_name(UsbFunction f);
+
+// Anything that is not one of the three names is REFUSED, not defaulted.
+// A hand-edited machino.conf saying usb.mode=wlan must not silently become
+// Off -- that reads as "the setting did not take" and sends the owner looking
+// in the wrong place. The caller reports the bad value and keeps what it had.
+bool usb_function_parse(const std::string& s, UsbFunction& out);
+
 struct UsbConfig {
     bool         enabled = false;
     UsbPowerMode mode = UsbPowerMode::BoardDefault;
@@ -30,21 +45,27 @@ struct UsbConfig {
     // flash -- we nearly drove one of those by accident while finding PB18.
     bool         expert = false;
 
-    // The USB WiFi radio, off by default and deliberately so.
+    // What the USB port is used for. ONE setting, because there is one port.
     //
-    // This is not a preference, it is a resource decision. There is ONE USB
-    // port. Switching WiFi on means loading cfg80211, aic_load_fw and aic8800,
-    // raising PB18 and handing wlan0 to a supervisor -- and the aic8800 driver
-    // is the component that pushed this camera into OOM twice during bring-up
-    // (it asks for 847 order-3 blocks where about 20 are free). A camera that
-    // is going to carry a 4G modem on that port must not pay any of that.
+    // This replaced two independent checkboxes (usb.wifi.enabled and
+    // cellular.enabled), and the reason is not tidiness. Both of them switched
+    // on a driver stack for the same physical connector, so "both true" was a
+    // state the configuration could express and the hardware could not. Which
+    // of the two won would then have been decided by init script ordering --
+    // a fact nobody reads before ticking a box.
     //
-    // Off means off at the source: with this false the init script loads no
-    // module, raises no rail and starts no daemon. It is therefore read before
-    // machino exists, straight out of machino.conf, which is why a change
-    // takes effect at the next boot rather than at once. "Restart required" is
-    // the honest thing to say; pretending it is live would be the lie.
-    bool         wifi_enabled = false;
+    // It is also a resource decision. The aic8800 driver is the component that
+    // pushed this camera into OOM twice during bring-up: it asks for 847
+    // order-3 blocks where about 20 are free. A camera carrying a 4G modem on
+    // that port must not pay any of that, and Off must pay neither.
+    //
+    // Off means off at the source: the boot helper loads no module, raises no
+    // rail and starts no daemon. It is read before machino exists, straight
+    // out of machino.conf, which is why a change takes effect at the NEXT BOOT
+    // rather than at once. "Restart required" is the honest thing to say;
+    // pretending it is live would be the lie, and swapping kernel modules
+    // under a running IMP pipeline is how this camera hardlocks.
+    UsbFunction  function = UsbFunction::Off;
 };
 
 // What the service resolved the request into, after consulting the backend.
@@ -57,6 +78,16 @@ struct UsbResolved {
 
 struct UsbStatus {
     bool                   enabled = false;
+
+    // The stored function, and the one the boot helper actually acted on.
+    //
+    // They differ exactly between a change and the reboot that makes it real,
+    // and that gap is the whole reason the UI has something to say. Deriving
+    // "reboot required" from anything else -- a dirty flag, a timestamp --
+    // would survive the reboot and keep nagging.
+    UsbFunction            function = UsbFunction::Off;
+    UsbFunction            boot_function = UsbFunction::Off;
+    bool                   reboot_required = false;
     bool                   host_active = false;
     bool                   power_known = false;
     bool                   power_on = false;
@@ -103,6 +134,12 @@ public:
     // problem.
     Result apply_at_boot(std::string& err, bool* applied = nullptr);
 
+    // What the boot helper actually started, read once at start-up from the
+    // marker it leaves behind. Unknown means "we could not find out", and that
+    // is reported as Off rather than as agreement -- claiming the running mode
+    // matches the stored one when nobody knows would hide a needed reboot.
+    void set_boot_function(UsbFunction f);
+
     UsbConfig       config() const;
     UsbCapabilities capabilities() const;
     UsbStatus       status() const;
@@ -112,6 +149,7 @@ private:
     mutable std::mutex m_;
     UsbConfig   cfg_;
     UsbResolved resolved_;
+    UsbFunction boot_function_ = UsbFunction::Off;
 };
 
 }} // namespace machino::usb

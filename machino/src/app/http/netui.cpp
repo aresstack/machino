@@ -159,15 +159,63 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
 </section>
 
 <section id="t-cellular" hidden>
-  <div class="card">
-    <h2>Mobilfunk</h2>
+  <!-- Wenn USB nicht auf Mobilfunk steht, wird das GESAGT und nicht durch
+       graue Felder angedeutet. Ein Formular, das sich speichern laesst und
+       nichts bewirkt, ist schlimmer als eines, das erklaert warum. -->
+  <div id="cell-offmode" class="unavail" hidden></div>
+
+  <div class="card" id="cell-statuscard">
+    <h2>Status</h2>
     <table id="cell"><tbody></tbody></table>
     <div id="cell-none" class="unavail" hidden>
-      Kein Mobilfunk-Uplink vorhanden. Ein Modem erscheint hier, sobald es als
-      Uplink registriert ist; das Modem-Backend selbst ist in diesem Build noch
-      nicht enthalten, und das wird hier gesagt statt Bedienelemente
-      anzubieten, die nichts tun.
+      Kein Mobilfunk-Backend in diesem Build. Das wird hier gesagt, statt
+      Bedienelemente anzubieten, die nichts tun.
     </div>
+  </div>
+
+  <div class="card" id="cell-apncard">
+    <h2>Zugangsdaten</h2>
+    <div class="grid">
+      <div><label for="cellpreset">Vorlage</label>
+        <select id="cellpreset"><option value="">Benutzerdefiniert</option></select></div>
+      <div><label for="cellapn">APN</label><input id="cellapn" placeholder="internet.t-d1.de"></div>
+      <div><label for="cellpdp">PDP-Typ</label>
+        <select id="cellpdp"><option value="IP">IPv4</option><option value="IPV4V6">IPv4/IPv6</option></select></div>
+      <div><label for="cellauth">Authentifizierung</label>
+        <select id="cellauth"><option value="none">keine</option><option value="pap">PAP</option><option value="chap">CHAP</option></select></div>
+      <div><label for="celluser">Benutzername</label><input id="celluser" autocomplete="off"></div>
+      <div><label for="cellpw">Passwort</label><input id="cellpw" type="password" autocomplete="new-password" placeholder="unverändert"></div>
+    </div>
+    <label><input type="checkbox" id="cellauto" style="width:auto"> Selbstverbindung im Modem (persistent)</label>
+    <label><input type="checkbox" id="cellnic" style="width:auto"> NIC-Modus: öffentliche Adresse direkt am Host</label>
+    <p class="note">Eine Vorlage füllt die Felder nur aus &mdash; sie bleiben
+      danach änderbar. Das Passwortfeld ist leer, weil gespeicherte Geheimnisse
+      nicht zurückgegeben werden; leer lassen heißt „unverändert".</p>
+    <button class="act" id="cellsave">Übernehmen (mit Bestätigungsfrist)</button>
+    <div class="msg" id="m-cell" hidden></div>
+  </div>
+
+  <div class="card" id="cell-simcard">
+    <h2>SIM</h2>
+    <table id="cellsim"><tbody></tbody></table>
+    <div class="grid">
+      <div><label for="cellpin">SIM-PIN</label><input id="cellpin" type="password" autocomplete="new-password" placeholder="unverändert"></div>
+    </div>
+    <label><input type="checkbox" id="cellpinclear" style="width:auto"> Gespeicherte PIN löschen</label>
+    <button class="act" id="cellpinsave">PIN speichern (mit Bestätigungsfrist)</button>
+    <div class="msg" id="m-cellpin" hidden></div>
+    <p class="note">Eine konfigurierte PIN wird pro Startvorgang <b>höchstens
+      einmal</b> gesendet. Drei falsche Versuche sperren die Karte und danach
+      braucht es den PUK &mdash; deshalb wiederholt hier nichts, auch kein
+      Knopfdruck. Eine geänderte PIN darf wieder einmal versuchen.</p>
+  </div>
+
+  <div class="card" id="cell-diagcard">
+    <h2>Diagnose</h2>
+    <table id="celldiag"><tbody></tbody></table>
+    <p class="note">Nur gelesen. Eine freie AT-Konsole gibt es hier bewusst
+      nicht: ein falsch abgesetztes Kommando stellt die USB-Komposition des
+      Modems dauerhaft um.</p>
   </div>
 </section>
 
@@ -225,18 +273,22 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   </div>
 </section>
 
-<section id="t-usbwifi" hidden>
+<section id="t-usbmode" hidden>
   <div class="card">
-    <h2>USB-WLAN</h2>
-    <label><input type="checkbox" id="wifien" style="width:auto"> WLAN-Unterstützung aktivieren</label>
-    <p class="note" id="wifien-note">Änderung wird nach einem Neustart wirksam.</p>
-    <button class="act" id="wifiensave">Übernehmen</button>
-    <div class="msg" id="m-wifien" hidden></div>
-    <p class="note">Solange dies aus ist, wird beim Start kein Treiber geladen,
-      der Portstrom auf PB18 bleibt unten und es läuft kein WLAN-Dienst. Der
+    <h2>USB-Nutzung</h2>
+    <p class="note">Die Kamera hat <b>einen</b> USB-Port. Er trägt entweder
+      nichts, ein WLAN-Modul oder ein 4G-Modem &mdash; nicht zweierlei.</p>
+    <label><input type="radio" name="usbmode" value="off" style="width:auto"> Deaktiviert</label>
+    <label><input type="radio" name="usbmode" value="wifi" style="width:auto"> WLAN</label>
+    <label><input type="radio" name="usbmode" value="cellular" style="width:auto"> 4G-Mobilfunk</label>
+    <p class="note" id="usbmode-note">Änderung wird nach einem Neustart wirksam.</p>
+    <button class="act" id="usbmodesave">Übernehmen</button>
+    <div class="msg" id="m-usbmode" hidden></div>
+    <p class="note">Bei <b>Deaktiviert</b> wird beim Start kein Treiber geladen,
+      der Portstrom auf PB18 bleibt unten und es läuft kein Dienst dafür. Der
       USB-Port steht dann vollständig für ein anderes Gerät zur Verfügung.
-      Das ist der Grund für den Neustart: Kernelmodule bei laufender
-      Medien-Pipeline nachzuladen wäre der unsichere Weg.</p>
+      Das ist auch der Grund für den Neustart: Kernelmodule bei laufender
+      Medien-Pipeline zu tauschen wäre der unsichere Weg.</p>
   </div>
 </section>
 
@@ -257,7 +309,7 @@ const TABS = [
   ["t-overview","Übersicht"],["t-ethernet","Ethernet"],["t-wifi","WLAN"],
   ["t-cellular","Mobilfunk"],["t-routing","Routing"],
   ["t-usbhost","USB-Host"],["t-usbpower","Stromversorgung"],
-  ["t-usbwifi","USB-WLAN"],["t-usbdev","Geräte"]
+  ["t-usbmode","USB-Nutzung"],["t-usbdev","Geräte"]
 ];
 const $ = (id) => document.getElementById(id);
 
@@ -371,16 +423,6 @@ async function loadNetwork() {
     row(etb, "Empfangen / Gesendet", (m.rxBytes || 0) + " / " + (m.txBytes || 0) + " B");
   } else { row(etb, "–", "kein Ethernet-Uplink registriert"); }
 
-  const cells = (n.uplinks || []).filter((u) => u.type === "cellular");
-  const ctb = $("cell").querySelector("tbody"); ctb.textContent = "";
-  $("cell-none").hidden = cells.length > 0;
-  cells.forEach((u) => {
-    const m = u.metrics || {};
-    row(ctb, u.id, pill(u.state, stateKind(u.state)));
-    row(ctb, "IPv4", u.ipv4);
-    row(ctb, "Signal", m.rssiDbm ? m.rssiDbm + " dBm" : "–");
-  });
-
   const p = n.policy || {};
   $("order").value = (p.order || []).join(",");
   $("failover").checked = !!p.autoFailover;
@@ -404,8 +446,9 @@ async function loadWifi() {
   // Funkmodul aus -- kein wlan0, keine Faehigkeiten. Der Unterschied ist fuer
   // den Bedienenden aber alles: das eine ist ein Haken, den er selbst gesetzt
   // hat, das andere ein Hardwareproblem. Also wird er benannt.
-  if (!c.present && wifiSaved === false) {
-    row(tb, "Funkmodul", "aus (USB-WLAN ist nicht aktiviert)");
+  if (!c.present && modeSaved !== null && modeSaved !== "wifi") {
+    row(tb, "Funkmodul", "aus (USB-Nutzung steht auf „"
+        + (MODE_LABEL[modeSaved] || modeSaved) + "\")");
     $("c-station").hidden = true; $("c-ap").hidden = true;
     return;
   }
@@ -445,19 +488,38 @@ async function loadWifi() {
 // Unterschied kann die Seite nicht sagen, ob der Neustart noch aussteht --
 // und "Neustart erforderlich" dauerhaft anzuzeigen waere genauso falsch wie
 // es nie anzuzeigen.
-let wifiSaved = null;
+let modeSaved = null;      // was in der Konfiguration steht
+let modeBooted = null;     // was beim Start tatsaechlich geladen wurde
 
-function markWifiPending() {
-  const n = $("wifien-note");
-  if (wifiSaved === null) { n.textContent = "Änderung wird nach einem Neustart wirksam."; return; }
-  const want = $("wifien").checked;
-  if (want !== wifiSaved) {
+const MODE_LABEL = {off: "Deaktiviert", wifi: "WLAN", cellular: "4G-Mobilfunk"};
+
+function selectedMode() {
+  const r = document.querySelector('input[name=usbmode]:checked');
+  return r ? r.value : null;
+}
+
+function markModePending() {
+  const n = $("usbmode-note");
+  if (modeSaved === null) { n.textContent = "Änderung wird nach einem Neustart wirksam."; return; }
+  const want = selectedMode();
+  if (want !== modeSaved) {
     n.textContent = "Nicht gespeichert. Übernehmen, dann neu starten.";
-  } else {
-    n.textContent = wifiSaved
-      ? "WLAN ist eingeschaltet. Nach einem Neustart lädt die Kamera Treiber und Firmware und bringt wlan0 hoch."
-      : "WLAN ist aus. Es wird kein Treiber geladen und kein Portstrom geschaltet; der USB-Port bleibt frei.";
+    return;
   }
+  // Drei Zustaende, nicht zwei. "Gespeichert" und "laeuft" sind hier
+  // verschiedene Dinge, und sie fallen genau zwischen Speichern und Neustart
+  // auseinander -- deshalb vergleicht die Seite mit dem, was der Boot-Helfer
+  // wirklich gestartet hat, statt sich ein Kennzeichen zu merken, das den
+  // Neustart ueberleben wuerde.
+  if (modeBooted !== null && modeSaved !== modeBooted) {
+    n.textContent = "Gespeichert: " + (MODE_LABEL[modeSaved] || modeSaved)
+      + ". Aktiv ist noch " + (MODE_LABEL[modeBooted] || modeBooted)
+      + " — ein Neustart ist erforderlich.";
+    return;
+  }
+  n.textContent = modeSaved === "off"
+    ? "Der USB-Port wird nicht benutzt: kein Treiber, kein Portstrom, kein Dienst."
+    : (MODE_LABEL[modeSaved] || modeSaved) + " ist aktiv.";
 }
 
 async function loadUsb() {
@@ -491,12 +553,13 @@ async function loadUsb() {
   $("usb-unavail").textContent = c.hostSupported
       ? "Dieses Board hat keinen schaltbaren Port-Strom; es gibt nichts einzustellen."
       : "Dieses Board hat keinen USB-Host.";
-  // Der WLAN-Schalter haengt NICHT an cp.switchable: ein Board ohne
-  // schaltbaren Portstrom kann trotzdem ein WLAN-Modul tragen.
-  const wifiOn = !!(cfg.wifi && cfg.wifi.enabled);
-  $("wifien").checked = wifiOn;
-  wifiSaved = wifiOn;
-  markWifiPending();
+  // Die Modusauswahl haengt NICHT an cp.switchable: ein Board ohne
+  // schaltbaren Portstrom kann trotzdem ein Modul am Port tragen.
+  modeSaved  = cfg.mode || (res.body.mode || "off");
+  modeBooted = (res.body.bootMode !== undefined) ? res.body.bootMode : null;
+  const radio = document.querySelector('input[name=usbmode][value="' + modeSaved + '"]');
+  if (radio) radio.checked = true;
+  markModePending();
 
   $("usben").checked = !!cfg.enabled;
   $("usbboot").checked = !!cfgp.enableAtBoot;
@@ -633,23 +696,28 @@ $("savepolicy").onclick = async () => {
   else msg($("m-policy"), reason(res, "Speichern fehlgeschlagen"), "bad");
 };
 
-$("wifien").addEventListener("change", markWifiPending);
+document.querySelectorAll('input[name=usbmode]')
+        .forEach(r => r.addEventListener("change", markModePending));
 
-$("wifiensave").onclick = async () => {
-  const want = $("wifien").checked;
-  const res = await api("PATCH", "/api/v1/usb", { wifi: { enabled: want } });
+$("usbmodesave").onclick = async () => {
+  const want = selectedMode();
+  if (!want) return;
+  const res = await api("PATCH", "/api/v1/usb", { mode: want });
   if (res.status === 200) {
-    wifiSaved = !!(res.body && res.body.config && res.body.config.wifi
-                   && res.body.config.wifi.enabled);
-    markWifiPending();
+    modeSaved = (res.body && res.body.config && res.body.config.mode) || want;
+    modeBooted = (res.body && res.body.bootMode !== undefined) ? res.body.bootMode : modeBooted;
+    markModePending();
     // Kein "Übernommen." allein: uebernommen ist die EINSTELLUNG, nicht der
-    // Zustand des Funkmoduls. Wer hier nur Erfolg meldet, laesst jemanden auf
-    // ein WLAN warten, das erst nach einem Neustart existiert.
-    msg($("m-wifien"), wifiSaved
-        ? "Gespeichert. WLAN wird beim nächsten Neustart geladen — jetzt ist es noch aus."
-        : "Gespeichert. Nach dem nächsten Neustart wird kein WLAN mehr geladen.", "ok");
+    // Zustand des Ports. Wer hier nur Erfolg meldet, laesst jemanden auf ein
+    // Modem warten, das erst nach einem Neustart existiert.
+    const pending = (modeBooted !== null && modeBooted !== modeSaved);
+    msg($("m-usbmode"), pending
+        ? "Gespeichert. Wirksam nach einem Neustart — jetzt läuft noch "
+          + (MODE_LABEL[modeBooted] || modeBooted) + "."
+        : "Gespeichert.", "ok");
+    await loadCellular();
   } else {
-    msg($("m-wifien"), reason(res, "Speichern fehlgeschlagen"), "bad");
+    msg($("m-usbmode"), reason(res, "Speichern fehlgeschlagen"), "bad");
   }
 };
 
@@ -671,14 +739,203 @@ $("usbsave").onclick = async () => {
   else msg($("m-usb"), reason(res, "Übernehmen fehlgeschlagen"), "bad");
 };
 
+// ------------------------------------------------------------ Mobilfunk
+//
+// EIN Wert wird hier nie erfunden. Was das Modem nicht geliefert hat, kommt
+// als null aus der API und wird zu "–". Eine 0 stuende an derselben Stelle
+// wie eine Messung, und "-0 dBm" sieht aus wie eine.
+function num(v, unit) { return (v === null || v === undefined) ? "–" : (v + (unit || "")); }
+function txt(v) { return (v === null || v === undefined || v === "") ? "–" : v; }
+
+const CELL_STATE_TEXT = {
+  disabled: "ausgeschaltet",
+  wait_device: "kein Modem gefunden",
+  wait_at: "Modem antwortet nicht auf dem AT-Port",
+  wait_sim: "SIM nicht bereit",
+  wait_registration: "nicht im Netz",
+  ensure_ecm_mode: "Betriebsart wird geprüft",
+  wait_reenumeration: "Modem startet neu",
+  configure_pdp: "APN wird gesetzt",
+  start_data: "Datenkanal wird aufgebaut",
+  wait_netif: "warte auf das Netzwerkinterface",
+  addressing: "warte auf eine Adresse",
+  up: "verbunden",
+  failed: "fehlgeschlagen"
+};
+
+let cellPresets = [];
+let cellPresetsLoaded = false;
+
+async function loadCellularPresets() {
+  if (cellPresetsLoaded) return;
+  cellPresetsLoaded = true;                 // auch bei Fehlschlag: nicht in jedem Takt erneut
+  const res = await api("GET", "/api/v1/network/cellular/presets");
+  if (res.status !== 200 || !res.body || !Array.isArray(res.body.presets)) return;
+  cellPresets = res.body.presets;
+  const sel = $("cellpreset");
+  cellPresets.forEach((p) => {
+    const o = document.createElement("option");
+    o.value = p.id; o.textContent = p.label + (p.note ? " — " + p.note : "");
+    sel.appendChild(o);
+  });
+}
+
+async function loadCellular() {
+  const res = await api("GET", "/api/v1/network/cellular");
+  const cards = ["cell-statuscard", "cell-apncard", "cell-simcard", "cell-diagcard"];
+  if (res.status !== 200) {
+    // Kein Mobilfunk-Backend in diesem Build. Gesagt, nicht angedeutet.
+    cards.forEach((id) => { $(id).hidden = true; });
+    $("cell-offmode").hidden = false;
+    $("cell-offmode").textContent =
+      "Mobilfunk ist in diesem Build nicht verfügbar.";
+    return;
+  }
+  const c = res.body || {};
+
+  // Der USB-Modus entscheidet, ob hier ueberhaupt etwas passieren kann.
+  const usable = (modeSaved === null) || (modeSaved === "cellular");
+  $("cell-offmode").hidden = usable;
+  if (!usable) {
+    $("cell-offmode").textContent =
+      "4G-Mobilfunk ist für USB nicht aktiviert. Unter „USB-Nutzung\" auswählen "
+      + "und neu starten; die Zugangsdaten bleiben dabei gespeichert.";
+  }
+  // Die Karten bleiben SICHTBAR, auch wenn der Modus ein anderer ist: die
+  // gespeicherten Zugangsdaten sollen sich vorbereiten lassen, bevor jemand
+  // umschaltet. Nur der Hinweis oben sagt, dass noch nichts davon laeuft.
+  cards.forEach((id) => { $(id).hidden = false; });
+  $("cell-none").hidden = true;
+
+  await loadCellularPresets();
+
+  // ---- Status
+  const tb = $("cell").querySelector("tbody"); tb.textContent = "";
+  const dl = c.dataLink || {}, ad = c.address || {}, nw = c.network || {}, rf = c.radio || {}, md = c.modem || {};
+  row(tb, "Verbindung", pill(txt(c.state), stateKind(c.state)));
+  row(tb, "Erklärung", CELL_STATE_TEXT[dl.state] || txt(dl.detail));
+  row(tb, "Modem vorhanden", c.available ? "ja" : "nein");
+  row(tb, "Hersteller", txt(md.manufacturer));
+  row(tb, "Modell", txt(md.model));
+  row(tb, "Firmware", txt(md.firmware));
+  row(tb, "Betreiber", txt(nw.operatorName));
+  row(tb, "Registrierung", txt(nw.registration) + (nw.roaming ? " (Roaming)" : ""));
+  row(tb, "Funktechnik", txt(nw.rat));
+  row(tb, "Band", num(rf.band) + (rf.bandMhz ? " (" + rf.bandMhz + " MHz)" : ""));
+  row(tb, "RSRP", num(rf.rsrpDbm, " dBm"));
+  row(tb, "RSRQ", num(rf.rsrqDb, " dB"));
+  row(tb, "SINR", num(rf.sinrDb, " dB"));
+  row(tb, "Datenlink", txt(dl.kind) + " / " + txt(dl.state));
+  row(tb, "Interface", txt(c.interface));
+  row(tb, "IPv4", txt(ad.ipv4));
+  row(tb, "Internet", c.internet ? "erreichbar" : "nicht bestätigt");
+
+  // ---- Zugangsdaten. Nur fuellen, wenn niemand gerade tippt: ein
+  // 5-Sekunden-Takt, der ein Formular ueberschreibt, ist unbenutzbar.
+  const cfg = c.config || {};
+  if (document.activeElement && document.activeElement.closest &&
+      document.activeElement.closest("#cell-apncard")) {
+    /* der Benutzer ist im Formular -- nichts anfassen */
+  } else {
+    $("cellapn").value  = cfg.apn || "";
+    $("cellpdp").value  = cfg.pdpType || "IP";
+    $("cellauth").value = cfg.authMode || "none";
+    $("celluser").value = cfg.username || "";
+    $("cellauto").checked = !!cfg.autoConnect;
+    $("cellnic").checked  = !!cfg.nicMode;
+    $("cellpw").placeholder = cfg.passwordSet ? "gespeichert — leer lassen für unverändert" : "";
+  }
+
+  // ---- SIM
+  const stb = $("cellsim").querySelector("tbody"); stb.textContent = "";
+  const sim = c.sim || {};
+  row(stb, "Status", txt(sim.state));
+  row(stb, "Hinweis", txt(sim.detail));
+  row(stb, "ICCID", txt(sim.iccid));
+  row(stb, "IMSI", txt(sim.imsi));
+  // Nur ob eine hinterlegt ist. Die PIN selbst verlaesst die Kamera nicht.
+  row(stb, "PIN hinterlegt", cfg.simPinSet ? "ja" : "nein");
+  $("cellpin").placeholder = cfg.simPinSet ? "gespeichert — leer lassen für unverändert" : "";
+
+  // ---- Diagnose
+  const dtb = $("celldiag").querySelector("tbody"); dtb.textContent = "";
+  row(dtb, "ATI", [md.manufacturer, md.model, md.firmware].filter(Boolean).join(" / ") || "–");
+  row(dtb, "IMEI", txt(md.imei));
+  row(dtb, "CEREG", txt(nw.registration));
+  row(dtb, "CSQ", num(rf.csq));
+  row(dtb, "COPS", txt(nw.operatorName) + (nw.operatorCode ? " (" + nw.operatorCode + ")" : ""));
+  row(dtb, "QNWINFO", txt(nw.rat));
+  row(dtb, "QENG Zelle / TAC", txt(rf.cellId) + " / " + txt(rf.tac));
+  row(dtb, "QENG EARFCN / PCI", num(rf.earfcn) + " / " + num(rf.pci));
+  row(dtb, "CGPADDR", txt((c.pdp || {}).ipv4));
+  row(dtb, "Interface", txt(c.interface));
+  row(dtb, "Adresse / Gateway", txt(ad.ipv4) + " / " + txt(ad.gateway));
+  row(dtb, "DNS", (ad.dns && ad.dns.length) ? ad.dns.join(", ") : "–");
+  row(dtb, "Adressbezug", dl.nicMode ? "statisch aus CGCONTRDP (NIC-Modus)" : "DHCP (Routing-Modus)");
+  row(dtb, "Fehlversuche", num(dl.attempts));
+  row(dtb, "Letzter Fehler", txt(c.lastError));
+}
+
+$("cellpreset").onchange = () => {
+  const p = cellPresets.find((x) => x.id === $("cellpreset").value);
+  if (!p) return;
+  // Nur ausfuellen. Die Felder bleiben aenderbar -- eine Vorlage ist ein
+  // Vorschlag, keine erzwungene Anbieterkonfiguration.
+  $("cellapn").value = p.apn || "";
+  if (p.pdpType)  $("cellpdp").value = p.pdpType;
+  if (p.authMode) $("cellauth").value = p.authMode;
+};
+
+$("cellsave").onclick = async () => {
+  const body = {
+    apn: $("cellapn").value.trim(),
+    pdpType: $("cellpdp").value,
+    authMode: $("cellauth").value,
+    username: $("celluser").value,
+    autoConnect: $("cellauto").checked,
+    nicMode: $("cellnic").checked
+  };
+  // Ein leeres Passwortfeld heisst "unverändert", nicht "löschen". Wer es
+  // löschen will, hat dafür keinen Weg über dieses Feld -- das ist Absicht:
+  // ein versehentlich geleertes Feld darf nicht das gespeicherte Geheimnis
+  // mitnehmen.
+  if ($("cellpw").value) body.password = $("cellpw").value;
+  const res = await api("PATCH", "/api/v1/network/cellular", body);
+  if (res.status === 202) {
+    $("cellpw").value = "";
+    msg($("m-cell"), "Übernommen — bitte oben bestätigen, sonst wird zurückgerollt.", "ok");
+    await loadNetwork();
+  } else {
+    msg($("m-cell"), reason(res, "Speichern fehlgeschlagen"), "bad");
+  }
+};
+
+$("cellpinsave").onclick = async () => {
+  const clear = $("cellpinclear").checked;
+  const pin = $("cellpin").value;
+  if (!clear && !pin) { msg($("m-cellpin"), "Keine PIN eingegeben.", "warn"); return; }
+  const res = await api("PATCH", "/api/v1/network/cellular", { simPin: clear ? "" : pin });
+  if (res.status === 202) {
+    $("cellpin").value = ""; $("cellpinclear").checked = false;
+    msg($("m-cellpin"), clear
+        ? "PIN gelöscht — bitte oben bestätigen."
+        : "PIN gespeichert — bitte oben bestätigen. Sie wird beim nächsten Versuch EINMAL gesendet.", "ok");
+    await loadNetwork();
+  } else {
+    msg($("m-cellpin"), reason(res, "Speichern fehlgeschlagen"), "bad");
+  }
+};
+
 // ------------------------------------------------------------- refresh
 async function refresh() {
   try {
     await loadNetwork();
-    // loadUsb ZUERST: es setzt wifiSaved, und loadWifi braucht das, um ein
-    // abgeschaltetes WLAN von einem fehlenden Funkmodul zu unterscheiden.
+    // loadUsb ZUERST: es setzt modeSaved, und sowohl loadWifi als auch
+    // loadCellular brauchen das, um ein abgeschaltetes Geraet von einem
+    // fehlenden zu unterscheiden.
     await loadUsb();
     await loadWifi();
+    await loadCellular();
   } catch (e) { /* a 401 already navigated away */ }
 }
 

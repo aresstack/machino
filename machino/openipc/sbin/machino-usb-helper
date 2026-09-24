@@ -1,0 +1,295 @@
+#!/bin/sh
+# Was am USB-Port haengt, und was dafuer geladen wird.
+#
+# EIN Helfer statt zweier Init-Skripte, weil es EIN Port ist.
+#
+# Vorher gab es S42wifi mit usb.wifi.enabled, und der Mobilfunkpfad haette ein
+# zweites Skript mit einem zweiten Schalter gebraucht. Zwei Schalter fuer einen
+# Stecker heisst, dass "beides an" ein Zustand ist, den die Konfiguration
+# ausdruecken kann und die Hardware nicht -- und welcher der beiden gewinnt,
+# entschiede dann die Reihenfolge der Init-Skripte. Das liest niemand nach,
+# bevor er ein Haekchen setzt.
+#
+# Also: usb.mode = off | wifi | cellular, genau eine Wahrheit.
+#
+# WARUM DAS EIN BOOT-SKRIPT IST UND NICHT MACHINO
+#
+# Jeder Schritt hier laedt ein Modul oder startet einen Prozess. machino darf
+# beides nicht, solange die IMP-Pipeline laeuft: fork+exec ist auf dieser
+# Kamera der dokumentierte Ausloeser eines Out-of-Memory-Vorfalls, und der
+# OOM-Killer trifft den Mediendaemon, der /dev/watchdog haelt. Deshalb passiert
+# alles Prozess-Startende VOR machinod.
+#
+# Praeziser: hier wird sehr wohl geforkt, das ist der Zweck. Der Punkt ist, WER
+# es tut.
+#
+# WARUM EIN MODUSWECHSEL EINEN NEUSTART BRAUCHT
+#
+# Weil die Alternative waere, Kernelmodule bei laufender IMP-Pipeline zu
+# tauschen und den Portstrom unter einem enumerierten Geraet wegzunehmen. Das
+# ist keine Bequemlichkeitsentscheidung: der aic8800-Treiber hat diese Kamera
+# beim Bring-up zweimal in den OOM getrieben, und ein halb entladener Treiber
+# ist kein Zustand, aus dem man ohne Stromzyklus herauskommt. "Neustart
+# erforderlich" ist die ehrliche Antwort.
+
+CONF=/etc/machino/machino.conf
+MODDIR=/etc/machino/modules
+MODEDIR=/var/run
+MODEFILE=/var/run/machino-usb-mode      # was WIRKLICH gestartet wurde
+GPIO=50                                 # PB18, der Portstrom
+
+# --- WLAN ---
+WPACTRL=/var/run/wpa_supplicant
+WIFI_SUPERVISOR=/usr/sbin/machino-wifi-role
+WIFI_ROLEFILE=/etc/machino/wifi-role
+WIFI_IFACE=wlan0
+WIFI_PIDFILE=/var/run/machino-wifi-role.pid
+
+# --- Mobilfunk ---
+CELL_HELPER=/usr/sbin/machino-cellular-helper
+CELL_PIDFILE=/var/run/machino-cellular-helper.pid
+CELL_VID=2c7c
+CELL_PID=6005
+
+say() { echo "usb: $*"; }
+
+# Den Modus aus machino.conf lesen.
+#
+# Erst alle Leerzeichen, Tabs und CR raus, dann exakt am Zeilenanfang
+# vergleichen. Das ist absichtlich stumpf: eine Variante mit mehreren
+# [[:space:]]-Klassen im selben Ausdruck hat sich beim Testen je nach
+# sed-Implementierung anders verhalten, und diese Zeile entscheidet, ob ein
+# Treiber geladen wird. Ein Kommentar (#usb...), ein Praefix (xusb...) und ein
+# Suffix (usb.modex) fallen hier alle korrekt durch. Bei mehrfacher Angabe
+# gewinnt die letzte.
+#
+# Unbekannte Werte werden zu "off". Das ist die einzige Richtung, in die ein
+# Tippfehler wirken darf: weniger laden, nicht mehr.
+read_mode() {
+	[ -f "$CONF" ] || { echo off; return; }
+	v=$(tr -d ' \t\r' < "$CONF" | sed -n 's/^usb\.mode=//p' | tail -1)
+	if [ -z "$v" ]; then
+		# Eine Installation von vor AP-M6 hat den Schluessel noch nicht.
+		# Einmalige Ableitung aus dem alten Feld -- machino schreibt beim
+		# naechsten Speichern usb.mode und danach liest das hier niemand mehr.
+		w=$(tr -d ' \t\r' < "$CONF" | sed -n 's/^usb\.wifi\.enabled=//p' | tail -1)
+		if [ "$w" = "true" ] || [ "$w" = "1" ]; then echo wifi; else echo off; fi
+		return
+	fi
+	case "$v" in
+		off|wifi|cellular) echo "$v" ;;
+		*) echo off ;;
+	esac
+}
+
+# Der Portstrom. NUR wenn der Port auch benutzt wird -- bei "off" bleibt die
+# Schiene unten, und zwar auch dann, wenn ein Geraet daran haengt.
+port_power_on() {
+	[ -d /sys/class/gpio/gpio$GPIO ] || echo $GPIO > /sys/class/gpio/export 2>/dev/null
+	[ -d /sys/class/gpio/gpio$GPIO ] || { say "GPIO $GPIO nicht exportierbar"; return 1; }
+	echo out > /sys/class/gpio/gpio$GPIO/direction
+	echo 1   > /sys/class/gpio/gpio$GPIO/value
+}
+
+load_module() {
+	lsmod | grep -q "^$1 " && return 0
+	[ -f "$MODDIR/$1.ko" ] || { say "$MODDIR/$1.ko fehlt"; return 1; }
+	insmod "$MODDIR/$1.ko" || { say "$1 liess sich nicht laden"; return 1; }
+	return 0
+}
+
+# ----------------------------------------------------------------- WLAN ----
+#
+# Die Reihenfolge ist nicht beliebig, sie ist auf Hardware erarbeitet (siehe
+# machino/docs/aic8800-bringup.md):
+#
+#   cfg80211            ist in diesem Kernel NICHT eingebaut, sondern Modul
+#   aic_load_fw         liefert Symbole fuer aic8800 (depends=aic_load_fw)
+#   aic8800
+#   GPIO 50 = PB18      Portstrom ZULETZT: das Geraet taucht auf, wenn der
+#                       Treiber schon registriert ist, dann passieren
+#                       Enumeration und Binding in einem Zug
+#
+# Die Module muessen mit CONFIG_PREALLOC_RX_SKB=n gebaut sein. Mit dem
+# Upstream-Default fordert der Treiber beim Init 847 order-3-Bloecke an; diese
+# Kamera hat rund 20 davon frei.
+start_wifi() {
+	modprobe cfg80211 2>/dev/null
+	load_module aic_load_fw || return 1
+	load_module aic8800 || return 1
+	port_power_on || return 1
+
+	# Enumeration, Firmware-Upload und Interface-Anlage brauchen auf dieser Box
+	# rund drei Sekunden. Eine feste Wartezeit waere entweder zu kurz oder
+	# verschenkt Bootzeit, also wird gepollt.
+	n=0
+	while [ ! -d /sys/class/net/$WIFI_IFACE ]; do
+		n=$((n + 1))
+		[ $n -ge 60 ] && { say "$WIFI_IFACE erschien nicht - haengt das Modul am Port?"; return 1; }
+		usleep 250000 2>/dev/null || sleep 1
+	done
+	ip link set $WIFI_IFACE up
+	say "$WIFI_IFACE bereit"
+
+	# Ab hier besitzt der Rollen-Supervisor das Interface. Er wird EINMAL
+	# gestartet -- hier, vor machinod, also bevor IMP existiert -- und startet
+	# danach wpa_supplicant oder hostapd, je nachdem was in der Rollendatei
+	# steht. Station und AP sind auf diesem Radio gegenseitige Rollen; beide
+	# gleichzeitig auf wlan0 ergibt einen Access Point, der hochkommt und
+	# Sekunden spaeter wegbricht, weil der Supplicant weiterscannt.
+	[ -x "$WIFI_SUPERVISOR" ] || { say "$WIFI_SUPERVISOR fehlt"; return 1; }
+	[ -f "$WIFI_ROLEFILE" ] || echo station > "$WIFI_ROLEFILE"
+	"$WIFI_SUPERVISOR" >/dev/null 2>&1 &
+	echo "$!" > "$WIFI_PIDFILE"
+	say "Rollen-Supervisor laeuft (pid $!)"
+	return 0
+}
+
+stop_wifi() {
+	if [ -f "$WIFI_PIDFILE" ]; then
+		kill "$(cat "$WIFI_PIDFILE")" 2>/dev/null
+		rm -f "$WIFI_PIDFILE"
+	fi
+	[ -f /var/run/udhcpc.$WIFI_IFACE.pid ] && kill "$(cat /var/run/udhcpc.$WIFI_IFACE.pid)" 2>/dev/null
+	rm -f /var/run/udhcpc.$WIFI_IFACE.pid
+	[ -f /var/run/udhcpd.pid ] && kill "$(cat /var/run/udhcpd.pid)" 2>/dev/null
+	rm -f /var/run/udhcpd.pid
+	# Der Supervisor raeumt seine eigenen Prozesse per PID-Datei ab; hier nur
+	# die Faelle, in denen er selbst nicht mehr laeuft.
+	for p in /var/run/wpa_supplicant.$WIFI_IFACE.pid /var/run/hostapd.pid; do
+		[ -f "$p" ] && { kill "$(cat "$p")" 2>/dev/null; rm -f "$p"; }
+	done
+	ip link set $WIFI_IFACE down 2>/dev/null
+}
+
+# ------------------------------------------------------------ Mobilfunk ----
+#
+# DIE REIHENFOLGE IST HIER EINE ENTSCHEIDUNG, KEIN ZUFALL.
+#
+# Zuerst das Netzwerkpaar, dann die seriellen Treiber. Grund: `option` bindet
+# ueber `new_id` ALLE Interfaces eines Geraets. Waere es zuerst da und
+# brauchte man den Notnagel, verschluckte es auch das ECM-Interface, und der
+# Datenpfad waere weg -- mit einem AT-Port, der wunderbar antwortet. Bindet
+# cdc_ether MI_00 vorher ueber seine Klasse (CDC Ethernet, 02/06), kann
+# `option` es nicht mehr nehmen.
+#
+# usbserial ist im Image vorhanden; die uebrigen vier kommen aus dem Bundle.
+start_cellular() {
+	# usbnet vor cdc_ether: cdc_ether haengt an dessen Symbolen.
+	load_module usbnet   || say "usbnet fehlt - ohne das kein ECM-Interface"
+	load_module cdc_ether || say "cdc_ether fehlt - ohne das kein ECM-Interface"
+
+	modprobe usbserial 2>/dev/null || load_module usbserial
+	load_module usb_wwan || say "usb_wwan fehlt - option braucht dessen Symbole"
+	load_module option   || say "option fehlt - ohne das kein AT-Port"
+
+	port_power_on || return 1
+
+	# Auf den AT-Port warten. Dass ein ttyUSB erscheint, heisst noch nicht,
+	# dass es der richtige ist -- welcher es ist, sucht machino selbst
+	# (core/cellular/modem_ports). Hier geht es nur darum, ob ueberhaupt etwas
+	# gebunden wurde.
+	n=0
+	while [ ! -e /dev/ttyUSB0 ]; do
+		n=$((n + 1))
+		[ $n -ge 80 ] && break          # 20 s
+		usleep 250000 2>/dev/null || sleep 1
+	done
+
+	if [ ! -e /dev/ttyUSB0 ]; then
+		# Der vom Kernel vorgesehene Notnagel: option.c dieses Kernels kennt
+		# 0x6005 nicht. Ein geratener Eintrag in der Treibertabelle waere
+		# schlimmer, weil die richtige .reserved-Maske davon abhaengt, welche
+		# Interfacenummern die Netzwerkfunktion belegt.
+		#
+		# Gefahrlos ist das NUR, weil cdc_ether oben schon gebunden hat: ein
+		# bereits belegtes Interface nimmt new_id nicht weg.
+		for d in /sys/bus/usb-serial/drivers/option1 /sys/bus/usb-serial/drivers/option; do
+			[ -w "$d/new_id" ] || continue
+			say "kein ttyUSB - melde $CELL_VID:$CELL_PID bei $(basename "$d") an"
+			echo "$CELL_VID $CELL_PID" > "$d/new_id" 2>/dev/null
+			break
+		done
+		n=0
+		while [ ! -e /dev/ttyUSB0 ]; do
+			n=$((n + 1))
+			[ $n -ge 40 ] && { say "kein serieller Port - steckt das Modem?"; break; }
+			usleep 250000 2>/dev/null || sleep 1
+		done
+	fi
+
+	# Der Prozessstarter fuer den Datenpfad. machino schreibt ihm Wuensche in
+	# eine Datei; er fuehrt sie aus, damit machino selbst nicht forken muss.
+	[ -x "$CELL_HELPER" ] || { say "$CELL_HELPER fehlt"; return 1; }
+	"$CELL_HELPER" >/dev/null 2>&1 &
+	echo "$!" > "$CELL_PIDFILE"
+	say "Mobilfunk-Helfer laeuft (pid $!)"
+	return 0
+}
+
+stop_cellular() {
+	if [ -f "$CELL_PIDFILE" ]; then
+		kill "$(cat "$CELL_PIDFILE")" 2>/dev/null
+		rm -f "$CELL_PIDFILE"
+	fi
+	# Die DHCP-Clients des Helfers, falls er sie nicht mehr abraeumen konnte.
+	for p in /var/run/udhcpc.usb0.pid /var/run/udhcpc.eth1.pid /var/run/udhcpc.wwan0.pid; do
+		[ -f "$p" ] && { kill "$(cat "$p")" 2>/dev/null; rm -f "$p"; }
+	done
+	rm -f /var/run/machino-cellular.state
+}
+
+# ------------------------------------------------------------------ main ----
+
+start() {
+	mode=$(read_mode)
+	case "$mode" in
+		off)
+			# Ausdruecklich NICHTS: kein Modul, kein Portstrom, kein Daemon.
+			# Das ist der Vorgabezustand und der Grund, warum eine Kamera ohne
+			# USB-Zusatz sich exakt so verhaelt wie vor dieser Erweiterung.
+			say "aus (usb.mode=off) - kein Modul, kein Portstrom, kein Daemon"
+			;;
+		wifi)
+			start_wifi || say "WLAN kam nicht hoch"
+			;;
+		cellular)
+			start_cellular || say "Mobilfunk kam nicht hoch"
+			;;
+	esac
+	# Was WIRKLICH gestartet wurde, damit machino "Neustart erforderlich"
+	# sagen kann, ohne es zu raten. Auch im Fehlerfall: der Modus wurde
+	# versucht, und ein fehlgeschlagener Versuch ist kein Grund, einen zweiten
+	# Neustart zu verlangen.
+	mkdir -p "$MODEDIR" 2>/dev/null
+	echo "$mode" > "$MODEFILE" 2>/dev/null
+}
+
+stop() {
+	# Beide, unabhaengig vom eingestellten Modus. Wer den Modus umstellt und
+	# dann stop ruft, soll nicht den alten Stack stehen lassen.
+	stop_wifi
+	stop_cellular
+	rm -f "$MODEFILE"
+	# Portstrom bleibt AN. Ihn abzuschalten wuerde das Geraet abmelden,
+	# waehrend machino unter Umstaenden noch laeuft und es abfragt.
+}
+
+case "${1:-}" in
+	start) start ;;
+	stop)  stop ;;
+	restart) stop; sleep 2; start ;;
+	mode) read_mode ;;
+	status)
+		echo "configured: $(read_mode)"
+		echo "started:    $(cat "$MODEFILE" 2>/dev/null || echo '-')"
+		echo "wlan0:      $([ -d /sys/class/net/$WIFI_IFACE ] && echo vorhanden || echo fehlt)"
+		echo "aic module: $(lsmod | grep -c '^aic') geladen"
+		echo "role:       $(cat "$WIFI_ROLEFILE" 2>/dev/null || echo '-')"
+		echo "supplicant: $([ -e $WPACTRL/$WIFI_IFACE ] && echo laeuft || echo aus)"
+		echo "hostapd:    $([ -e /var/run/hostapd/$WIFI_IFACE ] && echo laeuft || echo aus)"
+		echo "ttyUSB:     $(ls /dev/ttyUSB* 2>/dev/null | tr '\n' ' ')"
+		echo "cell helper:$([ -f "$CELL_PIDFILE" ] && echo " laeuft" || echo " aus")"
+		;;
+	*) echo "usage: $0 {start|stop|restart|status|mode}"; exit 1 ;;
+esac

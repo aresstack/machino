@@ -26,6 +26,24 @@ bool usb_power_mode_parse(const std::string& s, UsbPowerMode& out)
 
 namespace usb {
 
+const char* usb_function_name(UsbFunction f)
+{
+    switch (f) {
+        case UsbFunction::Off:      return "off";
+        case UsbFunction::Wifi:     return "wifi";
+        case UsbFunction::Cellular: return "cellular";
+    }
+    return "off";
+}
+
+bool usb_function_parse(const std::string& s, UsbFunction& out)
+{
+    if (s == "off")      { out = UsbFunction::Off;      return true; }
+    if (s == "wifi")     { out = UsbFunction::Wifi;     return true; }
+    if (s == "cellular") { out = UsbFunction::Cellular; return true; }
+    return false;
+}
+
 namespace {
 
 bool pin_is_listed(const UsbPowerCapability& p, const std::string& pin)
@@ -174,6 +192,12 @@ UsbCapabilities UsbHostService::capabilities() const
     return backend_.capabilities();
 }
 
+void UsbHostService::set_boot_function(UsbFunction f)
+{
+    std::lock_guard<std::mutex> g(m_);
+    boot_function_ = f;
+}
+
 UsbStatus UsbHostService::status() const
 {
     UsbStatus s;
@@ -184,6 +208,12 @@ UsbStatus UsbHostService::status() const
         std::lock_guard<std::mutex> g(m_);
         s.enabled = cfg_.enabled;
         s.resolved = resolved_;
+        s.function = cfg_.function;
+        s.boot_function = boot_function_;
+        // A mode change is only real after the boot helper has run. Saying so
+        // here, from the two values themselves, means the flag clears itself
+        // at the next boot instead of needing anyone to reset it.
+        s.reboot_required = (cfg_.function != boot_function_);
     }
     bool on = false;
     if (backend_.power_state(on)) { s.power_known = true; s.power_on = on; }

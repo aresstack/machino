@@ -212,7 +212,7 @@ void test_all_the_sections_the_navigation_promises_exist()
 {
     const std::string p = page();
     for (const char* id : {"t-overview", "t-ethernet", "t-wifi", "t-cellular",
-                           "t-routing", "t-usbhost", "t-usbpower", "t-usbwifi", "t-usbdev"}) {
+                           "t-routing", "t-usbhost", "t-usbpower", "t-usbmode", "t-usbdev"}) {
         // Once in the tab table, once as the section.
         TCHECK(has(p, std::string("\"") + id + "\""));
         TCHECK(has(p, std::string("id=\"") + id + "\""));

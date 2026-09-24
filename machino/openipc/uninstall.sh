@@ -87,13 +87,21 @@ fi
 # ---------------------------------------------------- restore the boot slot ---
 rm -f "$INITD/S95streamer"
 
-# The WiFi boot script. Stopped first so no supplicant or DHCP client is left
-# running against a machino that is going away.
-if [ -f "$INITD/S42wifi" ]; then
-    run_live "$INITD/S42wifi" stop
-    rm -f "$INITD/S42wifi" "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
-    rm -f "$ROOT/usr/sbin/machino-wifi-role"
-fi
+# The USB boot script. Stopped first so no supplicant, no hostapd and no DHCP
+# client is left running against a machino that is going away. Its stop tears
+# down BOTH stacks regardless of the selected mode, which is what we want here.
+#
+# S42wifi is the name this had before AP-M6. An installation that was never
+# upgraded still has it, and leaving it behind would leave a boot script that
+# loads a WiFi driver for a machino that is no longer installed.
+for _s in S42usb S42wifi; do
+    if [ -f "$INITD/$_s" ]; then
+        run_live "$INITD/$_s" stop
+        rm -f "$INITD/$_s"
+    fi
+done
+rm -f "$ROOT/usr/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-wifi-role"
+rm -f "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
 
 # Die Treiber und die Firmware. Die installiert machino jetzt selbst, also
 # raeumt machino sie auch wieder weg -- rund 1 MB auf einem Overlay, das
@@ -125,7 +133,7 @@ fi
 # has already been stopped above, so nothing is serving from it any more.
 rm -f "$ROOT/usr/sbin/hostapd" "$ROOT/usr/sbin/hostapd_cli"
 rm -f "$STATE_DIR/hostapd.conf" "$STATE_DIR/udhcpd.conf"
-rm -f "$INITD/S41hostapd"      # superseded by S42wifi + the role supervisor
+rm -f "$INITD/S41hostapd"      # superseded by S42usb + the role supervisor
 
 if [ -f "$INITD/majestic" ]; then
     move_file "$INITD/majestic" "$INITD/S95majestic" || warn "could not move majestic back into the boot slot"
