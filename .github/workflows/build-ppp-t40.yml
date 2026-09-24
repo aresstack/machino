@@ -136,7 +136,8 @@ jobs:
           # Build aus.
           make -C pppd -j"$(nproc)" \
                CC=mipsel-linux-gcc AR=mipsel-linux-ar RANLIB=mipsel-linux-ranlib \
-               COPTS="-O2 -std=gnu17" FILTER= USE_PAM= \
+               COPTS="-O2 -std=gnu17" \
+               FILTER= USE_EAPTLS= USE_PAM= USE_SRP= USE_SYSTEMD= USE_LIBUTIL= \
                || { echo "::error::pppd build failed"; exit 1; }
           make -C chat -j"$(nproc)" \
                CC=mipsel-linux-gcc AR=mipsel-linux-ar RANLIB=mipsel-linux-ranlib \
