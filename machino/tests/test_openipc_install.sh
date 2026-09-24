@@ -591,6 +591,13 @@ esac
 
 # wifi_enabled(): entscheidet, ob beim Boot ein Kernelmodul geladen und der
 # USB-Port bestromt wird. Fail-closed in jedem Zweifelsfall.
+#
+# Die andere Haelfte dieses Vertrags steht in test_net_views.cpp
+# (test_the_wifi_switch_is_written_the_way_the_init_script_reads_it): dort wird
+# festgenagelt, dass machino genau "usb.wifi.enabled" mit genau "true"
+# schreibt. Hier wird geprueft, dass der Parser das liest. Die beiden Seiten
+# laufen nie zusammen -- C++ schreibt die Datei, Shell liest sie vor dem Start
+# von machino -- also muessen sie sich an einer woertlichen Zeile treffen.
 eval "$(sed -n '/^wifi_enabled() {/,/^}/p' "$PKG/init/S42wifi")"
 gate() { CONF="$WORK/gate.conf"; printf '%s' "$1" > "$CONF"; if wifi_enabled; then echo AN; else echo AUS; fi; }
 for case_ in \

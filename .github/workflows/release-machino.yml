@@ -78,6 +78,7 @@ jobs:
       - name: "Guards"
         run: |
           sh machino/tools/check-linux-only.sh
+          sh machino/tools/check-netui.sh machino/src/app/http/netui.cpp
           # The make-free runner must not have rotted either: it is what a
           # contributor without make will use to check their work.
           rm -rf machino/build machino/tests/machino-tests

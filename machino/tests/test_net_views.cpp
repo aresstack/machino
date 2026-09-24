@@ -130,6 +130,43 @@ void test_usb_wifi_is_off_until_someone_says_otherwise()
     TCHECK(w->get("appliesAt") && w->get("appliesAt")->as_string() == "reboot");
 }
 
+// Der Vertrag zwischen machino und dem Init-Skript, woertlich.
+//
+// S42wifi liest usb.wifi.enabled aus machino.conf, BEVOR machino laeuft -- es
+// gibt keine API, die es fragen koennte. Damit haengt das Laden eines
+// Kernelmoduls an der Textform einer Zeile, und die beiden Seiten sind in
+// verschiedenen Sprachen geschrieben und werden nie zusammen ausgefuehrt.
+//
+// Genau diese Kette ist nirgends komplett gelaufen: die Kamera traegt einen
+// machino von vor diesem Feld, und bei den Hardwaretests wurde der Schluessel
+// von Hand geschrieben. Also wird hier die Zeile festgenagelt, die der
+// ConfigStore erzeugt, und drueben in test_openipc_install.sh dieselbe Zeile
+// durch den echten Parser des Init-Skripts geschickt. Treffen sich die beiden
+// nicht mehr, faellt eine von beiden Seiten um.
+void test_the_wifi_switch_is_written_the_way_the_init_script_reads_it()
+{
+    usb::UsbConfig cfg;
+    cfg.wifi_enabled = true;
+    std::vector<std::pair<std::string, std::string>> kv;
+    usb_config_to_settings(cfg, kv);
+
+    bool found = false;
+    for (const auto& p : kv) {
+        if (p.first != "usb.wifi.enabled") continue;
+        found = true;
+        // Kleingeschrieben: der Parser im Init-Skript akzeptiert bewusst kein
+        // "TRUE" (fail-closed), also darf hier auch keins entstehen.
+        TCHECK(p.second == "true");
+    }
+    TCHECK(found);
+
+    cfg.wifi_enabled = false;
+    kv.clear();
+    usb_config_to_settings(cfg, kv);
+    for (const auto& p : kv)
+        if (p.first == "usb.wifi.enabled") TCHECK(p.second == "false");
+}
+
 void test_usb_config_survives_a_settings_round_trip()
 {
     usb::UsbConfig cfg;
@@ -476,6 +513,7 @@ void run_net_views_tests()
     test_usb_patch_rejects_bad_values_and_changes_nothing();
     test_usb_config_survives_a_settings_round_trip();
     test_usb_wifi_is_off_until_someone_says_otherwise();
+    test_the_wifi_switch_is_written_the_way_the_init_script_reads_it();
     test_wifi_capabilities_separate_driver_from_tooling();
     test_an_unasked_driver_is_reported_as_unknown_not_as_no();
     test_no_document_ever_contains_a_passphrase();

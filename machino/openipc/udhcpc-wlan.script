@@ -43,7 +43,18 @@ case "$1" in
 				grep -v '^# machino-wlan$' "$RESOLV" 2>/dev/null | grep -v '^nameserver'
 				for d in $dns; do echo "nameserver $d"; done
 				echo '# machino-wlan'
-			} > "$tmp" && mv "$tmp" "$RESOLV"
+			} > "$tmp" || { rm -f "$tmp"; exit 0; }
+			# Rechte AUSDRUECKLICH setzen, nicht dem umask ueberlassen.
+			#
+			# Der Rollen-Supervisor laeuft mit umask 077, damit die
+			# wpa_supplicant-Konfiguration mit ihrem PSK nicht lesbar entsteht.
+			# Dieses Skript ist sein Enkelkind und erbt das -- die Temp-Datei
+			# entstuende als 0600, und der mv wuerde eine 0644-Systemdatei
+			# heimlich auf root-only herabstufen. Auf dieser Kamera laeuft alles
+			# als root, es faellt also nicht auf; genau deshalb waere es spaeter
+			# nicht zu finden. resolv.conf ist kein Geheimnis.
+			chmod 0644 "$tmp" 2>/dev/null
+			mv "$tmp" "$RESOLV" || rm -f "$tmp"
 		fi
 		;;
 
