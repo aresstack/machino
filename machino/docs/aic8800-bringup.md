@@ -1,71 +1,64 @@
 
-## AP-Modus (2026-09-23, Kamera 192.168.1.10, beobachtet ueber Ethernet)
+### Rueckweg AP -> Station: drei Defekte, alle auf Hardware aufgefallen
 
-Der AIC8800 kann Access Point. Das war bis hierher eine Annahme; jetzt ist es
-gemessen. Der Uebergang Station -> AP im Kernel-Log:
+Der Weg hin lief auf Anhieb, der Weg zurueck nicht. Im Supervisor-Log stand
 
-    rwnx_cfg80211_disconnect drv_vif_index:0 disconnect reason:3
-    rwnx_cfg80211_unlink_bss(): cfg80211_unlink Viva Espana!!
-    change_if: 2 to 3, 8, 2
-    usb 1-1 wlan0: AP started: ch=0, bcmc_idx=33 channel=2437 bw=1
+    wifi-role: wpa_supplicant startete nicht
 
-`change_if: 2 to 3` ist der Rollenwechsel des Interface-Typs im Treiber, und er
-laeuft sauber durch: erst die Station-Verbindung abbauen, dann den Typ aendern,
-dann der AP. Genau deshalb sind es getrennte Rollen und keine gleichzeitigen
-Daemons -- der Treiber selbst behandelt sie als Umschaltung.
+und dasselbe Kommando lief eine Minute spaeter von Hand mit rc=0. Also kein
+Konfigurations-, sondern ein Zeitfehler. Der Beweis steht im Kernel-Log:
 
-Zustand danach:
+    [6807.085433] usb 1-1 wlan0: AP Stopped
+    [6807.133940] change_if: 3 to 2, 8, 2
 
-    wlan0  Mode:Master, 192.168.24.1/24
-    hostapd -B -P /var/run/hostapd.pid   laeuft, ctrl-Socket /var/run/hostapd/wlan0
-    udhcpd /etc/machino/udhcpd.conf      laeuft
-    eth0   192.168.1.10 unveraendert
-    machino laeuft weiter, MemAvailable 24824 kB, buddyinfo unauffaellig
+`stop_ap()` hatte auf das Verschwinden des hostapd-ctrl-Sockets gewartet. Der
+ist sofort weg. Der Treiber baut das Interface danach noch um, und genau in
+dieses Fenster hinein startete der Supplicant.
 
-hostapd 2.10, statisch gegen libnl 3.7.0, 996 KB gestrippt. `hostapd_cli` wird
-NICHT mitgeliefert: machino spricht den ctrl-Socket ueber wpa_ctrl.cpp selbst
-an, und der Supervisor braucht ihn nicht. Das sind 150 KB, die auf einem
-Overlay mit 4,3 MB frei nichts zu suchen haben.
+1. **kill(1) wartet nicht.** `kill_pidfile` hat SIGTERM geschickt und ist
+   weitergelaufen. Jetzt pollt es `kill -0`, bis der Prozess wirklich weg ist,
+   und eskaliert nach 5 s auf SIGKILL. Der Socket-Wartelauf ist damit
+   ueberfluessig und entfernt.
 
-Fuer diesen Test liegt das Binary auf tmpfs mit einem Symlink aus /usr/sbin --
-absichtlich: haette der Treiber AP verweigert, waere kein Flash verbraucht
-worden. Die dauerhafte Installation kommt ueber den Installer.
+2. **Der Start braucht Wiederholung, keine Wartezeit.** `retry_start` versucht
+   den Daemon zehnmal im Sekundenabstand. Eine feste Pause waere entweder zu
+   kurz oder verschenkte Sekunden bei jedem Wechsel.
 
-HTTP antwortet auf der AP-Adresse: `GET http://192.168.24.1/api/v1/state` gibt
-401. Das ist der Beweis, um den es geht -- der Server ist auf dem Interface
-erreichbar und verlangt Anmeldung. Ein 401 ueber die AP-Adresse ist ein
-erreichbarer Server, keine kaputte Route.
+3. **Zwei DHCP-Prozesse ohne PID-Datei.** BusyBox 1.36 `udhcpd` kennt kein -P,
+   und die Direktive `pidfile` in udhcpd.conf schreibt dieser Build
+   stillschweigend nicht -- nachgemessen: die Datei entstand nie. Der
+   DHCP-Server des Access Points hat den Rollenwechsel ueberlebt und weiter
+   Adressen aus einem Netz verteilt, das es nicht mehr gab. Jetzt laeuft er mit
+   `-f` und wird selbst in den Hintergrund gelegt, damit `$!` exakt stimmt.
+   Derselbe Fehler steckte spiegelbildlich im Station-Pfad: `udhcpc` wurde ohne
+   `-p` gestartet.
 
-NOCH NICHT GEMESSEN (braucht ein zweites Geraet, PENDING_PHYSICAL):
-sieht ein Telefon die SSID, kommt WPA2 zustande, vergibt udhcpd eine Adresse,
-und ist /machino/net dann ueber die Luft bedienbar.
+Ausserdem hat die erste Fassung ihre Daemons mit `>/dev/null 2>&1` gestartet.
+Der Fehlschlag war damit nicht diagnostizierbar -- es stand da, dass der
+Supplicant nicht startete, und warum stand nirgends. Der Supervisor schreibt
+jetzt nach `/tmp/machino-wifi-role.log` (tmpfs, nicht Flash: das ist Diagnose,
+kein Zustand).
 
-### Ein Nebenbefund, der nicht vergessen werden darf
+Nach dem Fix, auf der Kamera gemessen:
 
-Der AIC-Treiber schreibt weiterhin Schluesselmaterial ins Kernel-Log
-("key: 00000000: ea a5 2c 65 ..." direkt nach dem AP-Start). Das ist der
-Treiber, nicht machino, aber `dmesg` ist damit auf dieser Kamera ein
-Geheimnistraeger.
-der künftigen
-Speicherfrage zu diesem Treiber ist `buddyinfo` die Messung, nicht `free`.
+    wpa_supplicant -B -P /var/run/wpa_supplicant.wlan0.pid ...   laeuft
+    udhcpc -i wlan0 -b -t 0 -S -p /var/run/udhcpc.wlan0.pid      laeuft
+    /var/run/udhcpd.pid, /var/run/hostapd.pid                    weg
+    wpa_state=SCANNING
 
-Gebaut wird deshalb mit:
+Die Assoziation selbst ist NICHT nachgewiesen: der Test-Hotspot war zu diesem
+Zeitpunkt aus (`iwlist scan` zeigt zehn andere Netze, "Viva Espana" nicht
+darunter). Der Supervisor tut das Richtige und sucht.
 
-```
-CONFIG_PREALLOC_RX_SKB=n CONFIG_PREALLOC_TXQ=n
-```
+### Der AP-Test selbst ist bestanden
 
-als Make-Variablen auf der Kommandozeile — die schlagen das `export` im
-Top-Makefile. Das ist kein Patch, sondern ein vorgesehener Betriebsmodus.
+Ein Telefon hat sich mit `Machino-Test` verbunden, eine Adresse bekommen, die
+WebUI ueber `http://192.168.24.1/` geladen und den Live-H.264-Stream ueber den
+Access Point gesehen. Im Kernel-Log ist der Client als assoziierte Station
+belegt:
 
-### 2. Der OOM trifft den Watchdog-Fütterer
-
-```
-PID 992 majestic -> /dev/watchdog
-  992 {majestic} /usr/bin/machino -c /etc/machino/machino.conf --api-port 80
-```
-
-**machino selbst hält den Watchdog** (argv[0] ist `majestic`, wegen der
+    usb 1-1 wlan0: Del sta 9 (be:43:e6:78:0b:63)
+�lt den Watchdog** (argv[0] ist `majestic`, wegen der
 Drop-in-Kompatibilität — deshalb liest sich der OOM-Log so, als sei ein
 fremdes Majestic gestorben). Stirbt es, wird `/dev/watchdog` nicht mehr
 gefüttert und die Hardware setzt zurück. Der Treiber meldet beim Schließen

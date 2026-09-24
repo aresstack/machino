@@ -42,28 +42,79 @@ WPACTRL=/var/run/wpa_supplicant
 APCTRL=/var/run/hostapd
 WPAPID=/var/run/wpa_supplicant.wlan0.pid
 APPID=/var/run/hostapd.pid
+DHCPCPID=/var/run/udhcpc.wlan0.pid
+# Nicht auf das Overlay: das hier ist Diagnose, kein Zustand, und Flash-Schreiben
+# fuer Logzeilen ist auf einer Kamera mit 4,3 MB frei die falsche Entscheidung.
+LOGFILE=/tmp/machino-wifi-role.log
 POLL=2
 
-log() { echo "wifi-role: $*"; }
+# Auch in die Datei. S42wifi startet den Supervisor mit >/dev/null, und bei
+# der ersten Fehlschaltung auf Hardware war genau das das Problem: es stand
+# "wpa_supplicant startete nicht" da, und der Grund war nirgends.
+log() { echo "wifi-role: $*"; echo "$(date '+%H:%M:%S') wifi-role: $*" >> "$LOGFILE" 2>/dev/null; }
 
 # Nur die EIGENEN Prozesse beenden, nie per killall. Eine spaetere Kamera kann
 # einen zweiten Supplicant auf einer anderen Schnittstelle fahren -- ein
 # pauschales "killall wpa_supplicant" wuerde den mit abraeumen, und das faellt
 # dann an einer ganz anderen Stelle auf.
+#
+# Und danach WARTEN, bis der Prozess wirklich weg ist. Die erste Fassung hat
+# nur SIGTERM geschickt und ist sofort weitergelaufen -- der Rollenwechsel
+# AP -> Station ist auf echter Hardware genau daran gescheitert (siehe
+# docs/aic8800-bringup.md). kill(1) kehrt zurueck, wenn das Signal zugestellt
+# ist, nicht wenn der Empfaenger fertig ist.
 kill_pidfile() {
 	[ -f "$1" ] || return 0
 	pid=$(cat "$1" 2>/dev/null)
-	[ -n "$pid" ] && kill "$pid" 2>/dev/null
 	rm -f "$1"
+	[ -n "$pid" ] || return 0
+	kill "$pid" 2>/dev/null || return 0
+	n=0
+	while kill -0 "$pid" 2>/dev/null; do
+		n=$((n + 1))
+		if [ $n -ge 50 ]; then           # 5 s hoeflich, dann nicht mehr
+			log "PID $pid reagiert nicht auf TERM - KILL"
+			kill -9 "$pid" 2>/dev/null
+			sleep 1
+			break
+		fi
+		usleep 100000 2>/dev/null || sleep 1
+	done
+	return 0
+}
+
+# Nach einem Rollenwechsel braucht der AIC8800 einen Moment. Im Kernel-Log
+# steht der Grund wortwoertlich:
+#
+#     usb 1-1 wlan0: AP Stopped
+#     change_if: 3 to 2, 8, 2
+#
+# Das ist ein Typwechsel des Interface im Treiber, und er passiert NACH dem
+# Ende von hostapd. Wer sofort danach den Supplicant startet, trifft ein
+# Interface, das gerade umgebaut wird. Deshalb wird der Start wiederholt
+# statt einmalig versucht -- eine feste Wartezeit waere entweder zu kurz oder
+# verschenkte Sekunden bei jedem Wechsel.
+retry_start() {
+	what=$1; shift
+	n=0
+	while [ $n -lt 10 ]; do
+		if "$@" >>"$LOGFILE" 2>&1; then
+			[ $n -gt 0 ] && log "$what kam im Versuch $((n + 1)) hoch"
+			return 0
+		fi
+		n=$((n + 1))
+		sleep 1
+	done
+	log "$what kam nach $n Versuchen nicht hoch - siehe $LOGFILE"
+	return 1
 }
 
 stop_station() {
-	kill_pidfile /var/run/udhcpc.$IFACE.pid
+	kill_pidfile "$DHCPCPID"
 	kill_pidfile "$WPAPID"
-	# Warten, bis der Socket wirklich weg ist. Sonst uebernimmt hostapd ein
-	# Interface, das der Supplicant noch haelt, und scheitert unspezifisch.
-	n=0
-	while [ -e "$WPACTRL/$IFACE" ] && [ $n -lt 20 ]; do n=$((n+1)); sleep 1; done
+	# kill_pidfile hat bereits auf das Prozessende gewartet. Der Socket wird
+	# beim Beenden aufgeraeumt; bleibt er als Leiche liegen, uebernimmt hostapd
+	# ihn nicht, also weg damit.
 	rm -f "$WPACTRL/$IFACE"
 	# Die per DHCP bezogene Adresse muss weg. Bleibt sie stehen, traegt das
 	# Interface in der AP-Rolle zwei Adressen -- die alte aus dem Hotspot-Netz
@@ -75,8 +126,6 @@ stop_station() {
 stop_ap() {
 	kill_pidfile /var/run/udhcpd.pid
 	kill_pidfile "$APPID"
-	n=0
-	while [ -e "$APCTRL/$IFACE" ] && [ $n -lt 20 ]; do n=$((n+1)); sleep 1; done
 	rm -f "$APCTRL/$IFACE"
 	# Umgekehrt genauso: die AP-Adresse darf nicht in die Station-Rolle
 	# hineinreichen.
@@ -92,16 +141,21 @@ start_station() {
 		chmod 600 "$WPACONF"
 	fi
 	ip link set $IFACE up
-	wpa_supplicant -B -P "$WPAPID" -i $IFACE -c "$WPACONF" -D nl80211 >/dev/null 2>&1 || {
-		log "wpa_supplicant startete nicht"; return 1; }
+	retry_start "wpa_supplicant" \
+		wpa_supplicant -B -P "$WPAPID" -i $IFACE -c "$WPACONF" -D nl80211 || return 1
 	# DHCP als Daemon: nach einem Rollback assoziiert der Supplicant von
 	# selbst neu, und ohne laufenden Client bliebe das Interface assoziiert
 	# und adresslos.
+	#
+	# -p ist nicht optional: ohne sie schreibt udhcpc keine PID-Datei, und
+	# stop_station() zielt dann auf eine Datei, die es nie gab. Derselbe Fehler
+	# wie bei udhcpd, nur in die andere Richtung -- der DHCP-Client des
+	# Hotspots haette den Wechsel nach AP ueberlebt.
 	if command -v udhcpc >/dev/null 2>&1; then
 		if [ -x "$DHCPSCRIPT" ]; then
-			udhcpc -i $IFACE -b -t 0 -S -s "$DHCPSCRIPT" >/dev/null 2>&1
+			udhcpc -i $IFACE -b -t 0 -S -p "$DHCPCPID" -s "$DHCPSCRIPT" >/dev/null 2>&1
 		else
-			udhcpc -i $IFACE -b -t 0 -S >/dev/null 2>&1
+			udhcpc -i $IFACE -b -t 0 -S -p "$DHCPCPID" >/dev/null 2>&1
 		fi
 	fi
 	log "Rolle station aktiv"
@@ -112,16 +166,29 @@ start_ap() {
 	[ -f "$APCONF" ] || { log "keine $APCONF - machino schreibt sie beim Einschalten"; return 1; }
 	mkdir -p "$APCTRL"
 	ip link set $IFACE up
-	hostapd -B -P "$APPID" "$APCONF" >/dev/null 2>&1 || {
-		log "hostapd startete nicht - Konfiguration pruefen"; return 1; }
+	retry_start "hostapd" hostapd -B -P "$APPID" "$APCONF" || return 1
 
 	# Eigene Adresse und DHCP fuer die Clients. Ohne beides assoziieren
 	# Telefone und bekommen nichts, was wie eine kaputte Kamera aussieht.
 	ip_addr=$(sed -n 's/^option router *//p' "$DHCPDCONF" 2>/dev/null | head -1)
 	[ -n "$ip_addr" ] && ip addr add "$ip_addr/24" dev $IFACE 2>/dev/null
+	# udhcpd bekommt seine PID-Datei von UNS.
+	#
+	# BusyBox 1.36 kennt kein -P, und die Direktive "pidfile" in udhcpd.conf
+	# wird von diesem Build stillschweigend nicht geschrieben -- auf der Kamera
+	# nachgemessen: die Datei entstand nie. Folge in der ersten Fassung: der
+	# DHCP-Server des Access Points ueberlebte den Wechsel nach Station und
+	# verteilte weiter Adressen aus einem Netz, das es nicht mehr gab.
+	#
+	# Also -f (Vordergrund) und selbst in den Hintergrund legen. Dann ist $!
+	# exakt der Prozess, und kill_pidfile trifft ihn.
 	if [ -f "$DHCPDCONF" ] && command -v udhcpd >/dev/null 2>&1; then
 		[ -f /var/run/udhcpd.leases ] || : > /var/run/udhcpd.leases
-		udhcpd "$DHCPDCONF" >/dev/null 2>&1 || log "udhcpd startete nicht - Clients bekommen keine Adresse"
+		udhcpd -f "$DHCPDCONF" >>"$LOGFILE" 2>&1 &
+		echo "$!" > /var/run/udhcpd.pid
+		sleep 1
+		kill -0 "$(cat /var/run/udhcpd.pid)" 2>/dev/null ||
+			log "udhcpd startete nicht - Clients bekommen keine Adresse"
 	fi
 	log "Rolle ap aktiv"
 }
@@ -137,6 +204,8 @@ apply_role() {
 }
 
 # ---------------------------------------------------------------- main loop
+umask 077
+: > "$LOGFILE"
 [ -f "$ROLE_FILE" ] || echo station > "$ROLE_FILE"
 current=""
 while :; do
