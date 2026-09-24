@@ -580,4 +580,192 @@ bool wifi_ap_from_json(const Json& body, net::WifiApConfig& cfg, std::string& er
     return true;
 }
 
+// -------------------------------------------------------------- Mobilfunk
+
+namespace {
+
+// Ein Maybe wird null, wenn es leer ist. Das ist der ganze Unterschied
+// zwischen "kein Messwert" und "Messwert 0", und in einer Anzeige ist er
+// nicht mehr zu erkennen, wenn er hier verlorengeht.
+Json maybe_int(const cellular::MaybeInt& v)
+{
+    return v.has ? Json::integer(v.value) : Json::null();
+}
+
+Json str_or_null(const std::string& s)
+{
+    return s.empty() ? Json::null() : Json::string(s);
+}
+
+} // namespace
+
+Json cellular_status_json(const cellular::CellularStatus& s)
+{
+    Json j = Json::object();
+    j.set("present", Json::boolean(s.present));
+    j.set("responsive", Json::boolean(s.responsive));
+
+    Json id = Json::object();
+    id.set("manufacturer", str_or_null(s.identity.manufacturer));
+    id.set("model", str_or_null(s.identity.model));
+    id.set("firmware", str_or_null(s.identity.firmware));
+    id.set("imei", str_or_null(s.imei));
+    j.set("modem", id);
+
+    Json sim = Json::object();
+    sim.set("state", Json::string(cellular::sim_state_name(s.sim)));
+    sim.set("detail", str_or_null(s.sim_detail));
+    sim.set("iccid", str_or_null(s.iccid));
+    sim.set("imsi", str_or_null(s.imsi));
+    j.set("sim", sim);
+
+    Json net = Json::object();
+    net.set("registration", Json::string(cellular::reg_state_name(s.registration)));
+    net.set("registered", Json::boolean(cellular::reg_is_registered(s.registration)));
+    net.set("roaming", Json::boolean(s.registration == cellular::RegState::RegisteredRoaming));
+    net.set("operatorName", str_or_null(s.operator_name));
+    net.set("operatorCode", str_or_null(s.operator_code));
+    net.set("rat", str_or_null(s.rat));
+    j.set("network", net);
+
+    Json rf = Json::object();
+    rf.set("band", maybe_int(s.cell.band));
+    rf.set("bandMhz", maybe_int(s.cell.band_mhz));
+    rf.set("earfcn", maybe_int(s.cell.earfcn));
+    rf.set("pci", maybe_int(s.cell.pci));
+    rf.set("cellId", str_or_null(s.cell.cell_id));
+    rf.set("tac", str_or_null(s.cell.tac));
+    rf.set("rsrpDbm", maybe_int(s.cell.rsrp));
+    rf.set("rsrqDb", maybe_int(s.cell.rsrq));
+    // QENG misst genauer als CSQ. Fehlt es, tritt der aus CSQ abgeleitete Wert
+    // ein -- und fehlt auch der, bleibt es null statt 0.
+    rf.set("rssiDbm", s.cell.rssi.has ? Json::integer(s.cell.rssi.value)
+                                      : maybe_int(s.signal.rssi_dbm));
+    rf.set("sinrDb", maybe_int(s.cell.sinr));
+    rf.set("csq", maybe_int(s.signal.csq));
+    j.set("radio", rf);
+
+    Json pdp = Json::object();
+    pdp.set("ipv4", str_or_null(s.pdp.ipv4));
+    pdp.set("ipv6", str_or_null(s.pdp.ipv6));
+    j.set("pdp", pdp);
+
+    j.set("lastError", str_or_null(s.last_error));
+    j.set("lastUpdateMs", Json::integer((double)s.last_update_ms));
+    return j;
+}
+
+Json cellular_config_json(const cellular::CellularConfig& c)
+{
+    Json j = Json::object();
+    j.set("enabled", Json::boolean(c.enabled));
+    j.set("apn", Json::string(c.apn));
+    j.set("pdpType", Json::string(cellular::pdp_type_name(c.pdp)));
+    j.set("authMode", Json::string(cellular::auth_mode_name(c.auth)));
+    j.set("username", Json::string(c.username));
+    j.set("autoConnect", Json::boolean(c.auto_connect));
+    // Weder Passwort noch PIN. Nur ob eines hinterlegt ist -- das braucht die
+    // Oberflaeche, um "gespeichert" von "leer" zu unterscheiden.
+    j.set("passwordSet", Json::boolean(!c.password.empty()));
+    j.set("simPinSet", Json::boolean(!c.sim_pin.empty()));
+    return j;
+}
+
+Json cellular_presets_json()
+{
+    Json a = Json::array();
+    for (const cellular::ApnPreset& p : cellular::apn_presets()) {
+        Json o = Json::object();
+        o.set("id", Json::string(p.id));
+        o.set("label", Json::string(p.label));
+        o.set("apn", Json::string(p.apn));
+        o.set("pdpType", Json::string(cellular::pdp_type_name(p.pdp)));
+        o.set("authMode", Json::string(cellular::auth_mode_name(p.auth)));
+        o.set("note", Json::string(p.note));
+        a.push(o);
+    }
+    return a;
+}
+
+bool cellular_config_from_json(const Json& body, cellular::CellularConfig& cfg, std::string& err)
+{
+    if (!body.is_object()) { err = "body must be an object"; return false; }
+    if (!reject_unknown(body, {"enabled", "apn", "pdpType", "authMode", "username",
+                               "password", "autoConnect", "simPin"}, nullptr, err)) return false;
+
+    cellular::CellularConfig next = cfg;
+    if (!get_bool(body, "enabled", next.enabled, err)) return false;
+    if (!get_bool(body, "autoConnect", next.auto_connect, err)) return false;
+    if (!get_string(body, "apn", next.apn, err, 100)) return false;
+    if (!get_string(body, "username", next.username, err, 64)) return false;
+
+    // Fehlendes Feld heisst "nicht anfassen", leerer String heisst "loeschen".
+    // Ohne diesen Unterschied wuerde jede Teilaenderung der Seite die PIN
+    // mitloeschen, und beim naechsten Start stuende die SIM gesperrt da.
+    if (!get_string(body, "password", next.password, err, 128)) return false;
+    if (!get_string(body, "simPin", next.sim_pin, err, 8)) return false;
+    if (!next.sim_pin.empty()) {
+        if (next.sim_pin.size() < 4) { err = "a SIM PIN is 4 to 8 digits"; return false; }
+        for (char c : next.sim_pin)
+            if (c < '0' || c > '9') { err = "a SIM PIN is digits only"; return false; }
+    }
+
+    std::string s;
+    if (!get_string(body, "pdpType", s, err, 16)) return false;
+    if (!s.empty() && !cellular::pdp_type_parse(s, next.pdp)) {
+        err = "pdpType must be IP or IPV4V6"; return false;
+    }
+    s.clear();
+    if (!get_string(body, "authMode", s, err, 16)) return false;
+    if (!s.empty() && !cellular::auth_mode_parse(s, next.auth)) {
+        err = "authMode must be none, pap or chap"; return false;
+    }
+    if (next.auth != cellular::AuthMode::None && next.username.empty()) {
+        err = "PAP or CHAP needs a username"; return false;
+    }
+
+    cfg = next;
+    return true;
+}
+
+void cellular_config_to_settings(const cellular::CellularConfig& cfg,
+                                 std::vector<std::pair<std::string, std::string>>& out)
+{
+    out.emplace_back("cellular.enabled", cfg.enabled ? "true" : "false");
+    out.emplace_back("cellular.apn", cfg.apn);
+    out.emplace_back("cellular.pdp_type", cellular::pdp_type_name(cfg.pdp));
+    out.emplace_back("cellular.auth_mode", cellular::auth_mode_name(cfg.auth));
+    out.emplace_back("cellular.username", cfg.username);
+    out.emplace_back("cellular.password", cfg.password);
+    out.emplace_back("cellular.auto_connect", cfg.auto_connect ? "true" : "false");
+    out.emplace_back("cellular.sim_pin", cfg.sim_pin);
+}
+
+bool cellular_config_from_settings(const std::vector<std::pair<std::string, std::string>>& in,
+                                   cellular::CellularConfig& cfg, std::string& err)
+{
+    cellular::CellularConfig next = cfg;
+    for (const auto& kv : in) {
+        const std::string& k = kv.first;
+        const std::string& v = kv.second;
+        if      (k == "cellular.enabled")      next.enabled = (v == "true" || v == "1");
+        else if (k == "cellular.auto_connect") next.auto_connect = (v == "true" || v == "1");
+        else if (k == "cellular.apn")          next.apn = v;
+        else if (k == "cellular.username")     next.username = v;
+        else if (k == "cellular.password")     next.password = v;
+        else if (k == "cellular.sim_pin")      next.sim_pin = v;
+        else if (k == "cellular.pdp_type") {
+            if (!cellular::pdp_type_parse(v, next.pdp)) {
+                err = "cellular.pdp_type is not IP or IPV4V6"; return false;
+            }
+        } else if (k == "cellular.auth_mode") {
+            if (!cellular::auth_mode_parse(v, next.auth)) {
+                err = "cellular.auth_mode is not none, pap or chap"; return false;
+            }
+        }
+    }
+    cfg = next;
+    return true;
+}
+
 }} // namespace machino::api

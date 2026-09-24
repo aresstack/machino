@@ -500,6 +500,130 @@ void test_a_hand_edited_pin_to_nothing_is_refused_too()
     TCHECK(!p.pinned);
 }
 
+
+// ------------------------------------------------- API-Sicht Mobilfunk ----
+
+void test_no_cellular_document_ever_contains_a_secret()
+{
+    cellular::CellularConfig c;
+    c.apn = "internet.t-d1.de";
+    c.username = "user";
+    c.password = "GeheimesWort";
+    c.sim_pin = "4711";
+
+    const std::string txt = cellular_config_json(c).dump();
+    TCHECK(txt.find("GeheimesWort") == std::string::npos);
+    TCHECK(txt.find("4711") == std::string::npos);
+    // Aber ob eines gesetzt ist, muss die Seite wissen -- sonst kann sie
+    // "gespeichert" nicht von "leer" unterscheiden.
+    TCHECK(txt.find("\"passwordSet\":true") != std::string::npos);
+    TCHECK(txt.find("\"simPinSet\":true") != std::string::npos);
+    TCHECK(txt.find("internet.t-d1.de") != std::string::npos);
+
+    cellular::CellularConfig empty;
+    const std::string t2 = cellular_config_json(empty).dump();
+    TCHECK(t2.find("\"passwordSet\":false") != std::string::npos);
+    TCHECK(t2.find("\"simPinSet\":false") != std::string::npos);
+}
+
+void test_missing_measurements_serialise_as_null_not_zero()
+{
+    cellular::CellularStatus s;
+    s.present = true;
+    s.responsive = true;
+    const std::string txt = cellular_status_json(s).dump();
+    // Kein einziger erfundener Messwert.
+    TCHECK(txt.find("\"rsrpDbm\":null") != std::string::npos);
+    TCHECK(txt.find("\"rsrqDb\":null") != std::string::npos);
+    TCHECK(txt.find("\"sinrDb\":null") != std::string::npos);
+    TCHECK(txt.find("\"band\":null") != std::string::npos);
+    TCHECK(txt.find("\"csq\":null") != std::string::npos);
+    TCHECK(txt.find("\"rsrpDbm\":0") == std::string::npos);
+    TCHECK(txt.find("\"band\":0") == std::string::npos);
+    // Zustaende sind dagegen immer da, mit ihrem Namen.
+    TCHECK(txt.find("\"state\":\"unknown\"") != std::string::npos);
+    TCHECK(txt.find("\"registration\":\"unknown\"") != std::string::npos);
+    TCHECK(txt.find("\"registered\":false") != std::string::npos);
+}
+
+void test_a_partial_patch_does_not_wipe_the_pin()
+{
+    // Der Fall, der sonst still passiert: die Seite schickt nur den APN, und
+    // die PIN ist weg. Beim naechsten Start stuende die SIM gesperrt da.
+    cellular::CellularConfig c;
+    c.sim_pin = "4711";
+    c.password = "geheim";
+    std::string err;
+    TCHECK(cellular_config_from_json(parse("{\"apn\":\"netpublic\"}"), c, err));
+    TCHECK(c.apn == "netpublic");
+    TCHECK(c.sim_pin == "4711");
+    TCHECK(c.password == "geheim");
+
+    // Ein LEERER String heisst dagegen ausdruecklich "loeschen".
+    TCHECK(cellular_config_from_json(parse("{\"simPin\":\"\"}"), c, err));
+    TCHECK(c.sim_pin.empty());
+    TCHECK(c.password == "geheim");
+}
+
+void test_cellular_patch_refuses_nonsense()
+{
+    cellular::CellularConfig c;
+    std::string err;
+    TCHECK(!cellular_config_from_json(parse("{\"apnn\":\"x\"}"), c, err));
+    TCHECK(!cellular_config_from_json(parse("{\"pdpType\":\"IPV6\"}"), c, err));
+    TCHECK(!cellular_config_from_json(parse("{\"authMode\":\"kerberos\"}"), c, err));
+    TCHECK(!cellular_config_from_json(parse("{\"simPin\":\"12\"}"), c, err));
+    TCHECK(!cellular_config_from_json(parse("{\"simPin\":\"abcd\"}"), c, err));
+    TCHECK(!cellular_config_from_json(parse("{\"enabled\":\"yes\"}"), c, err));
+    // PAP ohne Benutzername ist eine Konfiguration, die nie funktionieren kann.
+    TCHECK(!cellular_config_from_json(parse("{\"authMode\":\"pap\"}"), c, err));
+    TCHECK(c.apn.empty() && c.sim_pin.empty());     // und nichts davon hat gewirkt
+
+    TCHECK(cellular_config_from_json(parse("{\"authMode\":\"pap\",\"username\":\"u\"}"), c, err));
+}
+
+void test_cellular_settings_round_trip_including_the_secrets()
+{
+    // In der Konfigurationsdatei MUESSEN sie stehen -- ohne PIN kann beim
+    // naechsten Start niemand entsperren. Nur in Antworten und Logs nicht.
+    cellular::CellularConfig c;
+    c.enabled = true;
+    c.apn = "internet.t-d1.de";
+    c.pdp = cellular::PdpType::Ipv4v6;
+    c.auth = cellular::AuthMode::Chap;
+    c.username = "u";
+    c.password = "p";
+    c.auto_connect = true;
+    c.sim_pin = "4711";
+
+    std::vector<std::pair<std::string, std::string>> kv;
+    cellular_config_to_settings(c, kv);
+
+    cellular::CellularConfig back;
+    std::string err;
+    TCHECK(cellular_config_from_settings(kv, back, err));
+    TCHECK(back.enabled == c.enabled);
+    TCHECK(back.apn == c.apn);
+    TCHECK(back.pdp == c.pdp);
+    TCHECK(back.auth == c.auth);
+    TCHECK(back.username == c.username);
+    TCHECK(back.password == c.password);
+    TCHECK(back.auto_connect == c.auto_connect);
+    TCHECK(back.sim_pin == c.sim_pin);
+
+    // Unsinn in der Datei ist ein Fehler, kein stiller Default.
+    cellular::CellularConfig c2;
+    TCHECK(!cellular_config_from_settings({{"cellular.pdp_type", "IPV6"}}, c2, err));
+    TCHECK(!cellular_config_from_settings({{"cellular.auth_mode", "magic"}}, c2, err));
+}
+
+void test_presets_reach_the_api_with_their_reason()
+{
+    const std::string txt = cellular_presets_json().dump();
+    TCHECK(txt.find("internet.t-d1.de") != std::string::npos);
+    TCHECK(txt.find("netpublic") != std::string::npos);
+    TCHECK(txt.find("CGNAT") != std::string::npos);
+}
 } // namespace
 
 void run_net_views_tests()
@@ -526,4 +650,10 @@ void run_net_views_tests()
     test_secured_ap_needs_a_real_passphrase();
     test_policy_patch_refuses_a_pin_to_nothing();
     test_network_document_names_the_active_uplink();
+    test_no_cellular_document_ever_contains_a_secret();
+    test_missing_measurements_serialise_as_null_not_zero();
+    test_a_partial_patch_does_not_wipe_the_pin();
+    test_cellular_patch_refuses_nonsense();
+    test_cellular_settings_round_trip_including_the_secrets();
+    test_presets_reach_the_api_with_their_reason();
 }

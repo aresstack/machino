@@ -60,6 +60,7 @@ void run_network_txn_tests();
 void run_state_store_tests();
 void run_net_views_tests();
 void run_cellular_ports_tests();
+void run_cellular_tests();
 void run_net_api_tests();
 void run_proc_net_tests();
 void run_hostapd_conf_tests();
@@ -395,6 +396,7 @@ int main() {
     run_state_store_tests();
     run_net_views_tests();
     run_cellular_ports_tests();
+    run_cellular_tests();
     run_net_api_tests();
     run_proc_net_tests();
     run_hostapd_conf_tests();
