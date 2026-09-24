@@ -91,6 +91,7 @@ Result AtTransport::send(const std::string& cmd, AtReply& out, int timeout_ms)
         return Result::error(e);
     }
 
+    int empty_reads = 0;
     for (;;) {
         const uint64_t now = now_ms();
         if (now >= deadline) { out.timed_out = true; break; }
@@ -116,13 +117,38 @@ Result AtTransport::send(const std::string& cmd, AtReply& out, int timeout_ms)
         char buf[512];
         const ssize_t n = ::read(fd, buf, sizeof(buf));
         if (n > 0) {
+            empty_reads = 0;
             out.raw.append(buf, (size_t)n);
             out.result = cellular::at_scan(out.raw);
             if (out.result != cellular::AtResult::Pending) break;
             continue;
         }
-        if (n == 0) continue;                       // nichts da, poll erneut
-        if (errno == EAGAIN || errno == EINTR) continue;
+        // EAGAIN zaehlt hier genauso wie ein Leerlesen: poll() sagt lesbar,
+        // read() sagt nichts da. Das ist derselbe Widerspruch und dieselbe
+        // Endlosschleife, nur mit anderem Rueckgabewert.
+        if (n == 0 || errno == EAGAIN) {
+            // Kein Byte, obwohl poll() lesbar gemeldet hat. Einmal ist das ein
+            // Rennen; dauernd ist es ein abgemeldetes Geraet.
+            //
+            // Wird das Modem gezogen, waehrend noch Daten anstehen, liefert
+            // poll() POLLIN|POLLHUP. Der Zweig oben greift dann nicht (er
+            // verlangt kein POLLIN), read() leert den Rest und gibt danach
+            // immer 0 zurueck -- und poll() kehrt wegen POLLHUP sofort wieder
+            // zurueck. Ohne diese Bremse dreht die Schleife bis zum Timeout
+            // mit voller Last. Auf einer Kamera, die eine Medienpipeline
+            // bedient und einen Watchdog fuettert, sind drei Sekunden davon
+            // nicht nichts.
+            // POLLHUP ist der Nachweis: der Port wurde abgemeldet.
+            if (pfd.revents & POLLHUP) { out.device_gone = true; break; }
+            // Der Zaehler ist nur die Bremse. Er weiss NICHT, dass das Geraet
+            // weg ist -- es koennte auch ein Treiber sein, der sich seltsam
+            // verhaelt. "keine Antwort" ist die ehrliche Auskunft; "Modem
+            // nicht da" waere eine Behauptung, die diese acht Leerlesungen
+            // nicht hergeben.
+            if (++empty_reads >= 8)    { out.timed_out = true; break; }
+            continue;
+        }
+        if (errno == EINTR) continue;
         out.device_gone = (errno == EIO || errno == ENODEV || errno == ENXIO);
         break;
     }

@@ -124,6 +124,18 @@ Die Kconfig-Symbole, die AP-M2 im Build aktivieren muss:
     CONFIG_USB_USBNET=m
     CONFIG_USB_NET_CDCETHER=m
 
+Der Ausgangszustand der Board-Config (`br-ext-chip-ingenic/board/t40/
+t40.generic.config`), im CI-Lauf abgelesen:
+
+    # CONFIG_MODVERSIONS is not set          <- die Praemisse der ganzen
+                                                Modul-Strategie, bestaetigt
+    CONFIG_USB_SERIAL=m                      <- daher usbserial.ko im Image
+    # CONFIG_USB_SERIAL_OPTION is not set
+    # CONFIG_USB_USBNET is not set
+
+USBNET ist also ausdruecklich abgeschaltet, nicht nur nicht mitgeliefert. Wir
+schalten es ein und bauen die Module -- das Kernelimage bleibt unberuehrt.
+
 Offen und in AP-M2 zu entscheiden: ob wir das vorhandene `usbserial.ko` des
 Images benutzen oder ein eigenes mitliefern. Der vermagic passt, und
 `CONFIG_MODVERSIONS=n` heisst, dass es keine Symbol-CRCs gibt -- unser

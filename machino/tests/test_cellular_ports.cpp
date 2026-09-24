@@ -125,6 +125,60 @@ void test_a_duplicate_interface_does_not_overwrite()
     TCHECK(m.at == "/dev/ttyUSB1");
 }
 
+// ------------------------------------------------- Symlink -> USB-Namen ----
+//
+// Diese Zerlegung liegt in core mit der Begruendung, sie sei dort ohne sysfs
+// pruefbar. Dann muss sie auch geprueft werden -- beim ersten Anlauf stand die
+// Begruendung im Header und der Test nirgends.
+//
+// Die Pfade unten sind echte sysfs-Ziele in der Form, die diese Kamera
+// verwendet: /sys/class/tty/ttyUSB0 ist ein Link in die devices-Hierarchie,
+// und darin steht das Interface als eigene Komponente.
+void test_the_interface_name_comes_out_of_the_link_target()
+{
+    std::string iface, dev;
+
+    TCHECK(usb_names_from_tty_link(
+        "../../devices/platform/jzdwc-otg/usb1/1-1/1-1:1.3/ttyUSB0/tty/ttyUSB0",
+        iface, dev));
+    TCHECK(iface == "1-1:1.3");
+    TCHECK(dev == "1-1");
+
+    // Hinter einem Hub -- und der ist beim EC200A der Normalfall, weil das
+    // Modem extern versorgt werden muss.
+    TCHECK(usb_names_from_tty_link(
+        "../../devices/platform/jzdwc-otg/usb1/1-1/1-1.4/1-1.4:1.2/ttyUSB1/tty/ttyUSB1",
+        iface, dev));
+    TCHECK(iface == "1-1.4:1.2");
+    TCHECK(dev == "1-1.4");
+
+    // Die LETZTE Komponente mit Doppelpunkt gewinnt: davor steht der Hub, und
+    // dessen Interface ist nicht gemeint.
+    TCHECK(usb_names_from_tty_link("/sys/devices/usb1/1-1/1-1:1.0/1-1.4/1-1.4:1.3/ttyUSB2",
+                                   iface, dev));
+    TCHECK(iface == "1-1.4:1.3");
+
+    // Zweistellige Interfacenummern zerlegen genauso.
+    TCHECK(usb_names_from_tty_link("../../devices/usb1/2-1/2-1:1.12/ttyUSB9", iface, dev));
+    TCHECK(iface == "2-1:1.12");
+    TCHECK(dev == "2-1");
+}
+
+void test_a_path_without_an_interface_is_not_invented()
+{
+    std::string iface, dev;
+    TCHECK(!usb_names_from_tty_link("", iface, dev));
+    TCHECK(!usb_names_from_tty_link("/sys/devices/platform/serial8250/tty/ttyS0", iface, dev));
+    // Der Root-Hub ist ein Geraet, kein Interface.
+    TCHECK(!usb_names_from_tty_link("../../devices/platform/jzdwc-otg/usb1", iface, dev));
+    // Ein Doppelpunkt allein macht keine Interfacekomponente: es braucht den
+    // Bindestrich davor und den Punkt danach.
+    TCHECK(!usb_names_from_tty_link("/sys/devices/weird:thing/ttyUSB0", iface, dev));
+    TCHECK(!usb_names_from_tty_link("/sys/devices/a-b:cd/ttyUSB0", iface, dev));
+    // und bei Misserfolg bleibt nichts Halbes stehen
+    TCHECK(iface.empty() && dev.empty());
+}
+
 // ---------------------------------------------------------------- AT framing
 
 void test_a_reply_ends_at_its_result_line()
@@ -186,6 +240,8 @@ void run_cellular_ports_tests()
     test_a_foreign_device_is_not_a_modem();
     test_an_unknown_interface_gets_no_role();
     test_a_duplicate_interface_does_not_overwrite();
+    test_the_interface_name_comes_out_of_the_link_target();
+    test_a_path_without_an_interface_is_not_invented();
     test_a_reply_ends_at_its_result_line();
     test_a_result_word_inside_a_line_ends_nothing();
     test_payload_drops_the_echo_and_the_result_line();
