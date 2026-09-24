@@ -1,77 +1,83 @@
 
-### Rueckweg AP -> Station: drei Defekte, alle auf Hardware aufgefallen
+## Der Rollen-Supervisor, dritter Anlauf: drei Fehler hintereinander
 
-Der Weg hin lief auf Anhieb, der Weg zurueck nicht. Im Supervisor-Log stand
+Alle drei lagen uebereinander -- jeder wurde erst sichtbar, als der davor weg
+war. Und keiner davon zeigte sich beim Lesen des Codes; sichtbar wurden sie,
+als die Station-Rolle auf der Kamera lief und kein Netz in Reichweite war.
 
-    wifi-role: wpa_supplicant startete nicht
+### 1. `udhcpc -b -t 0` kehrt nie zurueck
 
-und dasselbe Kommando lief eine Minute spaeter von Hand mit rc=0. Also kein
-Konfigurations-, sondern ein Zeitfehler. Der Beweis steht im Kernel-Log:
+BusyBox sagt es selbst: `-b  Background if lease is not obtained` und
+`-t N  Send up to N discover packets`. Mit `-t 0` (unbegrenzt) tritt "not
+obtained" nie ein. Gemessen:
 
-    [6807.085433] usb 1-1 wlan0: AP Stopped
-    [6807.133940] change_if: 3 to 2, 8, 2
+    udhcpc  pid=13644 ppid=13632
+    superv  pid=13632 wchan=do_wait
 
-`stop_ap()` hatte auf das Verschwinden des hostapd-ctrl-Sockets gewartet. Der
-ist sofort weg. Der Treiber baut das Interface danach noch um, und genau in
-dieses Fenster hinein startete der Supplicant.
+Der Supervisor stand ab dem Moment, in dem die Station-Rolle hochkam, in
+`do_wait` und hat die Rollendatei nie wieder gelesen. Damit war genau der Weg
+tot, fuer den dieser Entwurf existiert: *mein WLAN ist weg, schalt die Kamera
+auf Access Point, damit ich wieder drankomme.*
 
-1. **kill(1) wartet nicht.** `kill_pidfile` hat SIGTERM geschickt und ist
-   weitergelaufen. Jetzt pollt es `kill -0`, bis der Prozess wirklich weg ist,
-   und eskaliert nach 5 s auf SIGKILL. Der Socket-Wartelauf ist damit
-   ueberfluessig und entfernt.
+Im Log stand das uebrigens die ganze Zeit:
 
-2. **Der Start braucht Wiederholung, keine Wartezeit.** `retry_start` versucht
-   den Daemon zehnmal im Sekundenabstand. Eine feste Pause waere entweder zu
-   kurz oder verschenkte Sekunden bei jedem Wechsel.
+    23:45:48 wifi-role: Wechsel  -> station
 
-3. **Zwei DHCP-Prozesse ohne PID-Datei.** BusyBox 1.36 `udhcpd` kennt kein -P,
-   und die Direktive `pidfile` in udhcpd.conf schreibt dieser Build
-   stillschweigend nicht -- nachgemessen: die Datei entstand nie. Der
-   DHCP-Server des Access Points hat den Rollenwechsel ueberlebt und weiter
-   Adressen aus einem Netz verteilt, das es nicht mehr gab. Jetzt laeuft er mit
-   `-f` und wird selbst in den Hintergrund gelegt, damit `$!` exakt stimmt.
-   Derselbe Fehler steckte spiegelbildlich im Station-Pfad: `udhcpc` wurde ohne
-   `-p` gestartet.
+und danach **kein** `Rolle station aktiv`. Die fehlende Zeile war der ganze
+Befund. Sie wurde beim ersten Lesen uebersehen.
 
-Ausserdem hat die erste Fassung ihre Daemons mit `>/dev/null 2>&1` gestartet.
-Der Fehlschlag war damit nicht diagnostizierbar -- es stand da, dass der
-Supplicant nicht startete, und warum stand nirgends. Der Supervisor schreibt
-jetzt nach `/tmp/machino-wifi-role.log` (tmpfs, nicht Flash: das ist Diagnose,
-kein Zustand).
+Behoben mit `-f` und eigenem `&`, wie bei udhcpd.
 
-Nach dem Fix, auf der Kamera gemessen:
+### 2. Beim Start raeumt der Supervisor die Station-Rolle nicht ab
 
-    wpa_supplicant -B -P /var/run/wpa_supplicant.wlan0.pid ...   laeuft
-    udhcpc -i wlan0 -b -t 0 -S -p /var/run/udhcpc.wlan0.pid      laeuft
-    /var/run/udhcpd.pid, /var/run/hostapd.pid                    weg
-    wpa_state=SCANNING
+`apply_role station` macht `stop_ap; start_station`. `stop_station` wird also
+ausgerechnet dann nicht gerufen, wenn noch ein Supplicant aus einem frueheren
+Leben das Interface haelt. wpa_supplicant antwortet darauf mit
 
-Die Assoziation selbst ist NICHT nachgewiesen: der Test-Hotspot war zu diesem
-Zeitpunkt aus (`iwlist scan` zeigt zehn andere Netze, "Viva Espana" nicht
-darunter). Der Supervisor tut das Richtige und sucht.
+    ctrl_iface exists and seems to be in use - cannot override it
 
-### Der AP-Test selbst ist bestanden
+und das wird von allein nie besser; `retry_start` verbrennt zehn Versuche
+dagegen. Der Supervisor behauptet, alleiniger Besitzer von wlan0 zu sein --
+dann muss er den Besitz beim Start auch nehmen. Tut er jetzt.
 
-Ein Telefon hat sich mit `Machino-Test` verbunden, eine Adresse bekommen, die
-WebUI ueber `http://192.168.24.1/` geladen und den Live-H.264-Stream ueber den
-Access Point gesehen. Im Kernel-Log ist der Client als assoziierte Station
-belegt:
+### 3. Ein fehlgeschlagener Supplicant-Start loescht die PID-Datei des laufenden
 
-    usb 1-1 wlan0: Del sta 9 (be:43:e6:78:0b:63)
-�lt den Watchdog** (argv[0] ist `majestic`, wegen der
-Drop-in-Kompatibilität — deshalb liest sich der OOM-Log so, als sei ein
-fremdes Majestic gestorben). Stirbt es, wird `/dev/watchdog` nicht mehr
-gefüttert und die Hardware setzt zurück. Der Treiber meldet beim Schließen
-`watchdog did not stop!`, also nowayout-Verhalten.
+Gleicher Pfad. Nach einem Fehlversuch zeigt kein Griff mehr auf den lebenden
+Prozess, und der naechste Start ergibt zwei Supplicants auf einem Interface --
+auf der Kamera genau so beobachtet.
 
-Folge für Tests: **den Mediendaemon nicht „zur Sicherheit" stoppen.** Genau
-das erzeugt den Reset, den man vermeiden will. Der richtige Weg ist, den OOM
-gar nicht erst entstehen zu lassen.
+`claim_interface` sucht deshalb ueber `/proc/<pid>/comm` **und** den
+Interfacenamen in der Kommandozeile. Das ist kein killall: ein Supplicant auf
+einer anderen Schnittstelle bleibt unberuehrt, und der udhcpc von eth0 lief
+nachweislich ueber den ganzen Durchlauf weiter.
 
-### 3. `cfg80211` ist nicht eingebaut
+### Ergebnis auf der Kamera
 
-`aic8800.ko` braucht 44 `cfg80211_*`-Symbole. `cfg80211.ko` und `mac80211.ko`
-liegen unter `/lib/modules/4.4.94/kernel/net/`, werden aber nicht geladen.
+    00:53:42 uebernehme wlan0
+    00:53:43 fremder Halter von wlan0: wpa_supplicant (pid 13643) -- wird beendet
+    00:53:44 Wechsel  -> station
+    00:53:44 Rolle station aktiv
+    00:54:19 Wechsel station -> ap
+    00:54:20 Rolle ap aktiv            Mode:Master, 192.168.24.1/24
+    00:54:40 Wechsel ap -> station
+    00:54:40 Rolle station aktiv       hostapd und udhcpd weg
+
+Ohne Wiederholungsversuch, eth0 durchgehend unberuehrt.
+
+OFFEN (PENDING_PHYSICAL): die Assoziation selbst. Der Test-Hotspot war
+abgeschaltet, der Supplicant scannt. Der Rollenwechsel ist damit bewiesen, das
+Wiederfinden eines konkreten Netzes nicht.
+
+### Was daran methodisch schiefging
+
+Der Durchlauf davor sah aus wie ein bestandener Test und war keiner: nach
+`echo ap` stand wlan0 weiter auf `Managed/off-any`, es lief kein hostapd, und
+das Supervisor-Log war leer. Ein Rollenwechsel hatte schlicht nicht
+stattgefunden -- weil der Supervisor in `do_wait` hing. Ein Test, der nichts
+ausloest, meldet keinen Fehler. Deshalb wird hier jetzt jeder Durchlauf am LOG
+geprueft und nicht nur am Endzustand: "keine Fehlermeldung" und "es ist etwas
+passiert" sind verschiedene Aussagen.
+nter `/lib/modules/4.4.94/kernel/net/`, werden aber nicht geladen.
 Ohne vorheriges `modprobe cfg80211` scheitert `insmod` mit unbekannten
 Symbolen — was wie „dieses Board kann kein WLAN" aussieht und reine
 Ladereihenfolge ist.
