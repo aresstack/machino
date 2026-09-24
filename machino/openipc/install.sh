@@ -115,16 +115,24 @@ done
 # guarantee on a box that has already surprised us once. So a failed rename
 # falls back to the old in-place copy, and SAYS that it did: a non-atomic write
 # is better than an install that cannot proceed, and an unnoticed one is not.
+# Die Variablen heissen _put_*, damit sie nicht mit denen der Aufrufer
+# kollidieren. Sie hiessen einmal _m/_s/_d/_t, und eine Schleife, die selbst
+# ein _d als Verzeichnis benutzte, hat daraufhin JEDE Firmware-Datei in ein
+# Verzeichnis gelegt, das nach der vorigen Datei benannt war -- basename "$_d"
+# las ab dem zweiten Durchlauf das Ziel des letzten put. Der Treiber haette
+# keine einzige Firmware gefunden. Auf der Kamera in einer Sandbox
+# aufgefallen, nicht in den Hosttests: deren Fixture hatte genau EINE
+# Firmware-Datei, und bei einem Element faellt ein Iterationsfehler nie auf.
 put() {
-    _m=$1; _s=$2; _d=$3
-    mkdir -p "$(dirname "$_d")" || return 1
-    _t="$_d.machino-new.$$"
-    if ! cp "$_s" "$_t"; then rm -f "$_t"; return 1; fi
-    if ! chmod "$_m" "$_t"; then rm -f "$_t"; return 1; fi
-    if mv -f "$_t" "$_d" 2>/dev/null; then return 0; fi
-    rm -f "$_t"
-    say "atomic replace unavailable for $_d - writing in place"
-    cp "$_s" "$_d" && chmod "$_m" "$_d"
+    _put_m=$1; _put_s=$2; _put_d=$3
+    mkdir -p "$(dirname "$_put_d")" || return 1
+    _put_t="$_put_d.machino-new.$$"
+    if ! cp "$_put_s" "$_put_t"; then rm -f "$_put_t"; return 1; fi
+    if ! chmod "$_put_m" "$_put_t"; then rm -f "$_put_t"; return 1; fi
+    if mv -f "$_put_t" "$_put_d" 2>/dev/null; then return 0; fi
+    rm -f "$_put_t"
+    say "atomic replace unavailable for $_put_d - writing in place"
+    cp "$_put_s" "$_put_d" && chmod "$_put_m" "$_put_d"
 }
 
 # Einen Schluessel in machino.conf setzen, ohne den Rest anzufassen.
@@ -382,14 +390,20 @@ if [ "$WITH_WIFI_PAYLOAD" = "1" ]; then
     # Ohne Firmware bindet der Treiber und scheitert danach: der Chip laedt
     # sein Image beim Probe. Ein Modul ohne Blobs ist schlimmer als keines,
     # weil es wie ein Hardwarefehler aussieht.
+    # Die Namen der Schleifenvariablen sind hier nicht beliebig: der Zielname
+    # wird VOR dem put berechnet und in einer eigenen Variablen gehalten. Die
+    # erste Fassung las ihn per $(basename "$_d") als Argument von put, und put
+    # selbst benutzte damals ebenfalls ein _d -- ab dem zweiten Durchlauf zeigte
+    # es auf das Ziel des letzten Kopiervorgangs.
     _fw=0
     if [ -d "$HERE/wifi/firmware" ]; then
-        for _d in "$HERE"/wifi/firmware/*; do
-            [ -d "$_d" ] || continue
-            for _f in "$_d"/*; do
-                [ -f "$_f" ] || continue
-                put 0644 "$_f" "$ROOT/lib/firmware/$(basename "$_d")/$(basename "$_f")" ||
-                    die "cannot install firmware $(basename "$_f")"
+        for _fwdir in "$HERE"/wifi/firmware/*; do
+            [ -d "$_fwdir" ] || continue
+            _fwname=$(basename "$_fwdir")
+            for _fwfile in "$_fwdir"/*; do
+                [ -f "$_fwfile" ] || continue
+                put 0644 "$_fwfile" "$ROOT/lib/firmware/$_fwname/$(basename "$_fwfile")" ||
+                    die "cannot install firmware $(basename "$_fwfile")"
                 _fw=$((_fw + 1))
             done
         done

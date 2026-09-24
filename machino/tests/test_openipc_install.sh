@@ -63,7 +63,15 @@ FAKE
     printf 'fake-hostapd\n'   > "$B/wifi/hostapd"
     printf 'fake-aic8800\n'   > "$B/wifi/modules/aic8800.ko"
     printf 'fake-loadfw\n'    > "$B/wifi/modules/aic_load_fw.ko"
-    printf 'fake-blob\n'      > "$B/wifi/firmware/aic8800DC/fmacfw.bin"
+    # MEHRERE Firmware-Dateien, und das ist kein Zufall: mit genau einer ist
+    # eine Schleife, die sich ihr eigenes Zielverzeichnis ueberschreibt, von
+    # einer korrekten nicht zu unterscheiden. Genau so ist der Fehler
+    # durchgerutscht, bei dem jede Datei in einem Verzeichnis landete, das nach
+    # der vorherigen benannt war -- gefunden erst in einer Sandbox auf der
+    # Kamera, mit 19 echten Blobs.
+    printf 'fake-blob-1\n'    > "$B/wifi/firmware/aic8800DC/fmacfw.bin"
+    printf 'fake-blob-2\n'    > "$B/wifi/firmware/aic8800DC/fmacfw_patch.bin"
+    printf 'fake-blob-3\n'    > "$B/wifi/firmware/aic8800DC/fw_adid.bin"
     cp "$PKG/udhcpc-wlan.script" "$B/"
     cp "$PKG/install.sh" "$PKG/uninstall.sh" "$B/"
     chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/sbin/machino-manager" "$B/init/"*
@@ -466,6 +474,12 @@ has "hostapd installed by default"          "$WORK/root/usr/sbin/hostapd"
 has "driver installed by default"           "$WORK/root/etc/machino/modules/aic8800.ko"
 has "firmware loader installed by default"  "$WORK/root/etc/machino/modules/aic_load_fw.ko"
 has "firmware blob installed by default"    "$WORK/root/lib/firmware/aic8800DC/fmacfw.bin"
+has "second firmware blob, same directory"  "$WORK/root/lib/firmware/aic8800DC/fmacfw_patch.bin"
+has "third firmware blob, same directory"   "$WORK/root/lib/firmware/aic8800DC/fw_adid.bin"
+# Und NICHTS darf ausserhalb dieses einen Verzeichnisses liegen. Der Treiber
+# sucht genau dort; eine Datei daneben ist eine Datei, die er nicht findet.
+n=$(find "$WORK/root/lib/firmware" -type f | grep -cv "/aic8800DC/")
+if [ "$n" = "0" ]; then ok; else bad "$n firmware file(s) landed outside lib/firmware/aic8800DC"; fi
 has "udhcpc hook installed by default"      "$WORK/root/etc/machino/udhcpc-wlan.script"
 hasnt "no separate AP boot script"          "$WORK/root/etc/init.d/S41hostapd"
 hasnt "no hostapd_cli"                      "$WORK/root/usr/sbin/hostapd_cli"
