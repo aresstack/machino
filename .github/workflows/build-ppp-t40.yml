@@ -82,14 +82,28 @@ jobs:
           ./configure --prefix=/usr --sysconfdir=/etc \
                       || { echo "::error::configure failed"; exit 1; }
 
-          # FILTER=y zieht libpcap herein, fuer die Demand-Dialling-Filter.
-          # Die braucht hier niemand: machino entscheidet selbst, wann gewaehlt
-          # wird, und eine Bibliothek, die auf der Kamera nicht liegt, macht
-          # aus einem fehlenden Filter einen pppd, der gar nicht erst startet.
+          # ALLES abschalten, was eine fremde Bibliothek braucht -- in einem
+          # Zug und nicht nacheinander.
           #
-          # Dasselbe fuer PAM: auf dieser Box gibt es keines, und das Netz
-          # authentifiziert sich ohnehin nicht bei uns (`noauth`).
-          sed -i 's/^FILTER=y/#FILTER=y/; s/^USE_PAM=y/#USE_PAM=y/' pppd/Makefile
+          # ppp 2.4.9 hat mehrere Zusatzfunktionen per Vorgabe AN, und jede
+          # bringt eine eigene Abhaengigkeit mit, die diese Kamera nicht hat:
+          #
+          #   FILTER      libpcap, fuer Demand-Dialling-Filter
+          #   USE_EAPTLS  OpenSSL
+          #   USE_PAM     libpam
+          #   USE_SRP     libsrp
+          #
+          # Keine davon wird hier gebraucht: machino entscheidet selbst, wann
+          # gewaehlt wird, und das Netz authentifiziert sich nicht bei uns
+          # (`noauth`). Eine Bibliothek, die auf der Kamera nicht liegt, macht
+          # ausserdem aus einem ungenutzten Feature einen pppd, der gar nicht
+          # erst startet.
+          #
+          # Einzeln abzuschalten hiesse eine CI-Runde je Abhaengigkeit, und
+          # zwei davon haben wir schon verbraucht.
+          sed -i 's/^\(FILTER\|USE_EAPTLS\|USE_PAM\|USE_SRP\|USE_SYSTEMD\|USE_LIBUTIL\)=y/#&/' \
+              pppd/Makefile
+          grep -E '^#?(FILTER|USE_EAPTLS|USE_PAM|USE_SRP)' pppd/Makefile || true
 
           # CC MUSS auf der Kommandozeile stehen, nicht in der Umgebung.
           #
