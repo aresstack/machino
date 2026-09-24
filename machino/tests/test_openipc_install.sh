@@ -808,6 +808,68 @@ hasnt "stop removed the ppp status file"  "$U/var/run/machino-ppp.status"
 # Und ohne laufendes PPP darf stop trotzdem sauber durchlaufen.
 PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" stop > "$WORK/usbout" 2>&1
 if [ $? = 0 ]; then ok; else bad "a second stop failed: $(cat "$WORK/usbout")"; fi
+
+# Eine STALE PID-Datei darf keinen fremden Prozess treffen.
+#
+# Beendet sich pppd selbst -- abgelehnte Authentifizierung, NO CARRIER,
+# Linkverlust --, bleibt ohne Aufraeumen ein Zettel mit einer toten PID liegen.
+# Vergibt der Kernel die Nummer neu, schiesst ein spaeteres stop auf einen
+# fremden Prozess. Auf dieser Kamera laeuft alles als root: das kann der
+# Mediendaemon sein.
+#
+# Der Zettel wird nach einem natuerlichen Ende entfernt; diese Pruefung ist
+# fuer den Fall, dass genau das einmal nicht passiert.
+usb_tree
+sleep 300 & _foreign=$!
+echo "$_foreign" > "$U/var/run/pppd.pid"
+# Das gefaelschte procfs sagt, was dieser Prozess WIRKLICH ist: kein pppd.
+mkdir -p "$U/proc/$_foreign"
+printf 'sleep\000300\000' > "$U/proc/$_foreign/cmdline"
+PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" stop > "$WORK/usbout" 2>&1
+if kill -0 "$_foreign" 2>/dev/null; then ok
+else bad "stop killed a foreign process that had inherited pppd's old pid"; fi
+kill -9 "$_foreign" 2>/dev/null
+hasnt "the stale pid file was discarded" "$U/var/run/pppd.pid"
+case "$(cat "$WORK/usbout")" in
+    *stale*) ok ;;
+    *) bad "the stale pid file was discarded without saying so" ;;
+esac
+
+# Und umgekehrt: sagt procfs, es IST ein pppd, wird es beendet.
+usb_tree
+sleep 300 & _ourppp=$!
+echo "$_ourppp" > "$U/var/run/pppd.pid"
+mkdir -p "$U/proc/$_ourppp"
+printf '/usr/sbin/pppd\000file\000/etc/machino/ppp/options\000' > "$U/proc/$_ourppp/cmdline"
+PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" stop > "$WORK/usbout" 2>&1
+if kill -0 "$_ourppp" 2>/dev/null; then
+    bad "stop left our own pppd running"; kill -9 "$_ourppp" 2>/dev/null
+else ok; fi
+
+# release_pidfile() aus dem Mobilfunk-Helfer, ECHT aufgerufen.
+#
+# Nicht nachgebaut: ein Test, der die Logik nachbaut statt sie auszufuehren,
+# bleibt gruen, wenn jemand sie aus dem Skript entfernt. Deshalb wird die
+# Funktion aus der Datei geholt -- dieselbe Technik wie bei read_mode.
+eval "$(sed -n '/^release_pidfile() {/,/^}/p' "$PKG/sbin/machino-cellular-helper")"
+
+PF="$WORK/waiter.pid"
+echo 4242 > "$PF"
+release_pidfile "$PF" 4242
+hasnt "release_pidfile removes its own pid file" "$PF"
+
+# Hat inzwischen ein NEUER Anruf die Datei uebernommen, bleibt sie stehen --
+# sonst waere der Nachfolger nicht mehr beendbar.
+echo 999999 > "$PF"
+release_pidfile "$PF" 4242
+if [ "$(cat "$PF" 2>/dev/null)" = "999999" ]; then ok
+else bad "release_pidfile deleted the successor's pid file"; fi
+
+# Und es darf nie fehlschlagen: im Waiter steht es vor write_ppp_status, und
+# ein Rueckgabewert ungleich 0 waere dort mit `set -e` das Ende des Aufraeumens.
+rm -f "$PF"
+if release_pidfile "$PF" 4242; then ok
+else bad "release_pidfile failed on a missing pid file"; fi
 didnt "ppp loads no wifi driver"           "aic8800"
 
 # Und andersherum: bei ECM (auch ohne den Schluessel) kommt das Netzwerkpaar.

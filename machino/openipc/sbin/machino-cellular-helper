@@ -109,6 +109,51 @@ stop_iface() {
 PPP_PIDFILE=/var/run/pppd.pid
 PPP_STATUS=/var/run/machino-ppp.status
 
+# Gehoert diese PID noch dem Programm, das wir beenden wollen?
+#
+# Eine PID-Datei ist ein Zettel, kein Besitznachweis. Beendet sich pppd selbst
+# -- abgelehnte Authentifizierung, NO CARRIER, Linkverlust -- und bleibt der
+# Zettel liegen, vergibt der Kernel die Nummer irgendwann neu. Ein spaeteres
+# stop schoesse dann auf einen fremden Prozess, und auf dieser Kamera laeuft
+# alles als root: das kann der Mediendaemon sein.
+#
+# Der Zettel wird nach einem natuerlichen Ende zwar entfernt (siehe start_ppp),
+# aber genau dafuer, dass das einmal NICHT passiert -- Stromausfall zwischen
+# wait und rm, ein Kill der Subshell --, steht diese Pruefung hier.
+#
+# procfs ist der Testhaken: $PROCDIR ist in Produktion /proc. Ein LEERER
+# cmdline-Inhalt heisst "procfs sagt dazu nichts" und wird als "darf" gewertet;
+# unter Linux hat jeder normale Prozess dort Inhalt, und ein Kernel-Thread
+# liesse sich ohnehin nicht beenden.
+PROCDIR=/proc
+
+# Die eigene PID-Datei abraeumen -- und NUR die eigene.
+#
+# Ohne das Entfernen bliebe nach jedem natuerlichen Ende von pppd ein Zettel
+# mit einer toten PID liegen, und sobald der Kernel die Nummer neu vergibt,
+# schoesse ein spaeteres stop auf einen fremden Prozess.
+#
+# Ohne den Vergleich waere es andersherum falsch: hat inzwischen ein NEUER
+# Anruf die Datei uebernommen, gehoert sie schon ihm, und der alte Waiter
+# loeschte den Zettel des Nachfolgers -- der waere dann nicht mehr beendbar.
+#
+# Eine eigene Funktion, damit ein Test sie aufrufen kann. Als Zeile in der
+# Subshell liess sie sich nur nachbauen, und ein Test, der die Logik nachbaut
+# statt sie auszufuehren, bleibt gruen, wenn man sie aus dem Skript entfernt.
+release_pidfile() {
+	[ "$(cat "$1" 2>/dev/null)" = "$2" ] && rm -f "$1"
+	return 0
+}
+
+pid_is_named() {
+	_pn_pid=$1; _pn_name=$2
+	case "$_pn_pid" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$_pn_pid" -gt 1 ] 2>/dev/null || return 1
+	_pn_cmd=$(tr '\000' ' ' < "$PROCDIR/$_pn_pid/cmdline" 2>/dev/null)
+	[ -n "$_pn_cmd" ] || return 0
+	case "$_pn_cmd" in *"$_pn_name"*) return 0 ;; *) return 1 ;; esac
+}
+
 write_ppp_status() {
 	tmp="$PPP_STATUS.new"
 	{
@@ -119,7 +164,15 @@ write_ppp_status() {
 }
 
 stop_ppp() {
-	kill_pidfile "$PPP_PIDFILE"
+	_sp_pid=$(cat "$PPP_PIDFILE" 2>/dev/null)
+	if [ -n "$_sp_pid" ] && ! pid_is_named "$_sp_pid" pppd; then
+		# Der Zettel ist alt und die Nummer gehoert inzwischen jemand anderem.
+		# Wegwerfen, NICHT darauf schiessen.
+		log "pid $_sp_pid ist kein pppd mehr - stale PID-Datei verworfen"
+		rm -f "$PPP_PIDFILE"
+	else
+		kill_pidfile "$PPP_PIDFILE"
+	fi
 	# Der Zustand wird hier NICHT auf "beendet mit Fehler" gesetzt: wir haben
 	# beendet, und das ist kein Fehlschlag. Der wartende Subshell schreibt
 	# gleich exit=5 (SIGTERM), was machino als "ok" liest.
@@ -150,7 +203,10 @@ start_ppp() {
 		_p=$!
 		echo "$_p" > "$PPP_PIDFILE"
 		wait "$_p"
-		write_ppp_status 0 "$?"
+		# Den Exit-Code ZUERST sichern: alles danach ueberschreibt $?.
+		_rc=$?
+		release_pidfile "$PPP_PIDFILE" "$_p"
+		write_ppp_status 0 "$_rc"
 	) &
 	log "pppd gestartet (Optionen: $opts)"
 }
