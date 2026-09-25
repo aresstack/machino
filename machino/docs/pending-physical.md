@@ -247,13 +247,29 @@ ohne dass es jemandem aufgefallen wäre.
 | H9 | **Der Rollback-Pfad unter realem Verbindungsverlust.** Genau der Fall, für den `NetworkTxn` existiert: falsche WLAN-Konfiguration setzen, Verbindung verlieren, warten, und die Kamera muss von selbst zurückkommen. Host-Tests decken die Logik ab, nicht den Stromausfall mittendrin |
 | H10 | Speicher- und CPU-Wirkung des 2-s-Netz-Ticks über einen COLD_IDLE-Soak. Der Trend aus AP2x (~+11 kB/Zyklus) ist ungeklärt, und hier kommt eine neue periodische Last dazu |
 
+### `PENDING_PHYSICAL` — Gerätemanager / OpenIPC-Registrierung (2026-09-25)
+
+Die Kette ist softwareseitig geschlossen und in `tests/test_openipc_install.sh`
+gegen die **echte** `adapter_scan()`-Logik geprüft. Was ein Hosttest prinzipiell
+nicht prüfen kann, ist der Kernel: `depmod`/`modprobe` laufen dort nie, und ein
+nachgebautes `/lib/modules` sagt nichts über `vermagic`.
+
+| Nr | Was |
+|----|-----|
+| H14 | `/machino/devices` → **Installieren** → Reboot → der Adapter steht auf der **unveränderten** OpenIPC-Seite *Network* im Dropdown „Wireless Adapter" als `aic8800-t40-machino` zur Auswahl. Das ist der Befund vom 2026-09-25 in seiner Umkehrung |
+| H15 | `S39machinodev` läuft **vor** `S40network`. Der Beweis ist nicht die Reihenfolge im Verzeichnis, sondern: Adapter auswählen (setzt `wlandev`), Reboot, und `wlan0` kommt in **demselben** Boot hoch — nicht erst im nächsten |
+| H16 | `modprobe` löst die Namen aus dem Profil wirklich auf, nachdem `machino-device` `depmod -a` gerufen hat. Der Hosttest überspringt `depmod` absichtlich (er dürfte den Modulbaum des Entwicklerrechners nicht anfassen) |
+| H17 | **Deinstallieren** → Reboot → das Dropdown bietet den Adapter nicht mehr an, `/etc/machino/payload/aic8800/` ist aber noch vollständig, und ein erneutes **Installieren** kommt ohne neues Bundle aus |
+| H18 | `wlandev` zeigte auf das entfernte Profil: `machino-device` löscht es über `fw_setenv`. Schlägt das fehl, findet `S40network` keinen Zweig — dann darf die Kamera trotzdem nicht ohne `eth0` dastehen |
+
 ### `PENDING_BROWSER` — nie gerendert
 
 | Nr | Was |
 |----|-----|
 | H11 | `/machino/net` in einem Browser öffnen. Die Feldnamen sind gegen die echten JSON-Builder getestet (`tests/test_netui.cpp`), das Layout ist es nicht |
+| H19 | `/machino/devices` in einem Browser öffnen. Das JavaScript parst und die nachgeschlagenen `id`s existieren (`tools/check-netui.sh`); wie die Karte aussieht und ob die Knöpfe in den richtigen Zuständen grau sind, hat nie jemand gesehen |
 | H12 | Der Bestätigungs-Countdown im Ernstfall: Banner sichtbar, Zähler läuft, Bestätigung kommt an, Rollback wird als solcher angezeigt |
-| H13 | Der Menüeintrag aus `install.sh --with-network-page` an einer echten `header.cgi` — die Tests benutzen einen nachgebauten Ausschnitt |
+| H13 | Der Menüeintrag aus `install.sh --with-network-page` (NICHT Teil des Produkt-Deploys, siehe install-openipc.md) an einer echten `header.cgi` — die Tests benutzen einen nachgebauten Ausschnitt |
 
 ---
 

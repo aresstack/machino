@@ -40,7 +40,9 @@ jobs:
         # ein fehlendes Komma im JavaScript zerlegt nicht die eine Schaltflaeche,
         # sondern den ganzen <script>-Block -- also die ganze Seite. Das faellt
         # sonst erst in einem Browser auf, und der ist hier selten zur Hand.
-        run: sh machino/tools/check-netui.sh machino/src/app/http/netui.cpp
+        run: |
+          sh machino/tools/check-netui.sh machino/src/app/http/netui.cpp
+          sh machino/tools/check-netui.sh machino/src/app/http/devui.cpp
 
       - name: "Fetch toolchain and vendor IMP libraries (T40 musl, SDK 1.3.1)"
         run: |
@@ -139,6 +141,14 @@ jobs:
           # niemand liest.
           cp -f machino/openipc/init/S42usb            "$O/init/S42usb"
           cp -f machino/openipc/sbin/machino-usb-helper "$O/sbin/machino-usb-helper"
+
+          # Geraetemanifeste und der Registrierer. Das Manifest ist die einzige
+          # Quelle fuer Profilname, Modulreihenfolge und USB-Id -- Installer,
+          # Boot-Helfer und machinod lesen alle diese Datei.
+          mkdir -p "$O/devices"
+          cp -f machino/openipc/devices/aic8800.manifest "$O/devices/aic8800.manifest"
+          cp -f machino/openipc/sbin/machino-device     "$O/sbin/machino-device"
+          cp -f machino/openipc/init/S39machinodev      "$O/init/S39machinodev"
 
           # WLAN. install.sh legt das per Default ab und laesst es
           # ausgeschaltet -- usb.mode ist off, und der Helfer kehrt dann
@@ -310,6 +320,36 @@ jobs:
           for stale in S41hostapd S42wifi; do
             if [ -f "$O/init/$stale" ]; then
               echo "::error::$stale is in the bundle again - it was superseded by S42usb + the role supervisor"
+              exit 1
+            fi
+          done
+
+          # Die AIC8800-Nutzlast ist KEIN Extra, sie ist der Inhalt des
+          # Geraetemanagers. Fehlt sie, laesst sich der Adapter auf der Kamera
+          # nicht einrichten -- und das faellt heute erst dort auf, wenn
+          # jemand im OpenIPC-Dropdown wieder nur "None" sieht.
+          #
+          # Frueher stand hier nur ein "NEIN" in der Zusammenfassung. Eine
+          # Warnung in einem Berichtstext, den niemand liest, ist keine
+          # Pruefung. Der Build faellt jetzt, damit kein Bundle entsteht, das
+          # sein eigenes Versprechen nicht halten kann.
+          for m in aic8800 aic_load_fw; do
+            if [ ! -f "$O/wifi/modules/$m.ko" ]; then
+              echo "::error::wifi payload incomplete: $m.ko is missing from the bundle."
+              echo "::error::Run the build-aic8800-t40 workflow against this kernel first."
+              exit 1
+            fi
+          done
+          if [ -z "$(find "$O/wifi/firmware" -type f 2>/dev/null)" ]; then
+            echo "::error::wifi payload incomplete: no firmware under wifi/firmware."
+            echo "::error::The driver binds and then fails without the aic8800DC blobs."
+            exit 1
+          fi
+          # Und die Namen muessen zu dem passen, was das Manifest verspricht --
+          # sonst kopiert machino-device beim Installieren ins Leere.
+          for m in $(sed -n 's/^payload_modules=//p' machino/openipc/devices/aic8800.manifest); do
+            if [ ! -f "$O/wifi/modules/$m.ko" ]; then
+              echo "::error::the manifest promises $m.ko, the bundle does not carry it"
               exit 1
             fi
           done

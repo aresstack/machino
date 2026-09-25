@@ -2,6 +2,10 @@
 # throwaway trees/artefacts created by the host tests
 tests/tmp-streamerctl/
 tests/tmp-openipc-install/
+# Die Wegwerfbaeume von test_devices.cpp. Sie raeumen sich selbst weg -- aber
+# nur, wenn der Test durchlaeuft; ein Abbruch soll keine Dateien im Index
+# hinterlassen.
+tests/tmp-devices*/
 tests/tmp_machino.conf
 tests/tmp_machino.conf.tmp
 tests/machino-tests

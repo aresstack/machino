@@ -10,6 +10,8 @@
 #include "adapters/ingenic/ingenic_platform.hpp"
 #include "app/api/api_service.hpp"
 #include "app/api/net_api.hpp"
+#include "core/devices/aic8800_package.hpp"
+#include "core/devices/device_package.hpp"
 #include "adapters/linux/at_transport.hpp"
 #include "adapters/linux/linux_ecm_backend.hpp"
 #include "adapters/linux/linux_ppp_backend.hpp"
@@ -760,6 +762,24 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Der Geraetemanager. Er haelt nur Wissen: alles, was er sagt, liest er
+        // im Dateisystem nach (Manifest, /lib/modules, /etc/wireless/usb), und
+        // alles, was er aendert, legt er als Absichtsdatei ab. Kein depmod,
+        // kein modprobe, kein fork -- siehe die Begruendung an InstallPending.
+        //
+        // Die Lebensdauer ist Absicht: beide Objekte leben so lange wie der
+        // HTTP-Server, der auf sie zeigt. DeviceManager::add nimmt kein
+        // Eigentum, deshalb stehen sie hier und nicht in einem Block.
+        devices::Aic8800Package aic8800_pkg;
+        devices::DeviceManager device_manager;
+        device_manager.add(&aic8800_pkg);
+        {
+            const devices::DeviceStatus st = aic8800_pkg.status();
+            LOGI(MOD, "devices: %s = %s%s%s", st.id.c_str(),
+                 devices::install_state_name(st.state),
+                 st.detail.empty() ? "" : " - ", st.detail.c_str());
+        }
+
         api::NetApiService::Deps nd;
         nd.usb  = &usb_service;
         nd.conn = &conn;
@@ -769,6 +789,7 @@ int main(int argc, char** argv) {
         // have been a lie on a camera whose radio simply had not been powered
         // up yet.
         nd.wifi = &wifi;
+        nd.devices = &device_manager;
         nd.txn  = &net_txn;
         nd.now_ms = [] { return (uint32_t)now_ms(); };
         nd.save_usb = [&store](const usb::UsbConfig& c, std::string& e) {

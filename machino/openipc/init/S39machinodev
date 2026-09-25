@@ -1,0 +1,31 @@
+#!/bin/sh
+# Vorgemerkte Geraeteabsichten ausfuehren. Duenne Huelle um machino-device.
+#
+# Warum ein eigenes Skript und nicht eine Zeile in S42usb:
+#
+# S40network liest wlandev aus dem U-Boot-Env und ruft /etc/wireless/usb
+# "$wlandev". Genau dieses Profil traegt machino-device ein. Liefe das
+# Eintragen erst in S42usb, waere der Adapter zwar im Dropdown der
+# OpenIPC-Seite zu sehen (adapter_scan laeuft beim Seitenaufruf), aber der
+# gesetzte wlandev fiele in diesem Boot noch ins Leere -- S40network haette den
+# Block noch nicht gefunden. Ein Neustart, der nichts bewirkt, ist genau die
+# Art Halbergebnis, die dieses Paket nicht liefern soll.
+#
+# S39 heisst deshalb: vor S40network, nach dem Mounten des Overlays (S00-S20).
+# Es laeuft frueh, aber es forkt nur hier -- machinod startet erst in S95, und
+# die Regel "kein fork bei lebendem IMP" (docs/evidence.md, OOM vom
+# 2026-09-22) bleibt unberuehrt. Das ist der ganze Grund, warum machinod die
+# Absicht hinterlegt statt sie selbst auszufuehren.
+DEV=/usr/sbin/machino-device
+
+case "${1:-start}" in
+    start)
+        [ -x "$DEV" ] || exit 0
+        "$DEV" run-intent
+        ;;
+    stop|restart|*)
+        # Nichts rueckgaengig zu machen: eingetragen ist eingetragen, und das
+        # Austragen ist ebenfalls eine Absicht, kein Shutdown-Schritt.
+        ;;
+esac
+exit 0

@@ -46,7 +46,12 @@ fi
 grep -o 'id="[A-Za-z0-9_-]*"' "$SRC" | sed 's/id="//; s/"//' | sort -u > "$TMP/have"
 # Jede id, die das Skript nachschlaegt. Nur die literale Form $("...") --
 # berechnete Namen kann diese Pruefung nicht sehen und behauptet es auch nicht.
-grep -o '\$("[A-Za-z0-9_-]*")' "$TMP/page.js" | sed 's/\$("//; s/")//' | sort -u > "$TMP/want"
+# Beide Schreibweisen: $("name") und $("#name"). Die zweite ist ein
+# CSS-Selektor und die uebliche; sie fehlte hier, und deshalb hat die Pruefung
+# auf der Geraeteseite genau NULL ids gesehen und trotzdem "alle existieren"
+# gemeldet. Eine Pruefung, die nichts findet und zufrieden ist, ist keine.
+grep -o '\$("#\{0,1\}[A-Za-z0-9_-]*")' "$TMP/page.js" |
+    sed 's/\$("//; s/")//; s/^#//' | sort -u > "$TMP/want"
 
 missing=$(comm -13 "$TMP/have" "$TMP/want")
 if [ -n "$missing" ]; then

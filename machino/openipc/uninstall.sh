@@ -86,6 +86,7 @@ fi
 
 # ---------------------------------------------------- restore the boot slot ---
 rm -f "$INITD/S95streamer"
+rm -f "$INITD/S39machinodev"
 
 # The USB boot script. Stopped first so no supplicant, no hostapd and no DHCP
 # client is left running against a machino that is going away. Its stop tears
@@ -129,36 +130,20 @@ if [ -z "$ROOT" ] && command -v depmod >/dev/null 2>&1; then
     depmod -a >/dev/null 2>&1 || true
 fi
 
-# Unser Profil aus /etc/wireless/usb, markerbegrenzt -- fremde Profile in
-# derselben Datei bleiben unangetastet.
-_wusb="$ROOT/etc/wireless/usb"
-_wbeg="# >>> machino aic8800-t40-machino >>>"
-_wend="# <<< machino aic8800-t40-machino <<<"
-if [ -f "$_wusb" ] && grep -qF "$_wbeg" "$_wusb"; then
-    if awk -v b="$_wbeg" -v e="$_wend" '
-            index($0, b) == 1 { skip = 1; next }
-            index($0, e) == 1 { skip = 0; next }
-            !skip
-        ' "$_wusb" > "$_wusb.machino.tmp" 2>/dev/null &&
-       mv -f "$_wusb.machino.tmp" "$_wusb"; then
-        chmod 0755 "$_wusb" 2>/dev/null
-        say "removed the WiFi profile from $_wusb"
-    else
-        rm -f "$_wusb.machino.tmp"
-        warn "could not remove the WiFi profile from $_wusb"
-    fi
+# Registrierung im Wirtssystem zurueckbauen -- ueber dasselbe Skript, das sie
+# angelegt hat. Frueher stand hier eine zweite Fassung samt hartkodiertem
+# Profilnamen; wer den Namen aendert, haette hier stillschweigend nichts mehr
+# entfernt und /etc/wireless/usb waere bei jedem Zyklus gewachsen.
+if [ -x "$ROOT/usr/sbin/machino-device" ]; then
+    MACHINO_ROOT="$ROOT" sh "$ROOT/usr/sbin/machino-device" uninstall aic8800 ||
+        warn "could not deregister the WiFi adapter"
 fi
-# wlandev zeigte womoeglich auf genau dieses Profil. Bliebe es stehen, riefe
-# S40network beim naechsten Boot ein Profil auf, das es nicht mehr gibt: die
-# Datei liefert exit 1, S40network faellt auf keinen Zweig und liesse die
-# Kamera ohne eth0 stehen. Also zurueck auf verkabelt.
-if [ -z "$ROOT" ] && command -v fw_printenv >/dev/null 2>&1; then
-    if [ "$(fw_printenv -n wlandev 2>/dev/null)" = "aic8800-t40-machino" ]; then
-        fw_setenv wlandev "" >/dev/null 2>&1 &&
-            say "cleared wlandev (it pointed at the removed profile)" ||
-            warn "could not clear wlandev - it still names the removed profile"
-    fi
-fi
+# Hier -- und NUR hier, beim vollstaendigen Deinstallieren -- faellt auch die
+# Nutzlast. Der Geraetemanager laesst sie bewusst liegen.
+rm -rf "$STATE_DIR/payload"
+rm -f "$STATE_DIR"/device-intent-*
+rm -rf "$STATE_DIR/devices"
+rm -f "$ROOT/usr/sbin/machino-device"
 rm -rf "$ROOT/lib/firmware/aic8800DC"
 
 # Mobilfunk: Helfer, DHCP-Hook und die Modem-Kernelmodule. Auch das haben wir
@@ -218,14 +203,18 @@ esac
 # ------------------------------------------------------------------ WebUI ---
 rm -f "$CGI/machino.cgi"
 header="$CGI/p/header.cgi"
-# The network page entry, if --with-network-page added one. Removed by its own
-# markers so it cannot take a neighbouring edit with it, and before the legacy
-# cleanup below because the two use different markers on purpose.
-if [ -f "$header" ] && grep -q 'machino-netpage:begin' "$header" 2>/dev/null; then
-    sed '/machino-netpage:begin/,/machino-netpage:end/d' "$header" > "$header.machino.tmp" &&
-        mv "$header.machino.tmp" "$header" && say "removed the network page menu entry" ||
-        { rm -f "$header.machino.tmp"; warn "could not remove the network page entry from $header"; }
-fi
+# Die Eintraege der eigenen Seiten, falls --with-network-page bzw.
+# --with-device-page welche angelegt haben. Jeder wird an SEINEN Markern
+# entfernt, damit keiner einen benachbarten fremden Eintrag mitnimmt, und vor
+# der Altlastbehandlung darunter -- die benutzt bewusst andere Marker
+# ('machino:begin'), und keiner der beiden Namen enthaelt den anderen.
+for _mark in netpage devpage; do
+    [ -f "$header" ] || break
+    grep -q "machino-$_mark:begin" "$header" 2>/dev/null || continue
+    sed "/machino-$_mark:begin/,/machino-$_mark:end/d" "$header" > "$header.machino.tmp" &&
+        mv "$header.machino.tmp" "$header" && say "removed the $_mark menu entry" ||
+        { rm -f "$header.machino.tmp"; warn "could not remove the $_mark entry from $header"; }
+done
 if [ -f "$header" ] && grep -q 'machino:begin' "$header" 2>/dev/null; then
     sed '/machino:begin/,/machino:end/d' "$header" > "$header.machino.tmp" &&
         mv "$header.machino.tmp" "$header" && say "removed the menu entry" ||

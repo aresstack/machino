@@ -1,0 +1,43 @@
+# Geraetemanifest AIC8800DC. DIE Quelle fuer alles, was diesen Adapter benennt.
+#
+# Warum eine Datei und nicht je eine Konstante pro Sprache: der Profilname stand
+# nach dem ersten Wurf sechsmal in vier Dateien (install.sh, uninstall.sh,
+# machino-usb-helper, aic8800_package.hpp). Wer ihn aendert und eine Kopie
+# uebersieht, bekommt keinen Fehler, sondern zwei stille Schaeden -- der
+# Deinstallierer findet seinen Marker nicht mehr und laesst den Block stehen,
+# und der Helfer erkennt die fremde Ownership nicht mehr und startet den
+# Rollen-Supervisor ein zweites Mal. Beides meldet sich nirgends.
+#
+# Format: KEY=VALUE, keine Anfuehrungszeichen, keine Ersetzungen. So kann die
+# Shell es mit `.` einlesen und C++ es Zeile fuer Zeile parsen, ohne dass eine
+# der beiden Seiten einen Interpreter braucht.
+#
+# Installiert nach /etc/machino/devices/aic8800.manifest.
+
+id=aic8800
+title=AIC8800DC WLAN
+driver=aic8800
+
+# Der Profilname in /etc/wireless/usb. Der Token "t40" ist nicht kosmetisch:
+# OpenIPCs adapter_scan zieht ihn aus der Id und vergleicht ihn praefixweise mit
+# `ipcinfo --chip-name`, deshalb greift t40 auch auf t40nn. Ein Name mit
+# "t40nn" ergaebe gar keinen Token (der Regex ist ^t[0-9]+$) und das Profil
+# waere ungefiltert auf JEDEM SoC sichtbar.
+openipc_profile=aic8800-t40-machino
+
+# Welche Portbelegung dieses Geraet braucht, wenn es aktiv sein soll.
+usb_mode=wifi
+
+# Die Module in Ladereihenfolge. Auf Hardware erarbeitet (aic8800-bringup.md):
+# cfg80211 ist in diesem Kernel ein Modul, aic_load_fw liefert die Symbole fuer
+# aic8800, und der Portstrom kommt ZULETZT. cfg80211 bringt das Image selbst
+# mit, deshalb steht es nicht unter payload_modules.
+modules=cfg80211 aic_load_fw aic8800
+payload_modules=aic_load_fw aic8800
+
+# Firmware-Blobs, ohne die der Treiber bindet und danach scheitert.
+firmware_dir=aic8800DC
+
+# USB-Kennung, nur fuer "Hardware erkannt" -- sagt nichts ueber Treiberbindung.
+usb_vid=a69c
+usb_pid=88dc

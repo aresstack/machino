@@ -13,6 +13,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT="${MACHINO_ROOT:-}"
 WITH_AP=0
 WITH_NETPAGE=0
+WITH_DEVPAGE=0
 # BEIDE USB-Nutzlasten werden per DEFAULT mitinstalliert, und beide bleiben AUS.
 #
 # Das klingt widerspruechlich und ist es nicht. Der Schalter sitzt in der
@@ -57,116 +58,24 @@ BACKUP="$STATE_DIR/backup"
 # selbst per insmod zu laden: fuer die Seite existieren sie dann nicht, das
 # Dropdown zeigt nur "None", und der bereits auf Hardware bewiesene AIC8800
 # bleibt unerreichbar. Genau dieser Befund am 2026-09-25.
-WIRELESS_USB="$ROOT/etc/wireless/usb"
-WIFI_PROFILE="aic8800-t40-machino"   # Token t40 -> greift auf t40 und t40nn
-WIFI_MARK_BEGIN="# >>> machino $WIFI_PROFILE >>>"
-WIFI_MARK_END="# <<< machino $WIFI_PROFILE <<<"
+# Die Registrierung selbst macht machino-device; der Profilname steht
+# ausschliesslich in openipc/devices/aic8800.manifest.
 
 say()  { echo "$*"; }
 warn() { echo "install: $*" >&2; }
 die()  { echo "install: $*" >&2; exit 1; }
 
-# Wohin Kernelmodule gehoeren, damit modprobe UND network.cgi sie finden.
-#
-# Die Version kommt aus dem BESTEHENDEN Baum, nicht aus `uname -r`: weichen die
-# beiden ab, legte uname -r einen zweiten, leeren Zweig an, den modprobe nie
-# benutzt. Nur wenn der Baum mehrdeutig ist (0 oder >1 Verzeichnisse), bleibt
-# uname -r als Notnagel.
-kmod_dir() {
-    _kd=""
-    for _d in "$ROOT"/lib/modules/*/; do
-        [ -d "$_d" ] || continue
-        if [ -n "$_kd" ]; then _kd=""; break; fi
-        _kd="$_d"
-    done
-    [ -n "$_kd" ] || _kd="$ROOT/lib/modules/$(uname -r)/"
-    printf '%s' "${_kd%/}/machino"
-}
-
-# Unseren Block aus /etc/wireless/usb entfernen -- und NUR unseren. Zwischen
-# den Markern, damit fremde Profile unberuehrt bleiben; das ist eine
-# OpenIPC-Datei, in der wir zu Gast sind.
-wireless_profile_remove() {
-    [ -f "$WIRELESS_USB" ] || return 0
-    grep -qF "$WIFI_MARK_BEGIN" "$WIRELESS_USB" || return 0
-    awk -v b="$WIFI_MARK_BEGIN" -v e="$WIFI_MARK_END" '
-        index($0, b) == 1 { skip = 1; next }
-        index($0, e) == 1 { skip = 0; next }
-        !skip
-    ' "$WIRELESS_USB" > "$WIRELESS_USB.machino-new" 2>/dev/null &&
-        mv -f "$WIRELESS_USB.machino-new" "$WIRELESS_USB" || {
-            rm -f "$WIRELESS_USB.machino-new"
-            return 1
-        }
-    return 0
-}
-
-# Den Block VOR das abschliessende `exit 1` setzen.
-#
-# Nicht anhaengen: die Datei endet auf `exit 1` (so meldet sie S40network "diese
-# Id gehoert nicht mir"), alles dahinter waere toter Code und das Dropdown
-# bliebe leer.
-#
-# Die modprobe-Zeilen sind doppelt gemeint. network.cgi liest genau sie, um zu
-# entscheiden, ob das Profil angeboten wird -- und zur Laufzeit laden sie die
-# Module wirklich. Ein `insmod <pfad>` wuerde laden, aber vom Scanner nicht
-# gesehen. Die Reihenfolge ist auf Hardware erarbeitet (aic8800-bringup.md):
-# cfg80211, dann aic_load_fw (liefert die Symbole), dann aic8800 -- und der
-# Portstrom PB18/GPIO50 ZULETZT, damit das Geraet erst auftaucht, wenn der
-# Treiber registriert ist. Den letzten Schritt macht der Helfer, damit die
-# bewaehrte Sequenz an EINER Stelle steht statt hier nachgebaut zu werden.
-wireless_profile_install() {
-    [ -f "$WIRELESS_USB" ] || {
-        warn "$WIRELESS_USB does not exist - this image has no OpenIPC wireless profiles;"
-        warn "the WiFi adapter cannot appear in the OpenIPC network page."
-        return 0
-    }
-    wireless_profile_remove || { warn "cannot rewrite $WIRELESS_USB"; return 1; }
-    awk -v b="$WIFI_MARK_BEGIN" -v e="$WIFI_MARK_END" -v id="$WIFI_PROFILE" '
-        { line[++n] = $0; if ($0 ~ /^[ \t]*exit[ \t]+1[ \t]*$/) last = n }
-        END {
-            if (!last) last = n + 1
-            for (i = 1; i <= n; i++) {
-                if (i == last) {
-                    print b
-                    print "if [ \"$1\" = \"" id "\" ]; then"
-                    print "\tmodprobe cfg80211"
-                    print "\tmodprobe aic_load_fw"
-                    print "\tmodprobe aic8800"
-                    print "\t/usr/sbin/machino-usb-helper wifi-attach"
-                    print "\texit 0"
-                    print "fi"
-                    print e
-                }
-                print line[i]
-            }
-            if (last > n) {
-                print b
-                print "if [ \"$1\" = \"" id "\" ]; then"
-                print "\tmodprobe cfg80211"
-                print "\tmodprobe aic_load_fw"
-                print "\tmodprobe aic8800"
-                print "\t/usr/sbin/machino-usb-helper wifi-attach"
-                print "\texit 0"
-                print "fi"
-                print e
-            }
-        }
-    ' "$WIRELESS_USB" > "$WIRELESS_USB.machino-new" 2>/dev/null &&
-        mv -f "$WIRELESS_USB.machino-new" "$WIRELESS_USB" || {
-            rm -f "$WIRELESS_USB.machino-new"
-            warn "cannot write $WIRELESS_USB"
-            return 1
-        }
-    chmod 0755 "$WIRELESS_USB" 2>/dev/null
-    return 0
-}
+# Die Registrierung im Wirtssystem (/lib/modules + /etc/wireless/usb) macht
+# openipc/sbin/machino-device. Sie stand frueher hier -- und danach ein zweites
+# Mal im Deinstallierer und ein drittes Mal im Boot-Helfer, mitsamt dem
+# Profilnamen als Zeichenkette. Eine Quelle, sonst driftet es.
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             cat <<EOF
 usage: ./install.sh [--usb-mode=off|wifi|cellular] [--with-network-page]
+            [--with-device-page]
 
 The WebUI login is Machino's Majestic drop-in session login against the
 camera's root account - there is nothing to configure here.
@@ -207,6 +116,9 @@ only works after someone has copied files over by SSH is not a switch.
                         payload now. Kept so existing install commands and
                         scripts do not break.
 
+  --with-device-page    add a "Geraete (machino)" entry to the stock WebUI menu.
+                        Same rule as --with-network-page: off by default, and
+                        the page works by URL without it.
   --with-network-page   add a "Netzwerk & USB (machino)" entry to the stock
                         WebUI menu, pointing at /machino/net. Off by default:
                         the installer does not edit p/header.cgi behind your
@@ -218,6 +130,7 @@ EOF
         --with-access-point) WITH_AP=1 ;;
         --usb-mode=*) USB_MODE="${1#--usb-mode=}" ;;
         --with-network-page) WITH_NETPAGE=1 ;;
+        --with-device-page) WITH_DEVPAGE=1 ;;
         --with-wifi) USB_MODE=wifi ;;          # Altname, siehe --help
         --without-wifi-payload) WITH_WIFI_PAYLOAD=0 ;;
         --without-cellular-payload) WITH_CELL_PAYLOAD=0 ;;
@@ -512,6 +425,25 @@ put 0755 "$HERE/init/S95streamer" "$INITD/S95streamer" || die "cannot install S9
 # Nutzlasten, sondern entscheidet zwischen ihnen. Ohne ihn waere usb.mode ein
 # Wert, den niemand liest.
 [ -r "$HERE/init/S42usb" ] || die "the bundle has no init/S42usb"
+[ -r "$HERE/sbin/machino-device" ] || die "the bundle has no sbin/machino-device"
+put 0755 "$HERE/sbin/machino-device" "$ROOT/usr/sbin/machino-device" ||
+    die "cannot install machino-device"
+# Das Manifest ist die einzige Quelle fuer Profilname, Modulreihenfolge und
+# USB-Id -- Shell und C++ lesen dieselbe Datei. Es gehoert NICHT in den
+# Nutzlast-Zweig: ohne Manifest kann der Geraetemanager nicht einmal sagen,
+# WELCHES Geraet ihm fehlt, und meldete "nicht unterstuetzt" statt "keine
+# Nutzlast in diesem Release".
+[ -r "$HERE/devices/aic8800.manifest" ] || die "the bundle has no devices/aic8800.manifest"
+mkdir -p "$STATE_DIR/devices" 2>/dev/null
+put 0644 "$HERE/devices/aic8800.manifest" "$STATE_DIR/devices/aic8800.manifest" ||
+    die "cannot install the aic8800 manifest"
+
+# Der Absichtsausfuehrer beim Boot. Er MUSS vor S40network laufen, sonst
+# griffe ein frisch gesetztes wlandev erst einen Neustart spaeter -- die
+# Begruendung steht im Skript selbst.
+[ -r "$HERE/init/S39machinodev" ] || die "the bundle has no init/S39machinodev"
+put 0755 "$HERE/init/S39machinodev" "$INITD/S39machinodev" ||
+    die "cannot install S39machinodev"
 [ -r "$HERE/sbin/machino-usb-helper" ] || die "the bundle has no sbin/machino-usb-helper"
 put 0755 "$HERE/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-usb-helper" ||
     die "cannot install machino-usb-helper"
@@ -543,32 +475,34 @@ if [ "$WITH_WIFI_PAYLOAD" = "1" ]; then
         { put 0755 "$HERE/udhcpc-wlan.script" "$STATE_DIR/udhcpc-wlan.script" ||
           warn "could not install the udhcpc hook - the WiFi default route will have no metric"; }
 
-    # Nach /lib/modules, nicht nach /etc/machino/modules: siehe den Vertrag oben
-    # bei WIRELESS_USB. Dort sucht network.cgi, und nur von dort loest modprobe
-    # die Namen auf, die im Profil stehen.
+    # Die Nutzlast liegt DAUERHAFT unter /etc/machino/payload/<id>/ und
+    # ueberlebt jedes Deinstallieren. Die Registrierung (Kopie nach
+    # /lib/modules + Profil) kommt und geht.
+    #
+    # Eine fruehere Fassung legte die Module nur nach /lib/modules und entfernte
+    # sie beim Deinstallieren -- danach war "Installieren" unmoeglich, weil
+    # nichts mehr da war, was man haette eintragen koennen. Install -> Uninstall
+    # -> Install muss ohne neues Bundle gehen.
     _mods=0
-    _kmods=$(kmod_dir)
     for _ko in "$HERE"/wifi/modules/*.ko; do
         [ -r "$_ko" ] || continue
-        put 0644 "$_ko" "$_kmods/$(basename "$_ko")" ||
+        put 0644 "$_ko" "$STATE_DIR/payload/aic8800/$(basename "$_ko")" ||
             die "cannot install $(basename "$_ko")"
         _mods=$((_mods + 1))
     done
 
-    # depmod nur auf dem echten Geraet. Mit gesetztem ROOT (Hosttests) wuerde
-    # ein nacktes `depmod -a` den Modulbaum des ENTWICKLERRECHNERS anfassen.
-    if [ "$_mods" -gt 0 ] && [ -z "$ROOT" ]; then
-        if command -v depmod >/dev/null 2>&1; then
-            depmod -a >/dev/null 2>&1 ||
-                warn "depmod failed - modprobe may not resolve the WiFi modules"
-        else
-            warn "no depmod on this camera - modprobe may not resolve the WiFi modules"
-        fi
-    fi
-
-    # Erst jetzt das Profil: es verweist auf genau diese Module.
-    wireless_profile_install ||
-        warn "could not register the WiFi profile in $WIRELESS_USB"
+    # Harte Bedingung, keine Warnung.
+    #
+    # Vorher meldete der Installer "0 module(s)" und lief weiter; das Ergebnis
+    # war eine Kamera, auf der das Profil eingetragen war, die Module aber
+    # fehlten -- adapter_scan verwirft es dann an der have-Pruefung und im
+    # Dropdown steht weiter "None", ohne dass irgendwo ein Fehler steht. Wer
+    # bewusst ohne WLAN ausliefern will, nimmt --without-wifi-payload; dann
+    # kommt dieser Block gar nicht erst dran.
+    [ "$_mods" -gt 0 ] ||
+        die "the bundle carries no WiFi kernel modules. Build them against this exact
+     kernel (see the build-aic8800-t40 workflow) or install with
+     --without-wifi-payload if this artefact is meant to ship without WiFi."
 
     # Ohne Firmware bindet der Treiber und scheitert danach: der Chip laedt
     # sein Image beim Probe. Ein Modul ohne Blobs ist schlimmer als keines,
@@ -607,10 +541,14 @@ if [ "$WITH_WIFI_PAYLOAD" = "1" ]; then
     # das niemand aufruft, keine gute Entscheidung.
 
     say "installed the WiFi payload: $_mods module(s), $_fw firmware file(s), hostapd $([ "$_ap" = 1 ] && echo yes || echo no)"
-    if [ "$_mods" = "0" ]; then
-        warn "no kernel modules in the bundle - the WiFi switch will have nothing to load."
-        warn "they must be built against this exact kernel; see the build-aic8800-t40 workflow"
-    fi
+
+    # Registrieren, damit die UNVERAENDERTE OpenIPC-Netzwerkseite den Adapter
+    # nach dieser Installation anbietet. Bewusst ueber dasselbe Skript, das der
+    # Device Manager und der Boot-Helfer benutzen: eine zweite Fassung dieser
+    # Logik hier waere genau die Drift, die uns den Profilnamen sechsmal
+    # eingebracht hat.
+    MACHINO_ROOT="$ROOT" sh "$ROOT/usr/sbin/machino-device" install aic8800 ||
+        warn "could not register the WiFi adapter with OpenIPC - the network page will not offer it"
 else
     say "skipped the WiFi payload (--without-wifi-payload)"
 fi
@@ -737,36 +675,54 @@ fi
 # find their files modified. /machino/net works either way; this only adds the
 # link.
 netpage_header="$CGI/p/header.cgi"
-if [ "$WITH_NETPAGE" = "1" ]; then
+
+# Eine Funktion, zwei Aufrufer. Die zweite Seite hat die Wahl gelassen zwischen
+# "denselben awk-Block noch einmal" und dem hier; der erste Weg ist genau die
+# Art Kopie, die uns den Profilnamen sechsmal eingebracht hat. Der Marker
+# traegt den Seitennamen, damit der Deinstallierer beide Bloecke einzeln findet.
+#
+#   $1 Marke ("netpage" / "devpage")   $2 Schalter, der ihn angefordert hat
+#   $3 Ziel-URL                        $4 Beschriftung
+menu_entry() {
+    _mark=$1; _flag=$2; _href=$3; _label=$4
     if [ ! -f "$netpage_header" ]; then
-        warn "--with-network-page given but $netpage_header does not exist - no menu entry added"
-    elif grep -q 'machino-netpage:begin' "$netpage_header" 2>/dev/null; then
-        say "the network page menu entry is already there"
-    else
-        # Anchored on the System dropdown, which is where a network page
-        # belongs and the one anchor this WebUI has had in every version we
-        # have seen. If it is not there we do NOT guess another spot: a menu
-        # entry in the wrong place is worse than none, and the page is still
-        # reachable by URL.
-        anchor='<li><a class="dropdown-item" href="network.cgi">'
-        if grep -qF "$anchor" "$netpage_header"; then
-            awk -v anchor="$anchor" '
-                { print }
-                index($0, anchor) && !done {
-                    print "<!-- machino-netpage:begin (added by machino install.sh --with-network-page) -->"
-                    print "<li><a class=\"dropdown-item\" href=\"/machino/net\">Netzwerk &amp; USB (machino)</a></li>"
-                    print "<!-- machino-netpage:end -->"
-                    done = 1
-                }
-            ' "$netpage_header" > "$netpage_header.machino.tmp" &&
-                mv "$netpage_header.machino.tmp" "$netpage_header" &&
-                say "added the network page to the System menu (marked machino-netpage)" ||
-                { rm -f "$netpage_header.machino.tmp"; warn "could not add the menu entry to $netpage_header"; }
-        else
-            warn "the System menu in $netpage_header does not look as expected - no menu entry added"
-            warn "the page is still reachable at http://<camera>/machino/net"
-        fi
+        warn "$_flag given but $netpage_header does not exist - no menu entry added"
+        return 0
     fi
+    if grep -q "machino-$_mark:begin" "$netpage_header" 2>/dev/null; then
+        say "the $_mark menu entry is already there"
+        return 0
+    fi
+    # Anchored on the System dropdown, which is where these pages belong and
+    # the one anchor this WebUI has had in every version we have seen. If it
+    # is not there we do NOT guess another spot: a menu entry in the wrong
+    # place is worse than none, and the page is still reachable by URL.
+    _anchor='<li><a class="dropdown-item" href="network.cgi">'
+    if ! grep -qF "$_anchor" "$netpage_header"; then
+        warn "the System menu in $netpage_header does not look as expected - no menu entry added"
+        warn "the page is still reachable at http://<camera>$_href"
+        return 0
+    fi
+    awk -v anchor="$_anchor" -v mark="$_mark" -v flag="$_flag" \
+        -v href="$_href" -v label="$_label" '
+        { print }
+        index($0, anchor) && !done {
+            print "<!-- machino-" mark ":begin (added by machino install.sh " flag ") -->"
+            print "<li><a class=\"dropdown-item\" href=\"" href "\">" label "</a></li>"
+            print "<!-- machino-" mark ":end -->"
+            done = 1
+        }
+    ' "$netpage_header" > "$netpage_header.machino.tmp" &&
+        mv "$netpage_header.machino.tmp" "$netpage_header" &&
+        say "added $_label to the System menu (marked machino-$_mark)" ||
+        { rm -f "$netpage_header.machino.tmp"; warn "could not add the menu entry to $netpage_header"; }
+}
+
+if [ "$WITH_NETPAGE" = "1" ]; then
+    menu_entry netpage --with-network-page /machino/net "Netzwerk &amp; USB (machino)"
+fi
+if [ "$WITH_DEVPAGE" = "1" ]; then
+    menu_entry devpage --with-device-page /machino/devices "Ger&auml;te (machino)"
 fi
 
 # ------------------------------------------------------------------- done ---

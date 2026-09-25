@@ -253,6 +253,14 @@ Response NetApiService::devices_action(const std::string& id, bool install)
         if (r.status == Status::Unsupported)
             return ApiService::fail(409, "invalid_value", path,
                                     "this build does not support that device");
+        // Busy heisst hier genau eine Sache: dem Geraet gehoert gerade der
+        // USB-Port. Das ist kein Fehlschlag, sondern die falsche Reihenfolge,
+        // und die Antwort muss sagen, welche die richtige ist -- sonst
+        // probiert der Benutzer denselben Knopf noch dreimal.
+        if (r.status == Status::Busy)
+            return ApiService::fail(409, "invalid_value", path,
+                                    "the device holds the USB port - release it first "
+                                    "(usb.mode on /machino/net), then uninstall");
         return ApiService::fail(409, "invalid_value", path,
                                 install ? "nothing to install - the release carries no payload for it"
                                         : "could not record the removal");

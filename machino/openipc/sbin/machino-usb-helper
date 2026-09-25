@@ -127,10 +127,25 @@ load_module() {
 # Rollen-Supervisor ein zweites Mal starten.
 #
 # EIN Besitzer, und zwar der, den die OpenIPC-Oberflaeche gesetzt hat.
+# Der Profilname steht NICHT hier. Er kommt aus dem Geraetemanifest, derselben
+# Datei, aus der ihn auch der Installer und machino-device nehmen. Eine Kopie an
+# dieser Stelle waere die gefaehrlichste von allen: weicht sie ab, erkennt der
+# Helfer die fremde Ownership nicht mehr und startet den Rollen-Supervisor ein
+# zweites Mal -- ohne jede Meldung.
+wifi_profile_name() {
+	_mf=$ROOT/etc/machino/devices/aic8800.manifest
+	[ -r "$_mf" ] || return 1
+	while IFS= read -r _l; do
+		case "$_l" in openipc_profile=*) printf '%s' "${_l#*=}"; return 0 ;; esac
+	done < "$_mf"
+	return 1
+}
+
 wlandev_owns_wifi() {
 	command -v fw_printenv >/dev/null 2>&1 || return 1
+	_prof=$(wifi_profile_name) || return 1
 	_wd=$(fw_printenv -n wlandev 2>/dev/null)
-	[ "$_wd" = "aic8800-t40-machino" ]
+	[ "$_wd" = "$_prof" ]
 }
 
 # ----------------------------------------------------------------- WLAN ----

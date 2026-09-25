@@ -1,0 +1,320 @@
+#!/bin/sh
+# Geraeteunterstuetzung im WIRTSSYSTEM ein- und austragen.
+#
+# Genau eine Stelle, die weiss, was "installiert" bei OpenIPC heisst. Der Befund
+# vom 2026-09-25: der AIC8800-Treiber war gebaut, ausgeliefert und lief -- und
+# die Netzwerkseite bot nur "None" an, weil unsere Module unter
+# /etc/machino/modules lagen und per insmod geladen wurden. OpenIPC sucht
+# woanders:
+#
+#   www/cgi-bin/network.cgi (adapter_scan)
+#     parst /etc/wireless/{usb,sdio,modem} auf Bloecke "if [ "$1" = "<id>" ]",
+#     zieht die modprobe-NAMEN heraus und bietet ein Profil nur an, wenn JEDES
+#     dieser Module als .ko unter /lib/modules liegt und mindestens eines kein
+#     reines Stack-Modul (mac80211/cfg80211/rfkill) ist.
+#   /etc/init.d/S40network
+#     liest wlandev aus dem U-Boot-Env, ruft /etc/wireless/usb "$wlandev" und
+#     danach ifup wlan0.
+#
+# Deshalb: Nutzlast bleibt liegen, Registrierung kommt und geht.
+#
+#   /etc/machino/payload/<id>/     die Module -- ueberleben JEDES Deinstallieren
+#   /lib/modules/<ver>/machino/    die Registrierung -- kommt und geht
+#   /etc/wireless/usb              das Profil -- kommt und geht
+#
+# Das ist nicht Geschmack, sondern der Fix einer Einbahnstrasse: eine fruehere
+# Fassung entfernte beim Deinstallieren die Module selbst, und danach war
+# "Installieren" nicht mehr moeglich, weil nichts mehr da war, was man haette
+# eintragen koennen. Neu installieren haette ein neues Bundle gebraucht.
+#
+# Verben:
+#   install <id>     Nutzlast -> /lib/modules + Profil, dann depmod
+#   uninstall <id>   Registrierung entfernen; Nutzlast bleibt
+#   status <id>      registered|available|absent  (Zeile, fuer Skripte)
+#   run-intent       fuehrt eine vorgemerkte Absicht aus (Aufruf beim Boot)
+set -u
+
+ROOT="${MACHINO_ROOT:-}"                 # Testhaken, wie im Installer
+STATE_DIR="$ROOT/etc/machino"
+DEVDIR="$STATE_DIR/devices"
+PAYLOAD="$STATE_DIR/payload"
+WIRELESS_USB="$ROOT/etc/wireless/usb"
+
+say()  { echo "machino-device: $*"; }
+warn() { echo "machino-device: $*" >&2; }
+
+# --------------------------------------------------------------- Manifest ---
+# Kein `.` auf die Datei: sie kaeme aus /etc und wuerde als Shell ausgefuehrt.
+# Ein einziges hineingeratenes Semikolon liefe dann als root. Zeilenweise lesen
+# ist ein Dreizeiler und kann das nicht.
+mf_get() {
+    _k=$2
+    while IFS= read -r _line; do
+        case "$_line" in
+            \#*|"") continue ;;
+            "$_k="*) printf '%s' "${_line#*=}"; return 0 ;;
+        esac
+    done < "$1"
+    return 1
+}
+
+manifest_for() {
+    _m="$DEVDIR/$1.manifest"
+    [ -r "$_m" ] || return 1
+    printf '%s' "$_m"
+}
+
+# ------------------------------------------------------------ Kernelbaum ---
+# Die Version kommt aus dem BESTEHENDEN Baum, nicht aus uname -r: weichen die
+# beiden ab, legte uname -r einen zweiten, leeren Zweig an, den modprobe nie
+# benutzt.
+kmod_dir() {
+    _kd=""
+    for _d in "$ROOT"/lib/modules/*/; do
+        [ -d "$_d" ] || continue
+        if [ -n "$_kd" ]; then _kd=""; break; fi
+        _kd="$_d"
+    done
+    [ -n "$_kd" ] || _kd="$ROOT/lib/modules/$(uname -r)/"
+    printf '%s' "${_kd%/}/machino"
+}
+
+# depmod nur auf dem echten Geraet: mit gesetztem ROOT (Hosttests) wuerde ein
+# nacktes `depmod -a` den Modulbaum des Entwicklerrechners anfassen.
+#
+# Und der Ausgang ZAEHLT. Frueher stand hier ein `|| warn` -- die Registrierung
+# galt dann trotzdem als gelungen, OpenIPCs Dropdown bot den Adapter an
+# (adapter_scan prueft nur, dass die .ko-Dateien existieren), und beim naechsten
+# Boot scheiterte `modprobe aic_load_fw` an einer modules.dep, die davon nichts
+# weiss. Also: schlaegt depmod fehl oder fehlt es, ist das Einrichten
+# fehlgeschlagen. Lieber "nicht installiert" als ein Eintrag, der beim Booten
+# nicht traegt.
+run_depmod() {
+    [ -z "$ROOT" ] || return 0
+    command -v depmod >/dev/null 2>&1 || {
+        warn "no depmod on this camera - modprobe could not resolve the modules"
+        return 1
+    }
+    depmod -a >/dev/null 2>&1 || { warn "depmod failed"; return 1; }
+    return 0
+}
+
+# Die Gegenprobe zu depmod: steht unser Modul wirklich im Index? Das ist die
+# Frage, die modprobe beim Booten stellt -- der Rueckgabewert von depmod ist
+# nur die Behauptung, dass es geklappt hat.
+#
+# Nur auf dem echten Geraet. Im Hosttest laeuft depmod bewusst nicht, dort
+# gaebe es keine modules.dep zu pruefen.
+depmod_knows() {
+    [ -z "$ROOT" ] || return 0
+    _dep=$(dirname "$(kmod_dir)")/modules.dep
+    [ -f "$_dep" ] || { warn "no $_dep after depmod"; return 1; }
+    for _m in $1; do
+        grep -q "/$_m\.ko:" "$_dep" || {
+            warn "$_m.ko is not in modules.dep - modprobe would not find it"
+            return 1
+        }
+    done
+    return 0
+}
+
+# ---------------------------------------------------- /etc/wireless/usb ---
+profile_remove() {
+    _prof=$1
+    _b="# >>> machino $_prof >>>"
+    _e="# <<< machino $_prof <<<"
+    [ -f "$WIRELESS_USB" ] || return 0
+    grep -qF "$_b" "$WIRELESS_USB" || return 0
+    awk -v b="$_b" -v e="$_e" '
+        index($0, b) == 1 { skip = 1; next }
+        index($0, e) == 1 { skip = 0; next }
+        !skip
+    ' "$WIRELESS_USB" > "$WIRELESS_USB.machino-new" 2>/dev/null &&
+        mv -f "$WIRELESS_USB.machino-new" "$WIRELESS_USB" || {
+            rm -f "$WIRELESS_USB.machino-new"
+            return 1
+        }
+    chmod 0755 "$WIRELESS_USB" 2>/dev/null
+    return 0
+}
+
+# Der Block MUSS vor dem abschliessenden `exit 1` stehen -- dahinter waere er
+# toter Code und das Dropdown bliebe leer. Und die modprobe-Zeilen tragen
+# doppelt: der Scanner liest genau sie, und zur Laufzeit laden sie wirklich. Ein
+# `insmod <pfad>` wuerde laden und bliebe unsichtbar.
+profile_install() {
+    _prof=$1; _mods=$2
+    [ -f "$WIRELESS_USB" ] || {
+        warn "$WIRELESS_USB does not exist - this image has no OpenIPC wireless profiles"
+        return 1
+    }
+    profile_remove "$_prof" || { warn "cannot rewrite $WIRELESS_USB"; return 1; }
+    awk -v b="# >>> machino $_prof >>>" -v e="# <<< machino $_prof <<<" \
+        -v id="$_prof" -v mods="$_mods" '
+        function emit(   i, n, m) {
+            print b
+            print "if [ \"$1\" = \"" id "\" ]; then"
+            n = split(mods, m, " ")
+            for (i = 1; i <= n; i++) if (m[i] != "") print "\tmodprobe " m[i]
+            print "\t/usr/sbin/machino-usb-helper wifi-attach"
+            print "\texit 0"
+            print "fi"
+            print e
+        }
+        { line[++n] = $0; if ($0 ~ /^[ \t]*exit[ \t]+1[ \t]*$/) last = n }
+        END {
+            if (!last) last = n + 1
+            for (i = 1; i <= n; i++) { if (i == last) emit(); print line[i] }
+            if (last > n) emit()
+        }
+    ' "$WIRELESS_USB" > "$WIRELESS_USB.machino-new" 2>/dev/null &&
+        mv -f "$WIRELESS_USB.machino-new" "$WIRELESS_USB" || {
+            rm -f "$WIRELESS_USB.machino-new"
+            warn "cannot write $WIRELESS_USB"
+            return 1
+        }
+    chmod 0755 "$WIRELESS_USB" 2>/dev/null
+    return 0
+}
+
+# ------------------------------------------------------------- die Verben ---
+dev_install() {
+    _id=$1
+    _m=$(manifest_for "$_id") || { warn "unknown device '$_id'"; return 1; }
+    _prof=$(mf_get "$_m" openipc_profile) || { warn "$_id: no openipc_profile"; return 1; }
+    _mods=$(mf_get "$_m" modules)         || { warn "$_id: no modules"; return 1; }
+    _pay=$(mf_get "$_m" payload_modules)  || _pay=""
+
+    _src="$PAYLOAD/$_id"
+    _dst=$(kmod_dir)
+    mkdir -p "$_dst" 2>/dev/null || { warn "cannot create $_dst"; return 1; }
+    _n=0
+    for _mod in $_pay; do
+        [ -f "$_src/$_mod.ko" ] || { warn "$_id: payload $_mod.ko missing in $_src"; return 1; }
+        cp "$_src/$_mod.ko" "$_dst/$_mod.ko" || { warn "cannot copy $_mod.ko"; return 1; }
+        chmod 0644 "$_dst/$_mod.ko" 2>/dev/null
+        _n=$((_n + 1))
+    done
+    [ "$_n" -gt 0 ] || { warn "$_id: nothing in the payload - refusing to register an empty driver"; return 1; }
+
+    # Reihenfolge ist Absicht: erst der Index, dann das Profil. Andersherum
+    # stuende bei einem depmod-Fehler ein Profil in /etc/wireless/usb, das die
+    # OpenIPC-Seite anbietet und das beim Booten nicht laedt -- also genau die
+    # stille Halbinstallation, die dieses Skript verhindern soll.
+    run_depmod        || { warn "$_id: not registering - the module index could not be rebuilt"; return 1; }
+    depmod_knows "$_pay" || { warn "$_id: not registering - the module index does not list it"; return 1; }
+    profile_install "$_prof" "$_mods" || return 1
+    say "$_id registered: $_n module(s) in $_dst, profile $_prof"
+    return 0
+}
+
+# NUR die Registrierung. Die Nutzlast bleibt, sonst waere das hier die
+# Einbahnstrasse von oben.
+dev_uninstall() {
+    _id=$1
+    _m=$(manifest_for "$_id") || { warn "unknown device '$_id'"; return 1; }
+    _prof=$(mf_get "$_m" openipc_profile) || return 1
+    _pay=$(mf_get "$_m" payload_modules)  || _pay=""
+
+    profile_remove "$_prof" || warn "could not remove the profile from $WIRELESS_USB"
+    _dst=$(kmod_dir)
+    for _mod in $_pay; do rm -f "$_dst/$_mod.ko"; done
+    rmdir "$_dst" 2>/dev/null || true
+    # Hier ist ein depmod-Fehler KEIN Grund zu scheitern: die Dateien sind schon
+    # weg, der Rueckbau ist also getan. Liesse man die Absicht deswegen liegen,
+    # versuchte es jeder Boot aufs Neue und die Oberflaeche meldete ewig
+    # "wird beim Neustart entfernt".
+    run_depmod || warn "$_id: depmod failed after removal - the index may still list the modules"
+
+    # Ein wlandev, das auf das entfernte Profil zeigt, waere schlimmer als
+    # nichts: S40network faende keinen Zweig und liesse die Kamera ohne eth0.
+    if [ -z "$ROOT" ] && command -v fw_printenv >/dev/null 2>&1; then
+        if [ "$(fw_printenv -n wlandev 2>/dev/null)" = "$_prof" ]; then
+            fw_setenv wlandev "" >/dev/null 2>&1 &&
+                say "cleared wlandev (it pointed at the removed profile)" ||
+                warn "could not clear wlandev - it still names the removed profile"
+        fi
+    fi
+    say "$_id deregistered (payload kept in $PAYLOAD/$_id)"
+    return 0
+}
+
+dev_status() {
+    _id=$1
+    _m=$(manifest_for "$_id") || { echo absent; return 0; }
+    _prof=$(mf_get "$_m" openipc_profile) || { echo absent; return 0; }
+    _pay=$(mf_get "$_m" payload_modules)  || _pay=""
+    _dst=$(kmod_dir)
+    _reg=1
+    for _mod in $_pay; do [ -f "$_dst/$_mod.ko" ] || _reg=0; done
+    grep -qF "$_prof" "$WIRELESS_USB" 2>/dev/null || _reg=0
+    [ "$_reg" = "1" ] && { echo registered; return 0; }
+    for _mod in $_pay; do
+        [ -f "$PAYLOAD/$_id/$_mod.ko" ] || { echo absent; return 0; }
+    done
+    echo available
+}
+
+# Beim Boot: was machinod vorgemerkt hat, ausfuehren. machinod selbst darf das
+# nicht -- fork() bei lebendem IMP ist der belegte Ausloeser des OOM vom
+# 2026-09-22 (docs/evidence.md), und depmod waere genau so ein fork.
+# Die Absicht verschwindet erst, wenn der ZUSTAND stimmt -- nicht schon, wenn
+# das Kommando 0 zurueckgab.
+#
+# Der Unterschied ist nicht akademisch. Zwischen dem Kopieren der Module und
+# dem Schreiben des Profils liegen mehrere Schritte auf einem jffs2-Overlay;
+# geht dazwischen der Strom weg, waere die Haelfte getan. Loeschten wir die
+# Absicht anhand des Rueckgabewerts, versuchte es der naechste Boot nie wieder,
+# und die Oberflaeche behauptete weiter "wirksam nach dem naechsten Neustart"
+# -- bei jedem Neustart aufs Neue.
+#
+# Also: ausfuehren, danach dev_status befragen, und nur bei der erwarteten
+# Antwort die Marke entfernen. Schlaegt es fehl, BLEIBT die Absicht liegen und
+# ein .failed-Merker sagt warum; machinod liest ihn und schreibt den Grund in
+# den Status, statt "kommt gleich" zu versprechen.
+intent_done() {
+    _f=$1; _id=$2; _want=$3
+    _have=$(dev_status "$_id")
+    case "$_want" in
+        install) [ "$_have" = "registered" ] ;;
+        remove)  [ "$_have" != "registered" ] ;;
+    esac
+}
+
+run_intent() {
+    for _f in "$STATE_DIR"/device-intent-*; do
+        [ -f "$_f" ] || continue
+        case "$_f" in *.failed) continue ;; esac
+        _id=${_f##*/device-intent-}
+        _want=$(cat "$_f" 2>/dev/null)
+        case "$_want" in
+            install) dev_install "$_id"   >/dev/null 2>&1 || true ;;
+            remove)  dev_uninstall "$_id" >/dev/null 2>&1 || true ;;
+            *)
+                # Unlesbar heisst unlesbar. Die raten wir nicht, aber wir
+                # lassen sie auch nicht liegen -- sonst blockiert sie jeden
+                # weiteren Boot mit derselben Meldung.
+                warn "ignoring unreadable intent for '$_id'"
+                rm -f "$_f" "$_f.failed"
+                continue
+                ;;
+        esac
+        if intent_done "$_f" "$_id" "$_want"; then
+            rm -f "$_f" "$_f.failed"
+            say "$_id: $_want done"
+        else
+            printf '%s\n' "$_want konnte nicht abgeschlossen werden (Zustand: $(dev_status "$_id"))" \
+                > "$_f.failed"
+            warn "$_id: $_want did NOT complete - the intent stays pending for the next boot"
+        fi
+    done
+    return 0
+}
+
+case "${1:-}" in
+    install)   [ $# -ge 2 ] || { warn "install needs a device id"; exit 1; }; dev_install "$2" ;;
+    uninstall) [ $# -ge 2 ] || { warn "uninstall needs a device id"; exit 1; }; dev_uninstall "$2" ;;
+    status)    [ $# -ge 2 ] || { warn "status needs a device id"; exit 1; }; dev_status "$2" ;;
+    run-intent) run_intent ;;
+    *) echo "usage: $0 {install|uninstall|status} <id> | run-intent"; exit 1 ;;
+esac

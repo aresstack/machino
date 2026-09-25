@@ -79,6 +79,7 @@ jobs:
         run: |
           sh machino/tools/check-linux-only.sh
           sh machino/tools/check-netui.sh machino/src/app/http/netui.cpp
+          sh machino/tools/check-netui.sh machino/src/app/http/devui.cpp
           # The make-free runner must not have rotted either: it is what a
           # contributor without make will use to check their work.
           rm -rf machino/build machino/tests/machino-tests
@@ -113,6 +114,13 @@ jobs:
           cp -f machino/openipc/init/S42usb            "$O/init/S42usb"
           cp -f machino/openipc/sbin/machino-usb-helper "$O/sbin/machino-usb-helper"
           cp -f machino/openipc/sbin/machino-wifi-role "$O/sbin/machino-wifi-role"
+          # Der Registrierer, sein Boot-Skript und die Geraetemanifeste. Ohne
+          # sie traegt das Release zwar die Treiber, kann sie dem Wirtssystem
+          # aber nicht melden -- und OpenIPCs Dropdown bliebe wieder leer.
+          cp -f machino/openipc/sbin/machino-device    "$O/sbin/machino-device"
+          cp -f machino/openipc/init/S39machinodev     "$O/init/S39machinodev"
+          mkdir -p "$O/devices"
+          cp -f machino/openipc/devices/aic8800.manifest "$O/devices/aic8800.manifest"
           cp -f machino/openipc/udhcpc-wlan.script     "$O/udhcpc-wlan.script"
           # Die Mobilfunkseite des USB-Ports. Sie fehlte hier, solange es nur
           # WLAN gab -- ein Release mit einer "4G-Mobilfunk"-Auswahl und ohne
@@ -143,6 +151,13 @@ jobs:
           done
           [ "$(find "$O/wifi/firmware" -type f | wc -l)" -gt 0 ] ||
             { echo "::error::no WiFi firmware in the release bundle; the driver would bind and then fail"; exit 1; }
+          # Und die Namen muessen zu dem passen, was das Manifest verspricht --
+          # sonst kopiert machino-device beim Installieren ins Leere, und zwar
+          # ohne Fehler: es faellt erst auf, wenn das Dropdown leer bleibt.
+          for m in $(sed -n 's/^payload_modules=//p' machino/openipc/devices/aic8800.manifest); do
+            [ -s "$O/wifi/modules/$m.ko" ] ||
+              { echo "::error::the manifest promises $m.ko, the release bundle does not carry it"; exit 1; }
+          done
 
           chmod 0755 "$O/machino" "$O/install.sh" "$O/uninstall.sh" "$O/sbin/"* "$O/init/"*
           {

@@ -57,6 +57,13 @@ FAKE
     cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$B/init/"
     mkdir -p "$B/sbin"
     cp "$PKG/sbin/machino-wifi-role" "$PKG/sbin/machino-usb-helper" "$B/sbin/"
+    # Der Registrierer, sein Boot-Skript und das Manifest. Das Manifest ist die
+    # einzige Quelle fuer den Profilnamen -- der Test kopiert es deshalb aus dem
+    # Paket und schreibt es nicht selbst, sonst pruefte er seine eigene Kopie.
+    cp "$PKG/sbin/machino-device" "$B/sbin/"
+    cp "$PKG/init/S39machinodev" "$B/init/"
+    mkdir -p "$B/devices"
+    cp "$PKG/devices/aic8800.manifest" "$B/devices/"
     # Die WLAN-Nutzlast so, wie das Release-Artefakt sie traegt: Treiber,
     # Firmware und hostapd unter wifi/. Sie wird per Default installiert und
     # ist ohne usb.wifi.enabled=true wirkungslos.
@@ -409,6 +416,44 @@ is "selection switched to machino" "$(cat "$R/etc/machino/streamer")" "machino"
 S=$(mgr_status)
 case "$S" in *'"state":"ON"'*) ok ;; *) bad "manager status not ON after install: $S" ;; esac
 
+# 15c-1) der PRODUKT-Deploy fasst die OpenIPC-WebUI NICHT an.
+#
+# Das ist eine Architekturgrenze, keine Vorsichtsmassnahme: OpenIPC bleibt
+# unveraendert, Majestic raus, Machino rein. Eine <li>-Zeile in p/header.cgi
+# ist eine Aenderung an fremden Dateien, auch wenn sie markiert ist und der
+# Deinstallierer sie byteweise zuruecknimmt.
+#
+# Der Geraetemanager ist trotzdem erreichbar -- unter /machino/devices, von
+# machino selbst ausgeliefert. Diese Trennung ist der ganze Punkt.
+HDR="$R/var/www/cgi-bin/p/header.cgi"
+if diff -q "$WORK/header.orig" "$HDR" >/dev/null; then ok
+else bad "the product deploy edited header.cgi - OpenIPC's WebUI must stay untouched"; fi
+for _m in machino-devpage machino-netpage; do
+    if grep -q "$_m" "$HDR"; then bad "the deploy left a $_m marker in the stock WebUI"; else ok; fi
+done
+has "the daemon is installed all the same" "$R/usr/bin/machino"
+
+# ... und --with-pages ist die ausdrueckliche Ausnahme dessen, der installiert.
+# Sie bleibt erhalten, damit die Mechanik nicht verrottet, ist aber nicht der
+# Normalweg.
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --with-pages ) >"$WORK/out" 2>&1 ||
+    bad "manager install --with-pages exited non-zero: $(cat "$WORK/out")"
+HDR="$R/var/www/cgi-bin/p/header.cgi"
+if grep -q 'machino-devpage:begin' "$HDR"; then ok
+else bad "--with-pages did not add the device manager entry"; fi
+if grep -q '/machino/devices' "$HDR"; then ok
+else bad "the device menu entry does not point at the page"; fi
+if grep -q 'machino-netpage:begin' "$HDR"; then ok
+else bad "--with-pages did not add the network page entry"; fi
+if grep -q 'href="network.cgi"' "$HDR"; then ok
+else bad "an entry replaced the stock Network item"; fi
+
+# Und zurueck auf den Normalfall fuer die folgenden Faelle.
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
+    bad "manager re-install exited non-zero: $(cat "$WORK/out")"
+
 # 15c-2) not selected => BROKEN, not a false ON (the hardened semantics)
 printf 'majestic\n' > "$R/etc/machino/streamer"
 S=$(mgr_status)
@@ -699,11 +744,22 @@ if run_install --usb-mode=cellular --without-cellular-payload; then
     bad "--usb-mode=cellular with no modem payload was accepted"
 else ok; fi
 
-# A bundle with no modules must say so rather than leaving a switch that
-# cannot work.
+# Ein Bundle ohne Module muss HART scheitern, nicht warnen.
+#
+# Vorher lief der Installer weiter und meldete "nothing to load". Das Ergebnis
+# war eine Kamera mit eingetragenem Profil und ohne Module -- adapter_scan
+# verwirft das an der have-Pruefung, und im Dropdown steht weiter "None", ohne
+# dass irgendwo ein Fehler sichtbar waere. Wer bewusst ohne WLAN ausliefern
+# will, hat --without-wifi-payload; einen unabsichtlich leeren Beutel
+# stillschweigend zu akzeptieren ist kein Dienst am Benutzer.
 make_bundle; rm -f "$WORK/bundle/wifi/modules/"*.ko; make_camera auto
-run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
-if grep -q "nothing to load" "$WORK/out"; then ok; else bad "the missing modules were not reported"; fi
+if run_install; then
+    bad "install.sh accepted a bundle with no WiFi kernel modules"
+else ok; fi
+if grep -q "no WiFi kernel modules" "$WORK/out"; then ok
+else bad "the missing modules were not reported: $(cat "$WORK/out")"; fi
+if grep -q -- "--without-wifi-payload" "$WORK/out"; then ok
+else bad "the refusal does not name the way out"; fi
 
 # --with-access-point is still accepted so nobody's install command breaks.
 make_bundle; make_camera auto
@@ -1110,6 +1166,37 @@ run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
 if diff -q "$WORK/header.orig" "$H" >/dev/null; then ok
 else bad "header.cgi is not byte-identical again after uninstall"; fi
 
+# Dieselbe Regel fuer die Geraeteseite, und beide zusammen. Der Grund fuer das
+# "zusammen": die Eintraege werden an derselben Ankerzeile eingefuegt und an
+# eigenen Markern wieder entfernt. Nimmt einer beim Entfernen den anderen mit,
+# faellt das nur auf, wenn man beide gesetzt hat.
+make_bundle; make_camera auto
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
+if diff -q "$WORK/header.orig" "$WORK/root/var/www/cgi-bin/p/header.cgi" >/dev/null; then ok
+else bad "install touched header.cgi without --with-device-page"; fi
+
+make_bundle; make_camera auto
+run_install --with-network-page --with-device-page ||
+    bad "--with-device-page was refused: $(cat "$WORK/out")"
+H="$WORK/root/var/www/cgi-bin/p/header.cgi"
+if grep -q 'machino-devpage:begin' "$H"; then ok; else bad "no device menu entry was added"; fi
+if grep -q '/machino/devices' "$H"; then ok; else bad "the device entry does not point at the page"; fi
+if grep -q 'machino-netpage:begin' "$H"; then ok; else bad "the device entry displaced the network entry"; fi
+if grep -q 'href="network.cgi"' "$H"; then ok; else bad "an entry replaced the stock Network item"; fi
+run_install --with-network-page --with-device-page
+is "device entry added exactly once" "$(grep -c 'machino-devpage:begin' "$H")" "1"
+is "network entry still exactly once" "$(grep -c 'machino-netpage:begin' "$H")" "1"
+run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
+if diff -q "$WORK/header.orig" "$H" >/dev/null; then ok
+else bad "header.cgi is not byte-identical again after uninstalling both entries"; fi
+
+# Die Seite selbst ist einkompiliert, nicht installiert. Ein Asset unter
+# /var/www waere genau der Weg, auf dem Seite und API in verschiedenen
+# Versionen auseinanderlaufen.
+if [ -e "$WORK/root/var/www/machino" ] || [ -e "$WORK/root/var/www/devices.html" ]; then
+    bad "the device page was installed as a file - it must be compiled in"
+else ok; fi
+
 # A WebUI whose System menu does not look as expected gets NO entry and says
 # so -- a menu item in the wrong place is worse than none, and the page is
 # still reachable by URL.
@@ -1125,7 +1212,7 @@ else ok; fi
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
 # check keeps the next such regression out.
-for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$PKG/sbin/machino-usb-helper" "$PKG/sbin/machino-wifi-role" "$PKG/udhcpc-wlan.script"; do
+for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$PKG/sbin/machino-usb-helper" "$PKG/sbin/machino-wifi-role" "$PKG/udhcpc-wlan.script" "$PKG/sbin/machino-device" "$PKG/init/S39machinodev"; do
     if grep -nE '(^|[^-a-z_])install +-[dm]' "$f"; then bad "$(basename "$f") uses install(1), which BusyBox does not have"; else ok; fi
     if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
     if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi
@@ -1213,6 +1300,129 @@ else ok; fi
 if real_adapter_scan "$WORK/root" t40nn | grep -q 'aic8800-t40-machino'; then
     bad "the profile is still offered after uninstalling"
 else ok; fi
+
+# --------- 15) Nutzlast, Registrierung und die EINE Quelle ------------------
+#
+# Drei Zusagen, die vorher keine Pruefung hatten und die zusammen die
+# Einbahnstrasse schliessen: installieren -> deinstallieren -> wieder
+# installieren, ohne neues Bundle.
+make_bundle; make_camera auto
+run_install || bad "install failed: $(cat "$WORK/out")"
+
+# Der Profilname wird hier NICHT wiederholt. Er kommt aus dem Manifest -- sonst
+# pruefte dieser Test eine siebte Kopie derselben Zeichenkette.
+PROF=$(sed -n 's/^openipc_profile=//p' "$PKG/devices/aic8800.manifest")
+if [ -n "$PROF" ]; then ok; else bad "the manifest has no openipc_profile"; fi
+
+# a) Die Nutzlast liegt dauerhaft unter /etc/machino/payload/<id>/.
+for m in aic8800 aic_load_fw; do
+    if [ -f "$WORK/root/etc/machino/payload/aic8800/$m.ko" ]; then ok
+    else bad "the payload $m.ko is not under /etc/machino/payload/aic8800"; fi
+done
+
+# b) Das Manifest liegt dort, wo Shell UND C++ es suchen.
+if [ -f "$WORK/root/etc/machino/devices/aic8800.manifest" ]; then ok
+else bad "the device manifest was not installed"; fi
+
+# c) Der Boot-Absichtsausfuehrer ist eingerichtet, und zwar VOR S40network.
+if [ -f "$WORK/root/etc/init.d/S39machinodev" ]; then ok
+else bad "S39machinodev was not installed - a pending intent would never run"; fi
+
+# d) machino-device uninstall entfernt NUR die Registrierung. Genau hier war
+#    frueher die Einbahnstrasse: die Nutzlast fiel mit, und danach liess sich
+#    der Adapter ohne neues Bundle nicht mehr einrichten.
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" uninstall aic8800 \
+    > "$WORK/out" 2>&1 || bad "machino-device uninstall failed: $(cat "$WORK/out")"
+if find "$WORK/root/lib/modules" -name 'aic8800.ko' | grep -q .; then
+    bad "deregistering left the module under /lib/modules"
+else ok; fi
+if real_adapter_scan "$WORK/root" t40nn | grep -q "$PROF"; then
+    bad "deregistering left the profile in /etc/wireless/usb"
+else ok; fi
+for m in aic8800 aic_load_fw; do
+    if [ -f "$WORK/root/etc/machino/payload/aic8800/$m.ko" ]; then ok
+    else bad "deregistering deleted the payload $m.ko - that is the one-way door"; fi
+done
+if [ "$(MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" status aic8800)" = "available" ]; then ok
+else bad "status after deregistering is not 'available'"; fi
+
+# e) ... und genau deshalb geht Wiedereinrichten ohne Bundle.
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" install aic8800 \
+    > "$WORK/out" 2>&1 || bad "re-install failed: $(cat "$WORK/out")"
+if real_adapter_scan "$WORK/root" t40nn | grep -q "$PROF"; then ok
+else bad "re-installing from the kept payload did not restore the profile"; fi
+if [ "$(MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" status aic8800)" = "registered" ]; then ok
+else bad "status after re-installing is not 'registered'"; fi
+
+# f) run-intent fuehrt aus, was machinod hinterlegt hat, und raeumt die Marke
+#    weg. Das ist der ganze Grund, warum machinod nicht selbst forkt.
+echo remove > "$WORK/root/etc/machino/device-intent-aic8800"
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" run-intent \
+    > "$WORK/out" 2>&1 || bad "run-intent failed: $(cat "$WORK/out")"
+if [ -f "$WORK/root/etc/machino/device-intent-aic8800" ]; then
+    bad "run-intent did not consume the intent file - it would run again every boot"
+else ok; fi
+if real_adapter_scan "$WORK/root" t40nn | grep -q "$PROF"; then
+    bad "the remove intent did not deregister the adapter"
+else ok; fi
+echo install > "$WORK/root/etc/machino/device-intent-aic8800"
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" run-intent \
+    > "$WORK/out" 2>&1 || bad "run-intent (install) failed: $(cat "$WORK/out")"
+if real_adapter_scan "$WORK/root" t40nn | grep -q "$PROF"; then ok
+else bad "the install intent did not register the adapter"; fi
+
+# f2) Eine Absicht, die NICHT durchlaeuft, bleibt liegen -- und sagt warum.
+#
+# Zwischen dem Kopieren der Module und dem Schreiben des Profils liegen mehrere
+# Schritte auf einem jffs2-Overlay. Faellt dazwischen der Strom, waere die
+# Haelfte getan; loeschte run-intent die Marke anhand des Rueckgabewerts,
+# versuchte es der naechste Boot nie wieder und die Oberflaeche verspraeche
+# weiter "wirksam nach dem naechsten Neustart".
+#
+# Nachgestellt wird das ueber die einzige Bedingung, die der Hosttest wirklich
+# herbeifuehren kann: eine Nutzlast, die nicht (mehr) da ist.
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" uninstall aic8800 >/dev/null 2>&1
+mv "$WORK/root/etc/machino/payload/aic8800/aic8800.ko" "$WORK/aic8800.ko.parked"
+echo install > "$WORK/root/etc/machino/device-intent-aic8800"
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" run-intent > "$WORK/out" 2>&1
+if [ -f "$WORK/root/etc/machino/device-intent-aic8800" ]; then ok
+else bad "a failed intent was consumed - the next boot would never retry it"; fi
+if [ -s "$WORK/root/etc/machino/device-intent-aic8800.failed" ]; then ok
+else bad "a failed intent left no reason behind"; fi
+if real_adapter_scan "$WORK/root" t40nn | grep -q "$PROF"; then
+    bad "a half-done install still registered the profile - OpenIPC would offer an adapter that cannot load"
+else ok; fi
+
+# ... und derselbe Intent laeuft durch, sobald die Ursache weg ist. Ohne das
+# waere "bleibt liegen" nur eine andere Art, stecken zu bleiben.
+mv "$WORK/aic8800.ko.parked" "$WORK/root/etc/machino/payload/aic8800/aic8800.ko"
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" run-intent > "$WORK/out" 2>&1
+if [ -f "$WORK/root/etc/machino/device-intent-aic8800" ]; then
+    bad "the retry did not consume the intent"
+else ok; fi
+if [ -f "$WORK/root/etc/machino/device-intent-aic8800.failed" ]; then
+    bad "the failure marker survived a successful retry - the UI would keep showing it"
+else ok; fi
+if real_adapter_scan "$WORK/root" t40nn | grep -q "$PROF"; then ok
+else bad "the retry did not register the adapter"; fi
+
+# g) Der Profilname steht NUR im Manifest. Jede weitere Kopie im ausgelieferten
+#    Paket ist die naechste stille Drift -- genau die, die uns sechs Kopien in
+#    vier Dateien eingebracht hat.
+hits=$(grep -rl "$PROF" "$PKG" 2>/dev/null | grep -v '/devices/aic8800.manifest$' || true)
+if [ -z "$hits" ]; then ok
+else bad "the profile name is hardcoded outside the manifest: $hits"; fi
+
+# h) Das vollstaendige uninstall.sh -- und NUR das -- raeumt auch die Nutzlast.
+run_uninstall || bad "uninstall failed: $(cat "$WORK/out")"
+if [ -d "$WORK/root/etc/machino/payload" ]; then
+    bad "the full uninstall left the payload behind"
+else ok; fi
+if [ -f "$WORK/root/etc/init.d/S39machinodev" ]; then
+    bad "the full uninstall left S39machinodev behind"
+else ok; fi
+if cmp -s "$WORK/root/etc/wireless/usb" "$WORK/wireless-usb.orig"; then ok
+else bad "the full uninstall did not restore /etc/wireless/usb byte for byte"; fi
 
 if [ "$SKIP" -gt 0 ]; then
     echo "openipc install tests: $PASS passed, $FAIL failed, $SKIP skipped"

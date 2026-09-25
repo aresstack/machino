@@ -91,6 +91,8 @@ mit, sagt der Installer das, statt eine Auswahl anzubieten, die nichts tut.
     ./install.sh --usb-mode=cellular         zusaetzlich usb.mode = cellular
     ./install.sh --without-wifi-payload      Treiber/Firmware/hostapd weglassen
     ./install.sh --without-cellular-payload  Modem-Module und Helfer weglassen
+    ./install.sh --with-device-page          Menueeintrag "Geraete (machino)"
+    ./install.sh --with-network-page         Menueeintrag "Netzwerk & USB (machino)"
 
 Ohne `--usb-mode` bleibt stehen, was in der Datei steht: eine Neuinstallation
 ueber eine bestehende hinweg setzt die Wahl des Betreibers nicht zurueck.
@@ -106,6 +108,30 @@ dessen Treiber nicht installiert ist.
 damit bestehende Installationsbefehle nicht brechen. `--with-access-point` wird
 noch angenommen und ignoriert; hostapd gehoert zur Standard-Nutzlast.
 `hostapd_cli` wird nicht mitgeliefert -- machino spricht den ctrl-Socket selbst.
+
+Die beiden Seitenschalter sind **aus**, und zwar auf jedem Weg -- auch beim
+Deploy ueber `machino-manager install`. Das ist eine Architekturgrenze:
+
+> OpenIPC bleibt unveraendert. Majestic raus, Machino rein.
+
+Eine `<li>`-Zeile in `p/header.cgi` ist eine Aenderung an der OpenIPC-WebUI,
+auch wenn sie markiert ist und der Deinstallierer sie byteweise zuruecknimmt.
+Machino liefert seine Seiten selbst aus und bleibt damit von den Dateien des
+Wirtssystems getrennt:
+
+    http://<kamera>/machino/devices     Geraetemanager
+    http://<kamera>/machino/net         Netzwerk & USB
+
+`--with-network-page` / `--with-device-page` (bzw. `machino-manager install
+--with-pages`) bleiben als **ausdrueckliche Entscheidung** dessen erhalten, der
+installiert. Sollte OpenIPC einmal einen echten Erweiterungspunkt fuer
+Menueeintraege anbieten, gehoert die Integration dorthin -- nicht in ein `awk`
+auf eine fremde Datei.
+
+Fehlt die WLAN-Nutzlast, ohne dass `--without-wifi-payload` angegeben wurde,
+**bricht der Installer ab**. Frueher lief er weiter und meldete "0 module(s)":
+das Profil stand dann in `/etc/wireless/usb`, die Module fehlten, `adapter_scan`
+verwarf es stillschweigend, und im Dropdown stand weiter "None".
 
 Ein `S42wifi` aus einer aelteren Installation wird beim Installieren
 **entfernt**. Es liefe sonst neben `S42usb`, laese noch `usb.wifi.enabled` und
@@ -129,8 +155,12 @@ niemals selbst ein Programm.
 | `/usr/sbin/machino-usb-helper` | reads `usb.mode` at boot and brings up the selected stack |
 | `/usr/sbin/machino-wifi-role` | owns wlan0 and switches between station and access point |
 | `/usr/sbin/machino-cellular-helper` | starts the modem's data path (DHCP or pppd) |
+| `/usr/sbin/machino-device` | registers a device with the host: payload -> `/lib/modules`, profile -> `/etc/wireless/usb` |
 | `/etc/machino/machino.conf` | your configuration (kept on upgrades) |
 | `/etc/machino/modules/` | the WiFi and modem kernel modules |
+| `/etc/machino/payload/<id>/` | the kernel modules this release carries. **Survives the device manager's "uninstall"** -- only `uninstall.sh` removes them |
+| `/etc/machino/devices/<id>.manifest` | the one source for a device's profile name, module order and USB id |
+| `/etc/init.d/S39machinodev` | executes a pending install/remove intent at boot, before `S40network` |
 | `/etc/machino/ppp/` | generated pppd options and chat script (0600 — carries the APN password) |
 | `/etc/ppp/ip-up`, `/etc/ppp/ip-down` | tell machino which interface a PPP call got |
 | `/etc/machino/streamer` | which service is selected; survives a reboot |
@@ -139,6 +169,38 @@ niemals selbst ein Programm.
 | `/etc/init.d/machino` | start/stop for Machino |
 | `/etc/init.d/S95streamer` | starts the selected service at boot |
 | `/etc/init.d/majestic` | Majestic's original init script, moved out of the boot slot |
+
+### Der Gerätemanager und OpenIPC
+
+`/machino/devices` richtet **Hardwareunterstützung** ein, es konfiguriert kein
+WLAN. Der Unterschied ist der Befund vom 2026-09-25: der AIC8800-Treiber war
+gebaut, ausgeliefert und lief auf der Kamera — und OpenIPCs Netzwerkseite bot
+trotzdem nur „None" an. Sie sucht nämlich woanders:
+
+* `www/cgi-bin/network.cgi` (`adapter_scan`) parst `/etc/wireless/{usb,sdio,modem}`
+  auf Blöcke `if [ "$1" = "<id>" ]`, zieht die **`modprobe`-Namen** heraus und
+  bietet ein Profil nur an, wenn jedes dieser Module als `.ko` unter
+  `/lib/modules` liegt. Ein `insmod <pfad>` ist für den Scanner unsichtbar.
+* `/etc/init.d/S40network` liest `wlandev` aus dem U-Boot-Env und ruft
+  `/etc/wireless/usb "$wlandev"`.
+
+Deshalb trennt Machino **Nutzlast** und **Registrierung**:
+
+```
+/etc/machino/payload/aic8800/   die Module   -- überleben jedes Deinstallieren
+/lib/modules/<ver>/machino/     Registrierung -- kommt und geht
+/etc/wireless/usb               das Profil    -- kommt und geht
+```
+
+Ablauf: **Installieren** merkt die Absicht nur vor (`machinod` darf bei lebendem
+IMP nicht forken, also kein `depmod` zur Laufzeit), `S39machinodev` führt sie
+beim nächsten Boot aus, und danach steht der Adapter auf der **unveränderten**
+OpenIPC-Seite *Network* unter „Wireless Adapter" zur Auswahl. Verbunden wird das
+WLAN weiterhin dort.
+
+**Deinstallieren im Gerätemanager entfernt nur die Registrierung.** Die Module
+bleiben liegen, damit ein späteres Installieren ohne neues Bundle möglich ist —
+eine frühere Fassung löschte sie mit und war damit eine Einbahnstraße.
 
 **Why Majestic's init script is moved:** OpenIPC's `rcS` runs every
 `/etc/init.d/S??*` without checking the executable bit, so `chmod -x` does not

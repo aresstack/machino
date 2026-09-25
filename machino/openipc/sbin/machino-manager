@@ -2,7 +2,7 @@
 # machino-manager: one idempotent control surface for tools (the Cam-Tool) and
 # humans. It hides which files Machino owns behind three operations:
 #
-#   machino-manager install [--owner NAME] [--platform P]
+#   machino-manager install [--owner NAME] [--platform P] [--with-pages]
 #   machino-manager uninstall [--owner NAME] [--force]
 #   machino-manager status            # machine-readable JSON on stdout
 #
@@ -126,11 +126,14 @@ EOF
 }
 
 cmd_install() {
-    owner=cam-tool; platform=""
+    owner=cam-tool; platform=""; pages=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --owner)    shift; owner="${1:-cam-tool}" ;;
             --platform) shift; platform="${1:-}" ;;
+            # Ausdrueckliche Option, NICHT der Normalfall: siehe die
+            # Begruendung an der Aufrufstelle weiter unten.
+            --with-pages) pages=1 ;;
             *) die "install: unknown option '$1'" ;;
         esac
         shift
@@ -155,7 +158,27 @@ cmd_install() {
         running && die "machino is still running and would not stop; cannot replace its binary"
     fi
 
-    MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" || die "install.sh failed"
+    # KEINE Menueeintraege im Normalfall. Das ist eine Architekturgrenze, keine
+    # Vorsichtsmassnahme:
+    #
+    #   OpenIPC bleibt unveraendert. Majestic raus, Machino rein.
+    #
+    # Eine <li>-Zeile in p/header.cgi ist eine Aenderung an der OpenIPC-WebUI,
+    # auch wenn sie markiert ist und der Deinstallierer sie byteweise wieder
+    # zuruecknimmt. Machino liefert seine Seiten selbst aus und bleibt damit
+    # von den Dateien des Wirtssystems getrennt:
+    #
+    #   http://<kamera>/machino/devices
+    #   http://<kamera>/machino/net
+    #
+    # --with-pages gibt es weiterhin, als ausdrueckliche Entscheidung dessen,
+    # der installiert. Sollte OpenIPC einmal einen echten Erweiterungspunkt
+    # fuer Menueeintraege anbieten, gehoert die Integration dorthin -- nicht in
+    # ein sed auf eine fremde Datei.
+    _pageopts=""
+    [ "$pages" = "1" ] && _pageopts="--with-network-page --with-device-page"
+    # shellcheck disable=SC2086 -- zwei feste Schalter, kein Benutzertext
+    MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" $_pageopts || die "install.sh failed"
 
     # install.sh has placed the on-camera control surface (machino-manager) and
     # a stored uninstaller under $STATE_DIR already.
@@ -259,7 +282,11 @@ case "${1:-}" in
     -h|--help|"")
         cat >&2 <<EOF
 usage: machino-manager <command>
-  install [--owner NAME] [--platform P]
+  install [--owner NAME] [--platform P] [--with-pages]
+            --with-pages: also add the machino entries to the stock WebUI
+            menu. OFF by default - the deploy does not touch OpenIPC's
+            files. The pages are reachable at /machino/net and
+            /machino/devices either way.
   uninstall [--owner NAME] [--force]
   status        machine-readable JSON: state = OFF|ON|BROKEN|EXTERNAL
 EOF

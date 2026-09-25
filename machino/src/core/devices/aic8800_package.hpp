@@ -8,14 +8,20 @@
 // unter /etc/machino/modules und wurden per insmod geladen -- funktionierend,
 // aber fuer das Wirtssystem unsichtbar.
 //
+// Was dieses Geraet AUSMACHT -- Profilname, Module, USB-Id, Portmodus -- steht
+// nicht hier, sondern im Manifest, das auch die Shell-Helfer lesen (siehe
+// device_manifest.hpp). Diese Klasse haelt nur die Regeln, nicht die Namen.
+//
 // Lesen tut dieses Paket selbst. Schreiben NICHT: das Einrichten braucht
 // depmod, und machinod darf bei lebendem IMP nicht forken (docs/evidence.md,
 // OOM vom 2026-09-22). install()/uninstall() hinterlegen deshalb nur eine
-// Absicht; ausgefuehrt wird sie vom externen Helfer beim naechsten Boot.
+// Absicht; ausgefuehrt wird sie vom externen Helfer beim naechsten Boot
+// (machino-device run-intent).
 #pragma once
 
 #include <string>
 
+#include "core/devices/device_manifest.hpp"
 #include "core/devices/device_package.hpp"
 
 namespace machino { namespace devices {
@@ -27,9 +33,13 @@ public:
     explicit Aic8800Package(std::string root = std::string());
 
     std::string id() const override { return "aic8800"; }
-    std::string title() const override { return "AIC8800DC WLAN"; }
+    std::string title() const override;
 
-    bool is_supported() const override { return true; }
+    // Ohne Manifest ist das Geraet nicht beschrieben: dann gibt es keinen
+    // Profilnamen, den man eintragen koennte, und "nicht unterstuetzt" ist die
+    // ehrliche Antwort. Bewusst kein einkompilierter Ersatzname -- der waere
+    // die zweite Quelle, die dieses Manifest gerade abgeschafft hat.
+    bool is_supported() const override { return mf_.loaded; }
     bool is_available() const override;
     bool is_installed() const override;
     bool is_hardware_present() const override;
@@ -39,17 +49,18 @@ public:
     Result uninstall() override;
     DeviceStatus status() const override;
 
-    // Das Profil, das der Installer in /etc/wireless/usb eintraegt. Oeffentlich,
-    // weil Helfer und Tests denselben Namen meinen muessen wie der Installer --
-    // ein zweiter Ort fuer diese Zeichenkette waere der naechste Fehler dieser
-    // Art.
-    static const char* profile_id() { return "aic8800-t40-machino"; }
+    // Das Profil, das machino-device in /etc/wireless/usb eintraegt -- aus dem
+    // Manifest, nicht aus dem Quelltext. Leer, wenn kein Manifest da ist.
+    const std::string& profile_id() const { return mf_.openipc_profile; }
+    const DeviceManifest& manifest() const { return mf_; }
 
 private:
     std::string root_;
+    DeviceManifest mf_;
 
     std::string intent_path() const;
     std::string read_intent() const;
+    std::string read_intent_failure() const;
 };
 
 }} // namespace machino::devices

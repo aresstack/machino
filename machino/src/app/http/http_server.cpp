@@ -1,5 +1,6 @@
 #include "app/http/http_server.hpp"
 #include "app/http/netui.hpp"
+#include "app/http/devui.hpp"
 #include "app/compat/majestic_webui.hpp"
 #include "app/webrtc/peer.hpp"
 #include "app/http/fmp4.hpp"
@@ -461,6 +462,18 @@ bool HttpServer::handle_request(Client& c) {
         else {
             const bool ok = queue(c, response(200, "text/html; charset=utf-8",
                                               std::string(machino_net_page(), machino_net_page_len()),
+                                              req.keep_alive));
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
+        }
+    } else if (net_api_ && (path == "/machino/devices" || path == "/machino/devices/")) {
+        // Die Geraeteseite. Dieselbe Bedingung wie bei /machino/net: nur
+        // ausliefern, wenn die API dahinter verdrahtet ist -- eine Seite,
+        // deren jeder Knopf 404 antwortet, ist schlimmer als keine Seite.
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else {
+            const bool ok = queue(c, response(200, "text/html; charset=utf-8",
+                                              std::string(machino_devices_page(), machino_devices_page_len()),
                                               req.keep_alive));
             if (!req.keep_alive) c.close_after_flush = true;
             return ok;
