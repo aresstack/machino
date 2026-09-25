@@ -1414,6 +1414,32 @@ else bad "re-installing from the kept payload did not restore the profile"; fi
 if [ "$(MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" status aic8800)" = "registered" ]; then ok
 else bad "status after re-installing is not 'registered'"; fi
 
+# e2) Der Modulindex OHNE depmod. Diese Kamera hat keines (gemessen am
+#     2026-09-26: busybox ohne depmod-Applet, die Registrierung scheiterte auf
+#     echter Hardware genau hier). machino-device schreibt die Zeilen selbst:
+#     busybox-modprobe liest nichts als modules.dep, Pfade relativ zu
+#     /lib/modules/<ver>, hinter dem Doppelpunkt die Abhaengigkeiten in
+#     Ladereihenfolge (aic8800 braucht aic_load_fw).
+MDEP=$(find "$WORK/root/lib/modules" -name modules.dep | head -1)
+if [ -n "$MDEP" ]; then ok; else bad "no modules.dep was written without depmod"; fi
+if grep -q '^machino/aic_load_fw\.ko:$' "$MDEP"; then ok
+else bad "modules.dep has no entry for aic_load_fw"; fi
+if grep -q '^machino/aic8800\.ko: machino/aic_load_fw\.ko$' "$MDEP"; then ok
+else bad "modules.dep does not give aic8800 its aic_load_fw dependency"; fi
+# Doppelt registrieren stapelt keine Zeilen.
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" install aic8800 >/dev/null 2>&1
+if [ "$(grep -c '^machino/aic8800\.ko:' "$MDEP")" = "1" ]; then ok
+else bad "re-registering duplicated the modules.dep entry"; fi
+# Deregistrieren raeumt die Zeilen wieder ab -- und NUR sie.
+printf 'kernel/net/foo.ko:\n' >> "$MDEP"
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" uninstall aic8800 >/dev/null 2>&1
+if grep -q '^machino/' "$MDEP"; then bad "deregistering left machino lines in modules.dep"
+else ok; fi
+if grep -q '^kernel/net/foo\.ko:$' "$MDEP"; then ok
+else bad "deregistering ate a foreign modules.dep line"; fi
+# ... und fuer die restlichen Pruefungen wieder registrieren.
+MACHINO_ROOT="$WORK/root" sh "$WORK/root/usr/sbin/machino-device" install aic8800 >/dev/null 2>&1
+
 # f) run-intent fuehrt aus, was machinod hinterlegt hat, und raeumt die Marke
 #    weg. Das ist der ganze Grund, warum machinod nicht selbst forkt.
 echo remove > "$WORK/root/etc/machino/device-intent-aic8800"

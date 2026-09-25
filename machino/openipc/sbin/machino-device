@@ -79,36 +79,93 @@ kmod_dir() {
     printf '%s' "${_kd%/}/machino"
 }
 
-# depmod nur auf dem echten Geraet: mit gesetztem ROOT (Hosttests) wuerde ein
-# nacktes `depmod -a` den Modulbaum des Entwicklerrechners anfassen.
+# Den Modulindex nachfuehren. depmod, wenn es eines gibt -- diese Kamera HAT
+# KEINES (gemessen am 2026-09-26: busybox ohne depmod-Applet, die Registrierung
+# scheiterte daran auf echter Hardware). Dann schreiben wir die Zeilen selbst:
+# busybox-modprobe liest nichts als modules.dep, und dessen Format ist eine
+# Zeile je Modul, Pfad relativ zu /lib/modules/<ver>, nach dem Doppelpunkt die
+# Abhaengigkeiten. Unsere Abhaengigkeiten KENNEN wir -- das Manifest nennt die
+# payload_modules in Ladereihenfolge, also haengt jedes Modul von seinen
+# Vorgaengern ab (aic8800 braucht aic_load_fw; mehr Wissen hat auch depmod
+# nicht, es liest es nur aus den Symbolen).
 #
 # Und der Ausgang ZAEHLT. Frueher stand hier ein `|| warn` -- die Registrierung
 # galt dann trotzdem als gelungen, OpenIPCs Dropdown bot den Adapter an
 # (adapter_scan prueft nur, dass die .ko-Dateien existieren), und beim naechsten
 # Boot scheiterte `modprobe aic_load_fw` an einer modules.dep, die davon nichts
-# weiss. Also: schlaegt depmod fehl oder fehlt es, ist das Einrichten
+# weiss. Also: geht weder depmod noch der eigene Eintrag, ist das Einrichten
 # fehlgeschlagen. Lieber "nicht installiert" als ein Eintrag, der beim Booten
 # nicht traegt.
-run_depmod() {
-    [ -z "$ROOT" ] || return 0
-    command -v depmod >/dev/null 2>&1 || {
-        warn "no depmod on this camera - modprobe could not resolve the modules"
-        return 1
-    }
-    depmod -a >/dev/null 2>&1 || { warn "depmod failed"; return 1; }
+#
+# Mit gesetztem ROOT (Hosttests) laeuft NIE depmod -- ein nacktes `depmod -a`
+# fasste den Modulbaum des Entwicklerrechners an. Der Zeilen-Fallback dagegen
+# schreibt nur in den Wegwerfbaum und ist dort genau das, was der Test
+# beweisen soll.
+index_write() {
+    _mods=$1
+    _dep=$(dirname "$(kmod_dir)")/modules.dep
+    [ -f "$_dep" ] || : > "$_dep" 2>/dev/null || { warn "cannot create $_dep"; return 1; }
+    awk -v mods=" $_mods " '
+        index($0, "machino/") == 1 {
+            mod = $0; sub(/^machino\//, "", mod); sub(/\.ko:.*/, "", mod)
+            if (index(mods, " " mod " ") > 0) next
+        }
+        { print }
+        END {
+            n = split(mods, m, " ")
+            pfx = ""
+            for (i = 1; i <= n; i++) {
+                if (m[i] == "") continue
+                print "machino/" m[i] ".ko:" pfx
+                pfx = pfx " machino/" m[i] ".ko"
+            }
+        }
+    ' "$_dep" > "$_dep.machino-new" 2>/dev/null &&
+        mv -f "$_dep.machino-new" "$_dep" || {
+            rm -f "$_dep.machino-new"
+            warn "cannot write $_dep"
+            return 1
+        }
     return 0
+}
+
+index_remove() {
+    _mods=$1
+    _dep=$(dirname "$(kmod_dir)")/modules.dep
+    [ -f "$_dep" ] || return 0
+    awk -v mods=" $_mods " '
+        index($0, "machino/") == 1 {
+            mod = $0; sub(/^machino\//, "", mod); sub(/\.ko:.*/, "", mod)
+            if (index(mods, " " mod " ") > 0) next
+        }
+        { print }
+    ' "$_dep" > "$_dep.machino-new" 2>/dev/null &&
+        mv -f "$_dep.machino-new" "$_dep" || {
+            rm -f "$_dep.machino-new"
+            return 1
+        }
+    return 0
+}
+
+run_depmod() {
+    _mods=$1
+    if [ -z "$ROOT" ] && command -v depmod >/dev/null 2>&1; then
+        depmod -a >/dev/null 2>&1 || { warn "depmod failed"; return 1; }
+        return 0
+    fi
+    [ -n "$ROOT" ] || warn "no depmod on this camera - writing the module index by hand"
+    index_write "$_mods"
 }
 
 # Die Gegenprobe zu depmod: steht unser Modul wirklich im Index? Das ist die
 # Frage, die modprobe beim Booten stellt -- der Rueckgabewert von depmod ist
 # nur die Behauptung, dass es geklappt hat.
 #
-# Nur auf dem echten Geraet. Im Hosttest laeuft depmod bewusst nicht, dort
-# gaebe es keine modules.dep zu pruefen.
+# Auch im Hosttest: seit dem Zeilen-Fallback gibt es dort eine modules.dep im
+# Wegwerfbaum, und genau deren Inhalt soll der Test beweisen.
 depmod_knows() {
-    [ -z "$ROOT" ] || return 0
     _dep=$(dirname "$(kmod_dir)")/modules.dep
-    [ -f "$_dep" ] || { warn "no $_dep after depmod"; return 1; }
+    [ -f "$_dep" ] || { warn "no $_dep after indexing"; return 1; }
     for _m in $1; do
         grep -q "/$_m\.ko:" "$_dep" || {
             warn "$_m.ko is not in modules.dep - modprobe would not find it"
@@ -207,7 +264,7 @@ dev_install() {
     # stuende bei einem depmod-Fehler ein Profil in /etc/wireless/usb, das die
     # OpenIPC-Seite anbietet und das beim Booten nicht laedt -- also genau die
     # stille Halbinstallation, die dieses Skript verhindern soll.
-    run_depmod        || { warn "$_id: not registering - the module index could not be rebuilt"; return 1; }
+    run_depmod "$_pay" || { warn "$_id: not registering - the module index could not be rebuilt"; return 1; }
     depmod_knows "$_pay" || { warn "$_id: not registering - the module index does not list it"; return 1; }
     profile_install "$_prof" "$_mods" || return 1
     say "$_id registered: $_n module(s) in $_dst, profile $_prof"
@@ -226,11 +283,15 @@ dev_uninstall() {
     _dst=$(kmod_dir)
     for _mod in $_pay; do rm -f "$_dst/$_mod.ko"; done
     rmdir "$_dst" 2>/dev/null || true
-    # Hier ist ein depmod-Fehler KEIN Grund zu scheitern: die Dateien sind schon
+    # Hier ist ein Index-Fehler KEIN Grund zu scheitern: die Dateien sind schon
     # weg, der Rueckbau ist also getan. Liesse man die Absicht deswegen liegen,
     # versuchte es jeder Boot aufs Neue und die Oberflaeche meldete ewig
     # "wird beim Neustart entfernt".
-    run_depmod || warn "$_id: depmod failed after removal - the index may still list the modules"
+    if [ -z "$ROOT" ] && command -v depmod >/dev/null 2>&1; then
+        depmod -a >/dev/null 2>&1 || warn "$_id: depmod failed after removal - the index may still list the modules"
+    else
+        index_remove "$_pay" || warn "$_id: the index may still list the removed modules"
+    fi
 
     # Ein wlandev, das auf das entfernte Profil zeigt, waere schlimmer als
     # nichts: S40network faende keinen Zweig und liesse die Kamera ohne eth0.
