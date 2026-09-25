@@ -1469,26 +1469,40 @@ else bad "the full uninstall did not restore /etc/wireless/usb byte for byte"; f
 # Erzeugt wird so eine Konfiguration von der majestic.yaml-Migration, die gar
 # keinen Boardbegriff kennt, und danach von jedem Upgrade weitergetragen, weil
 # eine vorhandene machino.conf bewusst nicht ueberschrieben wird.
+#
+# Geprueft wird install.sh DIREKT: es geht um das Schreiben der Konfiguration,
+# nicht um die Umschaltung des Streamers, die der Manager danach macht.
 # ---------------------------------------------------------------------------
 make_bundle; make_camera auto
+R="$WORK/root"
 mkdir -p "$R/etc/machino"
 printf '# migriert aus majestic.yaml\nvideo.0.fps = 20\nrtsp.port = 554\n' > "$R/etc/machino/machino.conf"
-( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --minimal ) >"$WORK/out" 2>&1 ||
-    bad "install over a board-less config exited non-zero: $(cat "$WORK/out")"
+run_install || bad "install over a board-less config exited non-zero: $(cat "$WORK/out")"
 if grep -qE '^[[:space:]]*board[[:space:]]*=' "$R/etc/machino/machino.conf"; then ok
 else bad "install left a config with no hardware selection - the daemon would refuse to start"; fi
 if grep -q 'rtsp.port = 554' "$R/etc/machino/machino.conf"; then ok
 else bad "adding the board line destroyed the existing settings"; fi
 
-# Eine Konfiguration, die schon eine Auswahl hat, wird nicht angefasst.
+# Eine Konfiguration, die schon eine Auswahl hat, wird nicht angefasst -- auch
+# nicht um eine zweite board-Zeile ergaenzt.
 make_bundle; make_camera auto
+R="$WORK/root"
 mkdir -p "$R/etc/machino"
 printf 'board = eigenes-profil\nrtsp.port = 555\n' > "$R/etc/machino/machino.conf"
-( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --minimal ) >"$WORK/out" 2>&1 ||
-    bad "install over an explicit config exited non-zero: $(cat "$WORK/out")"
+run_install || bad "install over an explicit config exited non-zero: $(cat "$WORK/out")"
 if [ "$(grep -c '^board' "$R/etc/machino/machino.conf")" = 1 ] &&
    grep -q '^board = eigenes-profil' "$R/etc/machino/machino.conf"; then ok
 else bad "an existing board selection was overwritten or duplicated"; fi
+
+# Auch platform= allein genuegt -- dann fasst install.sh nichts an.
+make_bundle; make_camera auto
+R="$WORK/root"
+mkdir -p "$R/etc/machino"
+printf 'platform = ingenic-t40nn\nsensor.model = imx307\n' > "$R/etc/machino/machino.conf"
+run_install || bad "install over a platform-only config exited non-zero: $(cat "$WORK/out")"
+if grep -qE '^[[:space:]]*board[[:space:]]*=' "$R/etc/machino/machino.conf"; then
+    bad "install added a board line although platform was already set"
+else ok; fi
 
 if [ "$SKIP" -gt 0 ]; then
     echo "openipc install tests: $PASS passed, $FAIL failed, $SKIP skipped"
