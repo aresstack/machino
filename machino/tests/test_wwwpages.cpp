@@ -29,7 +29,7 @@ std::string slurp(const char* rel)
 {
     // Vom Repo-Wurzelverzeichnis oder aus machino/ heraus gestartet -- beide
     // Arbeitsverzeichnisse kommen in CI und lokal vor.
-    for (const std::string base : {std::string(""), std::string("machino/")}) {
+    for (const std::string& base : {std::string(""), std::string("machino/")}) {
         FILE* f = std::fopen((base + rel).c_str(), "rb");
         if (!f) continue;
         std::string out;
