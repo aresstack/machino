@@ -79,6 +79,12 @@ size_t relay_head_end(const std::string& buf, size_t& sep_len);
 // corrupt HTML from a future WebUI.
 std::string inject_machino_nav(const std::string& html, bool& changed);
 
+// Eine native Karte "USB network hardware" in OpenIPCs network.cgi einsetzen,
+// direkt neben "Wireless adapter". Fail-closed: unbekannte Struktur ->
+// unveraendert zurueck, changed bleibt false. Nichts unter /var/www wird
+// angefasst; nur die durchgereichte HTTP-Antwort.
+std::string inject_machino_network_cards(const std::string& html, bool& changed);
+
 // True when a relayed head is a plain HTML page safe to buffer for injection:
 // Content-Type text/html and NOT chunked (we do not parse chunk framing). Query
 // only, never rewrites.

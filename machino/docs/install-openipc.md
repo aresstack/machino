@@ -141,10 +141,22 @@ laedte auf einer auf Mobilfunk gestellten Kamera trotzdem den WLAN-Treiber.
 
 Beides sind ROLLEN desselben Funkmoduls, keine gleichzeitigen Betriebsarten.
 Der AIC8800 macht daraus im Treiber einen `change_if`, und es gibt genau einen
-Besitzer von wlan0: `/usr/sbin/machino-wifi-role`. machino schreibt seine
-Absicht nach `/etc/machino/wifi-role` (`station` | `ap` | `off`), der
-Supervisor setzt sie um. So startet der Prozess mit der grossen IMP-Pipeline
-niemals selbst ein Programm.
+Besitzer von wlan0 pro Rolle:
+
+* **Station** gehoert OpenIPC. SSID, Passwort und Adresse konfiguriert die
+  OpenIPC-Netzwerkseite (Karte "Wireless adapter"), `S40network`/`ifup`
+  startet den wpa_supplicant. Machino stellt nur die Hardware bereit:
+  Treiber registrieren (`machino-device`), Portstrom schalten, `wlan0`
+  anlegen (`machino-usb-helper wifi-attach`, seit 2026-09-25 hardware-only).
+* **Access Point** gehoert Machino, weil OpenIPC dafuer nichts hat:
+  `/usr/sbin/machino-wifi-role` startet hostapd, wenn in
+  `/etc/machino/wifi-role` `ap` steht. Nur dann laeuft der Supervisor
+  ueberhaupt -- zwei Supplicants auf demselben Interface waren der
+  Doppelbesitzer-Befund vom 2026-09-25.
+
+machino schreibt seine Absicht nach `/etc/machino/wifi-role`, der Supervisor
+setzt sie um. So startet der Prozess mit der grossen IMP-Pipeline niemals
+selbst ein Programm.
 
 ### What gets installed
 
@@ -153,7 +165,7 @@ niemals selbst ein Programm.
 | `/usr/bin/machino` | the daemon |
 | `/usr/sbin/streamerctl` | the selector — the only thing that switches services |
 | `/usr/sbin/machino-usb-helper` | reads `usb.mode` at boot and brings up the selected stack |
-| `/usr/sbin/machino-wifi-role` | owns wlan0 and switches between station and access point |
+| `/usr/sbin/machino-wifi-role` | runs the access-point role (hostapd); station Wi-Fi belongs to OpenIPC's own network page |
 | `/usr/sbin/machino-cellular-helper` | starts the modem's data path (DHCP or pppd) |
 | `/usr/sbin/machino-device` | registers a device with the host: payload -> `/lib/modules`, profile -> `/etc/wireless/usb` |
 | `/etc/machino/machino.conf` | your configuration (kept on upgrades) |

@@ -155,6 +155,36 @@ Regeln, die `tests/test_wwwpages.cpp` erzwingt: kein eigenes
 `.row{display:flex}` zerlegt Bootstraps Grid), Seitenskript als IIFE (wegen
 `function $` in main.js), API-Pfade absolut.
 
+## Die Zerlegung (2026-09-25/26) und der Architekturschnitt WLAN
+
+Die eine "Network & USB"-Seite (15 Karten, und ein zweites "Network" direkt
+unter OpenIPCs eigenem Menuepunkt) ist in Seiten je Thema zerlegt: **USB**
+(der eine Port: Rolle, Portstrom, Host, gesteckte Geraete), **Cellular**,
+**Uplinks**, dazu der **Device Manager**. Vier Menueeintraege, injiziert nach
+dem Stock-Eintrag "Network".
+
+**Keine Machino-Wi-Fi-Seite.** Station-WLAN (SSID, Passwort, Adresse)
+konfiguriert OpenIPCs eigene Netzwerkseite: `adapter_scan` in `network.cgi`
+listet jedes Profil aus `/etc/wireless/usb`, dessen Module unter
+`/lib/modules` liegen — genau dort registriert `machino-device` den AIC8800
+(`openipc_profile` aus dem Manifest). Danach waehlt man den Adapter im
+Stock-Dropdown, `S40network`/`ifup` startet den wpa_supplicant. Der fruehere
+Weg (Machino-Seite mit eigenem Supplicant) war ein Doppelbesitzer von
+`wlan0`: das `/etc/wireless/usb`-Profil startete den Rollen-Supervisor UND
+S40network machte danach `ifup wlan0` — zwei Supplicants, gemessen als
+Architekturbefund am 2026-09-25. Seitdem ist `machino-usb-helper wifi-attach`
+hardware-only (Module, Portstrom PB18/GPIO50 = 3,3-V-Transistor auf VBUS,
+`wlan0` hoch), und der Rollen-Supervisor startet nur noch fuer die AP-Rolle.
+
+**Karten-Injektion statt Seiten-Kopie.** Auf `network.cgi` setzt der Relay
+serverseitig eine native Karte "USB network hardware" neben "Wireless
+adapter" (`inject_machino_network_cards` in `http_parse.cpp`): keine Datei
+unter `/var/www` wird angefasst, nur die durchgereichte Antwort. Fail-closed:
+unbekannte Struktur → Seite unveraendert, nur die Karte fehlt. Dafuer puffert
+der Relay GENAU diese Seite ganz (`max_page_transform_bytes`), weil der Anker
+(`<details class="mj-advanced">`) tief in der ~52-KB-Seite liegt — das
+48-KB-Navbar-Fenster reicht dort nicht.
+
 ## Was hier NICHT steht
 
 Ob andere OpenIPC-Varianten (ultimate, fpv) dieselben Pfade und dieselbe

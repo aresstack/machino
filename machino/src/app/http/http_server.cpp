@@ -210,6 +210,10 @@ struct HttpServer::Client {
     // is held in relay_saved_head until the body is buffered and rewritten.
     bool        relay_inject = false;
     bool        relay_get = false;  // only GET pages are buffered for injection
+    // Karten-Injektion (network.cgi): der Anker liegt tief in der Seite, also
+    // wird der GANZE Body gepuffert und erst am Upstream-EOF transformiert.
+    // Ohne dieses Flag gilt das bewaehrte begrenzte Fenster fuer die Navbar.
+    bool        relay_inject_cards = false;
     std::string relay_saved_head;   // original upstream head, kept until injection
     std::string relay_inject_buf;   // the html body, accumulated
 };
@@ -766,6 +770,9 @@ bool HttpServer::relay_upstream(Client& c, const Request& req) {
     c.relay_saved_head.clear();
     c.relay_inject_buf.clear();
     c.relay_get = (req.method == "GET");
+    // Nur fuer die eine bekannte Seite; alles andere behaelt den schnellen
+    // Fenster-Pfad. Der Query-Teil ist egal (req.path ist ohne Query).
+    c.relay_inject_cards = (c.relay_get && req.path == "/cgi-bin/network.cgi");
     c.keep_alive_wanted = req.keep_alive;
     const int64_t now = now_ms();
     c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
@@ -823,7 +830,8 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
             // per request - only the expensive half is reused.
             c.relay_head.clear(); c.relay_head_done = false;
             c.relay_keep = false; c.relay_body_len = 0; c.relay_body_seen = 0;
-            c.relay_inject = false; c.relay_saved_head.clear(); c.relay_inject_buf.clear();
+            c.relay_inject = false; c.relay_inject_cards = false;
+            c.relay_saved_head.clear(); c.relay_inject_buf.clear();
             c.relay_total = 0;
             return true;
         }
@@ -911,10 +919,22 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
             if (c.relay_inject) {
                 bool did = false;
                 std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
-                const std::string& emit = did ? merged : c.relay_inject_buf;
-                if (!emit.empty() && !queue(c, emit, cfg_.max_out_buffer + sizeof buf)) return false;
+                std::string emit = did ? std::move(merged) : c.relay_inject_buf;
+                if (c.relay_inject_cards) {
+                    // Erst hier, am EOF, ist der tiefe Anker sicher im Puffer.
+                    bool didCards = false;
+                    std::string withCards = http::inject_machino_network_cards(emit, didCards);
+                    if (didCards) emit = std::move(withCards);
+                    else
+                        LOGW(MOD, "relay: %s: card anchor not found - page served without the machino card",
+                             c.relay_what.c_str());
+                }
+                if (!emit.empty() &&
+                    !queue(c, emit, cfg_.max_page_transform_bytes + cfg_.max_out_buffer + sizeof buf))
+                    return false;
                 c.relay_total += emit.size();
                 c.relay_inject = false;
+                c.relay_inject_cards = false;
                 c.relay_inject_buf.clear();
                 if (!did)
                     LOGW(MOD, "relay: %s: nav anchor not found - page served unchanged",
@@ -968,7 +988,9 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
                 c.relay_inject = true;
                 c.relay_inject_buf = rest; // begin the scan window
                 // Try to inject from what we already have; otherwise keep reading.
-                if (c.relay_inject) {
+                // Im Karten-Modus wird NIE vorzeitig emittiert: der zweite
+                // Anker liegt tief in der Seite, alles laeuft bis zum EOF auf.
+                if (c.relay_inject && !c.relay_inject_cards) {
                     bool did = false;
                     std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
                     if (did || c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
@@ -1010,6 +1032,23 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
         // path below.
         if (c.relay_inject) {
             c.relay_inject_buf.append(buf, (size_t)rd);
+            if (c.relay_inject_cards) {
+                // Ganzseiten-Pufferung. Die Notbremse gibt die Seite
+                // UNVERAENDERT weiter, statt sie abzuschneiden.
+                if (c.relay_inject_buf.size() > cfg_.max_page_transform_bytes) {
+                    LOGW(MOD, "relay: %s: page exceeds %zu B - served unchanged, no card",
+                         c.relay_what.c_str(), cfg_.max_page_transform_bytes);
+                    if (!queue(c, c.relay_inject_buf,
+                               cfg_.max_page_transform_bytes + cfg_.max_out_buffer + sizeof buf))
+                        return false;
+                    c.relay_total += c.relay_inject_buf.size();
+                    c.relay_inject = false;
+                    c.relay_inject_cards = false;
+                    c.relay_inject_buf.clear();
+                }
+                progress();
+                continue;
+            }
             bool did = false;
             std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
             if (did || c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {

@@ -142,6 +142,12 @@ profile_remove() {
 # toter Code und das Dropdown bliebe leer. Und die modprobe-Zeilen tragen
 # doppelt: der Scanner liest genau sie, und zur Laufzeit laden sie wirklich. Ein
 # `insmod <pfad>` wuerde laden und bliebe unsichtbar.
+#
+# wifi-attach ist seit dem Doppelbesitzer-Befund vom 2026-09-25 NUR Hardware:
+# Portstrom, auf wlan0 warten, Interface hoch. Kein Supplicant, kein DHCP --
+# nach dem Profil faehrt S40network mit `ifup wlan0` fort, und OpenIPCs
+# wpa_supplicant besitzt die Station. Vorher startete der Block zusaetzlich den
+# Rollen-Supervisor, und zwei Supplicants scannten sich gegenseitig vom Netz.
 profile_install() {
     _prof=$1; _mods=$2
     [ -f "$WIRELESS_USB" ] || {

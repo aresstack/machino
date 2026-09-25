@@ -163,7 +163,7 @@ wlandev_owns_wifi() {
 # Die Module muessen mit CONFIG_PREALLOC_RX_SKB=n gebaut sein. Mit dem
 # Upstream-Default fordert der Treiber beim Init 847 order-3-Bloecke an; diese
 # Kamera hat rund 20 davon frei.
-start_wifi() {
+wifi_hw() {
 	modprobe cfg80211 2>/dev/null
 	load_module aic_load_fw || return 1
 	load_module aic8800 || return 1
@@ -180,18 +180,34 @@ start_wifi() {
 	done
 	ip link set $WIFI_IFACE up
 	say "$WIFI_IFACE bereit"
+	return 0
+}
 
-	# Ab hier besitzt der Rollen-Supervisor das Interface. Er wird EINMAL
-	# gestartet -- hier, vor machinod, also bevor IMP existiert -- und startet
-	# danach wpa_supplicant oder hostapd, je nachdem was in der Rollendatei
-	# steht. Station und AP sind auf diesem Radio gegenseitige Rollen; beide
-	# gleichzeitig auf wlan0 ergibt einen Access Point, der hochkommt und
-	# Sekunden spaeter wegbricht, weil der Supplicant weiterscannt.
-	[ -x "$WIFI_SUPERVISOR" ] || { say "$WIFI_SUPERVISOR fehlt"; return 1; }
-	[ -f "$WIFI_ROLEFILE" ] || echo station > "$WIFI_ROLEFILE"
-	"$WIFI_SUPERVISOR" >/dev/null 2>&1 &
-	echo "$!" > "$WIFI_PIDFILE"
-	say "Rollen-Supervisor laeuft (pid $!)"
+start_wifi() {
+	wifi_hw || return 1
+
+	# Wer das Interface DANACH fuehrt, entscheidet die Rolle -- und Station
+	# ist keine Machino-Rolle mehr. SSID, Passwort und Adresse einer
+	# Client-Verbindung konfiguriert die OpenIPC-Netzwerkseite; deren
+	# S40network/ifup startet den wpa_supplicant. Ein zweiter Supplicant von
+	# hier war der Doppelbesitzer-Befund vom 2026-09-25: beide scannen, das
+	# Interface springt, und wer gewinnt, entscheidet der Zufall.
+	#
+	# Der Rollen-Supervisor startet nur noch fuer das, was OpenIPC nicht
+	# kann: den Access-Point-Modus. Er wird EINMAL gestartet -- hier, vor
+	# machinod, also bevor IMP existiert. Station und AP sind auf diesem
+	# Radio gegenseitige Rollen; beide gleichzeitig auf wlan0 ergibt einen
+	# Access Point, der hochkommt und Sekunden spaeter wegbricht, weil der
+	# Supplicant weiterscannt.
+	_role=$(cat "$WIFI_ROLEFILE" 2>/dev/null)
+	if [ "$_role" = "ap" ]; then
+		[ -x "$WIFI_SUPERVISOR" ] || { say "$WIFI_SUPERVISOR fehlt"; return 1; }
+		"$WIFI_SUPERVISOR" >/dev/null 2>&1 &
+		echo "$!" > "$WIFI_PIDFILE"
+		say "Rollen-Supervisor laeuft (pid $!, Rolle ap)"
+	else
+		say "Station gehoert OpenIPC (Netzwerkseite/ifup) - kein eigener Supplicant"
+	fi
 	return 0
 }
 
@@ -416,11 +432,12 @@ case "${1:-}" in
 	stop)  stop ;;
 	restart) stop; sleep 2; start ;;
 	# Aufgerufen aus dem /etc/wireless/usb-Profil, nachdem dieses die Module per
-	# modprobe geladen hat. start_wifi ueberspringt bereits geladene Module
-	# (lsmod-Pruefung in load_module) und macht hier genau den Rest: Portstrom
-	# PB18/GPIO50, auf wlan0 warten, Interface hoch, Rollen-Supervisor. So steht
-	# die auf Hardware erarbeitete Sequenz an EINER Stelle.
-	wifi-attach) start_wifi || { say "WLAN kam nicht hoch"; exit 1; } ;;
+	# modprobe geladen hat. NUR Hardware: Portstrom PB18/GPIO50, auf wlan0
+	# warten, Interface hoch -- und zurueckkehren. Danach faehrt S40network mit
+	# `ifup wlan0` fort und OpenIPCs wpa_supplicant besitzt die Station. Frueher
+	# stand hier start_wifi mitsamt Rollen-Supervisor: das waren zwei
+	# Supplicants auf demselben Interface (Befund 2026-09-25).
+	wifi-attach) wifi_hw || { say "WLAN-Hardware kam nicht hoch"; exit 1; } ;;
 	mode) read_mode ;;
 	status)
 		echo "configured: $(read_mode)"

@@ -27,6 +27,11 @@
     <label><input type="radio" name="usbmode" value="off" style="width:auto"> Disabled</label>
     <label><input type="radio" name="usbmode" value="wifi" style="width:auto"> Wi-Fi</label>
     <label><input type="radio" name="usbmode" value="cellular" style="width:auto"> Cellular (4G)</label>
+    <p class="mj-card-note">This only assigns the port. SSID, password and IP address of a
+      Wi-Fi client connection live on OpenIPC's own
+      <a href="network.cgi">Network</a> page &mdash; once the adapter is
+      registered on <a href="machino-devices.cgi">Device Manager</a>, it
+      appears there under <b>Wireless adapter</b>.</p>
     <p class="mj-card-note" id="usbmode-note">Takes effect after a reboot.</p>
     <button class="btn btn-sm btn-primary" id="usbmodesave">Apply</button>
     <div class="alert py-2" id="m-usbmode" hidden></div>
@@ -138,7 +143,7 @@ function stateKind(s) {
 let modeSaved = null;      // was in der Konfiguration steht
 let modeBooted = null;     // was beim Start tatsaechlich geladen wurde
 
-const MODE_LABEL = {off: "Disabled", wifi: "WLAN", cellular: "Cellular (4G)"};
+const MODE_LABEL = {off: "Disabled", wifi: "Wi-Fi", cellular: "Cellular (4G)"};
 
 function selectedMode() {
   const r = document.querySelector('input[name=usbmode]:checked');

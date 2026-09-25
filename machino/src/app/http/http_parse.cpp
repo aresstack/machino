@@ -239,13 +239,16 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     // ENGLISCH, weil die Stock-WebUI englisch ist: "Dashboard", "Live",
     // "Camera", "System", "Network", "Time", "Access". Ein deutscher Eintrag
     // mitten darin sieht nach Fremdkoerper aus -- und genau das war er.
-    // Fuenf Eintraege, seit die eine "Network & USB"-Monsterseite in Seiten
+    // Vier Eintraege, seit die eine "Network & USB"-Monsterseite in Seiten
     // je Thema zerlegt ist (2026-09-25). Ein einzelner Sammel-Eintrag hiesse,
     // die Zerlegung im Menue wieder zu verstecken -- und "Network & USB"
     // neben OpenIPCs eigenem "Network" war doppelt verwirrend.
+    // KEIN Wi-Fi-Eintrag: Station-WLAN (SSID/Passwort/IP) konfiguriert
+    // OpenIPCs eigene Network-Seite, sobald der Geraetemanager den Adapter
+    // registriert hat. Eine zweite WLAN-Verwaltung daneben war der
+    // Architekturbefund vom 2026-09-25 (zwei Besitzer von wlan0).
     const std::string add =
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-usb.cgi\">USB</a></li>"
-        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-wifi.cgi\">Wi-Fi (USB)</a></li>"
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-cellular.cgi\">Cellular</a></li>"
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-uplinks.cgi\">Uplinks</a></li>"
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-devices.cgi\">Device Manager</a></li>";
@@ -255,6 +258,92 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     out.append(html, 0, insertAt);
     out.append(add);
     out.append(html, insertAt, std::string::npos);
+    changed = true;
+    return out;
+}
+
+std::string inject_machino_network_cards(const std::string& html, bool& changed) {
+    changed = false;
+
+    // Schon drin? Nicht stapeln (Re-Relay, Proxy davor).
+    if (html.find("mchnw-card") != std::string::npos)
+        return html;
+
+    // Der Anker ist der Advanced-Block der Stock-Seite: er sitzt in derselben
+    // row wie die "Wireless adapter"-Karte, unsere Karte kommt als Geschwister
+    // davor. Gesucht wird das <details> und dann rueckwaerts sein
+    // Spalten-Wrapper; dazwischen darf nur Weissraum stehen -- alles andere
+    // ist eine Struktur, die wir nicht kennen, und dann liefern wir die Seite
+    // unveraendert aus (fail-closed, ein OpenIPC-Update bricht so hoechstens
+    // unsere Karte, nie die Seite).
+    const size_t det = html.find("<details class=\"mj-advanced\"");
+    if (det == std::string::npos)
+        return html;
+    const std::string colOpen = "<div class=\"col-12 col-lg-6\">";
+    const size_t wrap = html.rfind(colOpen, det);
+    if (wrap == std::string::npos)
+        return html;
+    for (size_t i = wrap + colOpen.size(); i < det; ++i) {
+        const char ch = html[i];
+        if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n')
+            return html;
+    }
+
+    // Native Stock-Bausteine (card/card-body, mj-cap, mj-card-note), keine
+    // eigene Designschicht. Die Daten kommen von machinos eigener API -- die
+    // Seite laeuft durch die Front-Door auf :80, also same-origin. Die
+    // JSON-Felder sind gemessen (net_views.cpp usb_status_json /
+    // net_api.cpp devices_get), nicht geraten.
+    const std::string card =
+        "<div class=\"col-12 col-lg-6\">\n"
+        "<div class=\"card h-100\" id=\"mchnw-card\"><div class=\"card-body\">\n"
+        "\t<div class=\"mj-live-head\"><h3 class=\"mj-cap\">USB network hardware</h3><span class=\"mj-live-rule\"></span></div>\n"
+        "\t<p class=\"mj-card-note\">The hardware side of the add-on radio, reported by machino."
+        " Once the adapter is <b>registered</b>, it appears in the Wireless adapter list on this page.</p>\n"
+        "\t<dl class=\"row mb-0\">\n"
+        "\t<dt class=\"col-6\">USB role</dt><dd class=\"col-6\" id=\"mchnw-role\">&hellip;</dd>\n"
+        "\t<dt class=\"col-6\">Port power (3.3 V VBUS)</dt><dd class=\"col-6\" id=\"mchnw-power\">&hellip;</dd>\n"
+        "\t<dt class=\"col-6\">Adapter</dt><dd class=\"col-6\" id=\"mchnw-adapter\">&hellip;</dd>\n"
+        "\t<dt class=\"col-6\">Hardware detected</dt><dd class=\"col-6\" id=\"mchnw-hw\">&hellip;</dd>\n"
+        "\t<dt class=\"col-6\">Driver loaded</dt><dd class=\"col-6\" id=\"mchnw-drv\">&hellip;</dd>\n"
+        "\t</dl>\n"
+        "\t<p class=\"mj-card-note\">Managed on <a href=\"machino-usb.cgi\">USB</a> and"
+        " <a href=\"machino-devices.cgi\">Device Manager</a>.</p>\n"
+        "<script>\n"
+        "(function () {\n"
+        "\tfunction put(id, text) { var e = document.getElementById(id); if (e) e.textContent = text; }\n"
+        "\tfunction grab(url, fill) {\n"
+        "\t\tfetch(url, {credentials: \"same-origin\"})\n"
+        "\t\t\t.then(function (r) { return r.ok ? r.json() : null; })\n"
+        "\t\t\t.then(fill)\n"
+        "\t\t\t.catch(function () { fill(null); });\n"
+        "\t}\n"
+        "\tgrab(\"/api/v1/usb\", function (u) {\n"
+        "\t\tif (!u) { put(\"mchnw-role\", \"no data\"); put(\"mchnw-power\", \"no data\"); return; }\n"
+        "\t\tvar labels = {off: \"Disabled\", wifi: \"Wi-Fi\", cellular: \"Cellular (4G)\"};\n"
+        "\t\tvar role = labels[u.mode] || u.mode || \"unknown\";\n"
+        "\t\tif (u.rebootRequired) role += \" (reboot pending)\";\n"
+        "\t\tput(\"mchnw-role\", role);\n"
+        "\t\tput(\"mchnw-power\", (u.power && u.power.state) ? u.power.state : \"unknown\");\n"
+        "\t});\n"
+        "\tgrab(\"/api/v1/devices\", function (d) {\n"
+        "\t\tvar list = (d && d.devices) || [];\n"
+        "\t\tif (!list.length) { put(\"mchnw-adapter\", \"none\"); put(\"mchnw-hw\", \"-\"); put(\"mchnw-drv\", \"-\"); return; }\n"
+        "\t\tvar a = list[0];\n"
+        "\t\tput(\"mchnw-adapter\", (a.title || a.id) + \" - \" + (a.state || \"unknown\"));\n"
+        "\t\tput(\"mchnw-hw\", a.hardwarePresent ? \"yes\" : \"no\");\n"
+        "\t\tput(\"mchnw-drv\", a.driverLoaded ? \"yes\" : \"no\");\n"
+        "\t});\n"
+        "})();\n"
+        "</script>\n"
+        "</div></div>\n"
+        "</div>\n\n";
+
+    std::string out;
+    out.reserve(html.size() + card.size());
+    out.append(html, 0, wrap);
+    out.append(card);
+    out.append(html, wrap, std::string::npos);
     changed = true;
     return out;
 }

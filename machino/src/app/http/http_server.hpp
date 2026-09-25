@@ -63,6 +63,12 @@ struct ServerConfig {
     // so a small window suffices; it also bounds what is held in memory and stays
     // under max_out_buffer so the injected prefix fits one queued write.
     size_t      max_inject_bytes = 48 * 1024;
+    // Seiten, in die eine Karte tief im Dokument eingesetzt wird (network.cgi:
+    // der Anker sitzt bei ~85 % der Seite), werden dafuer GANZ gepuffert.
+    // Die Stock-Seite misst ~52 KB; das Limit ist die Notbremse gegen eine
+    // endlose Antwort, nicht die erwartete Groesse. Darueber: unveraendert
+    // durchreichen (fail-closed), nie abschneiden.
+    size_t      max_page_transform_bytes = 256 * 1024;
     // Majestic drop-in session auth (POST /login, POST /logout, 401 gating).
     // Active only when both are set; auth_check validates the credentials.
     bool                  session_auth = false;

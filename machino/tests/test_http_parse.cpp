@@ -320,12 +320,15 @@ void run_relay_head_end_tests() {
         bool changed = false;
         const std::string out = inject_machino_nav(page, changed);
         HCHECK(changed);
-        // All five links present, exactly once each -- one per split page.
-        for (const char* p : {"machino-usb.cgi", "machino-wifi.cgi", "machino-cellular.cgi",
+        // All four links present, exactly once each -- one per split page.
+        // NO machino-wifi.cgi: station Wi-Fi is configured on OpenIPC's own
+        // network page (two-owners finding, 2026-09-25).
+        for (const char* p : {"machino-usb.cgi", "machino-cellular.cgi",
                               "machino-uplinks.cgi", "machino-devices.cgi"}) {
             HCHECK(out.find(std::string("href=\"") + p + "\"") != std::string::npos);
             HCHECK(out.find(p) == out.rfind(p));
         }
+        HCHECK(out.find("machino-wifi.cgi") == std::string::npos);
         // Inserted AFTER the Network item (inside Setup), before Time.
         HCHECK(out.find("machino-usb.cgi") > out.find("network.cgi"));
         HCHECK(out.find("machino-devices.cgi") < out.find("time.cgi"));
@@ -362,6 +365,60 @@ void run_relay_head_end_tests() {
         const std::string preout = inject_machino_nav(pre, ic);
         HCHECK(!ic);
         HCHECK(preout == pre);
+    }
+
+    // inject_machino_network_cards: a native card next to "Wireless adapter"
+    // on OpenIPC's network.cgi, spliced into the relayed reply. Modelled on
+    // the measured page structure (row g-4 mt-0 with the adapter card and the
+    // Advanced <details> as siblings).
+    {
+        const std::string page =
+            "<html><body><main><div class=\"container\">"
+            "<div class=\"row g-4 mt-0\">\n"
+            "<div class=\"col-12 col-lg-6\">\n"
+            "<div class=\"card h-100\" id=\"adapter\"><div class=\"card-body\">Wireless adapter</div></div>\n"
+            "</div>\n"
+            "<div class=\"col-12 col-lg-6\">\n"
+            "<details class=\"mj-advanced\"><summary>Advanced</summary></details>\n"
+            "</div>\n"
+            "</div></div></main></body></html>";
+
+        bool changed = false;
+        const std::string out = inject_machino_network_cards(page, changed);
+        HCHECK(changed);
+        HCHECK(out.find("mchnw-card") != std::string::npos);
+        // Between the adapter card and the Advanced column, as a sibling col.
+        HCHECK(out.find("mchnw-card") > out.find("id=\"adapter\""));
+        HCHECK(out.find("mchnw-card") < out.find("mj-advanced"));
+        // Talks to machino's own API, links to the machino pages.
+        HCHECK(out.find("/api/v1/usb") != std::string::npos);
+        HCHECK(out.find("/api/v1/devices") != std::string::npos);
+        HCHECK(out.find("machino-usb.cgi") != std::string::npos);
+        HCHECK(out.find("machino-devices.cgi") != std::string::npos);
+        // The stock page around it is untouched.
+        HCHECK(out.find("Wireless adapter") != std::string::npos);
+        HCHECK(out.find("<details class=\"mj-advanced\">") != std::string::npos);
+
+        // Idempotent.
+        bool again = true;
+        const std::string twice = inject_machino_network_cards(out, again);
+        HCHECK(!again);
+        HCHECK(twice == out);
+
+        // No anchor -> byte-identical, changed=false (fail-closed: an OpenIPC
+        // update that moves the block loses our card, never the page).
+        bool nc = true;
+        const std::string plain = "<html><body>no advanced block</body></html>";
+        HCHECK(inject_machino_network_cards(plain, nc) == plain);
+        HCHECK(!nc);
+
+        // Unknown structure between column wrapper and <details> (something
+        // other than whitespace) -> untouched as well.
+        bool uc = true;
+        const std::string odd =
+            "<div class=\"col-12 col-lg-6\"><b>x</b><details class=\"mj-advanced\"></details></div>";
+        HCHECK(inject_machino_network_cards(odd, uc) == odd);
+        HCHECK(!uc);
     }
 
     // relay_head_is_html: only text/html, and never a chunked body (we do not

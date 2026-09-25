@@ -933,13 +933,17 @@ if [ ! -s "$U/sys/class/gpio/gpio50/value" ]; then ok
 else bad "off raised the port power (PB18)"; fi
 is "off records what it started" "$(cat "$U/var/run/machino-usb-mode")" "off"
 
-# --- wifi: der WLAN-Stack und NUR der.
+# --- wifi: der WLAN-Stack und NUR der. Und KEIN Supplicant von uns: Station
+# gehoert seit der Architekturkorrektur vom 2026-09-25 OpenIPCs Netzwerkseite
+# (S40network/ifup startet den wpa_supplicant). Zwei Supplicants auf wlan0
+# war der Doppelbesitzer-Befund. Der Rollen-Supervisor startet nur noch fuer
+# die AP-Rolle -- das, was OpenIPC nicht kann.
 usb_tree
 run_usb_helper wifi
 did   "wifi loads cfg80211"        "modprobe cfg80211"
 did   "wifi loads aic_load_fw"     "aic_load_fw.ko"
 did   "wifi loads aic8800"         "aic8800.ko"
-did   "wifi starts the supervisor" "started machino-wifi-role"
+didnt "wifi (station) starts no supervisor" "started machino-wifi-role"
 didnt "wifi loads no option"       "option.ko"
 didnt "wifi loads no usb_wwan"     "usb_wwan.ko"
 didnt "wifi loads no usbnet"       "usbnet.ko"
@@ -947,6 +951,26 @@ didnt "wifi loads no cdc_ether"    "cdc_ether.ko"
 didnt "wifi starts no modem helper" "started machino-cellular-helper"
 is "wifi raised the port power" "$(cat "$U/sys/class/gpio/gpio50/value")" "1"
 is "wifi records what it started" "$(cat "$U/var/run/machino-usb-mode")" "wifi"
+
+# --- wifi mit AP-Rolle: NUR dann startet der Rollen-Supervisor.
+usb_tree
+echo ap > "$U/etc/machino/wifi-role"
+run_usb_helper wifi
+did   "wifi (ap) starts the supervisor" "started machino-wifi-role"
+
+# --- wifi-attach (der OpenIPC-Profilpfad): Hardware und sonst NICHTS.
+# Nach der Rueckkehr faehrt S40network mit `ifup wlan0` fort; ein Supervisor
+# von hier waere der zweite Besitzer. Auch mit gesetzter AP-Rolle nicht --
+# wlandev gehoert der Station.
+usb_tree
+echo ap > "$U/etc/machino/wifi-role"
+USB_ACTIONS="$WORK/actions.log"; : > "$USB_ACTIONS"; export USB_ACTIONS
+PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" wifi-attach \
+    > "$WORK/usbout" 2>&1
+did   "wifi-attach loads the driver"  "aic8800.ko"
+did   "wifi-attach brings wlan0 up"   "ip link set wlan0 up"
+didnt "wifi-attach starts no supervisor" "started machino-wifi-role"
+is "wifi-attach raised the port power" "$(cat "$U/sys/class/gpio/gpio50/value")" "1"
 
 # --- cellular: der Mobilfunkstack und NUR der.
 usb_tree
@@ -1453,7 +1477,6 @@ else bad "the profile name is hardcoded outside the manifest: $hits"; fi
 # vollstaendigen Uninstall restlos weg. Die OpenIPC-Dateien daneben prueft der
 # header.cgi-Vergleich weiter oben byte-genau.
 if [ -x "$WORK/root/var/www/cgi-bin/machino-usb.cgi" ] &&
-   [ -x "$WORK/root/var/www/cgi-bin/machino-wifi.cgi" ] &&
    [ -x "$WORK/root/var/www/cgi-bin/machino-cellular.cgi" ] &&
    [ -x "$WORK/root/var/www/cgi-bin/machino-uplinks.cgi" ] &&
    [ -x "$WORK/root/var/www/cgi-bin/machino-devices.cgi" ]; then ok

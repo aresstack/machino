@@ -41,7 +41,7 @@ jobs:
         # sondern den ganzen <script>-Block -- also die ganze Seite. Das faellt
         # sonst erst in einem Browser auf, und der ist hier selten zur Hand.
         run: |
-          for p in machino-uplinks machino-wifi machino-cellular machino-usb; do
+          for p in machino-uplinks machino-cellular machino-usb; do
             sh machino/tools/check-netui.sh machino/openipc/www/$p.cgi
           done
           sh machino/tools/check-netui.sh machino/openipc/www/machino-devices.cgi
@@ -157,7 +157,7 @@ jobs:
           # Webroot, uninstall.sh entfernt sie; OpenIPC-Dateien bleiben
           # byte-identisch.
           mkdir -p "$O/www"
-          for p in machino-uplinks machino-wifi machino-cellular machino-usb; do
+          for p in machino-uplinks machino-cellular machino-usb; do
             cp -f "machino/openipc/www/$p.cgi" "$O/www/$p.cgi"
           done
           cp -f machino/openipc/www/machino-devices.cgi "$O/www/machino-devices.cgi"
