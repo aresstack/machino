@@ -58,6 +58,11 @@ struct ServerConfig {
     // dozen fetches at once is a real OOM risk, so excess relays queue.
     int         max_relay_inflight = 3;
     size_t      max_relay_bytes = 8 * 1024 * 1024;   // total bytes forwarded per relayed request
+    // How far into an HTML page we scan for the navbar anchor before giving up
+    // and serving it unchanged. The OpenIPC navbar is at the very top of <body>,
+    // so a small window suffices; it also bounds what is held in memory and stays
+    // under max_out_buffer so the injected prefix fits one queued write.
+    size_t      max_inject_bytes = 48 * 1024;
     // Majestic drop-in session auth (POST /login, POST /logout, 401 gating).
     // Active only when both are set; auth_check validates the credentials.
     bool                  session_auth = false;

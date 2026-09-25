@@ -301,4 +301,102 @@ void run_relay_head_end_tests() {
         HCHECK(parse_request("GET /api/v1/reset?key=video.bitrate HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Ok);
         HCHECK(parse_request("GET /a/b?p=../x HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Ok);
     }
+
+    // inject_machino_nav: add the two links into a relayed OpenIPC page without
+    // touching any file. Modelled on the real header.cgi rendered output.
+    {
+        // A trimmed but faithful System dropdown, as haserl renders it (labels
+        // already substituted for <% page_label %>).
+        const std::string page =
+            "<!DOCTYPE html><html><body><ul class=\"navbar-nav\">"
+            "<li class=\"nav-item dropdown\"><a id=\"dropdownSystem\">System</a>"
+            "<ul class=\"dropdown-menu\">"
+            "<li><h6 class=\"dropdown-header\">Setup</h6></li>"
+            "<li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li>"
+            "<li><a class=\"dropdown-item\" href=\"time.cgi\">Time</a></li>"
+            "<li><a class=\"dropdown-item\" href=\"access.cgi\">Access</a></li>"
+            "</ul></li></ul></body></html>";
+
+        bool changed = false;
+        const std::string out = inject_machino_nav(page, changed);
+        HCHECK(changed);
+        // Both links present, exactly once each.
+        HCHECK(out.find("href=\"/machino/devices\"") != std::string::npos);
+        HCHECK(out.find("href=\"/machino/net\"") != std::string::npos);
+        HCHECK(out.find("/machino/devices") == out.rfind("/machino/devices"));
+        HCHECK(out.find("/machino/net") == out.rfind("/machino/net"));
+        // Inserted AFTER the Network item (inside Setup), before Time.
+        HCHECK(out.find("/machino/devices") > out.find("network.cgi"));
+        HCHECK(out.find("/machino/net") < out.find("time.cgi"));
+        // The stock entries are untouched and still there.
+        HCHECK(out.find("href=\"network.cgi\"") != std::string::npos);
+        HCHECK(out.find("href=\"time.cgi\"") != std::string::npos);
+        HCHECK(out.find("href=\"access.cgi\"") != std::string::npos);
+
+        // Idempotent: running it again changes nothing and adds no second copy.
+        bool again = false;
+        const std::string twice = inject_machino_nav(out, again);
+        HCHECK(!again);
+        HCHECK(twice == out);
+        HCHECK(twice.find("/machino/devices") == twice.rfind("/machino/devices"));
+
+        // Single-quoted href variant is accepted too.
+        bool sqc = false;
+        const std::string sqp = "<li><a class=\"dropdown-item\" href='network.cgi'>Network</a></li>";
+        const std::string sqout = inject_machino_nav(sqp, sqc);
+        HCHECK(sqc);
+        HCHECK(sqout.find("/machino/devices") != std::string::npos);
+
+        // No anchor -> byte-identical, changed=false.
+        const std::string noanchor = "<html><body><ul><li>nothing here</li></ul></body></html>";
+        bool nc = true;
+        const std::string same = inject_machino_nav(noanchor, nc);
+        HCHECK(!nc);
+        HCHECK(same == noanchor);
+
+        // Already-integrated page (carries /machino/devices) -> untouched.
+        bool ic = true;
+        const std::string pre = "<li><a href=\"/machino/devices\">DM</a></li>"
+                                "<li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li>";
+        const std::string preout = inject_machino_nav(pre, ic);
+        HCHECK(!ic);
+        HCHECK(preout == pre);
+    }
+
+    // relay_head_is_html: only text/html, and never a chunked body (we do not
+    // parse chunk framing, so those must not be buffered for injection).
+    {
+        HCHECK(relay_head_is_html("HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n"));
+        HCHECK(relay_head_is_html("HTTP/1.1 200 OK\nContent-type: text/html\n\n")); // bare LF, lowercase
+        HCHECK(!relay_head_is_html("HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n"));
+        HCHECK(!relay_head_is_html("HTTP/1.0 200 OK\r\nContent-Type: image/png\r\n\r\n"));
+        HCHECK(!relay_head_is_html("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nTransfer-Encoding: chunked\r\n\r\n"));
+        HCHECK(!relay_head_is_html("HTTP/1.0 200 OK\r\n\r\n")); // no content-type
+    }
+
+    // relay_head_stream_close: drop Content-Length + hop-by-hop, force close.
+    {
+        const std::string in = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: 40\r\n"
+                               "Connection: keep-alive\r\nCache-Control: no-store\r\n\r\n";
+        const std::string out = relay_head_stream_close(in);
+        HCHECK(out.find("Content-Length:") == std::string::npos);   // the length would be wrong after injection
+        HCHECK(out.find("Connection: close") != std::string::npos);
+        HCHECK(out.find("keep-alive") == std::string::npos);
+        HCHECK(out.find("Cache-Control: no-store") != std::string::npos); // unrelated headers kept
+        HCHECK(out.find("Content-Type: text/html") != std::string::npos);
+        HCHECK(out.rfind("HTTP/1.0 200 OK", 0) == 0);               // status line kept, first
+        HCHECK(out.size() >= 4 && out.compare(out.size() - 4, 4, "\r\n\r\n") == 0); // properly terminated
+    }
+
+    // relay_head_with_length: declare an exact length with the chosen disposition.
+    {
+        const std::string in = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: 9\r\n\r\n";
+        std::string keep = relay_head_with_length(in, 123, true);
+        HCHECK(keep.find("Content-Length: 123") != std::string::npos);
+        HCHECK(keep.find("Content-Length: 9") == std::string::npos);
+        HCHECK(keep.find("Connection: keep-alive") != std::string::npos);
+        std::string cl = relay_head_with_length(in, 5, false);
+        HCHECK(cl.find("Content-Length: 5") != std::string::npos);
+        HCHECK(cl.find("Connection: close") != std::string::npos);
+    }
 }

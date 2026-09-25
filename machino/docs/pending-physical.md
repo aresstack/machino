@@ -267,6 +267,7 @@ nachgebautes `/lib/modules` sagt nichts über `vermagic`.
 | Nr | Was |
 |----|-----|
 | H11 | `/machino/net` in einem Browser öffnen. Die Feldnamen sind gegen die echten JSON-Builder getestet (`tests/test_netui.cpp`), das Layout ist es nicht |
+| H20 | Eine **relayte** OpenIPC-Seite (z. B. Dashboard) im Browser öffnen, während Machino die :80-Front-Tür ist: unter *System → Setup* müssen „Device Manager" und „Netzwerk & USB" erscheinen, genau einmal, und /var/www/.../header.cgi byte-identisch bleiben. Die Injektionslogik ist in tests/test_http_parse.cpp gegen den gerenderten Navbar-Ausschnitt geprüft; das echte Rendering im Browser nicht |
 | H19 | `/machino/devices` in einem Browser öffnen. Das JavaScript parst und die nachgeschlagenen `id`s existieren (`tools/check-netui.sh`); wie die Karte aussieht und ob die Knöpfe in den richtigen Zuständen grau sind, hat nie jemand gesehen |
 | H12 | Der Bestätigungs-Countdown im Ernstfall: Banner sichtbar, Zähler läuft, Bestätigung kommt an, Rollback wird als solcher angezeigt |
 | H13 | Der Menüeintrag aus `install.sh --with-network-page` (NICHT Teil des Produkt-Deploys, siehe install-openipc.md) an einer echten `header.cgi` — die Tests benutzen einen nachgebauten Ausschnitt |

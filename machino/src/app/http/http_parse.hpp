@@ -62,6 +62,41 @@ bool relay_head_keepalive(const std::string& head, std::string& out, size_t& bod
 // header (that shipped once, as a 502 on every WebUI page).
 size_t relay_head_end(const std::string& buf, size_t& sep_len);
 
+// Insert Machino's two navigation entries into a relayed OpenIPC WebUI page,
+// WITHOUT touching any file on the camera.
+//
+// The stock header.cgi is a haserl script with a HARDCODED menu list and no
+// extension slot, so the only place to add a link and still leave /var/www
+// byte-identical is here, in the response Machino already relays as the
+// front door. The nav is server-side-included into every full page, so this
+// works on the rendered HTML, not on a separately-fetched header partial.
+//
+// Anchored on the existing System -> Setup "network.cgi" item: the two links
+// are inserted right after that <li>, so they land inside the same dropdown.
+// Idempotent (a page that already carries "/machino/devices" is returned
+// unchanged) and conservative: if the anchor is not present the input is
+// returned verbatim and `changed` is false -- never a heuristic cut that could
+// corrupt HTML from a future WebUI.
+std::string inject_machino_nav(const std::string& html, bool& changed);
+
+// True when a relayed head is a plain HTML page safe to buffer for injection:
+// Content-Type text/html and NOT chunked (we do not parse chunk framing). Query
+// only, never rewrites.
+bool relay_head_is_html(const std::string& head);
+
+// Rebuild a relayed head to declare exactly `body_len` bytes with the given
+// connection disposition. Drops any existing Content-Length and hop-by-hop
+// headers (Connection/Keep-Alive/Transfer-Encoding/Proxy-Connection). Used after
+// the body was buffered and rewritten, where the CGI head carried no length.
+std::string relay_head_with_length(const std::string& head, size_t body_len, bool keep_alive);
+
+// Rebuild a relayed head for a body we will REWRITE while streaming: drop any
+// Content-Length (it would be wrong after injection) and hop-by-hop headers,
+// and force Connection: close so the end is framed by the socket close. Used for
+// the menu-injection path, where the length is not known up front and the page
+// is delivered close-framed exactly as the stock CGI already was.
+std::string relay_head_stream_close(const std::string& head);
+
 const char* status_text(int status);
 std::string response(int status, const std::string& content_type, const std::string& body, bool keep_alive,
                      const std::string& extra_headers = "");

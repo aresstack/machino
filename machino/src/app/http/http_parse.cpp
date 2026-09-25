@@ -123,6 +123,131 @@ std::string forward_request(const Request& req, const std::string& upstream_host
     return out;
 }
 
+namespace {
+// Iterate header lines (CRLF or bare LF, mixed) between the status line and the
+// terminator, calling `fn(lower_name, raw_line)` for each field line.
+template <typename Fn>
+void for_each_header_line(const std::string& head, size_t end, Fn fn) {
+    size_t pos = 0;
+    bool first = true;
+    while (pos < end) {
+        size_t eol = head.find('\n', pos);
+        if (eol == std::string::npos || eol > end) eol = end;
+        size_t line_end = eol;
+        if (line_end > pos && head[line_end - 1] == '\r') --line_end;
+        const std::string line = head.substr(pos, line_end - pos);
+        pos = eol + 1;
+        if (first) { first = false; continue; }
+        if (line.empty()) continue;
+        const size_t colon = line.find(':');
+        std::string name = colon == std::string::npos ? line : line.substr(0, colon);
+        for (char& ch : name) ch = (char)tolower((unsigned char)ch);
+        fn(name, line);
+    }
+}
+} // namespace
+
+bool relay_head_is_html(const std::string& head) {
+    size_t sep = 0;
+    const size_t end = relay_head_end(head, sep);
+    if (end == std::string::npos) return false;
+    bool html = false, chunked = false;
+    for_each_header_line(head, end, [&](const std::string& name, const std::string& line) {
+        if (name == "transfer-encoding") chunked = true;
+        if (name == "content-type") {
+            std::string v = line.substr(line.find(':') + 1);
+            for (char& ch : v) ch = (char)tolower((unsigned char)ch);
+            if (v.find("text/html") != std::string::npos) html = true;
+        }
+    });
+    return html && !chunked;
+}
+
+std::string relay_head_with_length(const std::string& head, size_t body_len, bool keep_alive) {
+    size_t sep = 0;
+    const size_t end = relay_head_end(head, sep);
+    if (end == std::string::npos) return head;
+
+    // Keep the status line verbatim.
+    size_t sl = head.find('\n');
+    if (sl == std::string::npos) return head;
+    size_t sl_end = sl;
+    if (sl_end > 0 && head[sl_end - 1] == '\r') --sl_end;
+    std::string out = head.substr(0, sl_end) + "\r\n";
+
+    for_each_header_line(head, end, [&](const std::string& name, const std::string& line) {
+        if (name == "content-length" || name == "connection" || name == "keep-alive"
+            || name == "proxy-connection" || name == "transfer-encoding")
+            return;
+        out += line;
+        out += "\r\n";
+    });
+    out += "Content-Length: " + std::to_string(body_len) + "\r\n";
+    out += keep_alive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n";
+    return out;
+}
+
+std::string relay_head_stream_close(const std::string& head) {
+    size_t sep = 0;
+    const size_t end = relay_head_end(head, sep);
+    if (end == std::string::npos) return head;
+    size_t sl = head.find('\n');
+    if (sl == std::string::npos) return head;
+    size_t sl_end = sl;
+    if (sl_end > 0 && head[sl_end - 1] == '\r') --sl_end;
+    std::string out = head.substr(0, sl_end) + "\r\n";
+    for_each_header_line(head, end, [&](const std::string& name, const std::string& line) {
+        if (name == "content-length" || name == "connection" || name == "keep-alive"
+            || name == "proxy-connection" || name == "transfer-encoding")
+            return;
+        out += line;
+        out += "\r\n";
+    });
+    out += "Connection: close\r\n\r\n";
+    return out;
+}
+
+std::string inject_machino_nav(const std::string& html, bool& changed) {
+    changed = false;
+
+    // Already there? Do not double it -- re-relaying the same page (or a proxy
+    // in front) must not stack the entries.
+    if (html.find("/machino/devices") != std::string::npos)
+        return html;
+
+    // The anchor is the stock Network item in System -> Setup. Match the href
+    // only, so the label text (page_label renders "Network"/"Netzwerk"/...) does
+    // not matter. `href="network.cgi"` and `href='network.cgi'` both occur in
+    // the wild, so accept either quote.
+    size_t at = html.find("href=\"network.cgi\"");
+    if (at == std::string::npos)
+        at = html.find("href='network.cgi'");
+    if (at == std::string::npos)
+        return html; // unknown layout: leave it exactly as it came
+
+    // Insert AFTER the <li> that holds the anchor, so the new items are siblings
+    // in the same dropdown list rather than nested in the Network entry. Find the
+    // first </li> at or after the anchor.
+    const size_t liEnd = html.find("</li>", at);
+    if (liEnd == std::string::npos)
+        return html; // anchor without a closing <li>: not the structure we know
+    const size_t insertAt = liEnd + 5; // past "</li>"
+
+    // Bootstrap dropdown-item markup, matching the surrounding entries. Literal
+    // text (no haserl page_label here -- that is server-side and already run).
+    const std::string add =
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"/machino/devices\">Device Manager</a></li>"
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"/machino/net\">Netzwerk &amp; USB</a></li>";
+
+    std::string out;
+    out.reserve(html.size() + add.size());
+    out.append(html, 0, insertAt);
+    out.append(add);
+    out.append(html, insertAt, std::string::npos);
+    changed = true;
+    return out;
+}
+
 const char* status_text(int s) {
     switch (s) {
         case 200: return "OK"; case 204: return "No Content"; case 302: return "Found";

@@ -206,6 +206,14 @@ struct HttpServer::Client {
     bool        relay_keep = false; // this reply may leave the downstream open
     size_t      relay_body_len = 0; // exact body bytes to expect when relay_keep
     size_t      relay_body_seen = 0;
+    // Menu injection: buffer a text/html page body, add Machino's nav links, and
+    // send it with a corrected Content-Length. Only entered for a GET whose head
+    // says text/html; anything else streams verbatim exactly as before. The head
+    // is held in relay_saved_head until the body is buffered and rewritten.
+    bool        relay_inject = false;
+    bool        relay_get = false;  // only GET pages are buffered for injection
+    std::string relay_saved_head;   // original upstream head, kept until injection
+    std::string relay_inject_buf;   // the html body, accumulated
 };
 
 static const char* MJPEG_BOUNDARY = "machinoframe";
@@ -760,6 +768,10 @@ bool HttpServer::relay_upstream(Client& c, const Request& req) {
     c.relay_keep = false;
     c.relay_body_len = 0;
     c.relay_body_seen = 0;
+    c.relay_inject = false;
+    c.relay_saved_head.clear();
+    c.relay_inject_buf.clear();
+    c.relay_get = (req.method == "GET");
     c.keep_alive_wanted = req.keep_alive;
     const int64_t now = now_ms();
     c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
@@ -817,6 +829,7 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
             // per request - only the expensive half is reused.
             c.relay_head.clear(); c.relay_head_done = false;
             c.relay_keep = false; c.relay_body_len = 0; c.relay_body_seen = 0;
+            c.relay_inject = false; c.relay_saved_head.clear(); c.relay_inject_buf.clear();
             c.relay_total = 0;
             return true;
         }
@@ -898,6 +911,21 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
     while (c.out.size() < cfg_.max_out_buffer) {
         ssize_t rd = recv(c.relay_fd, buf, sizeof buf, MSG_DONTWAIT);
         if (rd == 0) {
+            // A page that ended while still inside the scan window: inject on
+            // what we have (or serve it unchanged if the anchor never appeared)
+            // and flush it before finishing.
+            if (c.relay_inject) {
+                bool did = false;
+                std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
+                const std::string& emit = did ? merged : c.relay_inject_buf;
+                if (!emit.empty() && !queue(c, emit, cfg_.max_out_buffer + sizeof buf)) return false;
+                c.relay_total += emit.size();
+                c.relay_inject = false;
+                c.relay_inject_buf.clear();
+                if (!did)
+                    LOGW(MOD, "relay: %s: nav anchor not found - page served unchanged",
+                         c.relay_what.c_str());
+            }
             // EOF: upstream done (it was asked for Connection: close). If we
             // already promised a Content-Length downstream and got fewer bytes,
             // the upstream truncated: cutting the connection is the only honest
@@ -933,6 +961,37 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
             c.relay_head.clear();
             c.relay_head_done = true;
 
+            // Menu injection: a GET whose head says text/html is delivered
+            // close-framed with Machino's nav links inserted near the top. The
+            // page is NOT buffered whole — the navbar is at the start of <body>,
+            // so we scan a bounded window, inject once, and stream the rest
+            // verbatim. Nothing under /var/www is touched.
+            if (c.relay_get && http::relay_head_is_html(head)) {
+                const std::string sh = http::relay_head_stream_close(head);
+                if (!queue(c, sh, cfg_.max_out_buffer + sizeof buf)) return false;
+                c.relay_total += sh.size();
+                c.relay_keep = false;      // close-framed: the socket close is the end
+                c.relay_inject = true;
+                c.relay_inject_buf = rest; // begin the scan window
+                // Try to inject from what we already have; otherwise keep reading.
+                if (c.relay_inject) {
+                    bool did = false;
+                    std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
+                    if (did || c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
+                        const std::string& emit = did ? merged : c.relay_inject_buf;
+                        if (!queue(c, emit, cfg_.max_out_buffer + sizeof buf)) return false;
+                        c.relay_total += emit.size();
+                        c.relay_inject = false;
+                        c.relay_inject_buf.clear();
+                        if (!did)
+                            LOGW(MOD, "relay: %s: nav anchor not found in first %zu B - page served unchanged",
+                                 c.relay_what.c_str(), cfg_.max_inject_bytes);
+                    }
+                }
+                progress();
+                continue;
+            }
+
             std::string patched;
             c.relay_keep = c.keep_alive_wanted &&
                            http::relay_head_keepalive(head, patched, c.relay_body_len);
@@ -947,6 +1006,28 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
                 c.relay_body_seen += rest.size();
             }
             if (c.relay_keep && c.relay_body_seen >= c.relay_body_len) return done();
+            progress();
+            continue;
+        }
+
+        // Still scanning for the navbar anchor: accumulate into the bounded
+        // window and inject as soon as it is found (or give up at the window
+        // edge and pass the buffer through). These bytes never take the verbatim
+        // path below.
+        if (c.relay_inject) {
+            c.relay_inject_buf.append(buf, (size_t)rd);
+            bool did = false;
+            std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
+            if (did || c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
+                const std::string& emit = did ? merged : c.relay_inject_buf;
+                if (!queue(c, emit, cfg_.max_out_buffer + sizeof buf)) return false;
+                c.relay_total += emit.size();
+                c.relay_inject = false;
+                c.relay_inject_buf.clear();
+                if (!did)
+                    LOGW(MOD, "relay: %s: nav anchor not in first %zu B - page served unchanged",
+                         c.relay_what.c_str(), cfg_.max_inject_bytes);
+            }
             progress();
             continue;
         }
