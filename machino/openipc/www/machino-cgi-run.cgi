@@ -50,11 +50,38 @@ esac
 _script="$CGI_DIR$_t"
 [ -f "$_script" ] || _fail "404 Not Found" "machino-cgi-run: no such cgi '$_t'"
 
-# Ein urlencodetes Feld dekodieren. Reihenfolge im sed: erst vorhandene
-# Backslashes verdoppeln (sonst deutet printf %b sie), dann + -> Leerzeichen,
-# dann %XX -> \xXX.
+# Ein urlencodetes Feld dekodieren. In awk, NICHT via printf '%b' "\xHH":
+# das kann busybox ash (die Laufzeit hier) zwar, der Test-Host-sh (dash) aber
+# nicht -- dort blieb "\x2F" stehen (CI 2026-09-26). awk mit eigener Hex->Byte-
+# Funktion (kein strtonum, das busybox awk fehlt) laeuft auf beiden. + -> Space,
+# %XX -> Byte, alles andere bleibt.
 _decode() {
-    printf '%b' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/+/ /g; s/%\([0-9a-fA-F][0-9a-fA-F]\)/\\x\1/g')"
+    printf '%s' "$1" | awk '
+        function h2d(s,   i, c, n) {
+            n = 0
+            for (i = 1; i <= length(s); i++) {
+                c = index("0123456789abcdef", tolower(substr(s, i, 1))) - 1
+                if (c < 0) return -1
+                n = n * 16 + c
+            }
+            return n
+        }
+        {
+            gsub(/\+/, " ")
+            out = ""
+            n = length($0)
+            i = 1
+            while (i <= n) {
+                c = substr($0, i, 1)
+                if (c == "%" && i + 2 <= n) {
+                    d = h2d(substr($0, i + 1, 2))
+                    if (d >= 0) { out = out sprintf("%c", d); i += 3; continue }
+                }
+                out = out c
+                i++
+            }
+            printf "%s", out
+        }'
 }
 
 # key=value-Paare aus einer &-getrennten Zeichenkette in <prefix>_<key> setzen.
