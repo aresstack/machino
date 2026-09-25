@@ -5,6 +5,10 @@
 // die deren Kopfleiste nicht kennt. Wer daraufklickt, verliert das Menue und
 // kommt nur ueber den Zurueck-Knopf wieder heraus. Als Integration zu wenig.
 //
+// Die gemessenen Fakten zu dieser WebUI -- Bootstrap-Version, welche Dateien
+// es gibt, was main.js kann und was nicht -- stehen in
+// docs/openipc-webui-assets.md. Wer hier etwas aendert, liest das zuerst.
+//
 // WIE: die UI der Kamera wird BENUTZT, nicht nachgebaut. Alles liegt auf
 // derselben Herkunft, also kann die Seite es einfach laden:
 //
