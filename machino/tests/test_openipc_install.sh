@@ -100,6 +100,103 @@ make_camera() {
 					</li>
 EOF
     cp "$R/var/www/cgi-bin/p/header.cgi" "$WORK/header.orig"
+
+    # Die beiden Vertragsflaechen der OpenIPC-Netzwerkseite. Ohne sie liefe der
+    # Installer ins Leere und die Tests darunter waeren wertlos.
+    #
+    # /lib/modules mit dem 802.11-Unterbau, wie ihn das echte Image mitbringt:
+    # cfg80211 und mac80211 ja, Geraetetreiber nein. Genau deshalb zeigte das
+    # Dropdown vor dieser Arbeit nur "None".
+    mkdir -p "$R/lib/modules/4.4.94/kernel/net/wireless"
+    for m in cfg80211 mac80211; do
+        printf 'fake-%s\n' "$m" > "$R/lib/modules/4.4.94/kernel/net/wireless/$m.ko"
+    done
+
+    # /etc/wireless/usb wie im Feld: ein paar Fremdprofile und am Ende exit 1
+    # (so meldet die Datei S40network "diese Id gehoert nicht mir"). Der
+    # aic8800-Eintrag von upstream traegt den SoC-Token ssc337de und wird auf
+    # einem T40 vom SoC-Filter verworfen -- er darf uns also NICHT retten.
+    mkdir -p "$R/etc/wireless"
+    cat > "$R/etc/wireless/usb" <<'EOF'
+#!/bin/sh
+set_gpio() {
+	[ "$2" -eq 1 ] && gpio set $1 || gpio clear $1
+	sleep 1
+}
+if [ "$1" = "mt7601u-generic" ]; then
+	modprobe mt7601u
+	exit 0
+fi
+if [ "$1" = "aic8800-ssc337de-broadband" ]; then
+	modprobe aic8800_fdrv
+	exit 0
+fi
+if [ "$1" = "rtl8188fu-t31-aoni-e97vj62" ]; then
+	set_gpio 53 1
+	modprobe 8188fu
+	exit 0
+fi
+exit 1
+EOF
+    chmod 0755 "$R/etc/wireless/usb"
+    cp "$R/etc/wireless/usb" "$WORK/wireless-usb.orig"
+}
+
+# Die ECHTE adapter_scan()-Logik aus majestic-webui/www/cgi-bin/network.cgi.
+#
+# Wortgleich uebernommen; geaendert sind nur die zwei absoluten Pfade, die hier
+# auf den Testbaum zeigen muessen (/lib/modules und /etc/wireless/$bus). Ein
+# Nachbau waere wertlos: geprueft werden soll, ob OpenIPC unser Profil findet,
+# nicht ob unsere Vorstellung davon zu sich selbst passt. Aendert sich upstream,
+# muss diese Kopie nachgezogen werden -- dann schlaegt hier etwas fehl, und das
+# ist der Sinn.
+#
+# $1 = Wurzel des Testbaums, $2 = soc (wie `ipcinfo --chip-name` ihn liefert).
+# Ausgabe: eine Zeile je angebotenem Profil, "bus<TAB>driver<TAB>id<TAB>pad".
+real_adapter_scan() {
+    _R="$1"; _soc="$2"
+    have=" $(find "$_R/lib/modules" -name '*.ko' 2>/dev/null |
+        sed 's|.*/||; s|\.ko$||' | tr '\n' ' ') "
+    TAB=$(printf '\t')
+    for bus in usb sdio modem; do
+        f="$_R/etc/wireless/$bus"
+        [ -r "$f" ] || continue
+        while IFS="$TAB" read -r id pad tok ms; do
+            [ -n "$id" ] || continue
+            ok=1
+            driver=""
+            for m in $ms; do
+                case "$have" in *" $m "*) ;; *) ok="" ;; esac
+                case "$m" in mac80211|cfg80211|rfkill) ;; *) driver="$m" ;; esac
+            done
+            [ -n "$ok" ] && [ -n "$driver" ] || continue
+            if [ "$tok" != "-" ]; then
+                case "$_soc" in
+                    "$tok"*) ;;
+                    *) case "$tok" in "$_soc"*) ;; *) continue ;; esac ;;
+                esac
+            fi
+            printf '%s\t%s\t%s\t%s\n' "$bus" "$driver" "$id" "$pad"
+        done <<EOF
+$(awk '
+	/^if \[ "\$1" = "/ { split($0, a, "\""); id = a[4]; mods = ""; pad = "-"; next }
+	id != "" && /set_gpio/ {
+		if (pad == "-") { n = split($0, g, /[ \t]+/); for (k = 1; k < n; k++) if (g[k] == "set_gpio") pad = g[k + 1] }
+	}
+	id != "" && /modprobe/ {
+		m = $0; sub(/.*modprobe[ \t]+/, "", m); sub(/[ \t].*/, "", m); mods = mods " " m
+	}
+	id != "" && /^fi/ {
+		tok = "-"
+		n = split(id, part, "-")
+		for (k = 1; k <= n; k++)
+			if (part[k] ~ /^(t[0-9]+|hi[0-9]{4}[a-z0-9]*|gk[0-9]{4}[a-z0-9]*|ssc[0-9]{3}[a-z0-9]*)$/) tok = part[k]
+		print id "\t" pad "\t" tok "\t" mods
+		id = ""
+	}
+' "$f")
+EOF
+    done
 }
 
 # The stand-in for the daemon is a shell script, so AP21's ELF format check has
@@ -476,8 +573,11 @@ has "usb boot script installed by default" "$WORK/root/etc/init.d/S42usb"
 has "usb boot helper installed by default" "$WORK/root/usr/sbin/machino-usb-helper"
 has "role supervisor installed by default"  "$WORK/root/usr/sbin/machino-wifi-role"
 has "hostapd installed by default"          "$WORK/root/usr/sbin/hostapd"
-has "driver installed by default"           "$WORK/root/etc/machino/modules/aic8800.ko"
-has "firmware loader installed by default"  "$WORK/root/etc/machino/modules/aic_load_fw.ko"
+# Unter /lib/modules, nicht mehr unter /etc/machino/modules: nur dort sucht
+# network.cgi (adapter_scan), und nur von dort loest modprobe die Namen auf, die
+# im /etc/wireless/usb-Profil stehen.
+has "driver installed where OpenIPC looks"          "$WORK/root/lib/modules/4.4.94/machino/aic8800.ko"
+has "firmware loader installed where OpenIPC looks" "$WORK/root/lib/modules/4.4.94/machino/aic_load_fw.ko"
 has "firmware blob installed by default"    "$WORK/root/lib/firmware/aic8800DC/fmacfw.bin"
 has "second firmware blob, same directory"  "$WORK/root/lib/firmware/aic8800DC/fmacfw_patch.bin"
 has "third firmware blob, same directory"   "$WORK/root/lib/firmware/aic8800DC/fw_adid.bin"
@@ -691,10 +791,25 @@ usb_tree() {
     : > "$U/dev/ttyUSB0"
 
     BIN="$WORK/usbbin"; rm -rf "$BIN"; mkdir -p "$BIN"
-    for c in insmod modprobe ip usleep; do
+    for c in insmod ip usleep; do
         printf '#!/bin/sh\necho "%s $*" >> "$USB_ACTIONS"\nexit 0\n' "$c" > "$BIN/$c"
         chmod +x "$BIN/$c"
     done
+    # modprobe wie auf dem Geraet: es findet NUR, was unter /lib/modules liegt.
+    # Ein Stub, der immer 0 liefert, machte die insmod-Erwartungen unten
+    # wertlos -- load_module kaeme nie bis dorthin und der Test waere gruen,
+    # ohne irgendetwas zu beweisen.
+    cat > "$BIN/modprobe" <<'EOS'
+#!/bin/sh
+echo "modprobe $*" >> "$USB_ACTIONS"
+for a in "$@"; do
+    case "$a" in -*) continue ;; esac
+    find "${MACHINO_ROOT:-}/lib/modules" -name "$a.ko" 2>/dev/null | grep -q . && exit 0
+    exit 1
+done
+exit 1
+EOS
+    chmod +x "$BIN/modprobe"
     # lsmod meldet konsequent "nichts geladen", damit load_module wirklich
     # jedes Mal bis zum insmod kommt.
     printf '#!/bin/sh\nexit 0\n' > "$BIN/lsmod"; chmod +x "$BIN/lsmod"
@@ -1015,6 +1130,89 @@ for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbi
     if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
     if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi
 done
+
+# --------- 14) the OpenIPC network page must be able to offer our WiFi -------
+#
+# Der Befund vom 2026-09-25: das Dropdown zeigte ausschliesslich "None", obwohl
+# der AIC8800 auf genau dieser Kamera schon lief. Die Module lagen unter
+# /etc/machino/modules, wo network.cgi nicht sucht, und ein passendes Profil gab
+# es nicht. Geprueft wird deshalb gegen die ECHTE adapter_scan()-Logik.
+make_bundle; make_camera auto
+
+# Vorher: die Seite hat nichts anzubieten. Das ist der reproduzierte Fehler.
+if real_adapter_scan "$WORK/root" t40nn | grep -q aic8800; then
+    bad "the fake camera already offers an aic8800 profile before installing"
+else ok; fi
+
+run_install || bad "install failed: $(cat "$WORK/out")"
+
+# a) Die Module liegen dort, wo OpenIPC sucht.
+if find "$WORK/root/lib/modules" -name 'aic8800.ko' | grep -q . &&
+   find "$WORK/root/lib/modules" -name 'aic_load_fw.ko' | grep -q .; then ok
+else bad "the AIC modules are not under /lib/modules, where network.cgi looks"; fi
+
+# b) Die echte Scanner-Logik bietet unser Profil an.
+scan=$(real_adapter_scan "$WORK/root" t40nn)
+if printf '%s\n' "$scan" | grep -q 'aic8800-t40-machino'; then ok
+else bad "the real adapter_scan does not offer our profile: [$scan]"; fi
+
+# c) Es wird als Treiber aic8800 gefuehrt, nicht als reines Stack-Modul.
+if printf '%s\n' "$scan" | grep -q "^usb	aic8800	aic8800-t40-machino"; then ok
+else bad "our profile is not reported with driver aic8800: [$scan]"; fi
+
+# d) Der SoC-Filter bleibt scharf: das ssc337de-Profil von upstream darf auf
+#    einem T40 NICHT erscheinen, und unseres nicht auf einer Sigmastar.
+if printf '%s\n' "$scan" | grep -q 'ssc337de'; then
+    bad "the ssc337de profile leaked onto a T40 - the SoC filter is broken"
+else ok; fi
+if real_adapter_scan "$WORK/root" ssc337de | grep -q 'aic8800-t40-machino'; then
+    bad "our t40 profile leaked onto a sigmastar SoC"
+else ok; fi
+
+# e) t40 muss per Praefix auch t40nn treffen -- das ist der ganze Grund fuer
+#    den Profilnamen.
+if real_adapter_scan "$WORK/root" t40 | grep -q 'aic8800-t40-machino'; then ok
+else bad "our profile does not match the plain t40 SoC"; fi
+
+# f) Idempotent: zweimal installieren ergibt genau einen Block.
+run_install || bad "second install failed: $(cat "$WORK/out")"
+n=$(grep -c 'machino aic8800-t40-machino >>>' "$WORK/root/etc/wireless/usb")
+if [ "$n" = "1" ]; then ok; else bad "installing twice left $n profile blocks"; fi
+
+# g) Der Block steht VOR dem abschliessenden exit 1 -- dahinter waere er tot.
+if awk '/^exit 1$/ { last = NR } /aic8800-t40-machino/ { mine = NR } END { exit !(mine && last && mine < last) }' \
+      "$WORK/root/etc/wireless/usb"; then ok
+else bad "the profile block sits after the final exit 1 and can never run"; fi
+
+# h) Fremde Profile bleiben unangetastet.
+for keep in mt7601u-generic aic8800-ssc337de-broadband rtl8188fu-t31-aoni-e97vj62; do
+    if grep -q "\"$keep\"" "$WORK/root/etc/wireless/usb"; then ok
+    else bad "installing removed the foreign profile $keep"; fi
+done
+
+# i) Kein Hosttest darf depmod auf dem Entwicklerrechner ausfuehren.
+if grep -q 'depmod' "$WORK/out"; then bad "depmod ran against a fake root"; else ok; fi
+
+# j) /var/www bleibt unberuehrt (ohne --with-network-page).
+if cmp -s "$WORK/root/var/www/cgi-bin/p/header.cgi" "$WORK/header.orig"; then ok
+else bad "the WiFi integration modified /var/www"; fi
+
+# k) Keine doppelte Boot-Aktivierung: der Helfer tritt zurueck, wenn wlandev
+#    unser Profil nennt (S40network laeuft vorher und hat es schon gestartet).
+if grep -q 'wlandev_owns_wifi' "$PKG/sbin/machino-usb-helper" &&
+   grep -q 'wifi-attach' "$PKG/sbin/machino-usb-helper"; then ok
+else bad "the helper has no wlandev stand-down / wifi-attach entry point"; fi
+
+# l) Deinstallieren stellt den vorherigen Zustand wieder her.
+run_uninstall || bad "uninstall failed: $(cat "$WORK/out")"
+if cmp -s "$WORK/root/etc/wireless/usb" "$WORK/wireless-usb.orig"; then ok
+else bad "uninstall did not restore /etc/wireless/usb byte for byte"; fi
+if find "$WORK/root/lib/modules" -name 'aic8800.ko' | grep -q .; then
+    bad "uninstall left the AIC modules under /lib/modules"
+else ok; fi
+if real_adapter_scan "$WORK/root" t40nn | grep -q 'aic8800-t40-machino'; then
+    bad "the profile is still offered after uninstalling"
+else ok; fi
 
 if [ "$SKIP" -gt 0 ]; then
     echo "openipc install tests: $PASS passed, $FAIL failed, $SKIP skipped"

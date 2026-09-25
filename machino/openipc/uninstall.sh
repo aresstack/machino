@@ -115,6 +115,50 @@ if [ -d "$STATE_DIR/modules" ]; then
     rm -f "$STATE_DIR/modules/aic8800.ko" "$STATE_DIR/modules/aic_load_fw.ko"
     rmdir "$STATE_DIR/modules" 2>/dev/null || true
 fi
+# Seit der OpenIPC-Integration liegen die WLAN-Module unter /lib/modules/<ver>/
+# machino, damit network.cgi sie findet. Nur unser eigenes Unterverzeichnis
+# wird entfernt -- /lib/modules gehoert uns nicht.
+for _kd in "$ROOT"/lib/modules/*/machino; do
+    [ -d "$_kd" ] || continue
+    rm -f "$_kd/aic8800.ko" "$_kd/aic_load_fw.ko"
+    rmdir "$_kd" 2>/dev/null || true
+done
+# Der Modulindex muss danach stimmen, sonst zeigt modules.dep auf Dateien, die
+# es nicht mehr gibt. Nur auf dem echten Geraet (siehe install.sh).
+if [ -z "$ROOT" ] && command -v depmod >/dev/null 2>&1; then
+    depmod -a >/dev/null 2>&1 || true
+fi
+
+# Unser Profil aus /etc/wireless/usb, markerbegrenzt -- fremde Profile in
+# derselben Datei bleiben unangetastet.
+_wusb="$ROOT/etc/wireless/usb"
+_wbeg="# >>> machino aic8800-t40-machino >>>"
+_wend="# <<< machino aic8800-t40-machino <<<"
+if [ -f "$_wusb" ] && grep -qF "$_wbeg" "$_wusb"; then
+    if awk -v b="$_wbeg" -v e="$_wend" '
+            index($0, b) == 1 { skip = 1; next }
+            index($0, e) == 1 { skip = 0; next }
+            !skip
+        ' "$_wusb" > "$_wusb.machino.tmp" 2>/dev/null &&
+       mv -f "$_wusb.machino.tmp" "$_wusb"; then
+        chmod 0755 "$_wusb" 2>/dev/null
+        say "removed the WiFi profile from $_wusb"
+    else
+        rm -f "$_wusb.machino.tmp"
+        warn "could not remove the WiFi profile from $_wusb"
+    fi
+fi
+# wlandev zeigte womoeglich auf genau dieses Profil. Bliebe es stehen, riefe
+# S40network beim naechsten Boot ein Profil auf, das es nicht mehr gibt: die
+# Datei liefert exit 1, S40network faellt auf keinen Zweig und liesse die
+# Kamera ohne eth0 stehen. Also zurueck auf verkabelt.
+if [ -z "$ROOT" ] && command -v fw_printenv >/dev/null 2>&1; then
+    if [ "$(fw_printenv -n wlandev 2>/dev/null)" = "aic8800-t40-machino" ]; then
+        fw_setenv wlandev "" >/dev/null 2>&1 &&
+            say "cleared wlandev (it pointed at the removed profile)" ||
+            warn "could not clear wlandev - it still names the removed profile"
+    fi
+fi
 rm -rf "$ROOT/lib/firmware/aic8800DC"
 
 # Mobilfunk: Helfer, DHCP-Hook und die Modem-Kernelmodule. Auch das haben wir

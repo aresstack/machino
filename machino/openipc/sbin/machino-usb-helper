@@ -108,9 +108,29 @@ port_power_on() {
 
 load_module() {
 	lsmod | grep -q "^$1 " && return 0
+	# Erst modprobe: die WLAN-Module liegen seit der OpenIPC-Integration unter
+	# /lib/modules (dort sucht auch network.cgi) und sind per depmod aufloesbar.
+	# Danach der alte Weg fuer alles, was noch in $MODDIR liegt (Modem).
+	modprobe "$1" 2>/dev/null && return 0
 	[ -f "$MODDIR/$1.ko" ] || { say "$MODDIR/$1.ko fehlt"; return 1; }
 	insmod "$MODDIR/$1.ko" || { say "$1 liess sich nicht laden"; return 1; }
 	return 0
+}
+
+# Wem gehoert WLAN beim Boot?
+#
+# OpenIPCs S40network liest wlandev aus dem U-Boot-Env und ruft
+# /etc/wireless/usb "$wlandev" -- und das Profil, das der Installer dort
+# eintraegt, laedt bereits unsere Module und ruft uns mit "wifi-attach".
+# S40network laeuft VOR S42usb. Steht dort also unser Profil, ist WLAN beim
+# Erreichen dieses Skripts schon versorgt, und ein zweiter Durchlauf wuerde den
+# Rollen-Supervisor ein zweites Mal starten.
+#
+# EIN Besitzer, und zwar der, den die OpenIPC-Oberflaeche gesetzt hat.
+wlandev_owns_wifi() {
+	command -v fw_printenv >/dev/null 2>&1 || return 1
+	_wd=$(fw_printenv -n wlandev 2>/dev/null)
+	[ "$_wd" = "aic8800-t40-machino" ]
 }
 
 # ----------------------------------------------------------------- WLAN ----
@@ -348,7 +368,11 @@ start() {
 			say "aus (usb.mode=off) - kein Modul, kein Portstrom, kein Daemon"
 			;;
 		wifi)
-			start_wifi || say "WLAN kam nicht hoch"
+			if wlandev_owns_wifi; then
+				say "WLAN gehoert wlandev (OpenIPC-Netzwerkseite) - S40network hat es bereits gestartet"
+			else
+				start_wifi || say "WLAN kam nicht hoch"
+			fi
 			;;
 		cellular)
 			start_cellular || say "Mobilfunk kam nicht hoch"
@@ -376,6 +400,12 @@ case "${1:-}" in
 	start) start ;;
 	stop)  stop ;;
 	restart) stop; sleep 2; start ;;
+	# Aufgerufen aus dem /etc/wireless/usb-Profil, nachdem dieses die Module per
+	# modprobe geladen hat. start_wifi ueberspringt bereits geladene Module
+	# (lsmod-Pruefung in load_module) und macht hier genau den Rest: Portstrom
+	# PB18/GPIO50, auf wlan0 warten, Interface hoch, Rollen-Supervisor. So steht
+	# die auf Hardware erarbeitete Sequenz an EINER Stelle.
+	wifi-attach) start_wifi || { say "WLAN kam nicht hoch"; exit 1; } ;;
 	mode) read_mode ;;
 	status)
 		echo "configured: $(read_mode)"
@@ -388,5 +418,5 @@ case "${1:-}" in
 		echo "ttyUSB:     $(ls $DEVDIR/ttyUSB* 2>/dev/null | tr '\n' ' ')"
 		echo "cell helper:$([ -f "$CELL_PIDFILE" ] && echo " laeuft" || echo " aus")"
 		;;
-	*) echo "usage: $0 {start|stop|restart|status|mode}"; exit 1 ;;
+	*) echo "usage: $0 {start|stop|restart|status|mode|wifi-attach}"; exit 1 ;;
 esac

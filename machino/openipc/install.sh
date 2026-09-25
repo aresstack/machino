@@ -39,9 +39,128 @@ CGI="$WWW/cgi-bin"
 INITD="$ROOT/etc/init.d"
 BACKUP="$STATE_DIR/backup"
 
+# Der Vertrag der OpenIPC-Netzwerkseite. Nicht erfunden, sondern aus
+# www/cgi-bin/network.cgi (adapter_scan) und /etc/init.d/S40network gelesen:
+#
+#   network.cgi   parst /etc/wireless/{usb,sdio,modem} auf Bloecke der Form
+#                 if [ "$1" = "<id>" ] ... fi, zieht die modprobe-NAMEN heraus
+#                 und bietet ein Profil nur an, wenn JEDES dieser Module als
+#                 .ko unter /lib/modules liegt und mindestens eines davon kein
+#                 reines Stack-Modul (mac80211/cfg80211/rfkill) ist.
+#   SoC-Filter    der Token kommt aus der Id (Teil, der auf ^t[0-9]+$ o.ae.
+#                 passt) und muss praefix-kompatibel zu `ipcinfo --chip-name`
+#                 sein. "t40" passt damit auch auf t40nn.
+#   S40network    liest wlandev aus dem U-Boot-Env und ruft
+#                 /etc/wireless/usb "$wlandev" auf, dann ifup wlan0.
+#
+# Deshalb genuegt es NICHT, die Module nach /etc/machino/modules zu legen und
+# selbst per insmod zu laden: fuer die Seite existieren sie dann nicht, das
+# Dropdown zeigt nur "None", und der bereits auf Hardware bewiesene AIC8800
+# bleibt unerreichbar. Genau dieser Befund am 2026-09-25.
+WIRELESS_USB="$ROOT/etc/wireless/usb"
+WIFI_PROFILE="aic8800-t40-machino"   # Token t40 -> greift auf t40 und t40nn
+WIFI_MARK_BEGIN="# >>> machino $WIFI_PROFILE >>>"
+WIFI_MARK_END="# <<< machino $WIFI_PROFILE <<<"
+
 say()  { echo "$*"; }
 warn() { echo "install: $*" >&2; }
 die()  { echo "install: $*" >&2; exit 1; }
+
+# Wohin Kernelmodule gehoeren, damit modprobe UND network.cgi sie finden.
+#
+# Die Version kommt aus dem BESTEHENDEN Baum, nicht aus `uname -r`: weichen die
+# beiden ab, legte uname -r einen zweiten, leeren Zweig an, den modprobe nie
+# benutzt. Nur wenn der Baum mehrdeutig ist (0 oder >1 Verzeichnisse), bleibt
+# uname -r als Notnagel.
+kmod_dir() {
+    _kd=""
+    for _d in "$ROOT"/lib/modules/*/; do
+        [ -d "$_d" ] || continue
+        if [ -n "$_kd" ]; then _kd=""; break; fi
+        _kd="$_d"
+    done
+    [ -n "$_kd" ] || _kd="$ROOT/lib/modules/$(uname -r)/"
+    printf '%s' "${_kd%/}/machino"
+}
+
+# Unseren Block aus /etc/wireless/usb entfernen -- und NUR unseren. Zwischen
+# den Markern, damit fremde Profile unberuehrt bleiben; das ist eine
+# OpenIPC-Datei, in der wir zu Gast sind.
+wireless_profile_remove() {
+    [ -f "$WIRELESS_USB" ] || return 0
+    grep -qF "$WIFI_MARK_BEGIN" "$WIRELESS_USB" || return 0
+    awk -v b="$WIFI_MARK_BEGIN" -v e="$WIFI_MARK_END" '
+        index($0, b) == 1 { skip = 1; next }
+        index($0, e) == 1 { skip = 0; next }
+        !skip
+    ' "$WIRELESS_USB" > "$WIRELESS_USB.machino-new" 2>/dev/null &&
+        mv -f "$WIRELESS_USB.machino-new" "$WIRELESS_USB" || {
+            rm -f "$WIRELESS_USB.machino-new"
+            return 1
+        }
+    return 0
+}
+
+# Den Block VOR das abschliessende `exit 1` setzen.
+#
+# Nicht anhaengen: die Datei endet auf `exit 1` (so meldet sie S40network "diese
+# Id gehoert nicht mir"), alles dahinter waere toter Code und das Dropdown
+# bliebe leer.
+#
+# Die modprobe-Zeilen sind doppelt gemeint. network.cgi liest genau sie, um zu
+# entscheiden, ob das Profil angeboten wird -- und zur Laufzeit laden sie die
+# Module wirklich. Ein `insmod <pfad>` wuerde laden, aber vom Scanner nicht
+# gesehen. Die Reihenfolge ist auf Hardware erarbeitet (aic8800-bringup.md):
+# cfg80211, dann aic_load_fw (liefert die Symbole), dann aic8800 -- und der
+# Portstrom PB18/GPIO50 ZULETZT, damit das Geraet erst auftaucht, wenn der
+# Treiber registriert ist. Den letzten Schritt macht der Helfer, damit die
+# bewaehrte Sequenz an EINER Stelle steht statt hier nachgebaut zu werden.
+wireless_profile_install() {
+    [ -f "$WIRELESS_USB" ] || {
+        warn "$WIRELESS_USB does not exist - this image has no OpenIPC wireless profiles;"
+        warn "the WiFi adapter cannot appear in the OpenIPC network page."
+        return 0
+    }
+    wireless_profile_remove || { warn "cannot rewrite $WIRELESS_USB"; return 1; }
+    awk -v b="$WIFI_MARK_BEGIN" -v e="$WIFI_MARK_END" -v id="$WIFI_PROFILE" '
+        { line[++n] = $0; if ($0 ~ /^[ \t]*exit[ \t]+1[ \t]*$/) last = n }
+        END {
+            if (!last) last = n + 1
+            for (i = 1; i <= n; i++) {
+                if (i == last) {
+                    print b
+                    print "if [ \"$1\" = \"" id "\" ]; then"
+                    print "\tmodprobe cfg80211"
+                    print "\tmodprobe aic_load_fw"
+                    print "\tmodprobe aic8800"
+                    print "\t/usr/sbin/machino-usb-helper wifi-attach"
+                    print "\texit 0"
+                    print "fi"
+                    print e
+                }
+                print line[i]
+            }
+            if (last > n) {
+                print b
+                print "if [ \"$1\" = \"" id "\" ]; then"
+                print "\tmodprobe cfg80211"
+                print "\tmodprobe aic_load_fw"
+                print "\tmodprobe aic8800"
+                print "\t/usr/sbin/machino-usb-helper wifi-attach"
+                print "\texit 0"
+                print "fi"
+                print e
+            }
+        }
+    ' "$WIRELESS_USB" > "$WIRELESS_USB.machino-new" 2>/dev/null &&
+        mv -f "$WIRELESS_USB.machino-new" "$WIRELESS_USB" || {
+            rm -f "$WIRELESS_USB.machino-new"
+            warn "cannot write $WIRELESS_USB"
+            return 1
+        }
+    chmod 0755 "$WIRELESS_USB" 2>/dev/null
+    return 0
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -424,13 +543,32 @@ if [ "$WITH_WIFI_PAYLOAD" = "1" ]; then
         { put 0755 "$HERE/udhcpc-wlan.script" "$STATE_DIR/udhcpc-wlan.script" ||
           warn "could not install the udhcpc hook - the WiFi default route will have no metric"; }
 
+    # Nach /lib/modules, nicht nach /etc/machino/modules: siehe den Vertrag oben
+    # bei WIRELESS_USB. Dort sucht network.cgi, und nur von dort loest modprobe
+    # die Namen auf, die im Profil stehen.
     _mods=0
+    _kmods=$(kmod_dir)
     for _ko in "$HERE"/wifi/modules/*.ko; do
         [ -r "$_ko" ] || continue
-        put 0644 "$_ko" "$STATE_DIR/modules/$(basename "$_ko")" ||
+        put 0644 "$_ko" "$_kmods/$(basename "$_ko")" ||
             die "cannot install $(basename "$_ko")"
         _mods=$((_mods + 1))
     done
+
+    # depmod nur auf dem echten Geraet. Mit gesetztem ROOT (Hosttests) wuerde
+    # ein nacktes `depmod -a` den Modulbaum des ENTWICKLERRECHNERS anfassen.
+    if [ "$_mods" -gt 0 ] && [ -z "$ROOT" ]; then
+        if command -v depmod >/dev/null 2>&1; then
+            depmod -a >/dev/null 2>&1 ||
+                warn "depmod failed - modprobe may not resolve the WiFi modules"
+        else
+            warn "no depmod on this camera - modprobe may not resolve the WiFi modules"
+        fi
+    fi
+
+    # Erst jetzt das Profil: es verweist auf genau diese Module.
+    wireless_profile_install ||
+        warn "could not register the WiFi profile in $WIRELESS_USB"
 
     # Ohne Firmware bindet der Treiber und scheitert danach: der Chip laedt
     # sein Image beim Probe. Ein Modul ohne Blobs ist schlimmer als keines,
