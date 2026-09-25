@@ -46,6 +46,16 @@
 "use strict";
 const $ = (s, r) => (r || document).querySelector(s);
 
+async function mchFetch(path, init) {
+  const opts = Object.assign({ credentials: "same-origin" }, init || {});
+  const r = await fetch(path, opts);
+  if (r.status === 401) {
+    location.href = "/login.html?next=/cgi-bin/machino-devices.cgi";
+    throw new Error("unauthorized");
+  }
+  return r;
+}
+
 function msg(text, kind) {
   const m = $("#msg");
   if (!text) { m.hidden = true; return; }
@@ -147,8 +157,8 @@ async function act(id, verb, el) {
   el.querySelectorAll("button").forEach((b) => (b.disabled = true));
   msg("");
   try {
-    const r = await fetch("/api/v1/devices/" + encodeURIComponent(id) + "/" + verb,
-                          { method: "POST" });
+    const r = await mchFetch("/api/v1/devices/" + encodeURIComponent(id) + "/" + verb,
+                             { method: "POST" });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error((body.error && body.error.message) || ("HTTP " + r.status));
     msg(verb === "install"
@@ -166,7 +176,7 @@ async function act(id, verb, el) {
 async function load() {
   const box = $("#list");
   try {
-    const r = await fetch("/api/v1/devices");
+    const r = await mchFetch("/api/v1/devices");
     if (!r.ok) throw new Error("HTTP " + r.status);
     const j = await r.json();
     const list = (j && j.devices) || [];
