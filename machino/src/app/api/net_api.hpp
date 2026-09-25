@@ -22,6 +22,7 @@
 #include "app/api/net_views.hpp"
 #include "core/net/cellular_uplink.hpp"
 #include "core/net/connectivity.hpp"
+#include "core/devices/device_package.hpp"
 #include "core/net/network_txn.hpp"
 #include "core/usb/usb_host_service.hpp"
 #include "ports/inetwork.hpp"
@@ -54,6 +55,9 @@ public:
         net::IWifiAdapter*        wifi = nullptr;
         net::CellularUplink*      cellular = nullptr;
         net::NetworkTxn*          txn = nullptr;
+        // Der Geraetemanager (WLAN-/Modem-Pakete). Optional wie alles hier: ein
+        // Build ohne ihn antwortet mit 404 und Begruendung statt so zu tun.
+        devices::DeviceManager*   devices = nullptr;
         ClockFn                   now_ms;
 
         // Called AFTER a staged change has been confirmed, with the candidate
@@ -93,6 +97,10 @@ private:
     Response usb_get() const;
     Response usb_patch(const std::string& body);
     Response usb_devices() const;
+    // Geraetemanager: Liste und die beiden Aktionen. Installieren aktiviert
+    // nicht -- der gemeinsame Port wird weiter ueber /api/v1/usb gesetzt.
+    Response devices_get() const;
+    Response devices_action(const std::string& id, bool install);
 
     Json     net_views_policy() const;
     Response network_get() const;

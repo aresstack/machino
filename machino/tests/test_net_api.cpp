@@ -800,6 +800,93 @@ void test_cellular_rejects_the_wrong_method()
     TCHECK(call(api, "DELETE", "/api/v1/network/cellular/presets").r.status == 405);
 }
 
+// Der Geraetemanager ueber HTTP.
+//
+// Zwei Dinge sollen hier festgenagelt sein. Erstens: /api/v1/devices ist NICHT
+// dasselbe wie /api/v1/usb/devices -- das eine sagt, was am Bus haengt, das
+// andere, was im System eingerichtet ist. Genau diese Verwechslung war der
+// Fehler vom 2026-09-25. Zweitens: installieren aktiviert nicht.
+namespace {
+
+class StubPackage : public devices::IDevicePackage {
+public:
+    std::string id() const override { return "aic8800"; }
+    std::string title() const override { return "AIC8800DC WLAN"; }
+    bool is_supported() const override { return true; }
+    bool is_available() const override { return available; }
+    bool is_installed() const override { return installed; }
+    bool is_hardware_present() const override { return true; }
+    bool is_active() const override { return active; }
+    Result install() override {
+        if (!available) return Result::error();
+        ++installs; pending = true; return Result::ok();
+    }
+    Result uninstall() override { ++uninstalls; return Result::ok(); }
+    devices::DeviceStatus status() const override {
+        devices::DeviceStatus s;
+        s.id = id(); s.title = title(); s.driver = "aic8800";
+        s.state = installed ? devices::InstallState::Installed
+                : pending   ? devices::InstallState::InstallPending
+                : available ? devices::InstallState::NotInstalled
+                            : devices::InstallState::Unavailable;
+        s.openipc_registered = installed;
+        s.hardware_present = true;
+        s.active = active;
+        if (pending) s.detail = "wirksam nach dem naechsten Neustart";
+        return s;
+    }
+    bool available = true, installed = false, active = false, pending = false;
+    int installs = 0, uninstalls = 0;
+};
+
+} // namespace
+
+void test_devices_surface()
+{
+    Rig rig;
+    StubPackage pkg;
+    devices::DeviceManager dm;
+    dm.add(&pkg);
+    NetApiService::Deps d = rig.deps();
+    d.devices = &dm;
+    NetApiService api(d);
+
+    // Liste: die Zustaende einzeln, nicht zu einem Satz verdichtet.
+    Call c = call(api, "GET", "/api/v1/devices", "");
+    TCHECK(c.routed && c.r.status == 200);
+    TCHECK(contains(dumped(c.r), "aic8800"));
+    TCHECK(contains(dumped(c.r), "not-installed"));
+    TCHECK(contains(dumped(c.r), "hardwarePresent"));
+
+    // Installieren wird vorgemerkt und aktiviert NICHT.
+    c = call(api, "POST", "/api/v1/devices/aic8800/install", "");
+    TCHECK(c.routed && c.r.status == 200);
+    TCHECK(pkg.installs == 1);
+    TCHECK(!pkg.active);
+    TCHECK(contains(dumped(c.r), "install-pending"));
+    TCHECK(contains(dumped(c.r), "Neustart"));
+
+    // Falsche Methode und unbekanntes Geraet sagen das, statt durchzufallen.
+    c = call(api, "GET", "/api/v1/devices/aic8800/install", "");
+    TCHECK(c.routed && c.r.status == 405);
+    c = call(api, "POST", "/api/v1/devices/gibtsnicht/install", "");
+    TCHECK(c.routed && c.r.status == 404);
+    c = call(api, "POST", "/api/v1/devices/aic8800/fliegen", "");
+    TCHECK(c.routed && c.r.status == 404);
+
+    // Ohne Nutzlast ist Installieren ein Konflikt, kein stiller Erfolg.
+    pkg.available = false; pkg.pending = false;
+    c = call(api, "POST", "/api/v1/devices/aic8800/install", "");
+    TCHECK(c.routed && c.r.status == 409);
+
+    // Ohne verdrahteten Manager: 404 mit Begruendung, kein Absturz.
+    NetApiService::Deps bare = rig.deps();
+    NetApiService api2(bare);
+    c = call(api2, "GET", "/api/v1/devices", "");
+    TCHECK(c.routed && c.r.status == 404);
+    TCHECK(contains(dumped(c.r), "device manager"));
+}
+
 void run_net_api_tests()
 {
     test_the_cellular_document_never_carries_the_pin_or_the_password();
@@ -842,4 +929,5 @@ void run_net_api_tests()
     test_policy_patch_that_cannot_be_persisted_changes_nothing();
     test_unwired_features_are_404_not_a_crash();
     test_a_staged_change_without_a_known_good_baseline_is_refused();
+    test_devices_surface();
 }

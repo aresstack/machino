@@ -69,6 +69,33 @@ bool NetApiService::handle(const std::string& method, const std::string& path,
         if (method == "GET") { out = usb_devices(); return true; }
         return wrong_method("GET");
     }
+    // Der Geraetemanager. Bewusst NICHT unter /api/v1/usb/devices: das dort ist
+    // die Aufzaehlung dessen, was gerade am Bus haengt (Hardware), waehrend es
+    // hier um die Unterstuetzung im System geht (Treiber + OpenIPC-Profil).
+    // Beides zusammenzulegen waere genau die Begriffsvermischung, die uns den
+    // 2026-09-25 gekostet hat.
+    if (path == "/api/v1/devices") {
+        if (method == "GET") { out = devices_get(); return true; }
+        return wrong_method("GET");
+    }
+    {
+        const std::string pfx = "/api/v1/devices/";
+        if (path.rfind(pfx, 0) == 0) {
+            const std::string rest = path.substr(pfx.size());
+            const size_t slash = rest.find('/');
+            const std::string id = rest.substr(0, slash);
+            const std::string verb = (slash == std::string::npos) ? std::string()
+                                                                  : rest.substr(slash + 1);
+            if (!id.empty() && (verb == "install" || verb == "uninstall")) {
+                // POST, nicht PATCH: es ist eine Aktion mit Nachwirkung ueber
+                // den Neustart hinaus, keine Feldaenderung.
+                if (method == "POST") { out = devices_action(id, verb == "install"); return true; }
+                return wrong_method("POST");
+            }
+            out = ApiService::fail(404, "unknown_field", path, "no such device resource");
+            return true;
+        }
+    }
     if (path == "/api/v1/network") {
         if (method == "GET") { out = network_get(); return true; }
         return wrong_method("GET");
@@ -186,6 +213,58 @@ Response NetApiService::usb_devices() const
 {
     if (!d_.usb) return not_wired("/api/v1/usb/devices", "the USB host");
     return ok(usb_devices_json(d_.usb->status().devices));
+}
+
+// Die vier Zustaende getrennt ausgeben, nicht zu einem Satz verdichtet. Wer
+// "installiert: ja" liest, muss daneben sehen koennen, dass OpenIPC es noch
+// nicht registriert hat oder dass kein Adapter steckt -- sonst entsteht wieder
+// derselbe blinde Fleck.
+Response NetApiService::devices_get() const
+{
+    if (!d_.devices) return not_wired("/api/v1/devices", "the device manager");
+    Json a = Json::array();
+    for (const devices::DeviceStatus& s : d_.devices->list()) {
+        Json o = Json::object();
+        o.set("id", Json::string(s.id));
+        o.set("title", Json::string(s.title));
+        o.set("driver", Json::string(s.driver));
+        o.set("state", Json::string(devices::install_state_name(s.state)));
+        o.set("openipcRegistered", Json::boolean(s.openipc_registered));
+        o.set("hardwarePresent", Json::boolean(s.hardware_present));
+        o.set("driverLoaded", Json::boolean(s.driver_loaded));
+        o.set("active", Json::boolean(s.active));
+        if (!s.detail.empty()) o.set("detail", Json::string(s.detail));
+        a.push(o);
+    }
+    Json j = Json::object();
+    j.set("devices", a);
+    return ok(j);
+}
+
+Response NetApiService::devices_action(const std::string& id, bool install)
+{
+    const std::string path = "/api/v1/devices/" + id + (install ? "/install" : "/uninstall");
+    if (!d_.devices) return not_wired(path, "the device manager");
+    devices::IDevicePackage* p = d_.devices->find(id);
+    if (!p) return ApiService::fail(404, "unknown_field", path, "no such device");
+
+    const Result r = install ? p->install() : p->uninstall();
+    if (!r.is_ok()) {
+        if (r.status == Status::Unsupported)
+            return ApiService::fail(409, "invalid_value", path,
+                                    "this build does not support that device");
+        return ApiService::fail(409, "invalid_value", path,
+                                install ? "nothing to install - the release carries no payload for it"
+                                        : "could not record the removal");
+    }
+    // Der Zustand danach, damit der Aufrufer nicht raten muss, ob es sofort
+    // galt oder erst nach dem Neustart gilt.
+    const devices::DeviceStatus s = p->status();
+    Json j = Json::object();
+    j.set("id", Json::string(s.id));
+    j.set("state", Json::string(devices::install_state_name(s.state)));
+    if (!s.detail.empty()) j.set("detail", Json::string(s.detail));
+    return ok(j);
 }
 
 // ---------------------------------------------------------- connectivity
