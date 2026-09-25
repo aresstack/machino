@@ -988,6 +988,7 @@ setInterval(() => {
   loadCellular().catch(() => {});
 }, 5000);
 </script>
+<script src="/machino/chrome.js" defer></script>
 </body>
 </html>
 )MACHINO_HTML";

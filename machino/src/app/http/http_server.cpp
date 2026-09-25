@@ -1,4 +1,5 @@
 #include "app/http/http_server.hpp"
+#include "app/http/chrome.hpp"
 #include "app/http/netui.hpp"
 #include "app/http/devui.hpp"
 #include "app/compat/majestic_webui.hpp"
@@ -470,6 +471,24 @@ bool HttpServer::handle_request(Client& c) {
         else {
             const bool ok = queue(c, response(200, "text/html; charset=utf-8",
                                               std::string(machino_net_page(), machino_net_page_len()),
+                                              req.keep_alive));
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
+        }
+    } else if (path == "/machino/chrome.js") {
+        // Die Kopfleiste fuer Machinos eigene Seiten. Bewusst eine eigene
+        // Datei statt zweimal inline: beide Seiten brauchen dasselbe, und der
+        // Browser kann sie zwischenspeichern. Siehe app/http/chrome.hpp dafuer,
+        // warum nur die LINKS der Stock-WebUI uebernommen werden und nicht
+        // deren Markup samt CSS.
+        //
+        // Nicht an net_api_ gebunden: ein Skript, das nichts tut, wenn es
+        // nichts zu zeigen gibt, ist harmlos -- ein 404 mitten in einer
+        // ausgelieferten Seite dagegen steht in jeder Browserkonsole.
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else {
+            const bool ok = queue(c, response(200, "application/javascript; charset=utf-8",
+                                              std::string(machino_chrome_js(), machino_chrome_js_len()),
                                               req.keep_alive));
             if (!req.keep_alive) c.close_after_flush = true;
             return ok;

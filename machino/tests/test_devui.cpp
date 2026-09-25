@@ -9,6 +9,7 @@
 //
 // Das Aussehen bleibt PENDING_BROWSER (H19 in docs/pending-physical.md).
 #include "app/http/devui.hpp"
+#include "app/http/chrome.hpp"
 #include "core/devices/device_package.hpp"
 
 #include <cstdio>
@@ -116,6 +117,26 @@ void test_nothing_here_touches_the_media_path()
     TCHECK(!has(p, "/ws/video"));
 }
 
+
+// Die Kopfleiste: beide Machino-Seiten binden dasselbe Skript ein, und das
+// Skript darf die Seite nicht davon abhaengig machen, dass es etwas findet.
+void test_the_pages_carry_the_chrome()
+{
+    TCHECK(has(page(), "/machino/chrome.js"));
+
+    const std::string js(machino::http::machino_chrome_js(),
+                         machino::http::machino_chrome_js_len());
+    // Gleiche Herkunft, damit die Sitzung mitgeht -- sonst kaeme immer nur
+    // die Anmeldeseite zurueck und die Leiste bliebe leer.
+    TCHECK(has(js, "same-origin"));
+    // Nur die Links werden uebernommen. Wer deren Stylesheet oder Skripte
+    // nachlaedt, hat zwei Layouts auf einer Seite.
+    TCHECK(!has(js, "stylesheet"));
+    TCHECK(!has(js, "<script"));
+    // Und ein Fehlschlag bleibt folgenlos.
+    TCHECK(has(js, "catch"));
+}
+
 } // namespace
 
 void run_devui_tests()
@@ -126,4 +147,5 @@ void run_devui_tests()
     test_the_state_names_match_install_state_name();
     test_the_page_says_what_it_does_not_do();
     test_nothing_here_touches_the_media_path();
+    test_the_pages_carry_the_chrome();
 }

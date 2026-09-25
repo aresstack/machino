@@ -218,6 +218,7 @@ load();
 // Aenderung wird erst durch einen Neustart wirksam, und ein Sekundentakt
 // waere reine Last auf einem Board, das ohnehin knapp ist.
 </script>
+<script src="/machino/chrome.js" defer></script>
 </body>
 </html>
 )MACHINO_HTML";
