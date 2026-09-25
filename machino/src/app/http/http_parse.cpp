@@ -235,9 +235,13 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
 
     // Bootstrap dropdown-item markup, matching the surrounding entries. Literal
     // text (no haserl page_label here -- that is server-side and already run).
+    //
+    // ENGLISCH, weil die Stock-WebUI englisch ist: "Dashboard", "Live",
+    // "Camera", "System", "Network", "Time", "Access". Ein deutscher Eintrag
+    // mitten darin sieht nach Fremdkoerper aus -- und genau das war er.
     const std::string add =
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"/machino/devices\">Device Manager</a></li>"
-        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"/machino/net\">Netzwerk &amp; USB</a></li>";
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"/machino/net\">Network &amp; USB</a></li>";
 
     std::string out;
     out.reserve(html.size() + add.size());
