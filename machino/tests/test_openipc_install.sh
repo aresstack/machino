@@ -449,6 +449,39 @@ else bad "--with-pages did not add the network page entry"; fi
 if grep -q 'href="network.cgi"' "$HDR"; then ok
 else bad "an entry replaced the stock Network item"; fi
 
+# --minimal: die USB-Nutzlast bleibt weg.
+#
+# Rund 2,4 MB, die sonst DAUERHAFT unter /etc/machino/payload liegen und ein
+# uninstall absichtlich ueberleben. Auf einer Kamera mit kleinem Overlay ist
+# das der Unterschied zwischen "passt" und "passt nicht" -- und install.sh
+# konnte das immer schon, nur kam man durch den Manager nicht daran, und die
+# Installation aus dem Cam-Tool laeuft ausschliesslich ueber den Manager.
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --minimal ) >"$WORK/out" 2>&1 ||
+    bad "manager install --minimal exited non-zero: $(cat "$WORK/out")"
+has "the daemon is installed all the same" "$R/usr/bin/machino"
+if [ -d "$R/etc/machino/payload/aic8800" ]; then
+    bad "--minimal installed the WiFi payload anyway"
+else ok; fi
+if ls "$R/usr/sbin/hostapd" >/dev/null 2>&1; then
+    bad "--minimal installed hostapd anyway"
+else ok; fi
+
+# Einzeln abwaehlbar, nicht nur beides zusammen.
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --without-wifi-payload ) >"$WORK/out" 2>&1 ||
+    bad "manager install --without-wifi-payload exited non-zero: $(cat "$WORK/out")"
+if [ -d "$R/etc/machino/payload/aic8800" ]; then
+    bad "--without-wifi-payload installed the WiFi payload anyway"
+else ok; fi
+
+# Ein unbekannter Schalter muss weiterhin scheitern -- sonst verschluckt der
+# Manager einen Tippfehler und installiert etwas anderes als gemeint.
+make_bundle; make_camera auto
+if ( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --without-wifi-payloads ) >/dev/null 2>&1; then
+    bad "a misspelled option was accepted"
+else ok; fi
+
 # Und zurueck auf den Normalfall fuer die folgenden Faelle.
 make_bundle; make_camera auto
 ( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||

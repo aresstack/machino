@@ -2,7 +2,7 @@
 # machino-manager: one idempotent control surface for tools (the Cam-Tool) and
 # humans. It hides which files Machino owns behind three operations:
 #
-#   machino-manager install [--owner NAME] [--platform P] [--with-pages]
+#   machino-manager install [--owner NAME] [--platform P] [--with-pages] [--minimal]
 #   machino-manager uninstall [--owner NAME] [--force]
 #   machino-manager status            # machine-readable JSON on stdout
 #
@@ -126,7 +126,7 @@ EOF
 }
 
 cmd_install() {
-    owner=cam-tool; platform=""; pages=0
+    owner=cam-tool; platform=""; pages=0; nowifi=0; nocell=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --owner)    shift; owner="${1:-cam-tool}" ;;
@@ -134,6 +134,20 @@ cmd_install() {
             # Ausdrueckliche Option, NICHT der Normalfall: siehe die
             # Begruendung an der Aufrufstelle weiter unten.
             --with-pages) pages=1 ;;
+            # Die USB-Nutzlast (WLAN-Treiber, Firmware, hostapd, Modem-Module)
+            # ist rund 2,4 MB und liegt DAUERHAFT unter /etc/machino/payload --
+            # sie ueberlebt ein uninstall absichtlich, damit ein angelerntes
+            # Geraet eine Neuinstallation uebersteht. Auf einer Kamera mit
+            # wenigen Megabyte Overlay entscheidet genau das darueber, ob die
+            # Installation ueberhaupt passt, und wer weder WLAN noch Modem
+            # benutzt, soll dafuer nicht bezahlen.
+            #
+            # install.sh kann das seit jeher. Nur kam man durch den Manager
+            # nicht daran, und die Cam-Tool-Installation laeuft ausschliesslich
+            # ueber den Manager -- also war die Nutzlast dort nicht abwaehlbar.
+            --without-wifi-payload)     nowifi=1 ;;
+            --without-cellular-payload) nocell=1 ;;
+            --minimal)                  nowifi=1; nocell=1 ;;
             *) die "install: unknown option '$1'" ;;
         esac
         shift
@@ -177,7 +191,9 @@ cmd_install() {
     # ein sed auf eine fremde Datei.
     _pageopts=""
     [ "$pages" = "1" ] && _pageopts="--with-network-page --with-device-page"
-    # shellcheck disable=SC2086 -- zwei feste Schalter, kein Benutzertext
+    [ "$nowifi" = "1" ] && _pageopts="$_pageopts --without-wifi-payload"
+    [ "$nocell" = "1" ] && _pageopts="$_pageopts --without-cellular-payload"
+    # shellcheck disable=SC2086 -- feste Schalter, kein Benutzertext
     MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" $_pageopts || die "install.sh failed"
 
     # install.sh has placed the on-camera control surface (machino-manager) and
@@ -283,10 +299,16 @@ case "${1:-}" in
         cat >&2 <<EOF
 usage: machino-manager <command>
   install [--owner NAME] [--platform P] [--with-pages]
+          [--without-wifi-payload] [--without-cellular-payload] [--minimal]
             --with-pages: also add the machino entries to the stock WebUI
             menu. OFF by default - the deploy does not touch OpenIPC's
             files. The pages are reachable at /machino/net and
             /machino/devices either way.
+            --without-*-payload / --minimal: do not install the USB payload
+            (WiFi driver + firmware + hostapd, modem modules + helper), about
+            2.4 MB that stays under /etc/machino/payload across an uninstall.
+            On a camera with a small overlay this is the difference between
+            fitting and not fitting. Passed straight to install.sh.
   uninstall [--owner NAME] [--force]
   status        machine-readable JSON: state = OFF|ON|BROKEN|EXTERNAL
 EOF
