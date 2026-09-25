@@ -468,6 +468,16 @@ for _pg in machino-uplinks.cgi machino-cellular.cgi machino-usb.cgi machino-devi
     fi
 done
 
+# Das CGI-Shim, das OpenIPCs sh-Backends (cgi-bin/j/*.cgi) die von ihnen
+# erwartete GET_/POST_-Umgebung gibt, die busybox httpd nicht setzt. machinos
+# Front-Door schreibt /cgi-bin/j/<x>.cgi hierauf um (PATH_INFO). Ohne das ist
+# der File Manager unbenutzbar (files.cgi listet stur /, download sagt "not a
+# file"). Eine machino-eigene cgi-bin-Datei wie die Seiten.
+[ -r "$HERE/www/machino-cgi-run.cgi" ] || die "the bundle has no www/machino-cgi-run.cgi"
+put 0755 "$HERE/www/machino-cgi-run.cgi" "$CGI/machino-cgi-run.cgi" ||
+    die "cannot install $CGI/machino-cgi-run.cgi"
+say "installed $CGI/machino-cgi-run.cgi"
+
 if [ -d "$HERE/profiles" ]; then
     mkdir -p "$STATE_DIR/profiles"
     for p in "$HERE"/profiles/*; do [ -f "$p" ] && put 0644 "$p" "$STATE_DIR/profiles/${p##*/}"; done

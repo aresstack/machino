@@ -100,8 +100,31 @@ Parse parse_request(const std::string& buf, size_t& consumed, Request& out, cons
     return Parse::Ok;
 }
 
+// OpenIPCs JSON-Backends unter /cgi-bin/j/*.cgi lesen GET_<k>/POST_<k>, die
+// majestics httpd setzt und busybox nicht. Wir koennen busybox das nicht
+// beibringen (Interpreter-Direktive fehlt in diesem Build) und duerfen die
+// Skripte nicht anfassen. Also auf ein machino-eigenes Shim-CGI umschreiben,
+// das die Umgebung fuellt und das echte Skript exec't -- der Zielname wandert
+// als PATH_INFO mit, die Query bleibt unangetastet. NUR eine Ebene unter j/,
+// ohne '/' im Namen; alles andere relayt unveraendert. Der Parser hat '..'
+// im Pfad bereits abgewiesen, das Shim prueft es ein zweites Mal.
+static bool is_stock_json_cgi(const std::string& path, std::string& tail) {
+    const std::string pfx = "/cgi-bin/j/";
+    if (path.compare(0, pfx.size(), pfx) != 0) return false;
+    tail = path.substr(pfx.size());                 // "<name>.cgi"
+    if (tail.empty() || tail.find('/') != std::string::npos) return false;
+    if (tail.size() < 5 || tail.compare(tail.size() - 4, 4, ".cgi") != 0) return false;
+    for (unsigned char ch : tail)
+        if (!(std::isalnum(ch) || ch == '.' || ch == '_' || ch == '-')) return false;
+    return true;
+}
+
 std::string forward_request(const Request& req, const std::string& upstream_host) {
-    std::string target = req.path;
+    std::string path = req.path;
+    std::string tail;
+    if (req.method != "OPTIONS" && is_stock_json_cgi(req.path, tail))
+        path = "/cgi-bin/machino-cgi-run.cgi/j/" + tail;   // PATH_INFO = /j/<name>.cgi
+    std::string target = path;
     if (!req.query.empty()) { target += '?'; target += req.query; }
     std::string out = req.method + " " + target + " HTTP/1.0\r\n";
     for (const auto& h : req.headers) {

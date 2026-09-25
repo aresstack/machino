@@ -106,6 +106,7 @@ done
 rm -f "$WWW/cgi-bin/machino-uplinks.cgi" "$WWW/cgi-bin/machino-wifi.cgi"
 rm -f "$WWW/cgi-bin/machino-cellular.cgi" "$WWW/cgi-bin/machino-usb.cgi"
 rm -f "$WWW/cgi-bin/machino-devices.cgi" "$WWW/cgi-bin/machino-network.cgi"
+rm -f "$WWW/cgi-bin/machino-cgi-run.cgi"
 rm -f "$ROOT/usr/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-wifi-role"
 rm -f "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
 

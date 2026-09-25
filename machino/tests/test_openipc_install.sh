@@ -653,6 +653,7 @@ run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
 has "usb boot script installed by default" "$WORK/root/etc/init.d/S42usb"
 has "usb boot helper installed by default" "$WORK/root/usr/sbin/machino-usb-helper"
 has "role supervisor installed by default"  "$WORK/root/usr/sbin/machino-wifi-role"
+has "cgi shim installed by default"         "$WORK/root/var/www/cgi-bin/machino-cgi-run.cgi"
 has "hostapd installed by default"          "$WORK/root/usr/sbin/hostapd"
 # Unter /lib/modules, nicht mehr unter /etc/machino/modules: nur dort sucht
 # network.cgi (adapter_scan), und nur von dort loest modprobe die Namen auf, die
@@ -815,6 +816,7 @@ run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
 hasnt "usb script removed again"    "$WORK/root/etc/init.d/S42usb"
 hasnt "usb helper removed again"    "$WORK/root/usr/sbin/machino-usb-helper"
 hasnt "supervisor removed again"    "$WORK/root/usr/sbin/machino-wifi-role"
+hasnt "cgi shim removed again"      "$WORK/root/var/www/cgi-bin/machino-cgi-run.cgi"
 hasnt "hostapd removed again"       "$WORK/root/usr/sbin/hostapd"
 hasnt "driver removed again"        "$WORK/root/etc/machino/modules/aic8800.ko"
 hasnt "loader removed again"        "$WORK/root/etc/machino/modules/aic_load_fw.ko"
@@ -1272,11 +1274,65 @@ else ok; fi
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
 # check keeps the next such regression out.
-for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$PKG/sbin/machino-usb-helper" "$PKG/sbin/machino-wifi-role" "$PKG/udhcpc-wlan.script" "$PKG/sbin/machino-device" "$PKG/init/S39machinodev"; do
+for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$PKG/sbin/machino-usb-helper" "$PKG/sbin/machino-wifi-role" "$PKG/www/machino-cgi-run.cgi" "$PKG/udhcpc-wlan.script" "$PKG/sbin/machino-device" "$PKG/init/S39machinodev"; do
     if grep -nE '(^|[^-a-z_])install +-[dm]' "$f"; then bad "$(basename "$f") uses install(1), which BusyBox does not have"; else ok; fi
     if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
     if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi
 done
+
+# --------- 13b) the CGI shim fills GET_/POST_ for the stock sh-CGIs ----------
+#
+# Gemessen 2026-09-26: OpenIPCs j/*.cgi lesen GET_<k>/POST_<k>, die majestics
+# httpd setzt und busybox nicht -- files.cgi listete stur /, download.cgi sagte
+# "not a file". Der Interpreter-Weg fiel aus (dieses busybox kennt die Direktive
+# nicht). Das Shim wird von machinos Front-Door per PATH_INFO angesprochen
+# (/cgi-bin/machino-cgi-run.cgi/j/<name>.cgi), fuellt die Umgebung und exec't
+# das UNVERAENDERTE Zielskript. Vier Vertraege, alle am Geraeteverhalten belegt.
+SHIM="$PKG/www/machino-cgi-run.cgi"
+cgi_tmp="$WORK/cgishim"; rm -rf "$cgi_tmp"; mkdir -p "$cgi_tmp/j"
+# Ein Fake-Zielskript unter j/, das GET_/POST_ und seinen stdin sichtbar macht.
+cat > "$cgi_tmp/j/files.cgi" <<'EOS'
+#!/bin/sh
+printf 'HTTP/1.1 200 OK\nContent-Type: text/plain\n\n'
+printf 'GET_cd=[%s] GET_path=[%s] POST_op=[%s] POST_path=[%s]\n' \
+    "$GET_cd" "$GET_path" "$POST_op" "$POST_path"
+cat
+EOS
+chmod +x "$cgi_tmp/j/files.cgi"
+
+# a) GET: Query -> GET_<k>, urldecodiert; Ziel aus PATH_INFO.
+out=$(env MACHINO_CGI_DIR="$cgi_tmp" PATH_INFO=/j/files.cgi \
+    QUERY_STRING='cd=%2Fetc&path=%2Ftmp%2Fx' REQUEST_METHOD=GET \
+    sh "$SHIM" </dev/null)
+case "$out" in *"GET_cd=[/etc]"*"GET_path=[/tmp/x]"*) ok ;; *) bad "shim GET: $out" ;; esac
+
+# b) POST urlencoded: Body -> POST_<k>, und stdin wird NICHT durchgereicht.
+body='op=delete&path=%2Ftmp%2Fy'
+out=$(printf '%s' "$body" | env MACHINO_CGI_DIR="$cgi_tmp" PATH_INFO=/j/files.cgi \
+    REQUEST_METHOD=POST CONTENT_TYPE=application/x-www-form-urlencoded \
+    CONTENT_LENGTH=${#body} sh "$SHIM")
+case "$out" in
+    *"POST_op=[delete]"*"POST_path=[/tmp/y]"*) ok ;;
+    *) bad "shim POST urlencoded: $out" ;;
+esac
+case "$out" in *"$body"*) bad "shim leaked the urlencoded body to stdin" ;; *) ok ;; esac
+
+# c) POST text/plain (save.cgi-Fall): GET_ aus Query, Rohbody UNANGETASTET an
+#    stdin. Genau das braucht `cat > $f`.
+out=$(printf 'ROHDATEN' | env MACHINO_CGI_DIR="$cgi_tmp" PATH_INFO=/j/files.cgi \
+    QUERY_STRING='path=/tmp/z' REQUEST_METHOD=POST CONTENT_TYPE='text/plain' \
+    CONTENT_LENGTH=8 sh "$SHIM")
+case "$out" in *"GET_path=[/tmp/z]"*"ROHDATEN"*) ok ;; *) bad "shim raw body: $out" ;; esac
+
+# d) Ein Ziel mit .. wird abgewiesen (400), nicht ausserhalb von j/ ausgefuehrt.
+out=$(env MACHINO_CGI_DIR="$cgi_tmp" PATH_INFO=/j/../etc.cgi REQUEST_METHOD=GET \
+    sh "$SHIM" </dev/null | head -1)
+case "$out" in *"400"*) ok ;; *) bad "shim did not reject a .. target: $out" ;; esac
+
+# e) Ein unbekanntes Ziel -> 404 (kein exec ins Leere).
+out=$(env MACHINO_CGI_DIR="$cgi_tmp" PATH_INFO=/j/nope.cgi REQUEST_METHOD=GET \
+    sh "$SHIM" </dev/null | head -1)
+case "$out" in *"404"*) ok ;; *) bad "shim did not 404 an unknown target: $out" ;; esac
 
 # --------- 14) the OpenIPC network page must be able to offer our WiFi -------
 #

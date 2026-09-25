@@ -50,13 +50,16 @@ void run_http_parse_tests() {
     // Authorization/Cookie, rewrites Host, drops hop-by-hop + our own length.
     {
         Request fr;
+        // A /cgi-bin/j/*.cgi backend is rewritten onto the machino shim so it
+        // gets the GET_/POST_ env busybox does not set; the target rides along
+        // as PATH_INFO and the query is left intact.
         HCHECK(parse_request("GET /cgi-bin/j/pulse.cgi?x=1 HTTP/1.1\r\nHost: cam\r\n"
                              "Authorization: Basic Zm9v\r\nCookie: s=1\r\nConnection: keep-alive\r\n\r\n",
                              used, fr) == Parse::Ok);
         std::string w = forward_request(fr, "127.0.0.1");
         // header NAMES are lower-cased by the parser and forwarded verbatim
         // (valid HTTP; CGI reads them case-insensitively).
-        HCHECK(w.rfind("GET /cgi-bin/j/pulse.cgi?x=1 HTTP/1.0\r\n", 0) == 0);
+        HCHECK(w.rfind("GET /cgi-bin/machino-cgi-run.cgi/j/pulse.cgi?x=1 HTTP/1.0\r\n", 0) == 0);
         HCHECK(w.find("authorization: Basic Zm9v\r\n") != std::string::npos);
         HCHECK(w.find("cookie: s=1\r\n") != std::string::npos);
         HCHECK(w.find("Host: 127.0.0.1\r\n") != std::string::npos);
@@ -64,6 +67,35 @@ void run_http_parse_tests() {
         HCHECK(w.find("Connection: close\r\n") != std::string::npos);
         HCHECK(w.find("keep-alive") == std::string::npos);              // hop-by-hop dropped
         HCHECK(w.rfind("\r\n\r\n") == w.size() - 4);                    // GET: empty body
+    }
+    // The j/ rewrite is narrow: only that one directory, only .cgi, one level
+    // deep, and everything else relays byte-for-byte.
+    {
+        Request fr;
+        HCHECK(parse_request("POST /cgi-bin/j/files.cgi HTTP/1.1\r\nHost: cam\r\n"
+                             "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 9\r\n\r\nop=delete",
+                             used, fr) == Parse::Ok);
+        std::string w = forward_request(fr, "127.0.0.1");
+        HCHECK(w.rfind("POST /cgi-bin/machino-cgi-run.cgi/j/files.cgi HTTP/1.0\r\n", 0) == 0);
+        HCHECK(w.size() >= 9 && w.substr(w.size() - 9) == "op=delete");  // body preserved
+    }
+    {   // a haserl page under cgi-bin (not j/) is NOT rewritten
+        Request fr;
+        HCHECK(parse_request("GET /cgi-bin/network.cgi HTTP/1.1\r\nHost: cam\r\n\r\n", used, fr) == Parse::Ok);
+        std::string w = forward_request(fr, "127.0.0.1");
+        HCHECK(w.rfind("GET /cgi-bin/network.cgi HTTP/1.0\r\n", 0) == 0);
+    }
+    {   // a nested path under j/ is NOT rewritten (only one level, no slashes)
+        Request fr;
+        HCHECK(parse_request("GET /cgi-bin/j/sub/x.cgi HTTP/1.1\r\nHost: cam\r\n\r\n", used, fr) == Parse::Ok);
+        std::string w = forward_request(fr, "127.0.0.1");
+        HCHECK(w.rfind("GET /cgi-bin/j/sub/x.cgi HTTP/1.0\r\n", 0) == 0);
+    }
+    {   // a non-.cgi under j/ is NOT rewritten
+        Request fr;
+        HCHECK(parse_request("GET /cgi-bin/j/locale.txt HTTP/1.1\r\nHost: cam\r\n\r\n", used, fr) == Parse::Ok);
+        std::string w = forward_request(fr, "127.0.0.1");
+        HCHECK(w.rfind("GET /cgi-bin/j/locale.txt HTTP/1.0\r\n", 0) == 0);
     }
     {
         Request fr;

@@ -145,6 +145,13 @@ webui_start() {
     # browser Basic-auth POPUP. This backend is bound to 127.0.0.1:$WEBUI_PORT
     # only (never public); Machino on :80 is the sole front door, and the WebUI's
     # own form login still applies through the relay.
+    # OpenIPCs sh-CGIs unter cgi-bin/j/ erwarten GET_<k>/POST_<k>, die majestics
+    # httpd setzt und busybox nicht. Der Interpreter-Weg (*.cgi:<runner> in der
+    # httpd.conf) fiel aus: DIESES busybox httpd kennt die Direktive nicht
+    # (gemessen 2026-09-26: "config error", Zeile ignoriert). Stattdessen laeuft
+    # ein Shim-CGI (/var/www/cgi-bin/machino-cgi-run.cgi), auf das machinos
+    # Front-Door die j/-Anfragen umschreibt. Hier bleibt es bei A:* -- offen wie
+    # bei Majestic; die Session-Auth liegt in machino auf :80.
     printf 'A:*\n' > "$HTTPD_CONF"; chmod 0600 "$HTTPD_CONF"
     CONF="$HTTPD_CONF"
     "$HTTPD" -p "$WEBUI_ADDR:$WEBUI_PORT" -h "$WWW_ROOT" -c "$CONF" -r "OpenIPC" || { warn "httpd failed to start on $WEBUI_ADDR:$WEBUI_PORT"; return 1; }

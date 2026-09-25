@@ -125,6 +125,7 @@ jobs:
             cp -f "machino/openipc/www/$p.cgi" "$O/www/$p.cgi"
           done
           cp -f machino/openipc/www/machino-devices.cgi "$O/www/machino-devices.cgi"
+          cp -f machino/openipc/www/machino-cgi-run.cgi "$O/www/machino-cgi-run.cgi"
           cp -f machino/openipc/init/S39machinodev     "$O/init/S39machinodev"
           mkdir -p "$O/devices"
           cp -f machino/openipc/devices/aic8800.manifest "$O/devices/aic8800.manifest"
