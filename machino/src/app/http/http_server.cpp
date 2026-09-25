@@ -472,17 +472,11 @@ bool HttpServer::handle_request(Client& c) {
         // aeltere Menue-Injektionen bestehen.
         const bool dev = path.compare(0, 16, "/machino/devices") == 0;
         const char* to = dev ? "/cgi-bin/machino-devices.cgi" : "/cgi-bin/machino-network.cgi";
-        std::string h = "HTTP/1.1 302 Found
-Location: ";
+        std::string h = "HTTP/1.1 302 Found\r\nLocation: ";
         h += to;
-        h += "
-Content-Length: 0
-";
-        h += req.keep_alive ? "Connection: keep-alive
-
-" : "Connection: close
-
-";
+        h += "\r\nContent-Length: 0\r\n";
+        h += req.keep_alive ? "Connection: keep-alive\r\n\r\n"
+                            : "Connection: close\r\n\r\n";
         const bool ok = queue(c, h);
         if (!req.keep_alive) c.close_after_flush = true;
         return ok;
