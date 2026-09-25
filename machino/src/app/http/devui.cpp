@@ -82,6 +82,13 @@ button:disabled{opacity:.45;cursor:default}
 </main>
 
 <script>
+// Alles hier ist LOKAL (IIFE). Der Grund ist konkret: die Kopfleiste
+// laedt /a/main.js der Kamera-WebUI nach, und das deklariert global
+// `function $`. Stand hier ein globales `const $`, starb main.js beim
+// Parsen ("Identifier '$' has already been declared") -- und mit ihm
+// jedes Dropdown der Leiste. Gemessen am 2026-09-25.
+(function () {
+
 "use strict";
 const $ = (s, r) => (r || document).querySelector(s);
 
@@ -223,6 +230,8 @@ load();
 // Kein Dauerpolling. Auf dieser Seite aendert sich nichts von selbst: jede
 // Aenderung wird erst durch einen Neustart wirksam, und ein Sekundentakt
 // waere reine Last auf einem Board, das ohnehin knapp ist.
+
+})();
 </script>
 <script src="/machino/chrome.js" defer></script>
 </body>

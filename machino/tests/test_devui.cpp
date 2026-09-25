@@ -52,6 +52,11 @@ void test_the_page_is_self_contained()
     // Grund oben (kein CDN) gilt unveraendert.
     TCHECK(count(p, "<script src") == 1);
     TCHECK(has(p, "<script src=\"/machino/chrome.js\""));
+    // Das Seitenskript ist eine IIFE. Nicht Stil: die Kopfleiste laedt
+    // /a/main.js nach, das global `function $` deklariert -- ein globales
+    // `const $` hier liess main.js beim Parsen sterben, und mit ihm jedes
+    // Dropdown der Leiste (gemessen 2026-09-25).
+    TCHECK(has(p, "(function () {"));
     TCHECK(!has(p, "<link rel=\"stylesheet\""));
 }
 
@@ -150,6 +155,15 @@ void test_the_pages_carry_the_chrome()
     TCHECK(!has(js, "dashboard.cgi"));
     // Fehlschlag bleibt folgenlos.
     TCHECK(has(js, "catch"));
+    // Die drei Befunde vom 2026-09-25, jeder als Stolperdraht:
+    // 1. relative Links der uebernommenen Leiste MUESSEN gegen die Quellseite
+    //    aufgeloest werden, sonst ist jeder Klick ein 404 unter /machino/...;
+    TCHECK(has(js, "rebase("));
+    // 2. der Platz wird VOR dem fetch reserviert, sonst springt die Seite;
+    TCHECK(has(js, "mch-nav-slot"));
+    // 3. window "load" ist vorbei, wenn main.js hier ankommt -- ohne den
+    //    Anstoss bleibt der Abmelden-Knopf der Leiste tot.
+    TCHECK(has(js, "initAll"));
 
     // Leer = ausdruecklich abgeschaltet: das Skript darf dann nichts holen.
     const std::string off = machino::http::machino_chrome_js("");

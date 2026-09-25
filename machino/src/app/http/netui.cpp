@@ -339,6 +339,13 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
 
 </main>
 <script>
+// Alles hier ist LOKAL (IIFE). Der Grund ist konkret: die Kopfleiste
+// laedt /a/main.js der Kamera-WebUI nach, und das deklariert global
+// `function $`. Stand hier ein globales `const $`, starb main.js beim
+// Parsen ("Identifier '$' has already been declared") -- und mit ihm
+// jedes Dropdown der Leiste. Gemessen am 2026-09-25.
+(function () {
+
 "use strict";
 const TABS = [
   ["t-overview","Übersicht"],["t-ethernet","Ethernet"],["t-wifi","WLAN"],
@@ -1036,6 +1043,8 @@ setInterval(() => {
   // loadCellular().
   loadCellular().catch(() => {});
 }, 5000);
+
+})();
 </script>
 <script src="/machino/chrome.js" defer></script>
 </body>

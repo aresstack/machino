@@ -51,6 +51,11 @@ void test_the_page_is_self_contained()
     // Grund oben (kein CDN) gilt unveraendert.
     TCHECK(count(p, "<script src") == 1);
     TCHECK(has(p, "<script src=\"/machino/chrome.js\""));
+    // Das Seitenskript ist eine IIFE. Nicht Stil: die Kopfleiste laedt
+    // /a/main.js nach, das global `function $` deklariert -- ein globales
+    // `const $` hier liess main.js beim Parsen sterben, und mit ihm jedes
+    // Dropdown der Leiste (gemessen 2026-09-25).
+    TCHECK(has(p, "(function () {"));
     TCHECK(!has(p, "<link rel=\"stylesheet\""));
 }
 
