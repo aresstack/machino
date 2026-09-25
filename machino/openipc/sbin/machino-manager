@@ -183,7 +183,7 @@ cmd_install() {
     # von den Dateien des Wirtssystems getrennt:
     #
     #   http://<kamera>/cgi-bin/machino-devices.cgi
-    #   http://<kamera>/cgi-bin/machino-network.cgi
+    #   http://<kamera>/cgi-bin/machino-usb.cgi
     #
     # --with-pages gibt es weiterhin, als ausdrueckliche Entscheidung dessen,
     # der installiert. Sollte OpenIPC einmal einen echten Erweiterungspunkt
@@ -302,7 +302,7 @@ usage: machino-manager <command>
           [--without-wifi-payload] [--without-cellular-payload] [--minimal]
             --with-pages: also add the machino entries to the stock WebUI
             menu. OFF by default - the deploy does not touch OpenIPC's
-            files. The pages are reachable at /cgi-bin/machino-network.cgi and
+            files. The pages are reachable at /cgi-bin/machino-usb.cgi and
             /cgi-bin/machino-devices.cgi either way.
             --without-*-payload / --minimal: do not install the USB payload
             (WiFi driver + firmware + hostapd, modem modules + helper), about

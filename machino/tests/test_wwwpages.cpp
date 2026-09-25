@@ -111,21 +111,55 @@ void check_page(const char* rel, const char* title, const char* login_next)
 
 void run_wwwpages_tests()
 {
-    std::printf("== WebUI: Machinos OpenIPC-Seiten ==\n");
-    check_page("openipc/www/machino-network.cgi", "Network & USB",
-               "/cgi-bin/machino-network.cgi");
+    std::printf("== WebUI: Machinos OpenIPC-Seiten ==
+");
+    // Fuenf Seiten seit der Zerlegung vom 2026-09-26: die eine
+    // "Network & USB"-Monsterseite (15 Karten, und ein zweites "Network"
+    // neben OpenIPCs eigenem Menuepunkt) ist in Seiten je Thema zerlegt.
+    check_page("openipc/www/machino-usb.cgi", "USB",
+               "/cgi-bin/machino-usb.cgi");
+    check_page("openipc/www/machino-wifi.cgi", "Wi-Fi",
+               "/cgi-bin/machino-wifi.cgi");
+    check_page("openipc/www/machino-cellular.cgi", "Cellular",
+               "/cgi-bin/machino-cellular.cgi");
+    check_page("openipc/www/machino-uplinks.cgi", "Uplinks",
+               "/cgi-bin/machino-uplinks.cgi");
     check_page("openipc/www/machino-devices.cgi", "Device Manager",
                "/cgi-bin/machino-devices.cgi");
 
-    // Die Netzwerkseite behaelt ihre Funktionsflaeche: jede dieser Routen
-    // existiert in net_api, und die Seite muss sie weiter ansprechen --
-    // der Umbau war UI-Architektur, kein Funktionsabbau.
-    const std::string net = slurp("openipc/www/machino-network.cgi");
-    for (const char* ep : {"/api/v1/network", "/api/v1/network/wifi",
-                           "/api/v1/network/wifi/scan", "/api/v1/network/wifi/station",
-                           "/api/v1/network/wifi/ap", "/api/v1/network/cellular",
-                           "/api/v1/network/policy", "/api/v1/usb", "/api/v1/usb/devices"})
-        TCHECK(has(net, ep));
+    // Die Funktionsflaeche ist vollstaendig auf die Seiten verteilt -- die
+    // Zerlegung war UI-Architektur, kein Funktionsabbau.
+    const std::string usb  = slurp("openipc/www/machino-usb.cgi");
+    const std::string wifi = slurp("openipc/www/machino-wifi.cgi");
+    const std::string cell = slurp("openipc/www/machino-cellular.cgi");
+    const std::string up   = slurp("openipc/www/machino-uplinks.cgi");
+    TCHECK(has(usb,  "/api/v1/usb"));
+    TCHECK(has(usb,  "/api/v1/usb/devices"));
+    TCHECK(has(wifi, "/api/v1/network/wifi"));
+    TCHECK(has(wifi, "/api/v1/network/wifi/scan"));
+    TCHECK(has(wifi, "/api/v1/network/wifi/station"));
+    TCHECK(has(wifi, "/api/v1/network/wifi/ap"));
+    TCHECK(has(cell, "/api/v1/network/cellular"));
+    TCHECK(has(cell, "/api/v1/network/cellular/presets"));
+    TCHECK(has(up,   "/api/v1/network"));
+    TCHECK(has(up,   "/api/v1/network/policy"));
     const std::string dev = slurp("openipc/www/machino-devices.cgi");
     TCHECK(has(dev, "/api/v1/devices"));
+
+    // Wi-Fi und Cellular haengen am usb.mode; seit der Zerlegung LESEN sie
+    // ihn selbst, statt eine Variable einer anderen Seite zu erwarten.
+    TCHECK(has(wifi, "fetchMode"));
+    TCHECK(has(cell, "fetchMode"));
+    // Eine anderswo angestossene Bestaetigungsfrist muss ueberall sichtbar
+    // sein, wo sie zurueckrollen kann.
+    TCHECK(has(wifi, "loadPending"));
+    TCHECK(has(cell, "loadPending"));
+
+    // Der Portstrom ist auf diesem Board 3,3 V ueber einen Transistor an
+    // einem GPIO -- ohne ihn enumeriert nichts. Die Karte muss das SAGEN,
+    // sonst wirkt eine gesteckte Zusatzplatine wie fehlende Hardware
+    // (gemessen am 2026-09-26).
+    TCHECK(has(usb, "3.3"));
+    TCHECK(has(usb, "transistor"));
+    TCHECK(has(usb, "Power the port"));
 }

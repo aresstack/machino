@@ -239,9 +239,16 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     // ENGLISCH, weil die Stock-WebUI englisch ist: "Dashboard", "Live",
     // "Camera", "System", "Network", "Time", "Access". Ein deutscher Eintrag
     // mitten darin sieht nach Fremdkoerper aus -- und genau das war er.
+    // Fuenf Eintraege, seit die eine "Network & USB"-Monsterseite in Seiten
+    // je Thema zerlegt ist (2026-09-25). Ein einzelner Sammel-Eintrag hiesse,
+    // die Zerlegung im Menue wieder zu verstecken -- und "Network & USB"
+    // neben OpenIPCs eigenem "Network" war doppelt verwirrend.
     const std::string add =
-        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-devices.cgi\">Device Manager</a></li>"
-        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-network.cgi\">Network &amp; USB</a></li>";
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-usb.cgi\">USB</a></li>"
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-wifi.cgi\">Wi-Fi (USB)</a></li>"
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-cellular.cgi\">Cellular</a></li>"
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-uplinks.cgi\">Uplinks</a></li>"
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-devices.cgi\">Device Manager</a></li>";
 
     std::string out;
     out.reserve(html.size() + add.size());

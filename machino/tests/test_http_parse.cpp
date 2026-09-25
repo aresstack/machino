@@ -320,14 +320,15 @@ void run_relay_head_end_tests() {
         bool changed = false;
         const std::string out = inject_machino_nav(page, changed);
         HCHECK(changed);
-        // Both links present, exactly once each.
-        HCHECK(out.find("href=\"machino-devices.cgi\"") != std::string::npos);
-        HCHECK(out.find("href=\"machino-network.cgi\"") != std::string::npos);
-        HCHECK(out.find("machino-devices.cgi") == out.rfind("machino-devices.cgi"));
-        HCHECK(out.find("machino-network.cgi") == out.rfind("machino-network.cgi"));
+        // All five links present, exactly once each -- one per split page.
+        for (const char* p : {"machino-usb.cgi", "machino-wifi.cgi", "machino-cellular.cgi",
+                              "machino-uplinks.cgi", "machino-devices.cgi"}) {
+            HCHECK(out.find(std::string("href=\"") + p + "\"") != std::string::npos);
+            HCHECK(out.find(p) == out.rfind(p));
+        }
         // Inserted AFTER the Network item (inside Setup), before Time.
-        HCHECK(out.find("machino-devices.cgi") > out.find("network.cgi"));
-        HCHECK(out.find("machino-network.cgi") < out.find("time.cgi"));
+        HCHECK(out.find("machino-usb.cgi") > out.find("network.cgi"));
+        HCHECK(out.find("machino-devices.cgi") < out.find("time.cgi"));
         // The stock entries are untouched and still there.
         HCHECK(out.find("href=\"network.cgi\"") != std::string::npos);
         HCHECK(out.find("href=\"time.cgi\"") != std::string::npos);

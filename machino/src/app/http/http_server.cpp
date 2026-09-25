@@ -471,7 +471,7 @@ bool HttpServer::handle_request(Client& c) {
         // Diese Pfade bleiben nur als Weiterleitung fuer Lesezeichen und
         // aeltere Menue-Injektionen bestehen.
         const bool dev = path.compare(0, 16, "/machino/devices") == 0;
-        const char* to = dev ? "/cgi-bin/machino-devices.cgi" : "/cgi-bin/machino-network.cgi";
+        const char* to = dev ? "/cgi-bin/machino-devices.cgi" : "/cgi-bin/machino-usb.cgi";
         std::string h = "HTTP/1.1 302 Found\r\nLocation: ";
         h += to;
         h += "\r\nContent-Length: 0\r\n";

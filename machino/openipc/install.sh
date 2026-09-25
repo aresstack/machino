@@ -438,7 +438,7 @@ fi
 # Uninstall entfernt sie restlos. Vorher gab es zwei Anlaeufe ohne eigene
 # Dateien (nachgebaute Leiste, clientseitig uebernommene Leiste); beide sind
 # im Browser gescheitert und dokumentiert in docs/openipc-webui-assets.md.
-for _pg in machino-network.cgi machino-devices.cgi; do
+for _pg in machino-uplinks.cgi machino-wifi.cgi machino-cellular.cgi machino-usb.cgi machino-devices.cgi; do
     if [ -r "$HERE/www/$_pg" ]; then
         put 0755 "$HERE/www/$_pg" "$CGI/$_pg" || die "cannot install $CGI/$_pg"
         say "installed $CGI/$_pg"
@@ -783,7 +783,7 @@ menu_entry() {
 }
 
 if [ "$WITH_NETPAGE" = "1" ]; then
-    menu_entry netpage --with-network-page machino-network.cgi "Netzwerk &amp; USB (machino)"
+    menu_entry netpage --with-network-page machino-usb.cgi "USB (machino)"
 fi
 if [ "$WITH_DEVPAGE" = "1" ]; then
     menu_entry devpage --with-device-page machino-devices.cgi "Ger&auml;te (machino)"

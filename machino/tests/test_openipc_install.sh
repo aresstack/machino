@@ -66,7 +66,7 @@ FAKE
     cp "$PKG/devices/aic8800.manifest" "$B/devices/"
     # Machinos eigene WebUI-Seiten -- echte OpenIPC-Seiten, siehe install.sh.
     mkdir -p "$B/www"
-    cp "$PKG/www/machino-network.cgi" "$PKG/www/machino-devices.cgi" "$B/www/"
+    cp "$PKG"/www/machino-*.cgi "$B/www/"
     # Die WLAN-Nutzlast so, wie das Release-Artefakt sie traegt: Treiber,
     # Firmware und hostapd unter wifi/. Sie wird per Default installiert und
     # ist ohne usb.wifi.enabled=true wirkungslos.
@@ -1190,7 +1190,7 @@ make_bundle; make_camera auto
 run_install --with-network-page || bad "--with-network-page was refused: $(cat "$WORK/out")"
 H="$WORK/root/var/www/cgi-bin/p/header.cgi"
 if grep -q 'machino-netpage:begin' "$H"; then ok; else bad "no menu entry was added"; fi
-if grep -q 'machino-network.cgi' "$H"; then ok; else bad "the menu entry does not point at the page"; fi
+if grep -q 'machino-usb.cgi' "$H"; then ok; else bad "the menu entry does not point at the page"; fi
 # The anchor line must still be there: the entry is added AFTER it, not over it.
 if grep -q 'href="network.cgi"' "$H"; then ok; else bad "the entry replaced the stock Network item"; fi
 
@@ -1452,10 +1452,13 @@ else bad "the profile name is hardcoded outside the manifest: $hits"; fi
 # Machinos WebUI-Seiten: nach dem Install im Webroot und ausfuehrbar, nach dem
 # vollstaendigen Uninstall restlos weg. Die OpenIPC-Dateien daneben prueft der
 # header.cgi-Vergleich weiter oben byte-genau.
-if [ -x "$WORK/root/var/www/cgi-bin/machino-network.cgi" ] &&
+if [ -x "$WORK/root/var/www/cgi-bin/machino-usb.cgi" ] &&
+   [ -x "$WORK/root/var/www/cgi-bin/machino-wifi.cgi" ] &&
+   [ -x "$WORK/root/var/www/cgi-bin/machino-cellular.cgi" ] &&
+   [ -x "$WORK/root/var/www/cgi-bin/machino-uplinks.cgi" ] &&
    [ -x "$WORK/root/var/www/cgi-bin/machino-devices.cgi" ]; then ok
 else bad "the machino pages were not installed into the webroot"; fi
-if head -1 "$WORK/root/var/www/cgi-bin/machino-network.cgi" | grep -q haserl; then ok
+if head -1 "$WORK/root/var/www/cgi-bin/machino-usb.cgi" | grep -q haserl; then ok
 else bad "the installed network page is not a haserl page"; fi
 
 # h) Das vollstaendige uninstall.sh -- und NUR das -- raeumt auch die Nutzlast.
@@ -1468,8 +1471,7 @@ if [ -f "$WORK/root/etc/init.d/S39machinodev" ]; then
 else ok; fi
 if cmp -s "$WORK/root/etc/wireless/usb" "$WORK/wireless-usb.orig"; then ok
 else bad "the full uninstall did not restore /etc/wireless/usb byte for byte"; fi
-if [ -e "$WORK/root/var/www/cgi-bin/machino-network.cgi" ] ||
-   [ -e "$WORK/root/var/www/cgi-bin/machino-devices.cgi" ]; then
+if ls "$WORK"/root/var/www/cgi-bin/machino-*.cgi >/dev/null 2>&1; then
     bad "the full uninstall left machino's pages in the webroot"
 else ok; fi
 

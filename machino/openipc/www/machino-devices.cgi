@@ -29,7 +29,7 @@
   then offers the adapter under &ldquo;Wireless Adapter&rdquo;, and that is
   where Wi-Fi gets connected. Installing does <em>not</em> switch the USB
   port &mdash; there is exactly one port, and who owns it is decided on
-  <a href="machino-network.cgi">Network &amp; USB</a>.</p>
+  the <a href="machino-usb.cgi">USB</a> page.</p>
 </div></div></div>
 
 <div class="col-12"><div class="row g-4" id="list"></div></div>
@@ -120,7 +120,9 @@ function card(d) {
       flag(d.hardwarePresent, "yes", "not seen") +
       ' <span class="badge text-bg-secondary">USB id only</span></td></tr>' +
     "<tr><th>Module loaded</th><td>" + flag(d.driverLoaded, "yes", "no") + "</td></tr>" +
-    "<tr><th>Holds the USB port</th><td>" + flag(d.active, "yes", "no") + "</td></tr>" +
+    "<tr><th>Assigned the USB port</th><td>" +
+      '<span class="badge text-bg-secondary">' + (d.active ? "yes (usb.mode)" : "no") + "</span>" +
+      "</td></tr>" +
     "</tbody></table>" +
     '<div class="grid">' +
       '<button class="btn btn-sm btn-primary" data-a="install" ' +
@@ -131,8 +133,8 @@ function card(d) {
     (d.detail ? '<p class="mj-card-note">' + esc(d.detail) + "</p>" : "") +
     (pending ? '<p class="mj-card-note text-warning">A reboot makes it effective.</p>' : "") +
     (blocked
-      ? '<p class="mj-card-note text-warning">This device currently holds the USB port. To ' +
-        'uninstall, release the port on <a href="machino-network.cgi">Network &amp; USB</a> ' +
+      ? '<p class="mj-card-note text-warning">The USB port is assigned to this device. To ' +
+        'uninstall, set the USB role to something else on <a href="machino-usb.cgi">USB</a> ' +
         "first.</p>"
       : "") +
     (canUninstall
