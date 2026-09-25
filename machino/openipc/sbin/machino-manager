@@ -160,6 +160,22 @@ cmd_install() {
     # manifest makes the install ours. Ownership only gates UNINSTALL.
     # A running daemon must stop first - overwriting a running ELF fails with
     # ETXTBSY. (Skipped under the NO_ACTIVATE test hook: no real daemon there.)
+    # Der Platz-Check MUSS vor dem Stoppen liegen. Am 2026-09-26 stoppte der
+    # Manager erst den Daemon, und install.sh starb DANACH am Platz-Check --
+    # Ergebnis: state BROKEN, kein Streamer, und der Bediener fragt zu Recht,
+    # warum ein gescheiterter Install die Kamera lahmlegt. Dieselbe Rechnung
+    # wie in install.sh, plus Gutschrift fuer das alte Rollback-Binary, das
+    # install.sh als erstes loescht.
+    _bb=$(dirname "$INSTALL_SH")/machino
+    if [ -r "$_bb" ]; then
+        _need=$(( ($(wc -c < "$_bb") / 1024) + 1280 ))
+        _free=$(df -k "$ROOT/" | awk 'NR==2 {print $4}')
+        _prev="$STATE_DIR/backup/machino.prev"
+        [ -f "$_prev" ] && _free=$(( ${_free:-0} + ($(wc -c < "$_prev") / 1024) ))
+        [ "${_free:-0}" -ge "$_need" ] || die \
+            "not enough space on / for this install (need ~${_need} kB, free+reclaimable ~${_free} kB) - nothing was stopped, machino keeps running"
+    fi
+
     if [ -z "${MACHINO_MANAGER_NO_ACTIVATE:-}" ] && [ -x "$BIN" ] && running; then
         say "stopping the running machino before replacing its binary" >&2
         [ -x "$INITD/machino" ] && MACHINO_ROOT="$ROOT" "$INITD/machino" stop >/dev/null 2>&1

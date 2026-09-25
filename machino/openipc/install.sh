@@ -227,7 +227,22 @@ for f in machino machino.conf sbin/streamerctl sbin/machino-manager init/S95stre
 done
 [ -d "$CGI" ] || die "no $CGI - this does not look like an OpenIPC camera with the WebUI installed"
 
-need_kb=$(( ($(wc -c < "$HERE/machino") / 1024) + 256 ))
+# Ein Rollback-Binary aus einer FRUEHEREN Installation ist ab hier wertlos --
+# das nuetzliche Rollback-Ziel ist immer der Stand von vor DIESER Installation,
+# und den legt der Backup-Schritt unten neu an. Es zuerst zu loeschen ist auf
+# dieser Kamera der Unterschied zwischen "passt" und "not enough space":
+# am 2026-09-26 scheiterte ein Install-ueber-Install an ~200 kB, waehrend
+# 2,9 MB alte Backup-Kopie auf dem Overlay lagen.
+if [ -f "$BACKUP/machino.prev" ]; then
+    rm -f "$BACKUP/machino.prev" "$BACKUP/machino.prev.tmp"
+    say "removed the rollback binary of the previous install (this install writes its own)"
+fi
+
+# 1280 kB Zuschlag: die groesste Einzeldatei der Nutzlast (hostapd ~1 MB) wird
+# als tmp+mv geschrieben und braucht ihren Platz TRANSIENT doppelt, dazu etwas
+# Luft. Das alte Binary kostet nichts mehr: es wird per move_file zum Backup
+# UMBENANNT, nicht kopiert.
+need_kb=$(( ($(wc -c < "$HERE/machino") / 1024) + 1280 ))
 free_kb=$(df -k / | awk 'NR==2 {print $4}')
 [ "${free_kb:-0}" -ge "$need_kb" ] || die "not enough space on / (need ~${need_kb} kB, have ${free_kb} kB)"
 
@@ -354,12 +369,16 @@ mkdir -p "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/var/run"
 # Overwritten on every install on purpose: the useful rollback target is the
 # version that was working five minutes ago, not the one from three upgrades
 # back. machino-manager restores it when post-install verification fails.
+# UMBENENNEN statt kopieren. Eine Kopie braucht Binary-Groesse EXTRA freien
+# Platz -- auf dieser Kamera hiess das: Install-ueber-Install unmoeglich, weil
+# 2x 2,9 MB nie gleichzeitig frei sind. move_file ist auf demselben Overlay ein
+# rename (Fallback cp+rm nur fuer den squashfs-Lower-Layer-Fall). Das kleine
+# Fenster, in dem /usr/bin/machino fehlt, schliesst der put-Schritt direkt
+# danach; der Daemon ist zu diesem Zeitpunkt ohnehin gestoppt.
 if [ -f "$ROOT/usr/bin/machino" ]; then
-    if cp -p "$ROOT/usr/bin/machino" "$BACKUP/machino.prev.tmp" &&
-       mv -f "$BACKUP/machino.prev.tmp" "$BACKUP/machino.prev"; then
+    if move_file "$ROOT/usr/bin/machino" "$BACKUP/machino.prev"; then
         say "kept the previous daemon as $BACKUP/machino.prev"
     else
-        rm -f "$BACKUP/machino.prev.tmp"
         # Not fatal: a camera with no room for a spare copy still deserves the
         # upgrade. But it must be SAID, because the rollback will not be there.
         say "could not keep a copy of the previous daemon - no rollback target"
