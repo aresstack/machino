@@ -120,7 +120,7 @@ only works after someone has copied files over by SSH is not a switch.
                         Same rule as --with-network-page: off by default, and
                         the page works by URL without it.
   --with-network-page   add a "Netzwerk & USB (machino)" entry to the stock
-                        WebUI menu, pointing at /machino/net. Off by default:
+                        WebUI menu, pointing at the machino network page. Off by default:
                         the installer does not edit p/header.cgi behind your
                         back. The page is reachable at that URL either way;
                         this only adds the link. The edit is marked and the
@@ -426,6 +426,29 @@ if [ -f "$_conf" ] &&
     fi
 fi
 
+# --------------------------------------------------- machino's own pages ---
+#
+# Zwei haserl-Seiten im Webroot der Kamera, exakt nach dem Muster von
+# wireguard.cgi (common/header/footer-Includes): damit sind Head, Navbar,
+# Theme und main.js im ERSTEN HTML, relative Links haben denselben
+# Basiskontext wie jede Stock-Seite, und es gibt keine zweite WebUI.
+#
+# Die Grenze, praezisiert am 2026-09-25: OpenIPC-eigene Dateien bleiben
+# byte-identisch -- Machino darf EIGENE Dateien hinzufuegen, und sein
+# Uninstall entfernt sie restlos. Vorher gab es zwei Anlaeufe ohne eigene
+# Dateien (nachgebaute Leiste, clientseitig uebernommene Leiste); beide sind
+# im Browser gescheitert und dokumentiert in docs/openipc-webui-assets.md.
+for _pg in machino-network.cgi machino-devices.cgi; do
+    if [ -r "$HERE/www/$_pg" ]; then
+        put 0755 "$HERE/www/$_pg" "$CGI/$_pg" || die "cannot install $CGI/$_pg"
+        say "installed $CGI/$_pg"
+    else
+        # Ein Bundle ohne die Seiten installiert trotzdem -- die API und die
+        # Weiterleitungen funktionieren, nur die Seiten fehlen. Gesagt wird es.
+        say "bundle has no www/$_pg - page not installed"
+    fi
+done
+
 if [ -d "$HERE/profiles" ]; then
     mkdir -p "$STATE_DIR/profiles"
     for p in "$HERE"/profiles/*; do [ -f "$p" ] && put 0644 "$p" "$STATE_DIR/profiles/${p##*/}"; done
@@ -713,7 +736,7 @@ fi
 # The default is to leave p/header.cgi byte-identical. An installer that edits
 # the stock navigation makes a later upgrade of the stock WebUI either revert
 # the change or conflict with it, and a user who did not ask for it should not
-# find their files modified. /machino/net works either way; this only adds the
+# find their files modified. The page works either way; this only adds the
 # link.
 netpage_header="$CGI/p/header.cgi"
 
@@ -760,10 +783,10 @@ menu_entry() {
 }
 
 if [ "$WITH_NETPAGE" = "1" ]; then
-    menu_entry netpage --with-network-page /machino/net "Netzwerk &amp; USB (machino)"
+    menu_entry netpage --with-network-page /cgi-bin/machino-network.cgi "Netzwerk &amp; USB (machino)"
 fi
 if [ "$WITH_DEVPAGE" = "1" ]; then
-    menu_entry devpage --with-device-page /machino/devices "Ger&auml;te (machino)"
+    menu_entry devpage --with-device-page /cgi-bin/machino-devices.cgi "Ger&auml;te (machino)"
 fi
 
 # ------------------------------------------------------------------- done ---

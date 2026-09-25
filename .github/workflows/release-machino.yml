@@ -78,8 +78,8 @@ jobs:
       - name: "Guards"
         run: |
           sh machino/tools/check-linux-only.sh
-          sh machino/tools/check-netui.sh machino/src/app/http/netui.cpp
-          sh machino/tools/check-netui.sh machino/src/app/http/devui.cpp
+          sh machino/tools/check-netui.sh machino/openipc/www/machino-network.cgi
+          sh machino/tools/check-netui.sh machino/openipc/www/machino-devices.cgi
           # The make-free runner must not have rotted either: it is what a
           # contributor without make will use to check their work.
           rm -rf machino/build machino/tests/machino-tests
@@ -118,6 +118,9 @@ jobs:
           # sie traegt das Release zwar die Treiber, kann sie dem Wirtssystem
           # aber nicht melden -- und OpenIPCs Dropdown bliebe wieder leer.
           cp -f machino/openipc/sbin/machino-device    "$O/sbin/machino-device"
+          mkdir -p "$O/www"
+          cp -f machino/openipc/www/machino-network.cgi "$O/www/machino-network.cgi"
+          cp -f machino/openipc/www/machino-devices.cgi "$O/www/machino-devices.cgi"
           cp -f machino/openipc/init/S39machinodev     "$O/init/S39machinodev"
           mkdir -p "$O/devices"
           cp -f machino/openipc/devices/aic8800.manifest "$O/devices/aic8800.manifest"

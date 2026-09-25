@@ -1,66 +1,42 @@
-#include "app/http/devui.hpp"
-
-#include <cstring>
-
-namespace machino { namespace http {
-
-// Ein einziges rohes Stringliteral, wie bei netui.cpp. Der Begrenzer ist
-// )MACHINO_HTML und nicht )", weil im JavaScript )" vorkommt.
-static const char kPage[] = R"MACHINO_HTML(<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ger&auml;te &mdash; machino</title>
+#!/usr/bin/haserl
+<%in p/common.cgi %>
+<% page_title="Device Manager" %>
+<%in p/header.cgi %>
+<!-- machino-owned page; see machino-network.cgi for the contract. -->
 <style>
-:root{--bg:var(--bs-body-bg,#14161a);--panel:var(--bs-tertiary-bg,#1c2026);
+#mch{--bg:var(--bs-body-bg,#14161a);--panel:var(--bs-tertiary-bg,#1c2026);
 --line:var(--bs-border-color,#2c323b);--fg:var(--bs-body-color,#e6e8ea);
 --dim:var(--bs-secondary-color,#9aa3ad);--ok:var(--bs-success,#4caf7d);
 --warn:var(--bs-warning,#d9a13b);--bad:var(--bs-danger,#d4564f);
 --acc:var(--bs-primary,#4a90d9)}
-*{box-sizing:border-box}
-body{margin:0}
-/* Ohne die Stock-CSS (nicht angemeldet, Datei fehlt) traegt die Seite ihr
-   eigenes Aussehen weiter -- die Fallbacks oben sind genau dafuer da. */
-body:not(.lite){background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif}
-header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;
-gap:16px;align-items:baseline;flex-wrap:wrap}
-h1{font-size:16px;margin:0;font-weight:600}
-header a{color:var(--acc);text-decoration:none;font-size:13px}
-main{padding:16px;max-width:900px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+#mch .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;
 padding:14px;margin-bottom:14px}
-.card h2{font-size:14px;margin:0 0 4px;font-weight:600}
-.sub{color:var(--dim);font-size:13px;margin:0 0 10px}
-table{width:100%;border-collapse:collapse}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--dim);font-weight:500;width:42%}
-tr:last-child th,tr:last-child td{border-bottom:0}
-.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
+#mch .card h2{font-size:14px;margin:0 0 4px;font-weight:600}
+#mch .sub{color:var(--dim);font-size:13px;margin:0 0 10px}
+#mch table{width:100%;border-collapse:collapse}
+#mch th, #mch td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+#mch th{color:var(--dim);font-weight:500;width:42%}
+#mch tr:last-child th, #mch tr:last-child td{border-bottom:0}
+#mch .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
 border:1px solid var(--line)}
-.pill.ok{color:var(--ok);border-color:var(--ok)}
-.pill.warn{color:var(--warn);border-color:var(--warn)}
-.pill.bad{color:var(--bad);border-color:var(--bad)}
-.pill.dim{color:var(--dim)}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
-button{background:#262c34;color:var(--fg);border:1px solid var(--line);
+#mch .pill.ok{color:var(--ok);border-color:var(--ok)}
+#mch .pill.warn{color:var(--warn);border-color:var(--warn)}
+#mch .pill.bad{color:var(--bad);border-color:var(--bad)}
+#mch .pill.dim{color:var(--dim)}
+#mch .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+#mch button{background:#262c34;color:var(--fg);border:1px solid var(--line);
 border-radius:4px;padding:7px 14px;font:inherit;cursor:pointer}
-button:hover:not(:disabled){border-color:var(--acc)}
-button:disabled{opacity:.45;cursor:default}
-.note{color:var(--dim);font-size:13px;margin-top:10px}
-.note.act{color:var(--warn)}
-#msg{margin:0 0 14px;padding:10px 12px;border-radius:4px;border:1px solid var(--line)}
-#msg.err{color:var(--bad);border-color:var(--bad)}
-#msg.good{color:var(--ok);border-color:var(--ok)}
-#msg[hidden]{display:none}
+#mch button:hover:not(:disabled){border-color:var(--acc)}
+#mch button:disabled{opacity:.45;cursor:default}
+#mch .note{color:var(--dim);font-size:13px;margin-top:10px}
+#mch .note.act{color:var(--warn)}
+#mch #msg{margin:0 0 14px;padding:10px 12px;border-radius:4px;border:1px solid var(--line)}
+#mch #msg.err{color:var(--bad);border-color:var(--bad)}
+#mch #msg.good{color:var(--ok);border-color:var(--ok)}
+#mch #msg[hidden]{display:none}
 </style>
-</head>
-<body>
-<header>
-  <h1>Ger&auml;te</h1>
-  <a href="/machino/net">Netzwerk &amp; USB</a>
-  <a href="/">Kamera</a>
-</header>
+<div id="mch">
+
 <main>
 <p id="msg" hidden></p>
 
@@ -233,12 +209,6 @@ load();
 
 })();
 </script>
-<script src="/machino/chrome.js" defer></script>
-</body>
-</html>
-)MACHINO_HTML";
 
-const char* machino_devices_page() { return kPage; }
-size_t      machino_devices_page_len() { return sizeof(kPage) - 1; }
-
-}} // namespace machino::http
+</div>
+<%in p/footer.cgi %>

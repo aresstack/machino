@@ -115,52 +115,47 @@ $ curl -su root:PW http://<kamera>/a/bootstrap.min.css | grep -c '\.offcanvas'
 
 Das `<nav>` wird serverseitig mit Bedingungen gerendert (haserl, `<% if %>`).
 Welche Einträge erscheinen, hängt von Hardware und installierten Diensten ab.
+Deshalb steht die Einträgeliste nirgends im Machino-Quelltext — die
+Relay-Injektion ergänzt genau zwei `<li>` (Device Manager, Network & USB) in
+der ausgelieferten Navbar und ist der EINZIGE Sonderfall, weil OpenIPC keinen
+Erweiterungspunkt für Menüeinträge hat.
 
-**Deshalb darf die Einträgeliste nirgends im Machino-Quelltext stehen.** Eine
-Kopie ist beim nächsten OpenIPC-Update falsch, ohne dass es jemand merkt.
-`/machino/chrome.js` holt eine ausgelieferte Seite und übernimmt deren `<nav>`
-unverändert; `src/app/http/chrome.hpp` begründet das im Detail. Der Test in
-`tests/test_devui.cpp` verbietet ausdrücklich, dass `dropdown-item` oder
-`dashboard.cgi` im Skript auftauchen.
+## Wie Machinos Seiten gebaut sind (Stand 2026-09-25, dritter Anlauf)
 
-## Nichts davon steht bei Machino fest verdrahtet
+Machinos Seiten sind **echte OpenIPC-Seiten**: haserl-CGIs nach exakt dem
+Muster von `wireguard.cgi`,
 
-Die Pfade oben sind **gemessene Werte dieser Kamera**, keine Konstanten im
-Code. `/machino/chrome.js` holt eine Seite und liest aus deren `<head>`, wo die
-Dateien liegen — Stylesheets aus `head link[rel~=stylesheet]`, Verhalten aus
-`head script[src]`, jeweils nur gleiche Herkunft. Eine andere Firmware, die
-ihre Dateien woanders ablegt, funktioniert damit ohne Zutun.
+```sh
+#!/usr/bin/haserl
+<%in p/common.cgi %>
+<% page_title="Network & USB" %>
+<%in p/header.cgi %>
+… Inhalt als Cards, Daten per fetch von /api/v1/… …
+<%in p/footer.cgi %>
+```
 
-Einstellbar ist deshalb genau **eine** Angabe, weil sie die einzige ist, die
-sich nicht ablesen lässt: *welche* Seite geholt wird.
+installiert als `machino-network.cgi` und `machino-devices.cgi` nach
+`/var/www/cgi-bin/` (Machino-eigene Dateien; OpenIPC-Dateien bleiben
+byte-identisch, der Uninstall entfernt sie restlos). Damit stehen Head, Navbar,
+Theme und `main.js` **im ersten HTML**, und relative Links haben denselben
+Basiskontext wie jede Stock-Seite. Die alten Pfade `/machino/net` und
+`/machino/devices` sind nur noch 302-Weiterleitungen.
 
-| | |
-|---|---|
-| Schlüssel | `api.chrome_source` |
-| Vorgabe | `/cgi-bin/live.cgi` |
-| leer | Übernahme aus, die Seiten bleiben eigenständig |
-| in der UI | `/machino/net` → Übersicht → **Darstellung** |
+Die zwei Anläufe davor sind absichtlich dokumentiert, damit sie niemand
+wiederholt:
 
-Der Wert landet in einem JavaScript-String-Literal und ist über die API
-schreibbar, wird beim Einsetzen also escaped (`"`, `\`, `<`, Zeilenumbrüche).
-Ein Test hält das fest.
+1. **Nachgebaute Kopfleiste** in eigenem Stil — Fremdkörper.
+2. **Clientseitig übernommene Kopfleiste** (fetch einer Stock-Seite, `<nav>`
+   importieren, Assets nachladen): Seite springt beim Einfügen, relative Links
+   laufen unter `/machino/` ins Leere, und `main.js` starb am globalen
+   `$`-Konflikt mit dem Seitenskript. Alles am Browser gemessen.
 
-## Was Machino daraus benutzt
-
-`/machino/net` und `/machino/devices` übernehmen Stylesheets und Verhalten aus
-dem Kopf der geholten Seite, setzen deren `<nav>` an den Anfang des Body und
-übernehmen `data-bs-theme` von deren `<html>`. Ihre eigenen
-Farbvariablen zeigen auf Bootstrap-Variablen (`--bs-body-bg`,
-`--bs-border-color`, `--bs-primary`, …), damit sie das Theme der Kamera
-mitnehmen statt daneben zu stehen.
-
-Alles davon ist **optional**: kommt das Stylesheet nicht an, ist niemand
-angemeldet oder fehlt das `<nav>`, bleiben die Seiten die eigenständigen, die
-sie ohnehin sind. Eine Kopfleiste ist Komfort und darf keine Seite kosten.
+Regeln, die `tests/test_wwwpages.cpp` erzwingt: kein eigenes
+`<html>/<head>/<body>`, eigenes CSS nur unter `#mch` gescoped (ein ungescoptes
+`.row{display:flex}` zerlegt Bootstraps Grid), Seitenskript als IIFE (wegen
+`function $` in main.js), API-Pfade absolut.
 
 ## Was hier NICHT steht
 
 Ob andere OpenIPC-Varianten (ultimate, fpv) dieselben Pfade und dieselbe
 Bootstrap-Version ausliefern. Gemessen wurde *lite* auf dieser einen Kamera.
-Der Code behandelt jedes fehlende Stück als „nicht da" und kommt ohne aus —
-was auch die einzige belastbare Antwort auf eine ungetestete Variante ist.

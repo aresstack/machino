@@ -260,7 +260,7 @@ Response NetApiService::devices_action(const std::string& id, bool install)
         if (r.status == Status::Busy)
             return ApiService::fail(409, "invalid_value", path,
                                     "the device holds the USB port - release it first "
-                                    "(usb.mode on /machino/net), then uninstall");
+                                    "(usb.mode on the Network & USB page), then uninstall");
         return ApiService::fail(409, "invalid_value", path,
                                 install ? "nothing to install - the release carries no payload for it"
                                         : "could not record the removal");

@@ -41,8 +41,8 @@ jobs:
         # sondern den ganzen <script>-Block -- also die ganze Seite. Das faellt
         # sonst erst in einem Browser auf, und der ist hier selten zur Hand.
         run: |
-          sh machino/tools/check-netui.sh machino/src/app/http/netui.cpp
-          sh machino/tools/check-netui.sh machino/src/app/http/devui.cpp
+          sh machino/tools/check-netui.sh machino/openipc/www/machino-network.cgi
+          sh machino/tools/check-netui.sh machino/openipc/www/machino-devices.cgi
 
       - name: "Fetch toolchain and vendor IMP libraries (T40 musl, SDK 1.3.1)"
         run: |
@@ -149,6 +149,14 @@ jobs:
           cp -f machino/openipc/devices/aic8800.manifest "$O/devices/aic8800.manifest"
           cp -f machino/openipc/sbin/machino-device     "$O/sbin/machino-device"
           cp -f machino/openipc/init/S39machinodev      "$O/init/S39machinodev"
+
+          # Machinos eigene WebUI-Seiten: echte OpenIPC-Seiten (haserl,
+          # common/header/footer-Includes). install.sh kopiert sie in den
+          # Webroot, uninstall.sh entfernt sie; OpenIPC-Dateien bleiben
+          # byte-identisch.
+          mkdir -p "$O/www"
+          cp -f machino/openipc/www/machino-network.cgi "$O/www/machino-network.cgi"
+          cp -f machino/openipc/www/machino-devices.cgi "$O/www/machino-devices.cgi"
 
           # WLAN. install.sh legt das per Default ab und laesst es
           # ausgeschaltet -- usb.mode ist off, und der Helfer kehrt dann

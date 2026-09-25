@@ -69,8 +69,7 @@ void run_ecm_link_tests();
 void run_net_api_tests();
 void run_proc_net_tests();
 void run_hostapd_conf_tests();
-void run_netui_tests();
-void run_devui_tests();
+void run_wwwpages_tests();
 void run_wpa_parse_tests();
 void run_adapter_wiring_tests();
 #define CHECK(cond) do { if (cond) { ++g_pass; } else { ++g_fail; fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
@@ -411,8 +410,7 @@ int main() {
     run_net_api_tests();
     run_proc_net_tests();
     run_hostapd_conf_tests();
-    run_netui_tests();
-    run_devui_tests();
+    run_wwwpages_tests();
     run_wpa_parse_tests();
     run_adapter_wiring_tests();
     g_pass += g_pass_ext; g_fail += g_fail_ext;

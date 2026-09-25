@@ -828,7 +828,6 @@ int main(int argc, char** argv) {
 
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
-        hc.chrome_source = cfg.api.chrome_source;
         // Front-door: the Majestic drop-in login gates :80 exactly like
         // Majestic did - the WebUI login IS the camera's system login.
         hc.unsafe = cfg.system.unsafe;

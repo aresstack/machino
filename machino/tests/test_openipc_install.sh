@@ -64,6 +64,9 @@ FAKE
     cp "$PKG/init/S39machinodev" "$B/init/"
     mkdir -p "$B/devices"
     cp "$PKG/devices/aic8800.manifest" "$B/devices/"
+    # Machinos eigene WebUI-Seiten -- echte OpenIPC-Seiten, siehe install.sh.
+    mkdir -p "$B/www"
+    cp "$PKG/www/machino-network.cgi" "$PKG/www/machino-devices.cgi" "$B/www/"
     # Die WLAN-Nutzlast so, wie das Release-Artefakt sie traegt: Treiber,
     # Firmware und hostapd unter wifi/. Sie wird per Default installiert und
     # ist ohne usb.wifi.enabled=true wirkungslos.
@@ -442,7 +445,7 @@ make_bundle; make_camera auto
 HDR="$R/var/www/cgi-bin/p/header.cgi"
 if grep -q 'machino-devpage:begin' "$HDR"; then ok
 else bad "--with-pages did not add the device manager entry"; fi
-if grep -q '/machino/devices' "$HDR"; then ok
+if grep -q '/cgi-bin/machino-devices.cgi' "$HDR"; then ok
 else bad "the device menu entry does not point at the page"; fi
 if grep -q 'machino-netpage:begin' "$HDR"; then ok
 else bad "--with-pages did not add the network page entry"; fi
@@ -1187,7 +1190,7 @@ make_bundle; make_camera auto
 run_install --with-network-page || bad "--with-network-page was refused: $(cat "$WORK/out")"
 H="$WORK/root/var/www/cgi-bin/p/header.cgi"
 if grep -q 'machino-netpage:begin' "$H"; then ok; else bad "no menu entry was added"; fi
-if grep -q '/machino/net' "$H"; then ok; else bad "the menu entry does not point at the page"; fi
+if grep -q '/cgi-bin/machino-network.cgi' "$H"; then ok; else bad "the menu entry does not point at the page"; fi
 # The anchor line must still be there: the entry is added AFTER it, not over it.
 if grep -q 'href="network.cgi"' "$H"; then ok; else bad "the entry replaced the stock Network item"; fi
 
@@ -1213,7 +1216,7 @@ run_install --with-network-page --with-device-page ||
     bad "--with-device-page was refused: $(cat "$WORK/out")"
 H="$WORK/root/var/www/cgi-bin/p/header.cgi"
 if grep -q 'machino-devpage:begin' "$H"; then ok; else bad "no device menu entry was added"; fi
-if grep -q '/machino/devices' "$H"; then ok; else bad "the device entry does not point at the page"; fi
+if grep -q '/cgi-bin/machino-devices.cgi' "$H"; then ok; else bad "the device entry does not point at the page"; fi
 if grep -q 'machino-netpage:begin' "$H"; then ok; else bad "the device entry displaced the network entry"; fi
 if grep -q 'href="network.cgi"' "$H"; then ok; else bad "an entry replaced the stock Network item"; fi
 run_install --with-network-page --with-device-page
@@ -1446,6 +1449,15 @@ hits=$(grep -rl "$PROF" "$PKG" 2>/dev/null | grep -v '/devices/aic8800.manifest$
 if [ -z "$hits" ]; then ok
 else bad "the profile name is hardcoded outside the manifest: $hits"; fi
 
+# Machinos WebUI-Seiten: nach dem Install im Webroot und ausfuehrbar, nach dem
+# vollstaendigen Uninstall restlos weg. Die OpenIPC-Dateien daneben prueft der
+# header.cgi-Vergleich weiter oben byte-genau.
+if [ -x "$WORK/root/var/www/cgi-bin/machino-network.cgi" ] &&
+   [ -x "$WORK/root/var/www/cgi-bin/machino-devices.cgi" ]; then ok
+else bad "the machino pages were not installed into the webroot"; fi
+if head -1 "$WORK/root/var/www/cgi-bin/machino-network.cgi" | grep -q haserl; then ok
+else bad "the installed network page is not a haserl page"; fi
+
 # h) Das vollstaendige uninstall.sh -- und NUR das -- raeumt auch die Nutzlast.
 run_uninstall || bad "uninstall failed: $(cat "$WORK/out")"
 if [ -d "$WORK/root/etc/machino/payload" ]; then
@@ -1456,6 +1468,10 @@ if [ -f "$WORK/root/etc/init.d/S39machinodev" ]; then
 else ok; fi
 if cmp -s "$WORK/root/etc/wireless/usb" "$WORK/wireless-usb.orig"; then ok
 else bad "the full uninstall did not restore /etc/wireless/usb byte for byte"; fi
+if [ -e "$WORK/root/var/www/cgi-bin/machino-network.cgi" ] ||
+   [ -e "$WORK/root/var/www/cgi-bin/machino-devices.cgi" ]; then
+    bad "the full uninstall left machino's pages in the webroot"
+else ok; fi
 
 # ---------------------------------------------------------------------------
 # Die Konfiguration MUSS Hardware auswaehlen.

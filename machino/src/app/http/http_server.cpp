@@ -1,7 +1,4 @@
 #include "app/http/http_server.hpp"
-#include "app/http/chrome.hpp"
-#include "app/http/netui.hpp"
-#include "app/http/devui.hpp"
 #include "app/compat/majestic_webui.hpp"
 #include "app/webrtc/peer.hpp"
 #include "app/http/fmp4.hpp"
@@ -459,88 +456,36 @@ bool HttpServer::handle_request(Client& c) {
             LOGI(MOD, "%s: SSE subscribed (%zu subscribers)", c.peer.c_str(), bus_.subscribers());
             return true;
         }
-    } else if (net_api_ && (path == "/machino/net" || path == "/machino/net/")) {
-        // Machino's own page, under its own path. The stock WebUI is left
-        // byte-identical: an installer that edits p/header.cgi makes an
-        // upgrade of the stock UI either revert the change or conflict with
-        // it. The menu entry that points here is a separate, explicit step.
+    } else if (path == "/machino/net" || path == "/machino/net/" ||
+               path == "/machino/devices" || path == "/machino/devices/") {
+        // Die Machino-Seiten sind seit dem UI-Umbau ECHTE OpenIPC-Seiten:
+        // haserl-CGIs im Webroot (von Machino installiert, von seinem
+        // Uninstall entfernt), gerendert von derselben Pipeline wie network.cgi
+        // -- Head, Navbar, Theme und main.js stehen damit im ERSTEN HTML, und
+        // relative Links haben denselben Basiskontext wie ueberall.
         //
-        // Served only when the network API is wired -- a page whose every
-        // button answers 404 is worse than no page.
-        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
-        else {
-            const bool ok = queue(c, response(200, "text/html; charset=utf-8",
-                                              std::string(machino_net_page(), machino_net_page_len()),
-                                              req.keep_alive));
-            if (!req.keep_alive) c.close_after_flush = true;
-            return ok;
-        }
-    } else if (path == "/machino/chrome") {
-        // Die eine Einstellung der Kopfleiste, unter EIGENEM Pfad statt über
-        // /api/v1/config. Grund steht in zwei Tests: netui und devui verbieten
-        // beiden Seiten ausdrücklich, /api/v1/config anzufassen, damit sich
-        // über eine Bequemlichkeit nichts aus dem Medienpfad in eine
-        // Netzwerkseite schleicht. Diese Einstellung gehört auch gar nicht
-        // dorthin -- sie beschreibt die Darstellung, nicht die Kamera.
-        // Geschrieben wird trotzdem in dieselbe Konfiguration, damit es nur
-        // eine Wahrheit gibt.
-        if (m == "GET") {
-            r.status = 200;
-            r.body = Json::object();
-            r.body.set("source", Json::string(cfg_.chrome_source));
-        } else if (m == "PATCH" || m == "POST") {
-            Json in;
-            std::string perr;
-            const Json* src = nullptr;
-            if (Json::parse(req.body, in, perr) && in.is_object()) src = in.get("source");
-            if (!src || !src->is_string()) {
-                r = api::ApiService::fail(400, "unknown_field", path, "expected {\"source\":\"...\"}");
-            } else {
-                const std::string v = src->as_string();
-                Json api_obj = Json::object();
-                api_obj.set("chrome_source", Json::string(v));
-                Json patch = Json::object();
-                patch.set("api", api_obj);
-                r = api_.patch_config(patch.dump(), "");
-                // Sofort wirksam: cfg_ ist die Kopie, aus der das Skript
-                // erzeugt wird. Ohne das griffe die Änderung erst nach einem
-                // Neustart des Daemons, und die Seite hätte beim Neuladen
-                // dieselbe Leiste wie vorher.
-                if (r.status >= 200 && r.status < 300) cfg_.chrome_source = v;
-            }
-        } else {
-            r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
-        }
-    } else if (path == "/machino/chrome.js") {
-        // Die Kopfleiste fuer Machinos eigene Seiten. Bewusst eine eigene
-        // Datei statt zweimal inline: beide Seiten brauchen dasselbe, und der
-        // Browser kann sie zwischenspeichern. Siehe app/http/chrome.hpp dafuer,
-        // warum nur die LINKS der Stock-WebUI uebernommen werden und nicht
-        // deren Markup samt CSS.
-        //
-        // Nicht an net_api_ gebunden: ein Skript, das nichts tut, wenn es
-        // nichts zu zeigen gibt, ist harmlos -- ein 404 mitten in einer
-        // ausgelieferten Seite dagegen steht in jeder Browserkonsole.
-        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
-        else {
-            const bool ok = queue(c, response(200, "application/javascript; charset=utf-8",
-                                              machino_chrome_js(cfg_.chrome_source),
-                                              req.keep_alive));
-            if (!req.keep_alive) c.close_after_flush = true;
-            return ok;
-        }
-    } else if (net_api_ && (path == "/machino/devices" || path == "/machino/devices/")) {
-        // Die Geraeteseite. Dieselbe Bedingung wie bei /machino/net: nur
-        // ausliefern, wenn die API dahinter verdrahtet ist -- eine Seite,
-        // deren jeder Knopf 404 antwortet, ist schlimmer als keine Seite.
-        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
-        else {
-            const bool ok = queue(c, response(200, "text/html; charset=utf-8",
-                                              std::string(machino_devices_page(), machino_devices_page_len()),
-                                              req.keep_alive));
-            if (!req.keep_alive) c.close_after_flush = true;
-            return ok;
-        }
+        // Ein erster Anlauf hat stattdessen die Kopfleiste clientseitig aus
+        // einer geholten Seite uebernommen. Das war der falsche Weg: die Seite
+        // sprang beim Einfuegen, relative Links liefen unter /machino/ ins
+        // Leere, und deren main.js starb an einem globalen Bezeichnerkonflikt.
+        // Diese Pfade bleiben nur als Weiterleitung fuer Lesezeichen und
+        // aeltere Menue-Injektionen bestehen.
+        const bool dev = path.compare(0, 16, "/machino/devices") == 0;
+        const char* to = dev ? "/cgi-bin/machino-devices.cgi" : "/cgi-bin/machino-network.cgi";
+        std::string h = "HTTP/1.1 302 Found
+Location: ";
+        h += to;
+        h += "
+Content-Length: 0
+";
+        h += req.keep_alive ? "Connection: keep-alive
+
+" : "Connection: close
+
+";
+        const bool ok = queue(c, h);
+        if (!req.keep_alive) c.close_after_flush = true;
+        return ok;
     } else if (net_api_ && net_api_->handle(m, path, req.body, r)) {
         // Asked first among the /api/v1 routes because it owns two whole
         // prefixes. It returns false for anything outside them, so the chain

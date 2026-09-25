@@ -1,81 +1,55 @@
-#include "app/http/netui.hpp"
-
-#include <cstring>
-
-namespace machino { namespace http {
-
-// One raw string literal. Kept in a single place so the page and the API it
-// calls cannot drift into different versions of the same contract.
-//
-// The delimiter is )MACHINO_HTML rather than )" because the page contains )"
-// in its JavaScript.
-static const char kPage[] = R"MACHINO_HTML(<!DOCTYPE html>
-<html lang="de">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Netzwerk &amp; USB &mdash; machino</title>
+#!/usr/bin/haserl
+<%in p/common.cgi %>
+<% page_title="Network & USB" %>
+<%in p/header.cgi %>
+<!-- machino-owned page. Installed by machino, removed by its uninstall;
+     no OpenIPC file is modified. Rendered by the SAME pipeline as every
+     stock page (common/header/footer includes), so head, navbar, theme
+     and main.js are in the first HTML and relative links resolve like
+     everywhere else. Data comes only from machino's /api/v1. -->
 <style>
-:root{--bg:var(--bs-body-bg,#14161a);--panel:var(--bs-tertiary-bg,#1c2026);
+#mch{--bg:var(--bs-body-bg,#14161a);--panel:var(--bs-tertiary-bg,#1c2026);
 --line:var(--bs-border-color,#2c323b);--fg:var(--bs-body-color,#e6e8ea);
 --dim:var(--bs-secondary-color,#9aa3ad);--ok:var(--bs-success,#4caf7d);
 --warn:var(--bs-warning,#d9a13b);--bad:var(--bs-danger,#d4564f);
 --acc:var(--bs-primary,#4a90d9)}
-*{box-sizing:border-box}
-body{margin:0}
-/* Ohne die Stock-CSS (nicht angemeldet, Datei fehlt) traegt die Seite ihr
-   eigenes Aussehen weiter -- die Fallbacks oben sind genau dafuer da. */
-body:not(.lite){background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif}
-header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;
-gap:16px;align-items:baseline;flex-wrap:wrap}
-h1{font-size:16px;margin:0;font-weight:600}
-nav#tabs{display:flex;gap:2px;flex-wrap:wrap;padding:0 16px;border-bottom:1px solid var(--line)}
-nav#tabs button{background:none;border:0;border-bottom:2px solid transparent;color:var(--dim);
-padding:10px 12px;cursor:pointer;font:inherit}
-nav#tabs button[aria-selected=true]{color:var(--fg);border-bottom-color:var(--acc)}
-main{padding:16px;max-width:900px}
-section[hidden]{display:none}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+#mch section[hidden]{display:none}
+#mch .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;
 padding:14px;margin-bottom:14px}
-.card h2{font-size:14px;margin:0 0 10px;font-weight:600}
-table{width:100%;border-collapse:collapse}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--dim);font-weight:500;width:40%}
-tr:last-child th,tr:last-child td{border-bottom:0}
-.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
+#mch .card h2{font-size:14px;margin:0 0 10px;font-weight:600}
+#mch table{width:100%;border-collapse:collapse}
+#mch th, #mch td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+#mch th{color:var(--dim);font-weight:500;width:40%}
+#mch tr:last-child th, #mch tr:last-child td{border-bottom:0}
+#mch .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
 border:1px solid var(--line)}
-.pill.ok{color:var(--ok);border-color:var(--ok)}
-.pill.warn{color:var(--warn);border-color:var(--warn)}
-.pill.bad{color:var(--bad);border-color:var(--bad)}
-label{display:block;margin:8px 0 2px;color:var(--dim);font-size:13px}
-input,select{background:#0f1114;color:var(--fg);border:1px solid var(--line);
+#mch .pill.ok{color:var(--ok);border-color:var(--ok)}
+#mch .pill.warn{color:var(--warn);border-color:var(--warn)}
+#mch .pill.bad{color:var(--bad);border-color:var(--bad)}
+#mch label{display:block;margin:8px 0 2px;color:var(--dim);font-size:13px}
+#mch input, #mch select{background:#0f1114;color:var(--fg);border:1px solid var(--line);
 border-radius:4px;padding:7px 8px;width:100%;font:inherit}
-button.act{background:var(--acc);color:#fff;border:0;border-radius:4px;
+#mch button.act{background:var(--acc);color:#fff;border:0;border-radius:4px;
 padding:8px 14px;cursor:pointer;font:inherit;margin-top:10px}
-button.act[disabled]{opacity:.45;cursor:not-allowed}
-button.ghost{background:none;color:var(--fg);border:1px solid var(--line)}
-.row{display:flex;gap:10px;flex-wrap:wrap}
-.row>*{flex:1 1 180px}
-.msg{margin-top:10px;padding:8px 10px;border-radius:4px;border:1px solid var(--line);
+#mch button.act[disabled]{opacity:.45;cursor:not-allowed}
+#mch button.ghost{background:none;color:var(--fg);border:1px solid var(--line)}
+#mch .row{display:flex;gap:10px;flex-wrap:wrap}
+#mch .row>*{flex:1 1 180px}
+#mch .msg{margin-top:10px;padding:8px 10px;border-radius:4px;border:1px solid var(--line);
 white-space:pre-wrap}
-.msg.bad{border-color:var(--bad);color:var(--bad)}
-.msg.ok{border-color:var(--ok);color:var(--ok)}
-.note{color:var(--dim);font-size:13px;margin:6px 0 0}
-.scan{width:100%;margin-top:8px}
-.scan td{cursor:pointer}
-.scan tr:hover td{background:#22272e}
-#pending{position:sticky;top:0;z-index:5;background:#3a2c14;border:1px solid var(--warn);
+#mch .msg.bad{border-color:var(--bad);color:var(--bad)}
+#mch .msg.ok{border-color:var(--ok);color:var(--ok)}
+#mch .note{color:var(--dim);font-size:13px;margin:6px 0 0}
+#mch .scan{width:100%;margin-top:8px}
+#mch .scan td{cursor:pointer}
+#mch .scan tr:hover td{background:#22272e}
+#mch #pending{position:sticky;top:0;z-index:5;background:#3a2c14;border:1px solid var(--warn);
 border-radius:6px;padding:12px;margin:0 16px 14px}
-#pending[hidden]{display:none}
-#count{font-variant-numeric:tabular-nums;font-weight:600}
-.unavail{color:var(--dim);font-style:italic}
+#mch #pending[hidden]{display:none}
+#mch #count{font-variant-numeric:tabular-nums;font-weight:600}
+#mch .unavail{color:var(--dim);font-style:italic}
 </style>
-</head>
-<body>
-<header>
-  <h1>Netzwerk &amp; USB</h1>
-  <span class="note" id="active"></span>
-</header>
+<div id="mch">
 
 <!-- The confirmation banner is OUTSIDE the tabs and sticky: a change that will
      roll itself back must be visible no matter which tab the user wandered
@@ -90,34 +64,22 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   </div>
 </div>
 
-<nav id="tabs"></nav>
 <main>
 
 <section id="t-overview">
   <div class="card">
     <h2>Uplinks</h2>
+    <!-- Stand frueher im eigenen Seitenkopf; der gehoert jetzt header.cgi. -->
+    <p class="note" id="active"></p>
     <table id="uplinks"><tbody></tbody></table>
     <p class="note">Ein Access Point ist kein Uplink. Eine Kamera, die ihr
     eigenes WLAN bereitstellt, arbeitet wie vorgesehen und hat
     absichtsgemäß keine Internetverbindung.</p>
   </div>
 
-  <div class="card">
-    <h2>Darstellung</h2>
-    <p class="note">Diese Seite übernimmt Kopfleiste, Farben und Verhalten von
-    der WebUI der Kamera. Dafür holt sie <b>eine</b> ihrer Seiten und liest
-    aus deren Kopf, wo die Dateien liegen &mdash; die Pfade sind nirgends fest
-    eingetragen. Falls diese Firmware eine andere Seite ausliefert, lässt sich
-    hier eine angeben. Leer lassen schaltet die Übernahme ab; die Seite
-    funktioniert dann eigenständig weiter.</p>
-    <label for="chromeSrc">Seite, von der die Kopfleiste stammt</label>
-    <input id="chromeSrc" placeholder="/cgi-bin/live.cgi">
-    <button class="act" id="chromeSave">Übernehmen</button>
-    <div id="chromeMsg"></div>
-  </div>
 </section>
 
-<section id="t-ethernet" hidden>
+<section id="t-ethernet">
   <div class="card">
     <h2>Ethernet</h2>
     <table id="eth"><tbody></tbody></table>
@@ -128,7 +90,7 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   </div>
 </section>
 
-<section id="t-wifi" hidden>
+<section id="t-wifi">
   <div class="card">
     <h2>WLAN-Status</h2>
     <table id="wifistat"><tbody></tbody></table>
@@ -178,7 +140,7 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   </div>
 </section>
 
-<section id="t-cellular" hidden>
+<section id="t-cellular">
   <!-- Wenn USB nicht auf Mobilfunk steht, wird das GESAGT und nicht durch
        graue Felder angedeutet. Ein Formular, das sich speichern laesst und
        nichts bewirkt, ist schlimmer als eines, das erklaert warum. -->
@@ -254,7 +216,7 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   </div>
 </section>
 
-<section id="t-routing" hidden>
+<section id="t-routing">
   <div class="card">
     <h2>Reihenfolge und Failover</h2>
     <label for="order">Reihenfolge (höchste Priorität zuerst, Komma getrennt)</label>
@@ -276,14 +238,14 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   </div>
 </section>
 
-<section id="t-usbhost" hidden>
+<section id="t-usbhost">
   <div class="card">
     <h2>USB-Host</h2>
     <table id="usbhost"><tbody></tbody></table>
   </div>
 </section>
 
-<section id="t-usbpower" hidden>
+<section id="t-usbpower">
   <div class="card">
     <h2>Stromversorgung des Ports</h2>
     <div id="usb-unavail" class="unavail" hidden></div>
@@ -308,7 +270,7 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   </div>
 </section>
 
-<section id="t-usbmode" hidden>
+<section id="t-usbmode">
   <div class="card">
     <h2>USB-Nutzung</h2>
     <p class="note">Die Kamera hat <b>einen</b> USB-Port. Er trägt entweder
@@ -327,7 +289,7 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
   </div>
 </section>
 
-<section id="t-usbdev" hidden>
+<section id="t-usbdev">
   <div class="card">
     <h2>Angeschlossene Geräte</h2>
     <table id="usbdev"><tbody></tbody></table>
@@ -347,12 +309,6 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
 (function () {
 
 "use strict";
-const TABS = [
-  ["t-overview","Übersicht"],["t-ethernet","Ethernet"],["t-wifi","WLAN"],
-  ["t-cellular","Mobilfunk"],["t-routing","Routing"],
-  ["t-usbhost","USB-Host"],["t-usbpower","Stromversorgung"],
-  ["t-usbmode","USB-Nutzung"],["t-usbdev","Geräte"]
-];
 const $ = (id) => document.getElementById(id);
 
 // Every request goes through here so a 401 does one thing everywhere: send the
@@ -365,7 +321,7 @@ async function api(method, path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
     credentials: "same-origin"
   });
-  if (r.status === 401) { location.href = "/login.html?next=/machino/net"; throw new Error("unauthorized"); }
+  if (r.status === 401) { location.href = "/login.html?next=/cgi-bin/machino-network.cgi"; throw new Error("unauthorized"); }
   let j = null;
   try { j = await r.json(); } catch (e) { j = null; }
   return {status: r.status, body: j};
@@ -404,23 +360,6 @@ function stateKind(s) {
 }
 
 // ---------------------------------------------------------------- tabs
-function buildTabs() {
-  const nav = $("tabs");
-  TABS.forEach(([id, label], i) => {
-    const b = document.createElement("button");
-    b.textContent = label;
-    b.setAttribute("aria-selected", i === 0 ? "true" : "false");
-    b.onclick = () => {
-      TABS.forEach(([oid]) => { $(oid).hidden = oid !== id; });
-      [...nav.children].forEach((c) => c.setAttribute("aria-selected", c === b ? "true" : "false"));
-      location.hash = id.slice(2);
-    };
-    nav.appendChild(b);
-  });
-  const want = location.hash.slice(1);
-  const idx = TABS.findIndex(([id]) => id.slice(2) === want);
-  if (idx >= 0) nav.children[idx].click();
-}
 
 // ------------------------------------------------------------- network
 let LAST_NET = null;
@@ -1000,37 +939,8 @@ async function refresh() {
   } catch (e) { /* a 401 already navigated away */ }
 }
 
-// --- Darstellung: welche Seite die Kopfleiste liefert ----------------------
-//
-// Nur DIESE eine Angabe ist einstellbar. Wo die Dateien liegen, liest
-// /machino/chrome.js aus dem Kopf der geholten Seite -- eine Einstellung, die
-// man sich ablesen kann, ist eine Einstellung zu viel.
-async function loadChrome() {
-  const r = await api("GET", "/machino/chrome");
-  const v = r.body ? r.body.source : undefined;
-  if (v !== undefined && document.activeElement !== $("chromeSrc"))
-    $("chromeSrc").value = v || "";
-}
-$("chromeSave").addEventListener("click", async () => {
-  const el = $("chromeMsg");
-  msg(el, "wird übernommen …");
-  try {
-    const r = await api("PATCH", "/machino/chrome",
-                        {source: $("chromeSrc").value.trim()});
-    if (r.status >= 200 && r.status < 300) {
-      // Die Seite laedt das Skript beim Aufbau. Ohne Neuladen bliebe die alte
-      // Kopfleiste stehen und niemand wuesste, ob es geklappt hat.
-      msg(el, "Übernommen. Seite wird neu geladen …", "ok");
-      setTimeout(() => location.reload(), 900);
-    } else {
-      msg(el, (r.body && r.body.error && r.body.error.message) || "Fehlgeschlagen.", "bad");
-    }
-  } catch (e) { /* 401 hat schon navigiert */ }
-});
 
-buildTabs();
 refresh();
-loadChrome().catch(() => {});
 // Polled, not pushed. The status here changes on the scale of seconds and a
 // dedicated SSE stream for one page would be a second thing to keep alive
 // through exactly the network changes this page makes.
@@ -1046,12 +956,6 @@ setInterval(() => {
 
 })();
 </script>
-<script src="/machino/chrome.js" defer></script>
-</body>
-</html>
-)MACHINO_HTML";
 
-const char* machino_net_page() { return kPage; }
-size_t      machino_net_page_len() { return sizeof(kPage) - 1; }
-
-}} // namespace machino::http
+</div>
+<%in p/footer.cgi %>
