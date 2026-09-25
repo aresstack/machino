@@ -212,7 +212,7 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
 
     // Already there? Do not double it -- re-relaying the same page (or a proxy
     // in front) must not stack the entries.
-    if (html.find("/cgi-bin/machino-devices.cgi") != std::string::npos)
+    if (html.find("machino-devices.cgi") != std::string::npos)
         return html;
 
     // The anchor is the stock Network item in System -> Setup. Match the href
@@ -240,8 +240,8 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     // "Camera", "System", "Network", "Time", "Access". Ein deutscher Eintrag
     // mitten darin sieht nach Fremdkoerper aus -- und genau das war er.
     const std::string add =
-        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"/cgi-bin/machino-devices.cgi\">Device Manager</a></li>"
-        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"/cgi-bin/machino-network.cgi\">Network &amp; USB</a></li>";
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-devices.cgi\">Device Manager</a></li>"
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-network.cgi\">Network &amp; USB</a></li>";
 
     std::string out;
     out.reserve(html.size() + add.size());

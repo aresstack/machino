@@ -321,13 +321,13 @@ void run_relay_head_end_tests() {
         const std::string out = inject_machino_nav(page, changed);
         HCHECK(changed);
         // Both links present, exactly once each.
-        HCHECK(out.find("href=\"/cgi-bin/machino-devices.cgi\"") != std::string::npos);
-        HCHECK(out.find("href=\"/cgi-bin/machino-network.cgi\"") != std::string::npos);
-        HCHECK(out.find("/cgi-bin/machino-devices.cgi") == out.rfind("/cgi-bin/machino-devices.cgi"));
-        HCHECK(out.find("/cgi-bin/machino-network.cgi") == out.rfind("/cgi-bin/machino-network.cgi"));
+        HCHECK(out.find("href=\"machino-devices.cgi\"") != std::string::npos);
+        HCHECK(out.find("href=\"machino-network.cgi\"") != std::string::npos);
+        HCHECK(out.find("machino-devices.cgi") == out.rfind("machino-devices.cgi"));
+        HCHECK(out.find("machino-network.cgi") == out.rfind("machino-network.cgi"));
         // Inserted AFTER the Network item (inside Setup), before Time.
-        HCHECK(out.find("/cgi-bin/machino-devices.cgi") > out.find("network.cgi"));
-        HCHECK(out.find("/cgi-bin/machino-network.cgi") < out.find("time.cgi"));
+        HCHECK(out.find("machino-devices.cgi") > out.find("network.cgi"));
+        HCHECK(out.find("machino-network.cgi") < out.find("time.cgi"));
         // The stock entries are untouched and still there.
         HCHECK(out.find("href=\"network.cgi\"") != std::string::npos);
         HCHECK(out.find("href=\"time.cgi\"") != std::string::npos);
@@ -338,14 +338,14 @@ void run_relay_head_end_tests() {
         const std::string twice = inject_machino_nav(out, again);
         HCHECK(!again);
         HCHECK(twice == out);
-        HCHECK(twice.find("/cgi-bin/machino-devices.cgi") == twice.rfind("/cgi-bin/machino-devices.cgi"));
+        HCHECK(twice.find("machino-devices.cgi") == twice.rfind("machino-devices.cgi"));
 
         // Single-quoted href variant is accepted too.
         bool sqc = false;
         const std::string sqp = "<li><a class=\"dropdown-item\" href='network.cgi'>Network</a></li>";
         const std::string sqout = inject_machino_nav(sqp, sqc);
         HCHECK(sqc);
-        HCHECK(sqout.find("/cgi-bin/machino-devices.cgi") != std::string::npos);
+        HCHECK(sqout.find("machino-devices.cgi") != std::string::npos);
 
         // No anchor -> byte-identical, changed=false.
         const std::string noanchor = "<html><body><ul><li>nothing here</li></ul></body></html>";
@@ -356,7 +356,7 @@ void run_relay_head_end_tests() {
 
         // Already-integrated page (carries /cgi-bin/machino-devices.cgi) -> untouched.
         bool ic = true;
-        const std::string pre = "<li><a href=\"/cgi-bin/machino-devices.cgi\">DM</a></li>"
+        const std::string pre = "<li><a href=\"machino-devices.cgi\">DM</a></li>"
                                 "<li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li>";
         const std::string preout = inject_machino_nav(pre, ic);
         HCHECK(!ic);

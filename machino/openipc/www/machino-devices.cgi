@@ -2,67 +2,45 @@
 <%in p/common.cgi %>
 <% page_title="Device Manager" %>
 <%in p/header.cgi %>
-<!-- machino-owned page; see machino-network.cgi for the contract. -->
+<!-- machino-owned page. Installed by machino, removed by its uninstall; no
+     OpenIPC file is modified. Rendered by the SAME pipeline as every stock
+     page (common/header/footer includes), so head, navbar, theme and main.js
+     are in the first HTML and relative links resolve like everywhere else.
+     Data comes only from machino's /api/v1. Components are the stock ones
+     (card/card-body, mj-cap, mj-card-note, badge, btn) -- the page must not
+     read as a second product. -->
 <style>
-#mch{--bg:var(--bs-body-bg,#14161a);--panel:var(--bs-tertiary-bg,#1c2026);
---line:var(--bs-border-color,#2c323b);--fg:var(--bs-body-color,#e6e8ea);
---dim:var(--bs-secondary-color,#9aa3ad);--ok:var(--bs-success,#4caf7d);
---warn:var(--bs-warning,#d9a13b);--bad:var(--bs-danger,#d4564f);
---acc:var(--bs-primary,#4a90d9)}
-#mch .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;
-padding:14px;margin-bottom:14px}
-#mch .card h2{font-size:14px;margin:0 0 4px;font-weight:600}
-#mch .sub{color:var(--dim);font-size:13px;margin:0 0 10px}
-#mch table{width:100%;border-collapse:collapse}
-#mch th, #mch td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-#mch th{color:var(--dim);font-weight:500;width:42%}
-#mch tr:last-child th, #mch tr:last-child td{border-bottom:0}
-#mch .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
-border:1px solid var(--line)}
-#mch .pill.ok{color:var(--ok);border-color:var(--ok)}
-#mch .pill.warn{color:var(--warn);border-color:var(--warn)}
-#mch .pill.bad{color:var(--bad);border-color:var(--bad)}
-#mch .pill.dim{color:var(--dim)}
-#mch .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
-#mch button{background:#262c34;color:var(--fg);border:1px solid var(--line);
-border-radius:4px;padding:7px 14px;font:inherit;cursor:pointer}
-#mch button:hover:not(:disabled){border-color:var(--acc)}
-#mch button:disabled{opacity:.45;cursor:default}
-#mch .note{color:var(--dim);font-size:13px;margin-top:10px}
-#mch .note.act{color:var(--warn)}
-#mch #msg{margin:0 0 14px;padding:10px 12px;border-radius:4px;border:1px solid var(--line)}
-#mch #msg.err{color:var(--bad);border-color:var(--bad)}
-#mch #msg.good{color:var(--ok);border-color:var(--ok)}
-#mch #msg[hidden]{display:none}
+/* Only what the stock UI has no component for: the two-button row. */
+#mch .grid{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
 </style>
 <div id="mch">
 
-<main>
-<p id="msg" hidden></p>
+<div class="row g-4">
+<div class="col-12"><p id="msg" class="alert py-2" hidden></p></div>
 
 <!-- Der Satz ist nicht Deko. Ohne ihn ist die Seite irrefuehrend: sie sieht
      aus, als koenne man hier WLAN konfigurieren, und genau das kann man
      nicht. -->
-<div class="card">
-  <h2>Was diese Seite tut</h2>
-  <p class="sub">Sie richtet die <em>Hardwareunterst&uuml;tzung</em> ein &mdash;
-  Treiber nach <code>/lib/modules</code> und ein Profil nach
-  <code>/etc/wireless/usb</code>. Danach bietet die unver&auml;nderte
-  OpenIPC-Seite <em>Network</em> den Adapter unter &bdquo;Wireless
-  Adapter&ldquo; an; dort wird das WLAN auch verbunden. Installieren schaltet
-  den USB-Port <em>nicht</em> um &mdash; es gibt genau einen Port, und wer ihn
-  bekommt, steht unter <a href="/machino/net">Netzwerk &amp; USB</a>.</p>
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+  <div class="mj-live-head"><h3 class="mj-cap">What this page does</h3><span class="mj-live-rule"></span></div>
+  <p class="mj-card-note">It sets up the <em>hardware support</em> &mdash;
+  drivers into <code>/lib/modules</code> and a profile into
+  <code>/etc/wireless/usb</code>. The unmodified OpenIPC <em>Network</em> page
+  then offers the adapter under &ldquo;Wireless Adapter&rdquo;, and that is
+  where Wi-Fi gets connected. Installing does <em>not</em> switch the USB
+  port &mdash; there is exactly one port, and who owns it is decided on
+  <a href="machino-network.cgi">Network &amp; USB</a>.</p>
+</div></div></div>
+
+<div class="col-12"><div class="row g-4" id="list"></div></div>
 </div>
 
-<div id="list"></div>
-</main>
-
 <script>
-// Alles hier ist LOKAL (IIFE). Der Grund ist konkret: die Kopfleiste
-// laedt /a/main.js der Kamera-WebUI nach, und das deklariert global
-// `function $`. Stand hier ein globales `const $`, starb main.js beim
-// Parsen ("Identifier '$' has already been declared") -- und mit ihm
-// jedes Dropdown der Leiste. Gemessen am 2026-09-25.
+// Alles hier ist LOKAL (IIFE). Der Grund ist konkret: header.cgi laedt
+// /a/main.js der Kamera-WebUI, und das deklariert global `function $`.
+// Stand hier ein globales `const $`, starb main.js beim Parsen
+// ("Identifier '$' has already been declared") -- und mit ihm jedes
+// Dropdown der Leiste. Gemessen am 2026-09-25.
 (function () {
 
 "use strict";
@@ -72,88 +50,92 @@ function msg(text, kind) {
   const m = $("#msg");
   if (!text) { m.hidden = true; return; }
   m.hidden = false; m.textContent = text;
-  m.className = kind || "";
+  m.className = "alert py-2 " +
+    (kind === "good" ? "alert-success" : kind === "err" ? "alert-danger" : "alert-secondary");
 }
 
 // Die Zustandsnamen kommen vom Server (install_state_name). Hier stehen nur
-// die Saetze dazu -- und zwar die, die der Benutzer braucht, nicht die
-// Aufzaehlungsnamen. "install-pending" auf eine Seite zu schreiben und den
-// Benutzer raten zu lassen, was jetzt zu tun ist, waere keine Oberflaeche.
+// die Saetze dazu -- die, die der Benutzer braucht, nicht die
+// Aufzaehlungsnamen. Sichtbarer Text ist ENGLISCH wie der Rest der WebUI.
 const STATE = {
-  "unsupported": ["nicht unterst&uuml;tzt", "dim",
-    "Diese Machino-Fassung kennt das Ger&auml;t nicht."],
-  "unavailable": ["keine Nutzlast", "dim",
-    "Dieses Release bringt die Kernelmodule nicht mit. Ohne sie w&auml;re " +
-    "&bdquo;Installieren&ldquo; ein Knopf, der nur scheitern kann."],
-  "not-installed": ["verf&uuml;gbar", "warn",
-    "Die Treiber liegen bereit, sind auf der Kamera aber noch nicht eingerichtet."],
-  "install-pending": ["wird beim Neustart eingerichtet", "warn",
-    "Vorgemerkt. Wirksam nach dem n&auml;chsten Neustart &mdash; machino l&auml;dt " +
-    "keine Kernelmodule im laufenden Betrieb."],
-  "installed": ["installiert", "ok",
-    "Eingerichtet. Der Adapter steht auf der OpenIPC-Seite <em>Network</em> " +
-    "unter &bdquo;Wireless Adapter&ldquo; zur Auswahl."],
-  "remove-pending": ["wird beim Neustart entfernt", "warn",
-    "Vorgemerkt. Die mitgelieferten Module bleiben erhalten, nur die " +
-    "Registrierung wird zur&uuml;ckgebaut."],
+  "unsupported": ["not supported", "text-bg-secondary",
+    "This machino build does not know this device."],
+  "unavailable": ["no payload", "text-bg-secondary",
+    "This release does not ship the kernel modules. Without them, " +
+    "&ldquo;Install&rdquo; would be a button that can only fail."],
+  "not-installed": ["available", "text-bg-warning",
+    "The drivers are on the camera but not set up yet."],
+  "install-pending": ["set up at next reboot", "text-bg-warning",
+    "Scheduled. Takes effect after the next reboot &mdash; machino loads no " +
+    "kernel modules while the camera is running."],
+  "installed": ["installed", "text-bg-success",
+    "Set up. The adapter is selectable on the OpenIPC <em>Network</em> page " +
+    "under &ldquo;Wireless Adapter&rdquo;."],
+  "remove-pending": ["removed at next reboot", "text-bg-warning",
+    "Scheduled. The shipped modules stay on the camera; only the " +
+    "registration is rolled back."],
 };
 
 function flag(on, yes, no) {
-  return '<span class="pill ' + (on ? "ok" : "dim") + '">' + (on ? yes : no) + "</span>";
+  return '<span class="badge ' + (on ? "text-bg-success" : "text-bg-secondary") + '">' + (on ? yes : no) + "</span>";
 }
 
 function card(d) {
-  const st = STATE[d.state] || [d.state, "dim", ""];
-  const el = document.createElement("div");
-  el.className = "card";
+  const st = STATE[d.state] || [d.state, "text-bg-secondary", ""];
+  const col = document.createElement("div");
+  col.className = "col-12 col-lg-6";
 
   // Installieren nur, wenn es etwas zu tun gibt UND etwas zu installieren da
   // ist. Deinstallieren nur, wenn wirklich etwas eingetragen ist. Ein Knopf,
   // der nichts bewirken kann, ist eine Falschaussage.
   // Solange das Geraet den USB-Port haelt, wird nicht deinstalliert -- der
-  // Server lehnt es ohnehin ab (409). Den Knopf trotzdem anzubieten hiesse,
-  // den Benutzer gegen eine Fehlermeldung laufen zu lassen, die er vorher
-  // haette sehen koennen.
+  // Server lehnt es ohnehin ab (409).
   const canInstall   = d.state === "not-installed";
   const canUninstall = d.state === "installed" && !d.active;
   const blocked      = d.state === "installed" && d.active;
   const pending      = d.state === "install-pending" || d.state === "remove-pending";
 
-  el.innerHTML =
-    "<h2>" + esc(d.title) + ' <span class="pill ' + st[1] + '">' + st[0] + "</span></h2>" +
-    '<p class="sub">' + st[2] + "</p>" +
-    "<table><tbody>" +
-    "<tr><th>Kennung</th><td><code>" + esc(d.id) + "</code></td></tr>" +
-    "<tr><th>Treiber</th><td><code>" + esc(d.driver || "&mdash;") + "</code></td></tr>" +
-    "<tr><th>Bei OpenIPC registriert</th><td>" +
-      flag(d.openipcRegistered, "ja", "nein") + "</td></tr>" +
-    "<tr><th>Hardware erkannt</th><td>" +
-      flag(d.hardwarePresent, "ja", "nicht gesehen") +
-      ' <span class="pill dim">nur USB-Kennung</span></td></tr>' +
-    "<tr><th>Modul geladen</th><td>" + flag(d.driverLoaded, "ja", "nein") + "</td></tr>" +
-    "<tr><th>H&auml;lt den USB-Port</th><td>" + flag(d.active, "ja", "nein") + "</td></tr>" +
+  col.innerHTML =
+    '<div class="card h-100"><div class="card-body">' +
+    '<div class="mj-live-head"><h3 class="mj-cap">' + esc(d.title) +
+      ' <span class="badge ' + st[1] + '">' + st[0] + '</span></h3>' +
+      '<span class="mj-live-rule"></span></div>' +
+    '<p class="mj-card-note">' + st[2] + "</p>" +
+    '<table class="table table-sm"><tbody>' +
+    "<tr><th>Id</th><td><code>" + esc(d.id) + "</code></td></tr>" +
+    "<tr><th>Driver</th><td><code>" + esc(d.driver || "&mdash;") + "</code></td></tr>" +
+    "<tr><th>Registered with OpenIPC</th><td>" +
+      flag(d.openipcRegistered, "yes", "no") + "</td></tr>" +
+    "<tr><th>Hardware detected</th><td>" +
+      flag(d.hardwarePresent, "yes", "not seen") +
+      ' <span class="badge text-bg-secondary">USB id only</span></td></tr>' +
+    "<tr><th>Module loaded</th><td>" + flag(d.driverLoaded, "yes", "no") + "</td></tr>" +
+    "<tr><th>Holds the USB port</th><td>" + flag(d.active, "yes", "no") + "</td></tr>" +
     "</tbody></table>" +
-    '<div class="row">' +
-      '<button data-a="install"   ' + (canInstall   ? "" : "disabled") + ">Installieren</button>" +
-      '<button data-a="uninstall" ' + (canUninstall ? "" : "disabled") + ">Deinstallieren</button>" +
+    '<div class="grid">' +
+      '<button class="btn btn-sm btn-primary" data-a="install" ' +
+        (canInstall ? "" : "disabled") + ">Install</button>" +
+      '<button class="btn btn-sm btn-outline-secondary" data-a="uninstall" ' +
+        (canUninstall ? "" : "disabled") + ">Uninstall</button>" +
     "</div>" +
-    (d.detail ? '<p class="note">' + esc(d.detail) + "</p>" : "") +
-    (pending ? '<p class="note act">Ein Neustart macht es wirksam.</p>' : "") +
+    (d.detail ? '<p class="mj-card-note">' + esc(d.detail) + "</p>" : "") +
+    (pending ? '<p class="mj-card-note text-warning">A reboot makes it effective.</p>' : "") +
     (blocked
-      ? '<p class="note act">Dieses Ger&auml;t h&auml;lt gerade den USB-Port. Zum ' +
-        'Deinstallieren zuerst unter <a href="/machino/net">Netzwerk &amp; USB</a> ' +
-        "den Port freigeben.</p>"
+      ? '<p class="mj-card-note text-warning">This device currently holds the USB port. To ' +
+        'uninstall, release the port on <a href="machino-network.cgi">Network &amp; USB</a> ' +
+        "first.</p>"
       : "") +
     (canUninstall
-      ? '<p class="note">Deinstallieren entfernt nur die Registrierung. Die ' +
-        "mitgelieferten Module bleiben auf der Kamera, damit ein sp&auml;teres " +
-        "Installieren ohne neues Paket m&ouml;glich bleibt.</p>"
-      : "");
+      ? '<p class="mj-card-note">Uninstalling only removes the registration. The ' +
+        "shipped modules stay on the camera, so a later install needs no new " +
+        "package.</p>"
+      : "") +
+    "</div></div>";
 
-  el.querySelectorAll("button[data-a]").forEach((b) => {
-    b.addEventListener("click", () => act(d.id, b.dataset.a, el));
+  col.querySelectorAll("button[data-a]").forEach((b) => {
+    b.addEventListener("click", () => act(d.id, b.dataset.a, col));
   });
-  return el;
+  return col;
 }
 
 function esc(s) {
@@ -170,10 +152,10 @@ async function act(id, verb, el) {
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error((body.error && body.error.message) || ("HTTP " + r.status));
     msg(verb === "install"
-        ? "Vorgemerkt. Nach dem nächsten Neustart steht der Adapter auf der "
-          + "OpenIPC-Seite Network zur Auswahl."
-        : "Vorgemerkt. Die Registrierung wird beim nächsten Neustart entfernt; "
-          + "die Module bleiben liegen.",
+        ? "Scheduled. After the next reboot the adapter is selectable on the "
+          + "OpenIPC Network page."
+        : "Scheduled. The registration is removed at the next reboot; the "
+          + "modules stay on the camera.",
         "good");
   } catch (e) {
     msg(String(e.message || e), "err");
@@ -191,14 +173,15 @@ async function load() {
     box.textContent = "";
     if (!list.length) {
       const p = document.createElement("div");
-      p.className = "card";
-      p.textContent = "Diese Fassung kennt keine Zusatzgeräte.";
+      p.className = "col-12";
+      p.innerHTML = '<div class="card"><div class="card-body">' +
+                    "This build knows no add-on devices.</div></div>";
       box.appendChild(p);
       return;
     }
     list.forEach((d) => box.appendChild(card(d)));
   } catch (e) {
-    msg("Der Gerätestatus ist nicht abrufbar: " + String(e.message || e), "err");
+    msg("The device status is not readable: " + String(e.message || e), "err");
   }
 }
 

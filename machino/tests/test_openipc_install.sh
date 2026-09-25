@@ -445,7 +445,7 @@ make_bundle; make_camera auto
 HDR="$R/var/www/cgi-bin/p/header.cgi"
 if grep -q 'machino-devpage:begin' "$HDR"; then ok
 else bad "--with-pages did not add the device manager entry"; fi
-if grep -q '/cgi-bin/machino-devices.cgi' "$HDR"; then ok
+if grep -q 'machino-devices.cgi' "$HDR"; then ok
 else bad "the device menu entry does not point at the page"; fi
 if grep -q 'machino-netpage:begin' "$HDR"; then ok
 else bad "--with-pages did not add the network page entry"; fi
@@ -1190,7 +1190,7 @@ make_bundle; make_camera auto
 run_install --with-network-page || bad "--with-network-page was refused: $(cat "$WORK/out")"
 H="$WORK/root/var/www/cgi-bin/p/header.cgi"
 if grep -q 'machino-netpage:begin' "$H"; then ok; else bad "no menu entry was added"; fi
-if grep -q '/cgi-bin/machino-network.cgi' "$H"; then ok; else bad "the menu entry does not point at the page"; fi
+if grep -q 'machino-network.cgi' "$H"; then ok; else bad "the menu entry does not point at the page"; fi
 # The anchor line must still be there: the entry is added AFTER it, not over it.
 if grep -q 'href="network.cgi"' "$H"; then ok; else bad "the entry replaced the stock Network item"; fi
 
@@ -1216,7 +1216,7 @@ run_install --with-network-page --with-device-page ||
     bad "--with-device-page was refused: $(cat "$WORK/out")"
 H="$WORK/root/var/www/cgi-bin/p/header.cgi"
 if grep -q 'machino-devpage:begin' "$H"; then ok; else bad "no device menu entry was added"; fi
-if grep -q '/cgi-bin/machino-devices.cgi' "$H"; then ok; else bad "the device entry does not point at the page"; fi
+if grep -q 'machino-devices.cgi' "$H"; then ok; else bad "the device entry does not point at the page"; fi
 if grep -q 'machino-netpage:begin' "$H"; then ok; else bad "the device entry displaced the network entry"; fi
 if grep -q 'href="network.cgi"' "$H"; then ok; else bad "an entry replaced the stock Network item"; fi
 run_install --with-network-page --with-device-page

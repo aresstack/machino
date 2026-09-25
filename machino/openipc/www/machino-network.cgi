@@ -8,298 +8,245 @@
      and main.js are in the first HTML and relative links resolve like
      everywhere else. Data comes only from machino's /api/v1. -->
 <style>
-#mch{--bg:var(--bs-body-bg,#14161a);--panel:var(--bs-tertiary-bg,#1c2026);
---line:var(--bs-border-color,#2c323b);--fg:var(--bs-body-color,#e6e8ea);
---dim:var(--bs-secondary-color,#9aa3ad);--ok:var(--bs-success,#4caf7d);
---warn:var(--bs-warning,#d9a13b);--bad:var(--bs-danger,#d4564f);
---acc:var(--bs-primary,#4a90d9)}
-#mch section[hidden]{display:none}
-#mch .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;
-padding:14px;margin-bottom:14px}
-#mch .card h2{font-size:14px;margin:0 0 10px;font-weight:600}
-#mch table{width:100%;border-collapse:collapse}
-#mch th, #mch td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
-#mch th{color:var(--dim);font-weight:500;width:40%}
-#mch tr:last-child th, #mch tr:last-child td{border-bottom:0}
-#mch .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;
-border:1px solid var(--line)}
-#mch .pill.ok{color:var(--ok);border-color:var(--ok)}
-#mch .pill.warn{color:var(--warn);border-color:var(--warn)}
-#mch .pill.bad{color:var(--bad);border-color:var(--bad)}
-#mch label{display:block;margin:8px 0 2px;color:var(--dim);font-size:13px}
-#mch input, #mch select{background:#0f1114;color:var(--fg);border:1px solid var(--line);
-border-radius:4px;padding:7px 8px;width:100%;font:inherit}
-#mch button.act{background:var(--acc);color:#fff;border:0;border-radius:4px;
-padding:8px 14px;cursor:pointer;font:inherit;margin-top:10px}
-#mch button.act[disabled]{opacity:.45;cursor:not-allowed}
-#mch button.ghost{background:none;color:var(--fg);border:1px solid var(--line)}
-#mch .row{display:flex;gap:10px;flex-wrap:wrap}
-#mch .row>*{flex:1 1 180px}
-#mch .msg{margin-top:10px;padding:8px 10px;border-radius:4px;border:1px solid var(--line);
-white-space:pre-wrap}
-#mch .msg.bad{border-color:var(--bad);color:var(--bad)}
-#mch .msg.ok{border-color:var(--ok);color:var(--ok)}
-#mch .note{color:var(--dim);font-size:13px;margin:6px 0 0}
-#mch .scan{width:100%;margin-top:8px}
+/* Nur wofuer die Stock-UI keine Komponente hat -- alles andere kommt aus
+   Bootstrap/bootstrap.override.css der Kamera. Farben ueber --bs-*-Variablen,
+   damit Hell/Dunkel mitgeht. */
+#mch .grid{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+#mch .grid>*{flex:1 1 180px}
 #mch .scan td{cursor:pointer}
-#mch .scan tr:hover td{background:#22272e}
-#mch #pending{position:sticky;top:0;z-index:5;background:#3a2c14;border:1px solid var(--warn);
-border-radius:6px;padding:12px;margin:0 16px 14px}
-#mch #pending[hidden]{display:none}
 #mch #count{font-variant-numeric:tabular-nums;font-weight:600}
-#mch .unavail{color:var(--dim);font-style:italic}
+#mch .unavail{color:var(--bs-secondary-color,#9aa3ad);font-style:italic;margin:6px 0}
+#mch label{display:block;margin:8px 0 2px}
+#mch .btn{margin-top:8px}
+#mch th{width:40%}
 </style>
 <div id="mch">
 
 <!-- The confirmation banner is OUTSIDE the tabs and sticky: a change that will
      roll itself back must be visible no matter which tab the user wandered
      onto, and it is the one thing on this page that is time-critical. -->
-<div id="pending" hidden>
-  <strong>Änderung wartet auf Bestätigung.</strong>
-  Wird in <span id="count">–</span> automatisch zurückgerollt, wenn sie nicht
-  bestätigt wird. Bestätige erst, wenn die Kamera über die neue Konfiguration
-  noch erreichbar ist &mdash; genau dafür ist die Frist da.
+<div id="pending" class="alert alert-warning" hidden>
+  <strong>A change is waiting for confirmation.</strong>
+  It is rolled back automatically in <span id="count">–</span> unless it is
+  confirmed. Confirm only once the camera is still reachable with the new
+  configuration &mdash; that is exactly what the window is for.
   <div class="row" style="margin-top:8px">
-    <button class="act" id="confirm">Jetzt bestätigen</button>
+    <button class="btn btn-sm btn-primary" id="confirm">Confirm now</button>
   </div>
 </div>
 
-<main>
+<div class="row g-4">
 
-<section id="t-overview">
-  <div class="card">
-    <h2>Uplinks</h2>
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Uplinks</h3><span class="mj-live-rule"></span></div>
     <!-- Stand frueher im eigenen Seitenkopf; der gehoert jetzt header.cgi. -->
-    <p class="note" id="active"></p>
-    <table id="uplinks"><tbody></tbody></table>
-    <p class="note">Ein Access Point ist kein Uplink. Eine Kamera, die ihr
-    eigenes WLAN bereitstellt, arbeitet wie vorgesehen und hat
-    absichtsgemäß keine Internetverbindung.</p>
-  </div>
+    <p class="mj-card-note" id="active"></p>
+    <table class="table table-sm" id="uplinks"><tbody></tbody></table>
+    <p class="mj-card-note">An access point is not an uplink. A camera that provides its own Wi-Fi
+    network is working as intended and deliberately has no internet
+    connection.</p>
+</div></div></div>
 
-</section>
 
-<section id="t-ethernet">
-  <div class="card">
-    <h2>Ethernet</h2>
-    <table id="eth"><tbody></tbody></table>
-    <p class="note">Ethernet wird nicht von hier aus konfiguriert. Adresse und
-    Route gehören den Boot-Skripten bzw. udhcpc; diese Seite berichtet nur.
-    Ein &bdquo;Trennen&ldquo; gibt es absichtlich nicht: über eth0 ist die
-    Kamera erreichbar.</p>
-  </div>
-</section>
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Ethernet</h3><span class="mj-live-rule"></span></div>
+    <table class="table table-sm" id="eth"><tbody></tbody></table>
+    <p class="mj-card-note">Ethernet is not configured from here. Address and route belong to the
+    boot scripts and udhcpc; this page only reports. There is deliberately
+    no &ldquo;disconnect&rdquo;: eth0 is how this camera is reached.</p>
+</div></div></div>
 
-<section id="t-wifi">
-  <div class="card">
-    <h2>WLAN-Status</h2>
-    <table id="wifistat"><tbody></tbody></table>
-  </div>
-  <div class="card" id="c-station">
-    <h2>Als Client verbinden</h2>
-    <button class="act ghost" id="scan">Netzwerke suchen</button>
-    <table class="scan" id="scanres"><tbody></tbody></table>
-    <label for="ssid">SSID</label><input id="ssid" maxlength="32" autocomplete="off">
-    <label for="psk">Passwort</label>
-    <input id="psk" type="password" maxlength="64" autocomplete="new-password">
-    <p class="note">8 bis 63 Zeichen, oder genau 64 Hex-Zeichen für einen
-    rohen PSK. Leer lassen für ein offenes Netz. Das Passwort wird nie
-    zurückgeliefert &mdash; auch nicht an diese Seite.</p>
-    <button class="act" id="join">Verbinden (mit Bestätigungsfrist)</button>
-    <div class="msg" id="m-station" hidden></div>
-  </div>
-  <div class="card" id="c-ap">
-    <h2>Eigenes WLAN bereitstellen</h2>
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Wi-Fi status</h3><span class="mj-live-rule"></span></div>
+    <table class="table table-sm" id="wifistat"><tbody></tbody></table>
+</div></div></div>
+<div class="col-12 col-lg-6" id="c-station"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Connect as a client</h3><span class="mj-live-rule"></span></div>
+    <button class="btn btn-sm btn-outline-secondary" id="scan">Scan for networks</button>
+    <table class="table table-sm table-hover scan" id="scanres"><tbody></tbody></table>
+    <label class="form-label" for="ssid">SSID</label><input class="form-control form-control-sm" id="ssid" maxlength="32" autocomplete="off">
+    <label class="form-label" for="psk">Password</label>
+    <input class="form-control form-control-sm" id="psk" type="password" maxlength="64" autocomplete="new-password">
+    <p class="mj-card-note">8 to 63 characters, or exactly 64 hex characters for a raw PSK. Leave
+    empty for an open network. The password is never returned &mdash; not
+    even to this page.</p>
+    <button class="btn btn-sm btn-primary" id="join">Connect (with confirmation window)</button>
+    <div class="alert py-2" id="m-station" hidden></div>
+</div></div></div>
+<div class="col-12 col-lg-6" id="c-ap"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Provide an access point</h3><span class="mj-live-rule"></span></div>
     <div id="ap-unavail" class="unavail" hidden></div>
-    <p class="note" id="ap-unverified" hidden>Ob dieses Funkmodul den
-    Access-Point-Modus beherrscht, wurde nicht abgefragt — dieser Build stellt
-    keine nl80211-Anfrage. Der Versuch ist erlaubt; scheitert er, meldet
-    hostapd den Grund, statt dass hier etwas versprochen wird.</p>
+    <p class="mj-card-note" id="ap-unverified" hidden>Whether this radio supports access-point mode was not queried &mdash;
+    this build makes no nl80211 request. Trying is allowed; if it fails,
+    hostapd reports the reason instead of this page promising anything.</p>
     <div id="ap-form">
-      <div class="row">
-        <div><label for="apssid">SSID</label><input id="apssid" maxlength="32"></div>
-        <div><label for="apsec">Sicherheit</label>
-          <select id="apsec">
+      <div class="grid">
+        <div><label class="form-label" for="apssid">SSID</label><input class="form-control form-control-sm" id="apssid" maxlength="32"></div>
+        <div><label class="form-label" for="apsec">Security</label>
+          <select class="form-select form-select-sm" id="apsec">
             <option value="wpa2">WPA2</option>
             <option value="wpa2-wpa3">WPA2/WPA3</option>
             <option value="wpa3">WPA3</option>
-            <option value="open">offen</option>
+            <option value="open">open</option>
           </select></div>
-        <div><label for="apch">Kanal</label><input id="apch" type="number" min="0" max="196" value="6"></div>
+        <div><label class="form-label" for="apch">Channel</label><input class="form-control form-control-sm" id="apch" type="number" min="0" max="196" value="6"></div>
       </div>
-      <label for="appsk">Passwort</label>
-      <input id="appsk" type="password" maxlength="63" autocomplete="new-password">
-      <div class="row">
-        <div><label for="apip">Adresse der Kamera</label><input id="apip" value="192.168.4.1"></div>
-        <div><label for="apfrom">DHCP von</label><input id="apfrom" value="192.168.4.20"></div>
-        <div><label for="apto">DHCP bis</label><input id="apto" value="192.168.4.100"></div>
+      <label class="form-label" for="appsk">Password</label>
+      <input class="form-control form-control-sm" id="appsk" type="password" maxlength="63" autocomplete="new-password">
+      <div class="grid">
+        <div><label class="form-label" for="apip">Camera address</label><input class="form-control form-control-sm" id="apip" value="192.168.4.1"></div>
+        <div><label class="form-label" for="apfrom">DHCP from</label><input class="form-control form-control-sm" id="apfrom" value="192.168.4.20"></div>
+        <div><label class="form-label" for="apto">DHCP to</label><input class="form-control form-control-sm" id="apto" value="192.168.4.100"></div>
       </div>
-      <button class="act" id="apstart">Access Point starten (mit Bestätigungsfrist)</button>
-      <div class="msg" id="m-ap" hidden></div>
+      <button class="btn btn-sm btn-primary" id="apstart">Start access point (with confirmation window)</button>
+      <div class="alert py-2" id="m-ap" hidden></div>
     </div>
-  </div>
-</section>
+</div></div></div>
 
-<section id="t-cellular">
   <!-- Wenn USB nicht auf Mobilfunk steht, wird das GESAGT und nicht durch
        graue Felder angedeutet. Ein Formular, das sich speichern laesst und
        nichts bewirkt, ist schlimmer als eines, das erklaert warum. -->
   <div id="cell-offmode" class="unavail" hidden></div>
 
-  <div class="card" id="cell-statuscard">
-    <h2>Status</h2>
-    <table id="cell"><tbody></tbody></table>
+<div class="col-12 col-lg-6" id="cell-statuscard"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Status</h3><span class="mj-live-rule"></span></div>
+    <table class="table table-sm" id="cell"><tbody></tbody></table>
     <div id="cell-none" class="unavail" hidden>
-      Kein Mobilfunk-Backend in diesem Build. Das wird hier gesagt, statt
-      Bedienelemente anzubieten, die nichts tun.
+      No cellular backend in this build. This page says so instead of
+      offering controls that do nothing.
     </div>
-  </div>
+</div></div></div>
 
-  <div class="card" id="cell-linkcard">
-    <h2>Datenverbindung</h2>
-    <label><input type="radio" name="celldl" value="ecm" style="width:auto"> ECM (Standard)</label>
+<div class="col-12 col-lg-6" id="cell-linkcard"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Data link</h3><span class="mj-live-rule"></span></div>
+    <label><input type="radio" name="celldl" value="ecm" style="width:auto"> ECM (default)</label>
     <label><input type="radio" name="celldl" value="ppp" style="width:auto"> PPP</label>
-    <p class="note" id="celldl-note">Änderung wird nach einem Neustart wirksam.</p>
-    <button class="act" id="celldlsave">Übernehmen (mit Bestätigungsfrist)</button>
-    <div class="msg" id="m-celldl" hidden></div>
-    <p class="note">ECM ist der normale Weg: das Modem meldet sich als
-      Netzwerkkarte. PPP ist die Ausweichmöglichkeit für Modems oder Netze, in
-      denen das nicht geht &mdash; die Strecke läuft dann über den seriellen
-      Modem-Port. Es wird <b>nicht</b> automatisch gewechselt: scheitert ECM,
-      bleibt es bei ECM und sagt warum. Ein stiller Wechsel hieße, dass die
-      Kamera auf einem Weg läuft, den niemand gewählt hat.</p>
-  </div>
+    <p class="mj-card-note" id="celldl-note">Takes effect after a reboot.</p>
+    <button class="btn btn-sm btn-primary" id="celldlsave">Apply (with confirmation window)</button>
+    <div class="alert py-2" id="m-celldl" hidden></div>
+    <p class="mj-card-note">ECM is the normal path: the modem presents itself as a network card.
+      PPP is the fallback for modems or networks where that does not work
+      &mdash; the link then runs over the serial modem port. There is <b>no</b>
+      automatic switching: if ECM fails, it stays on ECM and says why. A
+      silent switch would mean the camera runs on a path nobody chose.</p>
+</div></div></div>
 
-  <div class="card" id="cell-apncard">
-    <h2>Zugangsdaten</h2>
+<div class="col-12 col-lg-6" id="cell-apncard"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Credentials</h3><span class="mj-live-rule"></span></div>
     <div class="grid">
-      <div><label for="cellpreset">Vorlage</label>
-        <select id="cellpreset"><option value="">Benutzerdefiniert</option></select></div>
-      <div><label for="cellapn">APN</label><input id="cellapn" placeholder="internet.t-d1.de"></div>
-      <div><label for="cellpdp">PDP-Typ</label>
-        <select id="cellpdp"><option value="IP">IPv4</option><option value="IPV4V6">IPv4/IPv6</option></select></div>
-      <div><label for="cellauth">Authentifizierung</label>
-        <select id="cellauth"><option value="none">keine</option><option value="pap">PAP</option><option value="chap">CHAP</option></select></div>
-      <div><label for="celluser">Benutzername</label><input id="celluser" autocomplete="off"></div>
-      <div><label for="cellpw">Passwort</label><input id="cellpw" type="password" autocomplete="new-password" placeholder="unverändert"></div>
+      <div><label class="form-label" for="cellpreset">Preset</label>
+        <select class="form-select form-select-sm" id="cellpreset"><option value="">Custom</option></select></div>
+      <div><label class="form-label" for="cellapn">APN</label><input class="form-control form-control-sm" id="cellapn" placeholder="internet.t-d1.de"></div>
+      <div><label class="form-label" for="cellpdp">PDP type</label>
+        <select class="form-select form-select-sm" id="cellpdp"><option value="IP">IPv4</option><option value="IPV4V6">IPv4/IPv6</option></select></div>
+      <div><label class="form-label" for="cellauth">Authentication</label>
+        <select class="form-select form-select-sm" id="cellauth"><option value="none">none</option><option value="pap">PAP</option><option value="chap">CHAP</option></select></div>
+      <div><label class="form-label" for="celluser">Username</label><input class="form-control form-control-sm" id="celluser" autocomplete="off"></div>
+      <div><label class="form-label" for="cellpw">Password</label><input class="form-control form-control-sm" id="cellpw" type="password" autocomplete="new-password" placeholder="unchanged"></div>
     </div>
-    <label><input type="checkbox" id="cellauto" style="width:auto"> Selbstverbindung im Modem (persistent)</label>
-    <label><input type="checkbox" id="cellnic" style="width:auto"> NIC-Modus: öffentliche Adresse direkt am Host</label>
-    <p class="note">Eine Vorlage füllt die Felder nur aus &mdash; sie bleiben
-      danach änderbar. Das Passwortfeld ist leer, weil gespeicherte Geheimnisse
-      nicht zurückgegeben werden; leer lassen heißt „unverändert".</p>
-    <button class="act" id="cellsave">Übernehmen (mit Bestätigungsfrist)</button>
-    <div class="msg" id="m-cell" hidden></div>
-  </div>
+    <label><input type="checkbox" id="cellauto" style="width:auto"> Modem auto-connect (persistent)</label>
+    <label><input type="checkbox" id="cellnic" style="width:auto"> NIC mode: public address directly on the host</label>
+    <p class="mj-card-note">A preset only fills the fields &mdash; they stay editable. The password
+      field is empty because stored secrets are not returned; leaving it
+      empty means &ldquo;unchanged&rdquo;.</p>
+    <button class="btn btn-sm btn-primary" id="cellsave">Apply (with confirmation window)</button>
+    <div class="alert py-2" id="m-cell" hidden></div>
+</div></div></div>
 
-  <div class="card" id="cell-simcard">
-    <h2>SIM</h2>
-    <table id="cellsim"><tbody></tbody></table>
+<div class="col-12 col-lg-6" id="cell-simcard"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">SIM</h3><span class="mj-live-rule"></span></div>
+    <table class="table table-sm" id="cellsim"><tbody></tbody></table>
     <div class="grid">
-      <div><label for="cellpin">SIM-PIN</label><input id="cellpin" type="password" autocomplete="new-password" placeholder="unverändert"></div>
+      <div><label class="form-label" for="cellpin">SIM-PIN</label><input class="form-control form-control-sm" id="cellpin" type="password" autocomplete="new-password" placeholder="unchanged"></div>
     </div>
-    <label><input type="checkbox" id="cellpinclear" style="width:auto"> Gespeicherte PIN löschen</label>
-    <button class="act" id="cellpinsave">PIN speichern (mit Bestätigungsfrist)</button>
-    <div class="msg" id="m-cellpin" hidden></div>
-    <p class="note">Eine konfigurierte PIN wird pro Startvorgang <b>höchstens
-      einmal</b> gesendet. Drei falsche Versuche sperren die Karte und danach
-      braucht es den PUK &mdash; deshalb wiederholt hier nichts, auch kein
-      Knopfdruck. Eine geänderte PIN darf wieder einmal versuchen.</p>
-  </div>
+    <label><input type="checkbox" id="cellpinclear" style="width:auto"> Clear the stored PIN</label>
+    <button class="btn btn-sm btn-primary" id="cellpinsave">Save PIN (with confirmation window)</button>
+    <div class="alert py-2" id="m-cellpin" hidden></div>
+    <p class="mj-card-note">A configured PIN is sent <b>at most once</b> per boot. Three wrong
+      attempts lock the card and then the PUK is needed &mdash; so nothing
+      here retries, not even a button press. A changed PIN may try once
+      again.</p>
+</div></div></div>
 
-  <div class="card" id="cell-diagcard">
-    <h2>Diagnose</h2>
-    <table id="celldiag"><tbody></tbody></table>
-    <p class="note">Nur gelesen. Eine freie AT-Konsole gibt es hier bewusst
-      nicht: ein falsch abgesetztes Kommando stellt die USB-Komposition des
-      Modems dauerhaft um.</p>
-  </div>
-</section>
+<div class="col-12 col-lg-6" id="cell-diagcard"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Diagnostics</h3><span class="mj-live-rule"></span></div>
+    <table class="table table-sm" id="celldiag"><tbody></tbody></table>
+    <p class="mj-card-note">Read-only. There is deliberately no free AT console here: one wrong
+      command permanently reconfigures the modem's USB composition.</p>
+</div></div></div>
 
-<section id="t-routing">
-  <div class="card">
-    <h2>Reihenfolge und Failover</h2>
-    <label for="order">Reihenfolge (höchste Priorität zuerst, Komma getrennt)</label>
-    <input id="order" placeholder="ethernet,wifi,cellular">
-    <p class="note">Jeder Eintrag ist eine Uplink-ID (&bdquo;wlan0&ldquo;,
-    &bdquo;lte1&ldquo;) oder ein Typ (&bdquo;ethernet&ldquo;,
-    &bdquo;wifi&ldquo;, &bdquo;cellular&ldquo;). Eine ID gewinnt gegen einen
-    Typ &mdash; bei zwei Modems könnte &bdquo;cellular&ldquo; sonst nicht
-    sagen, welches.</p>
-    <label><input type="checkbox" id="failover" style="width:auto"> Automatisches Failover</label>
-    <label><input type="checkbox" id="prefer" style="width:auto"> Zurück auf den bevorzugten Uplink, sobald er wieder da ist</label>
-    <label><input type="checkbox" id="pinned" style="width:auto"> Festnageln auf genau einen Uplink</label>
-    <input id="pinnedid" placeholder="z. B. wlan0">
-    <p class="note">Festgenagelt wird auch ein Uplink benutzt, der gerade nicht
-    funktioniert. Das ist gewollt: still auf einen anderen auszuweichen würde
-    diese Seite zur Lüge machen.</p>
-    <button class="act" id="savepolicy">Speichern</button>
-    <div class="msg" id="m-policy" hidden></div>
-  </div>
-</section>
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Order and failover</h3><span class="mj-live-rule"></span></div>
+    <label class="form-label" for="order">Order (highest priority first, comma separated)</label>
+    <input class="form-control form-control-sm" id="order" placeholder="ethernet,wifi,cellular">
+    <p class="mj-card-note">Each entry is an uplink id (&ldquo;wlan0&rdquo;, &ldquo;lte1&rdquo;) or a
+    type (&ldquo;ethernet&rdquo;, &ldquo;wifi&rdquo;, &ldquo;cellular&rdquo;).
+    An id beats a type &mdash; with two modems, &ldquo;cellular&rdquo; could
+    not say which one.</p>
+    <label><input type="checkbox" id="failover" style="width:auto"> Automatic failover</label>
+    <label><input type="checkbox" id="prefer" style="width:auto"> Return to the preferred uplink as soon as it is back</label>
+    <label><input type="checkbox" id="pinned" style="width:auto"> Pin to exactly one uplink</label>
+    <input class="form-control form-control-sm" id="pinnedid" placeholder="e.g. wlan0">
+    <p class="mj-card-note">Pinned means the uplink is used even while it is down. That is intended:
+    silently falling back to another one would make this page a lie.</p>
+    <button class="btn btn-sm btn-primary" id="savepolicy">Save</button>
+    <div class="alert py-2" id="m-policy" hidden></div>
+</div></div></div>
 
-<section id="t-usbhost">
-  <div class="card">
-    <h2>USB-Host</h2>
-    <table id="usbhost"><tbody></tbody></table>
-  </div>
-</section>
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">USB host</h3><span class="mj-live-rule"></span></div>
+    <table class="table table-sm" id="usbhost"><tbody></tbody></table>
+</div></div></div>
 
-<section id="t-usbpower">
-  <div class="card">
-    <h2>Stromversorgung des Ports</h2>
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Port power</h3><span class="mj-live-rule"></span></div>
     <div id="usb-unavail" class="unavail" hidden></div>
     <div id="usb-form">
       <label><input type="checkbox" id="usben" style="width:auto"> Port mit Strom versorgen</label>
-      <label><input type="checkbox" id="usbboot" style="width:auto"> Beim Start automatisch einschalten</label>
+      <label><input type="checkbox" id="usbboot" style="width:auto"> Switch on automatically at boot</label>
       <div id="usbexpertbox">
-        <label><input type="checkbox" id="usbexpert" style="width:auto"> Expertenmodus: beliebigen Pin erlauben</label>
-        <p class="note">Ohne Expertenmodus sind nur Pins wählbar, die das
-        Boardprofil als für diesen Zweck verdrahtet ausweist. Der übrige
+        <label><input type="checkbox" id="usbexpert" style="width:auto"> Expert mode: allow any pin</label>
+        <p class="mj-card-note">Without expert mode, only pins the board profile lists as wired for
+        this purpose are selectable. The remaining
         GPIO-Bereich ist auf diesem Board der Sensor-Reset, der PHY-Reset und
         der Flash.</p>
-        <div class="row">
-          <div><label for="usbpin">Pin</label><input id="usbpin" placeholder="Board-Default"></div>
-          <div><label for="usblvl">Aktiver Pegel</label>
-            <select id="usblvl"><option value="high">high</option><option value="low">low</option></select></div>
+        <div class="grid">
+          <div><label class="form-label" for="usbpin">Pin</label><input class="form-control form-control-sm" id="usbpin" placeholder="Board default"></div>
+          <div><label class="form-label" for="usblvl">Aktiver Pegel</label>
+            <select class="form-select form-select-sm" id="usblvl"><option value="high">high</option><option value="low">low</option></select></div>
         </div>
       </div>
-      <button class="act" id="usbsave">Übernehmen</button>
-      <div class="msg" id="m-usb" hidden></div>
+      <button class="btn btn-sm btn-primary" id="usbsave">Apply</button>
+      <div class="alert py-2" id="m-usb" hidden></div>
     </div>
-  </div>
-</section>
+</div></div></div>
 
-<section id="t-usbmode">
-  <div class="card">
-    <h2>USB-Nutzung</h2>
-    <p class="note">Die Kamera hat <b>einen</b> USB-Port. Er trägt entweder
-      nichts, ein WLAN-Modul oder ein 4G-Modem &mdash; nicht zweierlei.</p>
-    <label><input type="radio" name="usbmode" value="off" style="width:auto"> Deaktiviert</label>
-    <label><input type="radio" name="usbmode" value="wifi" style="width:auto"> WLAN</label>
-    <label><input type="radio" name="usbmode" value="cellular" style="width:auto"> 4G-Mobilfunk</label>
-    <p class="note" id="usbmode-note">Änderung wird nach einem Neustart wirksam.</p>
-    <button class="act" id="usbmodesave">Übernehmen</button>
-    <div class="msg" id="m-usbmode" hidden></div>
-    <p class="note">Bei <b>Deaktiviert</b> wird beim Start kein Treiber geladen,
-      der Portstrom auf PB18 bleibt unten und es läuft kein Dienst dafür. Der
-      USB-Port steht dann vollständig für ein anderes Gerät zur Verfügung.
-      Das ist auch der Grund für den Neustart: Kernelmodule bei laufender
-      Medien-Pipeline zu tauschen wäre der unsichere Weg.</p>
-  </div>
-</section>
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">USB role</h3><span class="mj-live-rule"></span></div>
+    <p class="mj-card-note">The camera has <b>one</b> USB port. It carries nothing, a Wi-Fi module
+      or a 4G modem &mdash; not two things.</p>
+    <label><input type="radio" name="usbmode" value="off" style="width:auto"> Disabled</label>
+    <label><input type="radio" name="usbmode" value="wifi" style="width:auto"> Wi-Fi</label>
+    <label><input type="radio" name="usbmode" value="cellular" style="width:auto"> Cellular (4G)</label>
+    <p class="mj-card-note" id="usbmode-note">Takes effect after a reboot.</p>
+    <button class="btn btn-sm btn-primary" id="usbmodesave">Apply</button>
+    <div class="alert py-2" id="m-usbmode" hidden></div>
+    <p class="mj-card-note">With <b>Disabled</b>, no driver is loaded at boot, the port power on
+      PB18 stays down and no service runs for it. The USB port is then fully
+      available to any other device. That is also the reason for the reboot:
+      swapping kernel modules under a running media pipeline would be the
+      unsafe path.</p>
+</div></div></div>
 
-<section id="t-usbdev">
-  <div class="card">
-    <h2>Angeschlossene Geräte</h2>
-    <table id="usbdev"><tbody></tbody></table>
-    <p class="note">USB gehört nicht zum Medien-Lebenszyklus. Ein Gerät, das
-    auftaucht, verschwindet oder fehlschlägt, kann den Videopfad nicht
-    berühren; die Kamera streamt weiter, was auch am Port passiert.</p>
-  </div>
-</section>
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+    <div class="mj-live-head"><h3 class="mj-cap">Connected devices</h3><span class="mj-live-rule"></span></div>
+    <table class="table table-sm" id="usbdev"><tbody></tbody></table>
+    <p class="mj-card-note">USB is not part of the media lifecycle. A device that appears,
+    disappears or fails cannot touch the video path; the camera keeps
+    streaming no matter what happens on the port.</p>
+</div></div></div>
 
-</main>
+</div>
 <script>
 // Alles hier ist LOKAL (IIFE). Der Grund ist konkret: die Kopfleiste
 // laedt /a/main.js der Kamera-WebUI nach, und das deklariert global
@@ -329,7 +276,7 @@ async function api(method, path, body) {
 
 function msg(el, text, kind) {
   el.textContent = text;
-  el.className = "msg" + (kind ? " " + kind : "");
+  el.className = "alert py-2 " + (kind === "ok" ? "alert-success" : kind === "bad" ? "alert-danger" : "alert-secondary");
   el.hidden = !text;
 }
 // A failure reply is shown verbatim. The API answers with the concrete reason
@@ -349,7 +296,7 @@ function row(tb, k, v) {
 }
 function pill(text, kind) {
   const s = document.createElement("span");
-  s.className = "pill" + (kind ? " " + kind : "");
+  s.className = "badge " + (kind === "ok" ? "text-bg-success" : kind === "warn" ? "text-bg-warning" : kind === "bad" ? "text-bg-danger" : "text-bg-secondary");
   s.textContent = text; return s;
 }
 function stateKind(s) {
@@ -367,11 +314,11 @@ let LAST_NET = null;
 async function loadNetwork() {
   const res = await api("GET", "/api/v1/network");
   if (res.status !== 200) {
-    $("active").textContent = "Netzwerkverwaltung ist in diesem Build nicht verfügbar";
+    $("active").textContent = "Network management is not available in this build";
     return;
   }
   const n = res.body; LAST_NET = n;
-  $("active").textContent = "Aktiv: " + (n.activeUplink || "–");
+  $("active").textContent = "Active: " + (n.activeUplink || "–");
 
   const tb = $("uplinks").querySelector("tbody"); tb.textContent = "";
   (n.uplinks || []).forEach((u) => {
@@ -381,14 +328,14 @@ async function loadNetwork() {
     if (u.active) box.appendChild(pill("aktiv", "ok"));
     // "connected" and "has internet" are different answers on purpose: a
     // camera on a WLAN with no uplink is connected and useless.
-    if (u.state === "connected" && !u.internet) box.appendChild(pill("kein Internet", "warn"));
+    if (u.state === "connected" && !u.internet) box.appendChild(pill("no internet", "warn"));
     const extra = document.createElement("div");
     extra.className = "note";
     extra.textContent = [u.interface, u.ipv4, u.gateway ? "GW " + u.gateway : ""].filter(Boolean).join(" · ");
     box.appendChild(extra);
     row(tb, u.id + " (" + u.type + ")", box);
   });
-  if (!(n.uplinks || []).length) row(tb, "–", "keine Uplinks registriert");
+  if (!(n.uplinks || []).length) row(tb, "–", "no uplinks registered");
 
   const eth = (n.uplinks || []).find((u) => u.type === "ethernet");
   const etb = $("eth").querySelector("tbody"); etb.textContent = "";
@@ -397,12 +344,12 @@ async function loadNetwork() {
     row(etb, "Zustand", pill(eth.state, stateKind(eth.state)));
     row(etb, "Schnittstelle", eth.interface);
     row(etb, "IPv4", eth.ipv4);
-    row(etb, "Netzmaske", eth.netmask);
+    row(etb, "Netmask", eth.netmask);
     row(etb, "Gateway", eth.gateway);
     row(etb, "DNS", eth.dns);
-    row(etb, "Verbindung", m.linkMbit ? m.linkMbit + " Mbit/s" : "–");
-    row(etb, "Empfangen / Gesendet", (m.rxBytes || 0) + " / " + (m.txBytes || 0) + " B");
-  } else { row(etb, "–", "kein Ethernet-Uplink registriert"); }
+    row(etb, "Link", m.linkMbit ? m.linkMbit + " Mbit/s" : "–");
+    row(etb, "Received / sent", (m.rxBytes || 0) + " / " + (m.txBytes || 0) + " B");
+  } else { row(etb, "–", "no ethernet uplink registered"); }
 
   const p = n.policy || {};
   $("order").value = (p.order || []).join(",");
@@ -418,7 +365,7 @@ async function loadWifi() {
   const res = await api("GET", "/api/v1/network/wifi");
   const tb = $("wifistat").querySelector("tbody"); tb.textContent = "";
   if (res.status !== 200) {
-    row(tb, "–", "WLAN ist in diesem Build nicht verfügbar");
+    row(tb, "–", "Wi-Fi is not available in this build");
     $("c-station").hidden = true; $("c-ap").hidden = true;
     return;
   }
@@ -428,19 +375,19 @@ async function loadWifi() {
   // den Bedienenden aber alles: das eine ist ein Haken, den er selbst gesetzt
   // hat, das andere ein Hardwareproblem. Also wird er benannt.
   if (!c.present && modeSaved !== null && modeSaved !== "wifi") {
-    row(tb, "Funkmodul", "aus (USB-Nutzung steht auf „"
+    row(tb, "Radio", "aus (USB-Nutzung steht auf „"
         + (MODE_LABEL[modeSaved] || modeSaved) + "\")");
     $("c-station").hidden = true; $("c-ap").hidden = true;
     return;
   }
-  row(tb, "Funkmodul", c.present ? (c.driver || "vorhanden") : "nicht vorhanden");
+  row(tb, "Radio", c.present ? (c.driver || "present") : "not present");
   row(tb, "Schnittstelle", c.interface);
   row(tb, "Modus", w.mode);
   row(tb, "Zustand", pill(w.state, stateKind(w.state)));
   if (w.connected) {
     row(tb, "Verbunden mit", w.connected.ssid);
     row(tb, "Sicherheit", w.connected.security);
-    row(tb, "Kanal / Signal", (w.connected.channel || "–") + " / " + (w.connected.rssiDbm || "–") + " dBm");
+    row(tb, "Channel / signal", (w.connected.channel || "–") + " / " + (w.connected.rssiDbm || "–") + " dBm");
   }
 
   // Capabilities, not guesses: the reason a control is missing is shown next
@@ -449,8 +396,8 @@ async function loadWifi() {
   $("c-station").hidden = false;
   $("join").disabled = !sta;
   $("scan").disabled = !(c.usable && c.usable.scan);
-  if (!sta) msg($("m-station"), "Client-Modus ist nicht nutzbar: " +
-      (c.present ? "wpa_supplicant ist nicht erreichbar" : "kein Funkmodul vorhanden"), "");
+  if (!sta) msg($("m-station"), "Client mode is not usable: " +
+      (c.present ? "wpa_supplicant is not reachable" : "no radio present"), "");
 
   // Three states, not two. "accessPoint" means we may OFFER the attempt;
   // "accessPointVerified" means the driver is known to do it. An unverified
@@ -461,18 +408,18 @@ async function loadWifi() {
   const apSure = c.usable && c.usable.accessPointVerified;
   $("ap-form").hidden = !ap;
   $("ap-unavail").hidden = !!ap;
-  $("ap-unavail").textContent = c.apUnavailableReason || "Access-Point-Modus ist nicht verfügbar.";
+  $("ap-unavail").textContent = c.apUnavailableReason || "Access-point mode is not available.";
   $("ap-unverified").hidden = !(ap && !apSure);
 }
 
 // Was zuletzt GESPEICHERT war, nicht was im Kasten steht. Ohne den
 // Unterschied kann die Seite nicht sagen, ob der Neustart noch aussteht --
-// und "Neustart erforderlich" dauerhaft anzuzeigen waere genauso falsch wie
+// und "Reboot required" dauerhaft anzuzeigen waere genauso falsch wie
 // es nie anzuzeigen.
 let modeSaved = null;      // was in der Konfiguration steht
 let modeBooted = null;     // was beim Start tatsaechlich geladen wurde
 
-const MODE_LABEL = {off: "Deaktiviert", wifi: "WLAN", cellular: "4G-Mobilfunk"};
+const MODE_LABEL = {off: "Disabled", wifi: "WLAN", cellular: "Cellular (4G)"};
 
 function selectedMode() {
   const r = document.querySelector('input[name=usbmode]:checked');
@@ -481,59 +428,59 @@ function selectedMode() {
 
 function markModePending() {
   const n = $("usbmode-note");
-  if (modeSaved === null) { n.textContent = "Änderung wird nach einem Neustart wirksam."; return; }
+  if (modeSaved === null) { n.textContent = "Takes effect after a reboot."; return; }
   const want = selectedMode();
   if (want !== modeSaved) {
-    n.textContent = "Nicht gespeichert. Übernehmen, dann neu starten.";
+    n.textContent = "Not saved. Apply, then reboot.";
     return;
   }
-  // Drei Zustaende, nicht zwei. "Gespeichert" und "laeuft" sind hier
+  // Drei Zustaende, nicht zwei. "Saved" und "laeuft" sind hier
   // verschiedene Dinge, und sie fallen genau zwischen Speichern und Neustart
   // auseinander -- deshalb vergleicht die Seite mit dem, was der Boot-Helfer
   // wirklich gestartet hat, statt sich ein Kennzeichen zu merken, das den
   // Neustart ueberleben wuerde.
   if (modeBooted !== null && modeSaved !== modeBooted) {
-    n.textContent = "Gespeichert: " + (MODE_LABEL[modeSaved] || modeSaved)
-      + ". Aktiv ist noch " + (MODE_LABEL[modeBooted] || modeBooted)
-      + " — ein Neustart ist erforderlich.";
+    n.textContent = "Saved: " + (MODE_LABEL[modeSaved] || modeSaved)
+      + ". Still active: " + (MODE_LABEL[modeBooted] || modeBooted)
+      + " — a reboot is required.";
     return;
   }
   n.textContent = modeSaved === "off"
-    ? "Der USB-Port wird nicht benutzt: kein Treiber, kein Portstrom, kein Dienst."
-    : (MODE_LABEL[modeSaved] || modeSaved) + " ist aktiv.";
+    ? "The USB port is not in use: no driver, no port power, no service."
+    : (MODE_LABEL[modeSaved] || modeSaved) + " is active.";
 }
 
 async function loadUsb() {
   const res = await api("GET", "/api/v1/usb");
   const tb = $("usbhost").querySelector("tbody"); tb.textContent = "";
   if (res.status !== 200) {
-    row(tb, "–", "USB-Host ist in diesem Build nicht verfügbar");
+    row(tb, "–", "USB host is not available in this build");
     $("usb-form").hidden = true;
     $("usb-unavail").hidden = false;
-    $("usb-unavail").textContent = "USB-Host ist in diesem Build nicht verfügbar.";
+    $("usb-unavail").textContent = "USB host is not available in this build.";
     return;
   }
   const u = res.body;
   const c = u.capabilities || {}, cp = c.power || {};
   const cfg = u.config || {}, cfgp = cfg.power || {}, st = u.power || {};
-  row(tb, "Host-Betrieb", c.hostSupported ? (u.hostActive ? "aktiv" : "unterstützt, nicht aktiv") : "nicht unterstützt");
+  row(tb, "Host operation", c.hostSupported ? (u.hostActive ? "aktiv" : "supported, not active") : "not supported");
   row(tb, "Controller", c.controller);
-  row(tb, "Höchste Geschwindigkeit", c.maxSpeed);
-  row(tb, "Port-Strom schaltbar", cp.switchable ? "ja" : "nein");
-  if (cp.voltageMv) row(tb, "Port-Spannung", (cp.voltageMv / 1000) + " V");
+  row(tb, "Top speed", c.maxSpeed);
+  row(tb, "Port power switchable", cp.switchable ? "ja" : "nein");
+  if (cp.voltageMv) row(tb, "Port voltage", (cp.voltageMv / 1000) + " V");
   // "unknown" is a third answer and is kept as one: a hard-wired rail cannot
-  // be read back, and showing "aus" there would look like a fault.
-  row(tb, "Strom am Port", st.state === "on" ? "an" : st.state === "off" ? "aus" : "nicht auslesbar");
-  row(tb, "Aufgelöster Modus", (st.mode || "–") + (st.pin ? " an " + st.pin : ""));
+  // be read back, and showing "off" there would look like a fault.
+  row(tb, "Port power", st.state === "on" ? "on" : st.state === "off" ? "off" : "not readable");
+  row(tb, "Resolved mode", (st.mode || "–") + (st.pin ? " on " + st.pin : ""));
   if (cp.allowedPins && cp.allowedPins.length)
-    row(tb, "Freigegebene Pins", cp.allowedPins.join(", "));
+    row(tb, "Released pins", cp.allowedPins.join(", "));
 
   const sw = !!cp.switchable;
   $("usb-form").hidden = !sw;
   $("usb-unavail").hidden = sw;
   $("usb-unavail").textContent = c.hostSupported
-      ? "Dieses Board hat keinen schaltbaren Port-Strom; es gibt nichts einzustellen."
-      : "Dieses Board hat keinen USB-Host.";
+      ? "This board has no switchable port power; there is nothing to set."
+      : "This board has no USB host.";
   // Die Modusauswahl haengt NICHT an cp.switchable: ein Board ohne
   // schaltbaren Portstrom kann trotzdem ein Modul am Port tragen.
   modeSaved  = cfg.mode || (res.body.mode || "off");
@@ -552,7 +499,7 @@ async function loadUsb() {
   const dres = await api("GET", "/api/v1/usb/devices");
   // The endpoint answers with the array itself, not an object wrapping one.
   const list = Array.isArray(dres.body) ? dres.body : [];
-  if (!list.length) row(dtb, "–", "kein Gerät angeschlossen");
+  if (!list.length) row(dtb, "–", "no device connected");
   list.forEach((d) => {
     const box = document.createElement("div");
     box.textContent = [d.vid, d.pid].filter(Boolean).join(":");
@@ -562,10 +509,10 @@ async function loadUsb() {
     box.appendChild(n2);
     (d.interfaces || []).forEach((i) => {
       const li = document.createElement("div"); li.className = "note";
-      li.textContent = "Interface class " + i["class"] + (i.driver ? " · Treiber " + i.driver : " · kein Treiber");
+      li.textContent = "Interface class " + i["class"] + (i.driver ? " · driver " + i.driver : " · no driver");
       box.appendChild(li);
     });
-    row(dtb, d.path || d.product || "Gerät", box);
+    row(dtb, d.path || d.product || "Device", box);
   });
 }
 
@@ -600,7 +547,7 @@ function tick() {
 $("confirm").onclick = async () => {
   if (!TOKEN) return;
   const res = await api("POST", "/api/v1/network/change/" + TOKEN + "/confirm");
-  if (res.status !== 200) { alert("Bestätigung fehlgeschlagen: " + reason(res)); }
+  if (res.status !== 200) { alert("Confirmation failed: " + reason(res)); }
   await refresh();
 };
 
@@ -610,19 +557,19 @@ $("scan").onclick = async () => {
   const res = await api("POST", "/api/v1/network/wifi/scan");
   b.disabled = false; b.textContent = "Netzwerke suchen";
   const tb = $("scanres").querySelector("tbody"); tb.textContent = "";
-  if (res.status !== 200) { msg($("m-station"), reason(res, "Suche fehlgeschlagen"), "bad"); return; }
+  if (res.status !== 200) { msg($("m-station"), reason(res, "Scan failed"), "bad"); return; }
   msg($("m-station"), "", null);
   // The endpoint answers with the array itself.
   const nets = Array.isArray(res.body) ? res.body : [];
   if (!nets.length) {
     // The API answers 503 for a failed scan and 200 with an empty list for a
     // quiet band, so this really does mean "nothing on the air".
-    row(tb, "–", "keine Netzwerke gefunden");
+    row(tb, "–", "no networks found");
     return;
   }
   nets.forEach((n) => {
     const tr = document.createElement("tr");
-    const a = document.createElement("td"); a.textContent = n.ssid || "(versteckt)";
+    const a = document.createElement("td"); a.textContent = n.ssid || "(hidden)";
     const b2 = document.createElement("td");
     b2.textContent = [n.security, "Kanal " + n.channel, n.rssiDbm + " dBm"].join(" · ");
     tr.append(a, b2);
@@ -639,10 +586,10 @@ $("join").onclick = async () => {
     // passphrase once it has been handed over, and the API never gives one
     // back.
     $("psk").value = "";
-    msg($("m-station"), "Angewendet. Bitte oben bestätigen, sobald die Kamera erreichbar ist.", "ok");
+    msg($("m-station"), "Applied. Please confirm above once the camera is reachable.", "ok");
     showPending({pending: true, token: res.body.token, remaining_ms: res.body.confirm_within_ms});
   } else {
-    msg($("m-station"), reason(res, "Verbinden fehlgeschlagen"), "bad");
+    msg($("m-station"), reason(res, "Connect failed"), "bad");
   }
 };
 
@@ -656,10 +603,10 @@ $("apstart").onclick = async () => {
   const res = await api("POST", "/api/v1/network/wifi/ap", body);
   if (res.status === 202) {
     $("appsk").value = "";
-    msg($("m-ap"), "Access Point gestartet. Bitte oben bestätigen.", "ok");
+    msg($("m-ap"), "Access point started. Please confirm above.", "ok");
     showPending({pending: true, token: res.body.token, remaining_ms: res.body.confirm_within_ms});
   } else {
-    msg($("m-ap"), reason(res, "Access Point konnte nicht gestartet werden"), "bad");
+    msg($("m-ap"), reason(res, "The access point could not be started"), "bad");
   }
 };
 
@@ -673,8 +620,8 @@ $("savepolicy").onclick = async () => {
   };
   if (order.length) body.order = order;
   const res = await api("PATCH", "/api/v1/network/policy", body);
-  if (res.status === 200) { msg($("m-policy"), "Gespeichert.", "ok"); await loadNetwork(); }
-  else msg($("m-policy"), reason(res, "Speichern fehlgeschlagen"), "bad");
+  if (res.status === 200) { msg($("m-policy"), "Saved.", "ok"); await loadNetwork(); }
+  else msg($("m-policy"), reason(res, "Save failed"), "bad");
 };
 
 document.querySelectorAll('input[name=usbmode]')
@@ -688,17 +635,17 @@ $("usbmodesave").onclick = async () => {
     modeSaved = (res.body && res.body.config && res.body.config.mode) || want;
     modeBooted = (res.body && res.body.bootMode !== undefined) ? res.body.bootMode : modeBooted;
     markModePending();
-    // Kein "Übernommen." allein: uebernommen ist die EINSTELLUNG, nicht der
+    // Kein "Applied." allein: uebernommen ist die EINSTELLUNG, nicht der
     // Zustand des Ports. Wer hier nur Erfolg meldet, laesst jemanden auf ein
     // Modem warten, das erst nach einem Neustart existiert.
     const pending = (modeBooted !== null && modeBooted !== modeSaved);
     msg($("m-usbmode"), pending
-        ? "Gespeichert. Wirksam nach einem Neustart — jetzt läuft noch "
+        ? "Saved. Takes effect after a reboot — still running: "
           + (MODE_LABEL[modeBooted] || modeBooted) + "."
-        : "Gespeichert.", "ok");
+        : "Saved.", "ok");
     await loadCellular();
   } else {
-    msg($("m-usbmode"), reason(res, "Speichern fehlgeschlagen"), "bad");
+    msg($("m-usbmode"), reason(res, "Save failed"), "bad");
   }
 };
 
@@ -716,8 +663,8 @@ $("usbsave").onclick = async () => {
   // requests; omitting it is the one that means "leave it alone".
   if ($("usbpin").value.trim()) body.power.pin = $("usbpin").value.trim();
   const res = await api("PATCH", "/api/v1/usb", body);
-  if (res.status === 200) { msg($("m-usb"), "Übernommen.", "ok"); await loadUsb(); }
-  else msg($("m-usb"), reason(res, "Übernehmen fehlgeschlagen"), "bad");
+  if (res.status === 200) { msg($("m-usb"), "Applied.", "ok"); await loadUsb(); }
+  else msg($("m-usb"), reason(res, "Apply failed"), "bad");
 };
 
 // ------------------------------------------------------------ Mobilfunk
@@ -729,19 +676,19 @@ function num(v, unit) { return (v === null || v === undefined) ? "–" : (v + (u
 function txt(v) { return (v === null || v === undefined || v === "") ? "–" : v; }
 
 const CELL_STATE_TEXT = {
-  disabled: "ausgeschaltet",
-  wait_device: "kein Modem gefunden",
-  wait_at: "Modem antwortet nicht auf dem AT-Port",
-  wait_sim: "SIM nicht bereit",
-  wait_registration: "nicht im Netz",
-  ensure_ecm_mode: "Betriebsart wird geprüft",
-  wait_reenumeration: "Modem startet neu",
-  configure_pdp: "APN wird gesetzt",
-  start_data: "Datenkanal wird aufgebaut",
-  wait_netif: "warte auf das Netzwerkinterface",
-  addressing: "warte auf eine Adresse",
-  up: "verbunden",
-  failed: "fehlgeschlagen"
+  disabled: "switched off",
+  wait_device: "no modem found",
+  wait_at: "The modem does not answer on the AT port",
+  wait_sim: "SIM not ready",
+  wait_registration: "not on the network",
+  ensure_ecm_mode: "Checking the mode",
+  wait_reenumeration: "The modem is restarting",
+  configure_pdp: "Setting the APN",
+  start_data: "Data link is being established",
+  wait_netif: "waiting for the network interface",
+  addressing: "waiting for an address",
+  up: "connected",
+  failed: "failed"
 };
 
 let cellPresets = [];
@@ -769,7 +716,7 @@ async function loadCellular() {
     cards.forEach((id) => { $(id).hidden = true; });
     $("cell-offmode").hidden = false;
     $("cell-offmode").textContent =
-      "Mobilfunk ist in diesem Build nicht verfügbar.";
+      "Cellular is not available in this build.";
     return;
   }
   const c = res.body || {};
@@ -779,8 +726,8 @@ async function loadCellular() {
   $("cell-offmode").hidden = usable;
   if (!usable) {
     $("cell-offmode").textContent =
-      "4G-Mobilfunk ist für USB nicht aktiviert. Unter „USB-Nutzung\" auswählen "
-      + "und neu starten; die Zugangsdaten bleiben dabei gespeichert.";
+      "Cellular is not enabled for USB. Select it under \"USB role\" "
+      + "and reboot; the credentials stay saved.";
   }
   // Die Karten bleiben SICHTBAR, auch wenn der Modus ein anderer ist: die
   // gespeicherten Zugangsdaten sollen sich vorbereiten lassen, bevor jemand
@@ -793,24 +740,24 @@ async function loadCellular() {
   // ---- Status
   const tb = $("cell").querySelector("tbody"); tb.textContent = "";
   const dl = c.dataLink || {}, ad = c.address || {}, nw = c.network || {}, rf = c.radio || {}, md = c.modem || {};
-  row(tb, "Verbindung", pill(txt(c.state), stateKind(c.state)));
-  row(tb, "Erklärung", CELL_STATE_TEXT[dl.state] || txt(dl.detail));
-  row(tb, "Modem vorhanden", c.available ? "ja" : "nein");
-  row(tb, "Hersteller", txt(md.manufacturer));
+  row(tb, "Link", pill(txt(c.state), stateKind(c.state)));
+  row(tb, "Explanation", CELL_STATE_TEXT[dl.state] || txt(dl.detail));
+  row(tb, "Modem present", c.available ? "ja" : "nein");
+  row(tb, "Vendor", txt(md.manufacturer));
   row(tb, "Modell", txt(md.model));
   row(tb, "Firmware", txt(md.firmware));
-  row(tb, "Betreiber", txt(nw.operatorName));
-  row(tb, "Registrierung", txt(nw.registration) + (nw.roaming ? " (Roaming)" : ""));
-  row(tb, "Funktechnik", txt(nw.rat));
+  row(tb, "Operator", txt(nw.operatorName));
+  row(tb, "Registration", txt(nw.registration) + (nw.roaming ? " (Roaming)" : ""));
+  row(tb, "Radio technology", txt(nw.rat));
   row(tb, "Band", num(rf.band) + (rf.bandMhz ? " (" + rf.bandMhz + " MHz)" : ""));
   row(tb, "RSRP", num(rf.rsrpDbm, " dBm"));
   row(tb, "RSRQ", num(rf.rsrqDb, " dB"));
   row(tb, "SINR", num(rf.sinrDb, " dB"));
-  row(tb, "Datenlink", txt(dl.kind) + " / " + txt(dl.state)
-      + (dl.rebootRequired ? " — gewählt ist " + txt(dl.selected) + ", Neustart erforderlich" : ""));
+  row(tb, "Data link", txt(dl.kind) + " / " + txt(dl.state)
+      + (dl.rebootRequired ? " — selected is " + txt(dl.selected) + ", reboot required" : ""));
   row(tb, "Interface", txt(c.interface));
   row(tb, "IPv4", txt(ad.ipv4));
-  row(tb, "Internet", c.internet ? "erreichbar" : "nicht bestätigt");
+  row(tb, "Internet", c.internet ? "erreichbar" : "not confirmed");
 
   // ---- Zugangsdaten. Nur fuellen, wenn niemand gerade tippt: ein
   // 5-Sekunden-Takt, der ein Formular ueberschreibt, ist unbenutzbar.
@@ -827,11 +774,11 @@ async function loadCellular() {
     const dlr = document.querySelector('input[name=celldl][value="' + (cfg.dataLink || "ecm") + '"]');
     if (dlr) dlr.checked = true;
     $("celldl-note").textContent = dl.rebootRequired
-        ? "Gespeichert: " + txt(dl.selected) + ". Aktiv ist noch " + txt(dl.kind)
-          + " — ein Neustart ist erforderlich."
-        : "Änderung wird nach einem Neustart wirksam.";
+        ? "Saved: " + txt(dl.selected) + ". Still active: " + txt(dl.kind)
+          + " — a reboot is required."
+        : "Takes effect after a reboot.";
     $("cellnic").checked  = !!cfg.nicMode;
-    $("cellpw").placeholder = cfg.passwordSet ? "gespeichert — leer lassen für unverändert" : "";
+    $("cellpw").placeholder = cfg.passwordSet ? "saved — leave empty for unchanged" : "";
   }
 
   // ---- SIM
@@ -843,7 +790,7 @@ async function loadCellular() {
   row(stb, "IMSI", txt(sim.imsi));
   // Nur ob eine hinterlegt ist. Die PIN selbst verlaesst die Kamera nicht.
   row(stb, "PIN hinterlegt", cfg.simPinSet ? "ja" : "nein");
-  $("cellpin").placeholder = cfg.simPinSet ? "gespeichert — leer lassen für unverändert" : "";
+  $("cellpin").placeholder = cfg.simPinSet ? "saved — leave empty for unchanged" : "";
 
   // ---- Diagnose
   const dtb = $("celldiag").querySelector("tbody"); dtb.textContent = "";
@@ -857,11 +804,11 @@ async function loadCellular() {
   row(dtb, "QENG EARFCN / PCI", num(rf.earfcn) + " / " + num(rf.pci));
   row(dtb, "CGPADDR", txt((c.pdp || {}).ipv4));
   row(dtb, "Interface", txt(c.interface));
-  row(dtb, "Adresse / Gateway", txt(ad.ipv4) + " / " + txt(ad.gateway));
+  row(dtb, "Address / gateway", txt(ad.ipv4) + " / " + txt(ad.gateway));
   row(dtb, "DNS", (ad.dns && ad.dns.length) ? ad.dns.join(", ") : "–");
-  row(dtb, "Adressbezug", dl.nicMode ? "statisch aus CGCONTRDP (NIC-Modus)" : "DHCP (Routing-Modus)");
-  row(dtb, "Fehlversuche", num(dl.attempts));
-  row(dtb, "Letzter Fehler", txt(c.lastError));
+  row(dtb, "Address assignment", dl.nicMode ? "statisch aus CGCONTRDP (NIC-Modus)" : "DHCP (Routing-Modus)");
+  row(dtb, "Failed attempts", num(dl.attempts));
+  row(dtb, "Last error", txt(c.lastError));
 }
 
 $("cellpreset").onchange = () => {
@@ -883,7 +830,7 @@ $("cellsave").onclick = async () => {
     autoConnect: $("cellauto").checked,
     nicMode: $("cellnic").checked
   };
-  // Ein leeres Passwortfeld heisst "unverändert", nicht "löschen". Wer es
+  // Ein leeres Passwortfeld heisst "unchanged", nicht "clear". Wer es
   // löschen will, hat dafür keinen Weg über dieses Feld -- das ist Absicht:
   // ein versehentlich geleertes Feld darf nicht das gespeicherte Geheimnis
   // mitnehmen.
@@ -891,10 +838,10 @@ $("cellsave").onclick = async () => {
   const res = await api("PATCH", "/api/v1/network/cellular", body);
   if (res.status === 202) {
     $("cellpw").value = "";
-    msg($("m-cell"), "Übernommen — bitte oben bestätigen, sonst wird zurückgerollt.", "ok");
+    msg($("m-cell"), "Applied — please confirm above or it will be rolled back.", "ok");
     await loadNetwork();
   } else {
-    msg($("m-cell"), reason(res, "Speichern fehlgeschlagen"), "bad");
+    msg($("m-cell"), reason(res, "Save failed"), "bad");
   }
 };
 
@@ -903,26 +850,26 @@ $("celldlsave").onclick = async () => {
   if (!r) return;
   const res = await api("PATCH", "/api/v1/network/cellular", { dataLink: r.value });
   if (res.status === 202) {
-    msg($("m-celldl"), "Übernommen — bitte oben bestätigen. Wirksam nach einem Neustart.", "ok");
+    msg($("m-celldl"), "Applied — please confirm above. Takes effect after a reboot.", "ok");
     await loadNetwork();
   } else {
-    msg($("m-celldl"), reason(res, "Speichern fehlgeschlagen"), "bad");
+    msg($("m-celldl"), reason(res, "Save failed"), "bad");
   }
 };
 
 $("cellpinsave").onclick = async () => {
   const clear = $("cellpinclear").checked;
   const pin = $("cellpin").value;
-  if (!clear && !pin) { msg($("m-cellpin"), "Keine PIN eingegeben.", "warn"); return; }
+  if (!clear && !pin) { msg($("m-cellpin"), "No PIN entered.", "warn"); return; }
   const res = await api("PATCH", "/api/v1/network/cellular", { simPin: clear ? "" : pin });
   if (res.status === 202) {
     $("cellpin").value = ""; $("cellpinclear").checked = false;
     msg($("m-cellpin"), clear
-        ? "PIN gelöscht — bitte oben bestätigen."
-        : "PIN gespeichert — bitte oben bestätigen. Sie wird beim nächsten Versuch EINMAL gesendet.", "ok");
+        ? "PIN cleared — please confirm above."
+        : "PIN saved — please confirm above. It is sent ONCE on the next attempt.", "ok");
     await loadNetwork();
   } else {
-    msg($("m-cellpin"), reason(res, "Speichern fehlgeschlagen"), "bad");
+    msg($("m-cellpin"), reason(res, "Save failed"), "bad");
   }
 };
 

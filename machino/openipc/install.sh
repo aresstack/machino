@@ -783,10 +783,10 @@ menu_entry() {
 }
 
 if [ "$WITH_NETPAGE" = "1" ]; then
-    menu_entry netpage --with-network-page /cgi-bin/machino-network.cgi "Netzwerk &amp; USB (machino)"
+    menu_entry netpage --with-network-page machino-network.cgi "Netzwerk &amp; USB (machino)"
 fi
 if [ "$WITH_DEVPAGE" = "1" ]; then
-    menu_entry devpage --with-device-page /cgi-bin/machino-devices.cgi "Ger&auml;te (machino)"
+    menu_entry devpage --with-device-page machino-devices.cgi "Ger&auml;te (machino)"
 fi
 
 # ------------------------------------------------------------------- done ---

@@ -87,6 +87,24 @@ void check_page(const char* rel, const char* title, const char* login_next)
     // kommen von Machino auf Port 80 -- ein relativer Pfad ginge an busybox.
     TCHECK(has(p, "\"/api/v1/"));
     TCHECK(!has(p, "\"api/v1/"));
+
+    // Die vier Reviewbefunde vom 2026-09-25, je ein Stolperdraht:
+    // 1. header.cgi oeffnet <main>/<div class=container> bereits -- ein
+    //    eigenes <main> verschachtelt die Seite falsch.
+    TCHECK(!has(p, "<main"));
+    // 2. Keine eigene Designsprache: die Komponenten sind die der Kamera-UI.
+    TCHECK(!has(p, "class=\"act\""));
+    TCHECK(!has(p, "class=\"pill"));
+    TCHECK(!has(p, "class=\"note\""));
+    TCHECK(has(p, "mj-cap"));
+    TCHECK(has(p, "mj-card-note"));
+    TCHECK(has(p, "row g-4"));
+    // 3. Sichtbarer Text ENGLISCH wie der Rest der WebUI. Umlaute duerfen nur
+    //    in Kommentaren stehen; die Pruefung ist grob, aber jede der vier
+    //    Ketten kam im deutschen Bestand vor.
+    TCHECK(!has(p, "&auml;"));
+    TCHECK(!has(p, "&uuml;"));
+    TCHECK(!has(p, "Bestätigung"));
 }
 
 } // namespace
