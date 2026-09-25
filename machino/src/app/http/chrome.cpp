@@ -47,9 +47,9 @@ static const char kTail[] = R"MACHINO_JS(";
 
         /* Die Dateipfade werden NICHT geraten und stehen nirgends fest
            verdrahtet: sie stehen im <head> genau der Seite, die wir gerade
-           geholt haben. Auf dieser Kamera ist das /a/bootstrap.min.css,
-           /a/bootstrap.override.css und /a/main.js -- auf einer anderen
-           Variante eben etwas anderes, und dann stimmt es trotzdem. */
+           geholt haben. Welche Dateien das auf dieser Kamera sind, steht in
+           docs/openipc-webui-assets.md -- hier steht es absichtlich NICHT,
+           damit kein Pfad aus Versehen zur Konstante wird. */
         doc.querySelectorAll('head link[rel~="stylesheet"]').forEach(function (l) {
           adopt(l, "link", "href");
         });

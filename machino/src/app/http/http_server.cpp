@@ -475,6 +475,42 @@ bool HttpServer::handle_request(Client& c) {
             if (!req.keep_alive) c.close_after_flush = true;
             return ok;
         }
+    } else if (path == "/machino/chrome") {
+        // Die eine Einstellung der Kopfleiste, unter EIGENEM Pfad statt über
+        // /api/v1/config. Grund steht in zwei Tests: netui und devui verbieten
+        // beiden Seiten ausdrücklich, /api/v1/config anzufassen, damit sich
+        // über eine Bequemlichkeit nichts aus dem Medienpfad in eine
+        // Netzwerkseite schleicht. Diese Einstellung gehört auch gar nicht
+        // dorthin -- sie beschreibt die Darstellung, nicht die Kamera.
+        // Geschrieben wird trotzdem in dieselbe Konfiguration, damit es nur
+        // eine Wahrheit gibt.
+        if (m == "GET") {
+            r.status = 200;
+            r.body = Json::object();
+            r.body.set("source", Json::string(cfg_.chrome_source));
+        } else if (m == "PATCH" || m == "POST") {
+            Json in;
+            std::string perr;
+            const Json* src = nullptr;
+            if (Json::parse(req.body, in, perr) && in.is_object()) src = in.get("source");
+            if (!src || !src->is_string()) {
+                r = api::ApiService::fail(400, "unknown_field", path, "expected {\"source\":\"...\"}");
+            } else {
+                const std::string v = src->as_string();
+                Json api_obj = Json::object();
+                api_obj.set("chrome_source", Json::string(v));
+                Json patch = Json::object();
+                patch.set("api", api_obj);
+                r = api_.patch_config(patch.dump(), "");
+                // Sofort wirksam: cfg_ ist die Kopie, aus der das Skript
+                // erzeugt wird. Ohne das griffe die Änderung erst nach einem
+                // Neustart des Daemons, und die Seite hätte beim Neuladen
+                // dieselbe Leiste wie vorher.
+                if (r.status >= 200 && r.status < 300) cfg_.chrome_source = v;
+            }
+        } else {
+            r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+        }
     } else if (path == "/machino/chrome.js") {
         // Die Kopfleiste fuer Machinos eigene Seiten. Bewusst eine eigene
         // Datei statt zweimal inline: beide Seiten brauchen dasselbe, und der

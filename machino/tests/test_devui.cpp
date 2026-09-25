@@ -29,6 +29,13 @@ bool has(const std::string& hay, const std::string& needle)
     return hay.find(needle) != std::string::npos;
 }
 
+size_t count(const std::string& hay, const std::string& needle)
+{
+    size_t n = 0, p = 0;
+    while ((p = hay.find(needle, p)) != std::string::npos) { ++n; p += needle.size(); }
+    return n;
+}
+
 void test_the_page_is_self_contained()
 {
     const std::string p = page();
@@ -39,7 +46,12 @@ void test_the_page_is_self_contained()
     // wird genau dann gebraucht, wenn noch gar keine Verbindung steht.
     TCHECK(!has(p, "http://"));
     TCHECK(!has(p, "https://"));
-    TCHECK(!has(p, "<script src"));
+    // Genau EIN externes Skript, und zwar unser eigenes auf derselben
+    // Herkunft: /machino/chrome.js holt die Kopfleiste der Kamera-WebUI und
+    // tut nichts, wenn das nicht geht. Alles andere bleibt verboten -- der
+    // Grund oben (kein CDN) gilt unveraendert.
+    TCHECK(count(p, "<script src") == 1);
+    TCHECK(has(p, "<script src=\"/machino/chrome.js\""));
     TCHECK(!has(p, "<link rel=\"stylesheet\""));
 }
 
@@ -148,7 +160,9 @@ void test_the_pages_carry_the_chrome()
     // Anfuehrungszeichen unterbringt, haette sonst eigenen Code in jeder
     // ausgelieferten Seite.
     const std::string evil = machino::http::machino_chrome_js("a\";alert(1);//");
-    TCHECK(!has(evil, "\";alert"));
+    // Der escapte Text enthaelt ";alert weiterhin -- aber mit Backslash
+    // davor, und genau darauf kommt es an: das Literal bricht nicht auf.
+    TCHECK(has(evil, "a\\\";alert"));
     TCHECK(has(machino::http::machino_chrome_js("</script>"), "\\u003c"));
 }
 

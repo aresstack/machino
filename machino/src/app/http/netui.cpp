@@ -999,8 +999,8 @@ async function refresh() {
 // /machino/chrome.js aus dem Kopf der geholten Seite -- eine Einstellung, die
 // man sich ablesen kann, ist eine Einstellung zu viel.
 async function loadChrome() {
-  const r = await api("GET", "/api/v1/config");
-  const v = r.body && r.body.api ? r.body.api.chrome_source : undefined;
+  const r = await api("GET", "/machino/chrome");
+  const v = r.body ? r.body.source : undefined;
   if (v !== undefined && document.activeElement !== $("chromeSrc"))
     $("chromeSrc").value = v || "";
 }
@@ -1008,8 +1008,8 @@ $("chromeSave").addEventListener("click", async () => {
   const el = $("chromeMsg");
   msg(el, "wird übernommen …");
   try {
-    const r = await api("PATCH", "/api/v1/config",
-                        {api: {chrome_source: $("chromeSrc").value.trim()}});
+    const r = await api("PATCH", "/machino/chrome",
+                        {source: $("chromeSrc").value.trim()});
     if (r.status >= 200 && r.status < 300) {
       // Die Seite laedt das Skript beim Aufbau. Ohne Neuladen bliebe die alte
       // Kopfleiste stehen und niemand wuesste, ob es geklappt hat.

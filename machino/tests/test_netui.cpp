@@ -28,6 +28,13 @@ bool has(const std::string& hay, const std::string& needle)
     return hay.find(needle) != std::string::npos;
 }
 
+size_t count(const std::string& hay, const std::string& needle)
+{
+    size_t n = 0, p = 0;
+    while ((p = hay.find(needle, p)) != std::string::npos) { ++n; p += needle.size(); }
+    return n;
+}
+
 void test_the_page_is_self_contained()
 {
     const std::string p = page();
@@ -38,13 +45,19 @@ void test_the_page_is_self_contained()
     // that needs a CDN to render is useless exactly when it is needed.
     TCHECK(!has(p, "http://"));
     TCHECK(!has(p, "https://"));
-    TCHECK(!has(p, "<script src"));
+    // Genau EIN externes Skript, und zwar unser eigenes auf derselben
+    // Herkunft: /machino/chrome.js holt die Kopfleiste der Kamera-WebUI und
+    // tut nichts, wenn das nicht geht. Alles andere bleibt verboten -- der
+    // Grund oben (kein CDN) gilt unveraendert.
+    TCHECK(count(p, "<script src") == 1);
+    TCHECK(has(p, "<script src=\"/machino/chrome.js\""));
     TCHECK(!has(p, "<link rel=\"stylesheet\""));
 }
 
 void test_every_endpoint_the_page_calls_exists()
 {
     const std::string p = page();
+    TCHECK(has(p, "/machino/chrome"));      // die eine Einstellung der Kopfleiste
     for (const char* ep : {"/api/v1/network",
                            "/api/v1/network/policy",
                            "/api/v1/network/wifi",
