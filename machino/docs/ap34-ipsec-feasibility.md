@@ -5,6 +5,15 @@
 > `Miguel0888/quectel-ec200a-eu` unter `esp32-modem-host/src/weirdike/`. Beide
 > Repos sind ueber den vorhandenen Git-Credential-Helper klonbar.
 >
+> **NACHTRAG 2026-09-26:** Es liegt sogar LOKAL auf dem Entwicklungsrechner:
+> `C:\Projects\WeirdIKE` (main, synchron mit origin), daneben
+> `weirdike-vcpkg`, die vendored Kopie in `quectel-ec200a-eu` und die
+> Referenzen `CycloneIPSEC`/`Contiki-IPsec`. Zwei Suchlaeufe haben es
+> verfehlt, weil `C:\Projects` nie durchsucht wurde — nur `/c/tmp` und
+> `CLionProjects`. Stand d3c5d1e (2026-09-08): FRITZ-Interop-Werkzeuge im
+> Baum; E3 PARTIAL — Split-Tunnel funktioniert, Full-Tunnel (Default-Route
+> via ipsec0) fehlt und haengt am E1-Zielrouten-Mechanismus.
+>
 > ```
 > Upstream    146 Dateien, 14 274 C-Zeilen, CMake + Makefile, CI (ci.yml, cmake.yml)
 > Umfang      IKEv2-Kern, ESP, NAT-T-Demux, Rekeying, EAP-MSCHAPv2, X.509-Trust,
