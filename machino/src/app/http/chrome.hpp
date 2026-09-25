@@ -10,12 +10,17 @@
 // docs/openipc-webui-assets.md. Wer hier etwas aendert, liest das zuerst.
 //
 // WIE: die UI der Kamera wird BENUTZT, nicht nachgebaut. Alles liegt auf
-// derselben Herkunft, also kann die Seite es einfach laden:
+// derselben Herkunft, also kann die Seite es einfach laden -- Stylesheets und
+// Verhalten aus dem <head> der geholten Seite, das <nav> unveraendert.
 //
-//     /a/bootstrap.min.css        ihr Stylesheet
-//     /a/bootstrap.override.css   ihre Anpassungen (Farben, Dark/Light)
-//     /a/main.js                  ihr Verhalten
-//     <nav class="navbar">        ihr Markup, unveraendert uebernommen
+// WAS KONFIGURIERBAR IST, UND WARUM NUR DAS: api.chrome_source, also WELCHE
+// Seite geholt wird (Vorgabe /cgi-bin/live.cgi, leer = Uebernahme aus). Die
+// Dateipfade dagegen werden NICHT konfiguriert und auch nicht geraten: sie
+// stehen im <head> genau dieser Seite. Auf dieser Kamera ist das
+// /a/bootstrap.min.css, /a/bootstrap.override.css und /a/main.js -- auf einer
+// anderen Variante etwas anderes, und dann stimmt es trotzdem, ohne dass
+// jemand etwas einstellen muss. Eine Einstellung, die man sich ablesen kann,
+// ist eine Einstellung zu viel.
 //
 // Ein Bootstrap-JavaScript gibt es auf dieser Kamera NICHT (geprueft:
 // /a/bootstrap.bundle.min.js, bootstrap.min.js, bootstrap.js -> alle 404).
@@ -37,13 +42,13 @@
 // ohnehin ist. Eine Kopfleiste ist Komfort und darf keine Seite kosten.
 #pragma once
 
-#include <cstddef>
+#include <string>
 
 namespace machino {
 namespace http {
 
-const char* machino_chrome_js();
-std::size_t machino_chrome_js_len();
+// `source` ist api.chrome_source. Leer -> das Skript tut nichts.
+std::string machino_chrome_js(const std::string& source);
 
 } // namespace http
 } // namespace machino

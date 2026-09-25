@@ -51,6 +51,9 @@ struct ServerConfig {
     // deliberately-open camera.
     bool        unsafe = false;
     int         upstream_port = 0;
+    // Welche Seite der Stock-WebUI /machino/chrome.js holt, um Kopfleiste und
+    // Aussehen zu uebernehmen. Leer schaltet das ab. Siehe app/http/chrome.hpp.
+    std::string chrome_source = "/cgi-bin/live.cgi";
     int         relay_timeout_ms = 6000;      // upstream INACTIVITY bound: refreshed on connect/send/recv progress
     int         relay_max_ms = 120000;        // absolute safety ceiling per relayed request
     // Each relayed request makes busybox fork a CGI (shell + helpers). On a

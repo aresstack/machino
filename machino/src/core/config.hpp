@@ -175,6 +175,13 @@ struct ApiConfig {
     // Majestic drop-in session login (POST /login against the system account)
     // on the front door. Only effective when upstream_port > 0.
     bool        auth = true;
+    // Von welcher Seite der Stock-WebUI Machinos eigene Seiten ihre Kopfleiste
+    // holen (Stylesheets, Verhalten, das <nav> selbst -- siehe
+    // docs/openipc-webui-assets.md). Konfigurierbar, weil das die EINZIGE
+    // Angabe ist, die sich nicht aus der Seite selbst ablesen laesst: die
+    // Dateipfade stehen in ihrem <head>, welche Seite man dafuer nimmt, nicht.
+    // Leer schaltet die Uebernahme ab -- die Seiten bleiben dann eigenstaendig.
+    std::string chrome_source = "/cgi-bin/live.cgi";
 };
 
 // majestic `system` section. `unsafe` is upstream's "Disable authentication"

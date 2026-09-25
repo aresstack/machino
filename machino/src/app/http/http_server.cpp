@@ -488,7 +488,7 @@ bool HttpServer::handle_request(Client& c) {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         else {
             const bool ok = queue(c, response(200, "application/javascript; charset=utf-8",
-                                              std::string(machino_chrome_js(), machino_chrome_js_len()),
+                                              machino_chrome_js(cfg_.chrome_source),
                                               req.keep_alive));
             if (!req.keep_alive) c.close_after_flush = true;
             return ok;

@@ -123,10 +123,33 @@ unverändert; `src/app/http/chrome.hpp` begründet das im Detail. Der Test in
 `tests/test_devui.cpp` verbietet ausdrücklich, dass `dropdown-item` oder
 `dashboard.cgi` im Skript auftauchen.
 
+## Nichts davon steht bei Machino fest verdrahtet
+
+Die Pfade oben sind **gemessene Werte dieser Kamera**, keine Konstanten im
+Code. `/machino/chrome.js` holt eine Seite und liest aus deren `<head>`, wo die
+Dateien liegen — Stylesheets aus `head link[rel~=stylesheet]`, Verhalten aus
+`head script[src]`, jeweils nur gleiche Herkunft. Eine andere Firmware, die
+ihre Dateien woanders ablegt, funktioniert damit ohne Zutun.
+
+Einstellbar ist deshalb genau **eine** Angabe, weil sie die einzige ist, die
+sich nicht ablesen lässt: *welche* Seite geholt wird.
+
+| | |
+|---|---|
+| Schlüssel | `api.chrome_source` |
+| Vorgabe | `/cgi-bin/live.cgi` |
+| leer | Übernahme aus, die Seiten bleiben eigenständig |
+| in der UI | `/machino/net` → Übersicht → **Darstellung** |
+
+Der Wert landet in einem JavaScript-String-Literal und ist über die API
+schreibbar, wird beim Einsetzen also escaped (`"`, `\`, `<`, Zeilenumbrüche).
+Ein Test hält das fest.
+
 ## Was Machino daraus benutzt
 
-`/machino/net` und `/machino/devices` laden die zwei Stylesheets und `main.js`
-und setzen das geholte `<nav>` an den Anfang des Body. Ihre eigenen
+`/machino/net` und `/machino/devices` übernehmen Stylesheets und Verhalten aus
+dem Kopf der geholten Seite, setzen deren `<nav>` an den Anfang des Body und
+übernehmen `data-bs-theme` von deren `<html>`. Ihre eigenen
 Farbvariablen zeigen auf Bootstrap-Variablen (`--bs-body-bg`,
 `--bs-border-color`, `--bs-primary`, …), damit sie das Theme der Kamera
 mitnehmen statt daneben zu stehen.

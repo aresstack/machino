@@ -101,6 +101,20 @@ border-radius:6px;padding:12px;margin:0 16px 14px}
     eigenes WLAN bereitstellt, arbeitet wie vorgesehen und hat
     absichtsgemäß keine Internetverbindung.</p>
   </div>
+
+  <div class="card">
+    <h2>Darstellung</h2>
+    <p class="note">Diese Seite übernimmt Kopfleiste, Farben und Verhalten von
+    der WebUI der Kamera. Dafür holt sie <b>eine</b> ihrer Seiten und liest
+    aus deren Kopf, wo die Dateien liegen &mdash; die Pfade sind nirgends fest
+    eingetragen. Falls diese Firmware eine andere Seite ausliefert, lässt sich
+    hier eine angeben. Leer lassen schaltet die Übernahme ab; die Seite
+    funktioniert dann eigenständig weiter.</p>
+    <label for="chromeSrc">Seite, von der die Kopfleiste stammt</label>
+    <input id="chromeSrc" placeholder="/cgi-bin/live.cgi">
+    <button class="act" id="chromeSave">Übernehmen</button>
+    <div id="chromeMsg"></div>
+  </div>
 </section>
 
 <section id="t-ethernet" hidden>
@@ -979,8 +993,37 @@ async function refresh() {
   } catch (e) { /* a 401 already navigated away */ }
 }
 
+// --- Darstellung: welche Seite die Kopfleiste liefert ----------------------
+//
+// Nur DIESE eine Angabe ist einstellbar. Wo die Dateien liegen, liest
+// /machino/chrome.js aus dem Kopf der geholten Seite -- eine Einstellung, die
+// man sich ablesen kann, ist eine Einstellung zu viel.
+async function loadChrome() {
+  const r = await api("GET", "/api/v1/config");
+  const v = r.body && r.body.api ? r.body.api.chrome_source : undefined;
+  if (v !== undefined && document.activeElement !== $("chromeSrc"))
+    $("chromeSrc").value = v || "";
+}
+$("chromeSave").addEventListener("click", async () => {
+  const el = $("chromeMsg");
+  msg(el, "wird übernommen …");
+  try {
+    const r = await api("PATCH", "/api/v1/config",
+                        {api: {chrome_source: $("chromeSrc").value.trim()}});
+    if (r.status >= 200 && r.status < 300) {
+      // Die Seite laedt das Skript beim Aufbau. Ohne Neuladen bliebe die alte
+      // Kopfleiste stehen und niemand wuesste, ob es geklappt hat.
+      msg(el, "Übernommen. Seite wird neu geladen …", "ok");
+      setTimeout(() => location.reload(), 900);
+    } else {
+      msg(el, (r.body && r.body.error && r.body.error.message) || "Fehlgeschlagen.", "bad");
+    }
+  } catch (e) { /* 401 hat schon navigiert */ }
+});
+
 buildTabs();
 refresh();
+loadChrome().catch(() => {});
 // Polled, not pushed. The status here changes on the scale of seconds and a
 // dedicated SSE stream for one page would be a second thing to keep alive
 // through exactly the network changes this page makes.

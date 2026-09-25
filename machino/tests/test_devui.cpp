@@ -124,22 +124,32 @@ void test_the_pages_carry_the_chrome()
 {
     TCHECK(has(page(), "/machino/chrome.js"));
 
-    const std::string js(machino::http::machino_chrome_js(),
-                         machino::http::machino_chrome_js_len());
-    // Die UI der Kamera wird BENUTZT, nicht nachgebaut: ihr Stylesheet, ihr
-    // Verhalten, ihr Markup. Alles auf derselben Herkunft.
-    TCHECK(has(js, "/a/bootstrap.min.css"));
-    TCHECK(has(js, "/a/bootstrap.override.css"));
-    TCHECK(has(js, "/a/main.js"));
+    const std::string js = machino::http::machino_chrome_js("/cgi-bin/live.cgi");
+    TCHECK(has(js, "/cgi-bin/live.cgi"));
     TCHECK(has(js, "same-origin"));
-    // Das nav kommt unveraendert aus der ausgelieferten Seite. Eine im
-    // Quelltext nachgebaute Eintragsliste waere beim naechsten Update falsch,
-    // also darf hier keine stehen.
+    // Das nav kommt unveraendert aus der geholten Seite, die Dateipfade aus
+    // deren <head>. Steht hier ein Pfad fest verdrahtet, ist die Uebernahme
+    // auf jeder anderen Firmware falsch.
     TCHECK(has(js, "nav.navbar"));
+    TCHECK(has(js, "head link"));
+    TCHECK(has(js, "head script"));
+    TCHECK(!has(js, "/a/"));
     TCHECK(!has(js, "dropdown-item"));
     TCHECK(!has(js, "dashboard.cgi"));
-    // Und ein Fehlschlag bleibt folgenlos.
+    // Fehlschlag bleibt folgenlos.
     TCHECK(has(js, "catch"));
+
+    // Leer = ausdruecklich abgeschaltet: das Skript darf dann nichts holen.
+    const std::string off = machino::http::machino_chrome_js("");
+    TCHECK(has(off, "SOURCE = \"\""));
+
+    // Der Wert landet in einem JavaScript-String und kommt aus der
+    // Konfiguration, die ueber die API schreibbar ist. Wer dort ein
+    // Anfuehrungszeichen unterbringt, haette sonst eigenen Code in jeder
+    // ausgelieferten Seite.
+    const std::string evil = machino::http::machino_chrome_js("a\";alert(1);//");
+    TCHECK(!has(evil, "\";alert"));
+    TCHECK(has(machino::http::machino_chrome_js("</script>"), "\\u003c"));
 }
 
 } // namespace
