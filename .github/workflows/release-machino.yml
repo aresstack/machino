@@ -115,6 +115,8 @@ jobs:
           cp -f machino/openipc/init/machino           "$O/init/machino"
           cp -f machino/openipc/init/S42usb            "$O/init/S42usb"
           cp -f machino/openipc/sbin/machino-usb-helper "$O/sbin/machino-usb-helper"
+          cp -f machino/openipc/sbin/machino-dyndns     "$O/sbin/machino-dyndns"
+          cp -f machino/openipc/init/S49dyndns          "$O/init/S49dyndns"
           cp -f machino/openipc/sbin/machino-wifi-role "$O/sbin/machino-wifi-role"
           # Der Registrierer, sein Boot-Skript und die Geraetemanifeste. Ohne
           # sie traegt das Release zwar die Treiber, kann sie dem Wirtssystem
@@ -126,6 +128,7 @@ jobs:
           done
           cp -f machino/openipc/www/machino-devices.cgi "$O/www/machino-devices.cgi"
           cp -f machino/openipc/www/machino-cgi-run.cgi "$O/www/machino-cgi-run.cgi"
+          cp -f machino/openipc/www/machino-dyndns.cgi  "$O/www/machino-dyndns.cgi"
           cp -f machino/openipc/init/S39machinodev     "$O/init/S39machinodev"
           mkdir -p "$O/devices"
           cp -f machino/openipc/devices/aic8800.manifest "$O/devices/aic8800.manifest"

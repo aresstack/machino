@@ -457,7 +457,7 @@ fi
 # Uninstall entfernt sie restlos. Vorher gab es zwei Anlaeufe ohne eigene
 # Dateien (nachgebaute Leiste, clientseitig uebernommene Leiste); beide sind
 # im Browser gescheitert und dokumentiert in docs/openipc-webui-assets.md.
-for _pg in machino-uplinks.cgi machino-cellular.cgi machino-usb.cgi machino-devices.cgi; do
+for _pg in machino-uplinks.cgi machino-cellular.cgi machino-usb.cgi machino-devices.cgi machino-dyndns.cgi; do
     if [ -r "$HERE/www/$_pg" ]; then
         put 0755 "$HERE/www/$_pg" "$CGI/$_pg" || die "cannot install $CGI/$_pg"
         say "installed $CGI/$_pg"
@@ -541,6 +541,15 @@ put 0755 "$HERE/init/S39machinodev" "$INITD/S39machinodev" ||
 put 0755 "$HERE/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-usb-helper" ||
     die "cannot install machino-usb-helper"
 put 0755 "$HERE/init/S42usb" "$INITD/S42usb" || die "cannot install S42usb"
+
+# DynDNS: eigenstaendiger Updater + Boot-Huelle. Gehoert zum Kern (kleiner
+# Shell-Dienst, keine Nutzlast). Die Config schreibt die WebUI-Seite; ohne
+# dyndns.conf (enabled) tut der Updater beim Boot nichts.
+[ -r "$HERE/sbin/machino-dyndns" ] || die "the bundle has no sbin/machino-dyndns"
+put 0755 "$HERE/sbin/machino-dyndns" "$ROOT/usr/sbin/machino-dyndns" ||
+    die "cannot install machino-dyndns"
+[ -r "$HERE/init/S49dyndns" ] || die "the bundle has no init/S49dyndns"
+put 0755 "$HERE/init/S49dyndns" "$INITD/S49dyndns" || die "cannot install S49dyndns"
 
 # Das Vorgaengerskript MUSS weg, und das ist kein Aufraeumen.
 #

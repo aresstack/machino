@@ -57,6 +57,8 @@ FAKE
     cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$B/init/"
     mkdir -p "$B/sbin"
     cp "$PKG/sbin/machino-wifi-role" "$PKG/sbin/machino-usb-helper" "$B/sbin/"
+    cp "$PKG/sbin/machino-dyndns" "$B/sbin/"
+    cp "$PKG/init/S49dyndns" "$B/init/"
     # Der Registrierer, sein Boot-Skript und das Manifest. Das Manifest ist die
     # einzige Quelle fuer den Profilnamen -- der Test kopiert es deshalb aus dem
     # Paket und schreibt es nicht selbst, sonst pruefte er seine eigene Kopie.
@@ -654,6 +656,9 @@ has "usb boot script installed by default" "$WORK/root/etc/init.d/S42usb"
 has "usb boot helper installed by default" "$WORK/root/usr/sbin/machino-usb-helper"
 has "role supervisor installed by default"  "$WORK/root/usr/sbin/machino-wifi-role"
 has "cgi shim installed by default"         "$WORK/root/var/www/cgi-bin/machino-cgi-run.cgi"
+has "dyndns updater installed by default"   "$WORK/root/usr/sbin/machino-dyndns"
+has "dyndns boot script installed"          "$WORK/root/etc/init.d/S49dyndns"
+has "dyndns page installed"                 "$WORK/root/var/www/cgi-bin/machino-dyndns.cgi"
 has "hostapd installed by default"          "$WORK/root/usr/sbin/hostapd"
 # Unter /lib/modules, nicht mehr unter /etc/machino/modules: nur dort sucht
 # network.cgi (adapter_scan), und nur von dort loest modprobe die Namen auf, die
@@ -817,6 +822,9 @@ hasnt "usb script removed again"    "$WORK/root/etc/init.d/S42usb"
 hasnt "usb helper removed again"    "$WORK/root/usr/sbin/machino-usb-helper"
 hasnt "supervisor removed again"    "$WORK/root/usr/sbin/machino-wifi-role"
 hasnt "cgi shim removed again"      "$WORK/root/var/www/cgi-bin/machino-cgi-run.cgi"
+hasnt "dyndns updater removed again" "$WORK/root/usr/sbin/machino-dyndns"
+hasnt "dyndns boot script removed"  "$WORK/root/etc/init.d/S49dyndns"
+hasnt "dyndns page removed again"   "$WORK/root/var/www/cgi-bin/machino-dyndns.cgi"
 hasnt "hostapd removed again"       "$WORK/root/usr/sbin/hostapd"
 hasnt "driver removed again"        "$WORK/root/etc/machino/modules/aic8800.ko"
 hasnt "loader removed again"        "$WORK/root/etc/machino/modules/aic_load_fw.ko"
@@ -1274,7 +1282,7 @@ else ok; fi
 # Both of these were found on the hardware, not in review: BusyBox tar has no
 # -z, and there is no install(1). The host runs GNU coreutils, so only a static
 # check keeps the next such regression out.
-for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$PKG/sbin/machino-usb-helper" "$PKG/sbin/machino-wifi-role" "$PKG/www/machino-cgi-run.cgi" "$PKG/udhcpc-wlan.script" "$PKG/sbin/machino-device" "$PKG/init/S39machinodev"; do
+for f in "$PKG/install.sh" "$PKG/uninstall.sh" "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$PKG/sbin/machino-usb-helper" "$PKG/sbin/machino-wifi-role" "$PKG/www/machino-cgi-run.cgi" "$PKG/sbin/machino-dyndns" "$PKG/init/S49dyndns" "$PKG/udhcpc-wlan.script" "$PKG/sbin/machino-device" "$PKG/init/S39machinodev"; do
     if grep -nE '(^|[^-a-z_])install +-[dm]' "$f"; then bad "$(basename "$f") uses install(1), which BusyBox does not have"; else ok; fi
     if grep -nE 'tar +[a-z]*z' "$f"; then bad "$(basename "$f") uses tar -z, which BusyBox tar does not have"; else ok; fi
     if grep -nE '(^|[^a-z_])(mktemp|readlink -f|stat +-)' "$f"; then bad "$(basename "$f") uses a non-BusyBox tool"; else ok; fi
@@ -1333,6 +1341,51 @@ case "$out" in *"400"*) ok ;; *) bad "shim did not reject a .. target: $out" ;; 
 out=$(env MACHINO_CGI_DIR="$cgi_tmp" PATH_INFO=/j/nope.cgi REQUEST_METHOD=GET \
     sh "$SHIM" </dev/null | head -1)
 case "$out" in *"404"*) ok ;; *) bad "shim did not 404 an unknown target: $out" ;; esac
+
+# --------- 13c) the DynDNS updater: config gate, status, no fork when off ---
+#
+# Standalone updater (no machinod): reads /etc/machino/dyndns.conf line by line
+# (never sourced), records a status line, and refuses to run when disabled.
+DDNS="$PKG/sbin/machino-dyndns"
+dd_tmp="$WORK/ddns"; rm -rf "$dd_tmp"; mkdir -p "$dd_tmp/etc/machino" "$dd_tmp/var/run" "$dd_tmp/bin"
+# A fake curl on PATH that echoes a body + the -w http_code, controllable via a file.
+cat > "$dd_tmp/bin/curl" <<'EOS'
+#!/bin/sh
+code=$(cat "$CURL_CODE" 2>/dev/null || echo 200)
+printf 'body-here\n%s' "$code"
+EOS
+chmod +x "$dd_tmp/bin/curl"
+export CURL_CODE="$dd_tmp/code"; echo 200 > "$CURL_CODE"
+
+# a) disabled -> start runs nothing, status says so.
+printf 'enabled=false\n' > "$dd_tmp/etc/machino/dyndns.conf"
+MACHINO_DYNDNS_ROOT="$dd_tmp" PATH="$dd_tmp/bin:$PATH" sh "$DDNS" start >/dev/null 2>&1
+r=$(MACHINO_DYNDNS_ROOT="$dd_tmp" sh "$DDNS" status | sed -n 's/^running: //p')
+is "dyndns disabled does not run" "$r" "no"
+
+# b) enabled + HTTP 200 -> update-now records ok.
+printf 'enabled=true\nurl=https://example.test/upd?token=abc\ninterval=300\n' > "$dd_tmp/etc/machino/dyndns.conf"
+MACHINO_DYNDNS_ROOT="$dd_tmp" PATH="$dd_tmp/bin:$PATH" sh "$DDNS" update-now >/dev/null 2>&1
+case "$(cat "$dd_tmp/var/run/machino-dyndns.status" 2>/dev/null)" in
+    *" ok 200 "*) ok ;;
+    *) bad "dyndns update-now did not record ok/200: $(cat "$dd_tmp/var/run/machino-dyndns.status" 2>/dev/null)" ;;
+esac
+
+# c) HTTP 401 -> recorded as fail (a bad token must not read as success).
+echo 401 > "$CURL_CODE"
+MACHINO_DYNDNS_ROOT="$dd_tmp" PATH="$dd_tmp/bin:$PATH" sh "$DDNS" update-now >/dev/null 2>&1
+case "$(cat "$dd_tmp/var/run/machino-dyndns.status" 2>/dev/null)" in
+    *" fail 401 "*) ok ;;
+    *) bad "dyndns did not record a 401 as failure" ;;
+esac
+
+# d) the conf is read line-by-line, never sourced: a URL with shell metachars
+#    must not execute. $(touch pwned) in the value stays literal.
+printf 'enabled=true\nurl=https://x/?a=$(touch %s/pwned)&b=1\ninterval=300\n' "$dd_tmp" > "$dd_tmp/etc/machino/dyndns.conf"
+echo 200 > "$CURL_CODE"
+MACHINO_DYNDNS_ROOT="$dd_tmp" PATH="$dd_tmp/bin:$PATH" sh "$DDNS" update-now >/dev/null 2>&1
+if [ -e "$dd_tmp/pwned" ]; then bad "dyndns sourced the conf - command substitution in the URL ran"; else ok; fi
+unset CURL_CODE
 
 # --------- 14) the OpenIPC network page must be able to offer our WiFi -------
 #

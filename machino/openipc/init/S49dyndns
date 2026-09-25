@@ -1,0 +1,15 @@
+#!/bin/sh
+# DynDNS-Updater beim Boot. Duenne Huelle um machino-dyndns, wie S42usb um
+# machino-usb-helper.
+#
+# S49 liegt HINTER dem Netzwerk (S40network) -- ohne Uplink gibt es keine IP zu
+# melden -- und vor machinod (S95). Der Updater forkt curl in einer Schleife;
+# das gehoert in einen kleinen Boot-Prozess, nicht in machinod (OOM-Regel).
+HELPER=/usr/sbin/machino-dyndns
+
+[ -x "$HELPER" ] || { echo "dyndns: $HELPER fehlt"; exit 0; }
+
+case "${1:-start}" in
+    stop) exec "$HELPER" stop ;;
+    *)    exec "$HELPER" start ;;
+esac

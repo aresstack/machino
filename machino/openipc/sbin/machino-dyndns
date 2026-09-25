@@ -1,0 +1,129 @@
+#!/bin/sh
+# DynDNS-Updater: meldet die aktuelle oeffentliche IP periodisch an einen
+# Anbieter, indem er dessen Update-URL aufruft. Modelliert nach dem WeirdOS-
+# ESP32-Dienst (quectel-ec200a-eu/esp32-modem-host): die meisten Anbieter
+# (IONOS, DuckDNS, dynv6, No-IP, ...) nehmen ein einfaches HTTP(S)-GET auf eine
+# Token-URL, und die Quell-IP des Requests IST die gemeldete Adresse -- kein
+# myip-Parameter noetig. curl ist im Image vorhanden.
+#
+# EIGENSTAENDIG, nicht in machinod: der Updater forkt curl in einer Schleife.
+# machinod darf bei lebendem IMP nicht forken (OOM 2026-09-22), dieser kleine
+# Boot-Dienst schon -- genau wie machino-usb-helper. Gestartet von S49dyndns,
+# nach dem Netzwerk (S40) und lange vor machinod (S95).
+#
+# Verben: start | stop | restart | update-now | status
+set -u
+
+ROOT="${MACHINO_DYNDNS_ROOT:-}"          # Testhaken wie ueberall
+CONF="$ROOT/etc/machino/dyndns.conf"
+RUNDIR="$ROOT/var/run"
+PIDFILE="$RUNDIR/machino-dyndns.pid"
+STATUSFILE="$RUNDIR/machino-dyndns.status"   # eine Zeile: "<epoch> <ok|fail> <http> <ip> <msg>"
+
+say() { echo "dyndns: $*"; }
+
+# Config zeilenweise lesen -- NICHT `.` sourcen: die Datei kaeme aus /etc und
+# eine Update-URL mit Shell-Metazeichen liefe sonst als Code. Genau ein Wert je
+# Schluessel, letzter gewinnt.
+cfg_get() {
+    _k=$1
+    [ -f "$CONF" ] || return 1
+    _v=""
+    while IFS= read -r _line; do
+        case "$_line" in
+            \#*|"") continue ;;
+            "$_k="*) _v=${_line#*=} ;;
+        esac
+    done < "$CONF"
+    [ -n "$_v" ] || return 1
+    printf '%s' "$_v"
+}
+
+cfg_bool() {
+    case "$(cfg_get "$1" 2>/dev/null)" in
+        true|1|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+record() {
+    mkdir -p "$RUNDIR" 2>/dev/null
+    printf '%s %s %s %s %s\n' "$(date +%s 2>/dev/null || echo 0)" "$1" "$2" "$3" "$4" > "$STATUSFILE" 2>/dev/null
+}
+
+# Ein einzelnes Update. Gibt 0 bei Erfolg. Die Quell-IP bestimmt die
+# Default-Route (heute eth0, spaeter der Uplink) -- der Anbieter sieht sie.
+do_update() {
+    _url=$(cfg_get url 2>/dev/null) || { say "keine Update-URL konfiguriert"; record fail 0 - "no url"; return 1; }
+    # -s still, -S zeigt Fehler, -f macht HTTP-Fehlercodes zu curl-Fehlern,
+    # -m Gesamt-Timeout. -k: viele DynDNS-Endpunkte sind https; wir pruefen das
+    # Zertifikat NICHT (wie Router-DynDNS es tun) -- der Token in der URL ist das
+    # Geheimnis, und ein MITM koennte hoechstens eine IP faelschen, die der
+    # Anbieter ohnehin aus der Quelladresse nimmt.
+    _out=$(curl -sS -k -m 20 -w '\n%{http_code}' "$_url" 2>&1)
+    _rc=$?
+    _code=$(printf '%s' "$_out" | sed -n '$p')
+    _body=$(printf '%s' "$_out" | sed '$d' | tr -d '\r\n' | cut -c1-60)
+    case "$_code" in ''|*[!0-9]*) _code=0 ;; esac
+    if [ "$_rc" -eq 0 ] && [ "$_code" -ge 200 ] && [ "$_code" -lt 300 ]; then
+        say "Update ok (HTTP $_code) ${_body:+- $_body}"
+        record ok "$_code" - "${_body:-ok}"
+        return 0
+    fi
+    say "Update fehlgeschlagen (curl rc=$_rc, HTTP $_code) ${_body:+- $_body}"
+    record fail "$_code" - "${_body:-curl rc $_rc}"
+    return 1
+}
+
+# Die Schleife. Sofort ein Update, dann alle <interval> Sekunden (Vorgabe 300,
+# Minimum 60 -- ein Anbieter dankt keine Sekundentakte).
+loop() {
+    _iv=$(cfg_get interval 2>/dev/null) || _iv=300
+    case "$_iv" in ''|*[!0-9]*) _iv=300 ;; esac
+    [ "$_iv" -ge 60 ] || _iv=60
+    while :; do
+        do_update || true
+        sleep "$_iv"
+    done
+}
+
+running() {
+    [ -f "$PIDFILE" ] || return 1
+    _p=$(cat "$PIDFILE" 2>/dev/null)
+    [ -n "$_p" ] || return 1
+    kill -0 "$_p" 2>/dev/null
+}
+
+start() {
+    if ! cfg_bool enabled; then
+        say "aus (dyndns.enabled != true) - kein Updater"
+        record fail 0 - "disabled"
+        return 0
+    fi
+    if running; then say "laeuft bereits (pid $(cat "$PIDFILE"))"; return 0; fi
+    mkdir -p "$RUNDIR" 2>/dev/null
+    loop >/dev/null 2>&1 &
+    echo "$!" > "$PIDFILE"
+    say "Updater laeuft (pid $!)"
+}
+
+stop() {
+    if running; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null
+        say "gestoppt"
+    fi
+    rm -f "$PIDFILE"
+}
+
+case "${1:-}" in
+    start)      start ;;
+    stop)       stop ;;
+    restart)    stop; sleep 1; start ;;
+    update-now) do_update ;;
+    status)
+        echo "enabled: $(cfg_bool enabled && echo yes || echo no)"
+        echo "running: $(running && echo yes || echo no)"
+        echo "last:    $(cat "$STATUSFILE" 2>/dev/null || echo '-')"
+        ;;
+    *) echo "usage: $0 {start|stop|restart|update-now|status}"; exit 1 ;;
+esac

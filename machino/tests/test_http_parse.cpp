@@ -383,6 +383,37 @@ void run_relay_head_end_tests() {
         HCHECK(sqc);
         HCHECK(sqout.find("machino-devices.cgi") != std::string::npos);
 
+        // DynDNS is injected into the Services dropdown, after the WireGuard
+        // item -- next to the other tunnels, not under System.
+        {
+            const std::string svc =
+                "<li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li>"
+                "<li><a class=\"dropdown-item\" href=\"ntfy.cgi\">Ntfy</a></li>"
+                "<li><a class=\"dropdown-item\" href=\"vtun.cgi\">VTun</a></li>"
+                "<li><a class=\"dropdown-item\" href=\"wireguard.cgi\">WireGuard</a></li>"
+                "<li><a class=\"dropdown-item\" href=\"proxy.cgi\">Proxy</a></li>";
+            bool sc = false;
+            const std::string so = inject_machino_nav(svc, sc);
+            HCHECK(sc);
+            HCHECK(so.find("machino-dyndns.cgi") != std::string::npos);
+            HCHECK(so.find("machino-dyndns.cgi") == so.rfind("machino-dyndns.cgi"));
+            // after WireGuard, before Proxy (i.e. inside Services)
+            HCHECK(so.find("machino-dyndns.cgi") > so.find("wireguard.cgi"));
+            HCHECK(so.find("machino-dyndns.cgi") < so.find("proxy.cgi"));
+            // idempotent
+            bool sc2 = false;
+            HCHECK(inject_machino_nav(so, sc2) == so);
+        }
+        // No WireGuard anchor -> DynDNS is simply not added (System block still is).
+        {
+            bool wc = false;
+            const std::string now = inject_machino_nav(
+                "<li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li>", wc);
+            HCHECK(wc);
+            HCHECK(now.find("machino-dyndns.cgi") == std::string::npos);
+            HCHECK(now.find("machino-usb.cgi") != std::string::npos);   // System block present
+        }
+
         // No anchor -> byte-identical, changed=false.
         const std::string noanchor = "<html><body><ul><li>nothing here</li></ul></body></html>";
         bool nc = true;

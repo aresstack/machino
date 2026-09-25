@@ -95,7 +95,7 @@ rm -f "$INITD/S39machinodev"
 # S42wifi is the name this had before AP-M6. An installation that was never
 # upgraded still has it, and leaving it behind would leave a boot script that
 # loads a WiFi driver for a machino that is no longer installed.
-for _s in S42usb S42wifi; do
+for _s in S42usb S42wifi S49dyndns; do
     if [ -f "$INITD/$_s" ]; then
         run_live "$INITD/$_s" stop
         rm -f "$INITD/$_s"
@@ -106,8 +106,9 @@ done
 rm -f "$WWW/cgi-bin/machino-uplinks.cgi" "$WWW/cgi-bin/machino-wifi.cgi"
 rm -f "$WWW/cgi-bin/machino-cellular.cgi" "$WWW/cgi-bin/machino-usb.cgi"
 rm -f "$WWW/cgi-bin/machino-devices.cgi" "$WWW/cgi-bin/machino-network.cgi"
-rm -f "$WWW/cgi-bin/machino-cgi-run.cgi"
+rm -f "$WWW/cgi-bin/machino-cgi-run.cgi" "$WWW/cgi-bin/machino-dyndns.cgi"
 rm -f "$ROOT/usr/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-wifi-role"
+rm -f "$ROOT/usr/sbin/machino-dyndns" "$ROOT/etc/machino/dyndns.conf"
 rm -f "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
 
 # Die Treiber und die Firmware. Die installiert machino jetzt selbst, also

@@ -282,6 +282,23 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     out.append(add);
     out.append(html, insertAt, std::string::npos);
     changed = true;
+
+    // DynDNS gehoert fachlich unter Services (neben WireGuard/VTun/Proxy), nicht
+    // unter System. Zweite Injektion in die Services-Dropdown: nach dem
+    // wireguard.cgi-Eintrag. Fehlt der (andere OpenIPC-Variante), bleibt es beim
+    // System-Block -- kein Abbruch. Guard: machino-dyndns.cgi noch nicht drin.
+    if (out.find("machino-dyndns.cgi") == std::string::npos) {
+        size_t sa = out.find("href=\"wireguard.cgi\"");
+        if (sa == std::string::npos) sa = out.find("href='wireguard.cgi'");
+        if (sa != std::string::npos) {
+            const size_t sli = out.find("</li>", sa);
+            if (sli != std::string::npos) {
+                const std::string sadd =
+                    "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-dyndns.cgi\">DynDNS</a></li>";
+                out.insert(sli + 5, sadd);
+            }
+        }
+    }
     return out;
 }
 

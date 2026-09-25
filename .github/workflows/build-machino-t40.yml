@@ -143,6 +143,8 @@ jobs:
           # niemand liest.
           cp -f machino/openipc/init/S42usb            "$O/init/S42usb"
           cp -f machino/openipc/sbin/machino-usb-helper "$O/sbin/machino-usb-helper"
+          cp -f machino/openipc/sbin/machino-dyndns     "$O/sbin/machino-dyndns"
+          cp -f machino/openipc/init/S49dyndns          "$O/init/S49dyndns"
 
           # Geraetemanifeste und der Registrierer. Das Manifest ist die einzige
           # Quelle fuer Profilname, Modulreihenfolge und USB-Id -- Installer,
@@ -162,6 +164,7 @@ jobs:
           done
           cp -f machino/openipc/www/machino-devices.cgi "$O/www/machino-devices.cgi"
           cp -f machino/openipc/www/machino-cgi-run.cgi "$O/www/machino-cgi-run.cgi"
+          cp -f machino/openipc/www/machino-dyndns.cgi  "$O/www/machino-dyndns.cgi"
 
           # WLAN. install.sh legt das per Default ab und laesst es
           # ausgeschaltet -- usb.mode ist off, und der Helfer kehrt dann
