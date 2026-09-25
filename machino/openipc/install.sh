@@ -385,6 +385,47 @@ else
         put 0644 "$HERE/machino.conf" "$STATE_DIR/machino.conf"
     fi
 fi
+# The config MUST select hardware, or the daemon refuses to start:
+#
+#   [ERR] MAIN hardware resolution failed: no platform
+#   [ERR] MAIN refusing to start: no guessing of buses or pins
+#
+# That refusal is right - guessing i2c buses and reset pins is how you get a
+# camera that half-works. But two paths above produce exactly such a config:
+#
+#   * the majestic.yaml migration, because majestic.yaml has no notion of a
+#     board profile and therefore cannot supply one;
+#   * "keeping existing machino.conf" on a camera whose config came from that
+#     migration in an earlier version.
+#
+# The consequence was measured on the T40NN and is worse than a failed start:
+# install.sh reports success, machino-manager then switches the streamer over,
+# machino does not come up, the rollback to majestic runs - and the camera
+# RESETS. From the outside that looks like "the install hangs", which is what it
+# was diagnosed as for a long time.
+#
+# So: if nothing selects hardware, take the line out of the shipped default.
+# This ADDS a mandatory key that is missing; it clobbers no user setting, which
+# is what "upgrade-safe" was protecting.
+_conf="$STATE_DIR/machino.conf"
+if [ -f "$_conf" ] &&
+   ! grep -qE '^[[:space:]]*(board|board_profile_file|platform)[[:space:]]*=' "$_conf"; then
+    _board=$(sed -n 's/^[[:space:]]*board[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*/\1/p' \
+             "$HERE/machino.conf" | head -n1)
+    if [ -n "$_board" ]; then
+        _t="$_conf.machino-new.$$"
+        { echo "# added by install.sh: the daemon refuses to start without one"
+          echo "board = $_board"
+          cat "$_conf"; } > "$_t" && chmod 0644 "$_t" && mv -f "$_t" "$_conf" &&
+            say "config selected no hardware - added 'board = $_board' from the shipped default" ||
+            { rm -f "$_t"; die "cannot add the missing board selection to $_conf"; }
+    else
+        # Refuse rather than install something that cannot start: the operator
+        # gets a config to fix instead of a camera that resets on switch-over.
+        die "no hardware selection in $_conf and none in the bundle's default - set 'board = <profile>' and run again"
+    fi
+fi
+
 if [ -d "$HERE/profiles" ]; then
     mkdir -p "$STATE_DIR/profiles"
     for p in "$HERE"/profiles/*; do [ -f "$p" ] && put 0644 "$p" "$STATE_DIR/profiles/${p##*/}"; done

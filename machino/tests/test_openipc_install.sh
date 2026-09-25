@@ -1457,6 +1457,39 @@ else ok; fi
 if cmp -s "$WORK/root/etc/wireless/usb" "$WORK/wireless-usb.orig"; then ok
 else bad "the full uninstall did not restore /etc/wireless/usb byte for byte"; fi
 
+# ---------------------------------------------------------------------------
+# Die Konfiguration MUSS Hardware auswaehlen.
+#
+# Auf der T40NN gemessen: ohne board/platform verweigert der Daemon den Start
+# ("refusing to start: no guessing of buses or pins"). install.sh meldete
+# trotzdem Erfolg, der Manager schaltete um, machino kam nicht hoch, der
+# Rueckfall auf majestic lief -- und die Kamera startete neu. Von aussen sah
+# das wie "die Installation haengt" aus.
+#
+# Erzeugt wird so eine Konfiguration von der majestic.yaml-Migration, die gar
+# keinen Boardbegriff kennt, und danach von jedem Upgrade weitergetragen, weil
+# eine vorhandene machino.conf bewusst nicht ueberschrieben wird.
+# ---------------------------------------------------------------------------
+make_bundle; make_camera auto
+mkdir -p "$R/etc/machino"
+printf '# migriert aus majestic.yaml\nvideo.0.fps = 20\nrtsp.port = 554\n' > "$R/etc/machino/machino.conf"
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --minimal ) >"$WORK/out" 2>&1 ||
+    bad "install over a board-less config exited non-zero: $(cat "$WORK/out")"
+if grep -qE '^[[:space:]]*board[[:space:]]*=' "$R/etc/machino/machino.conf"; then ok
+else bad "install left a config with no hardware selection - the daemon would refuse to start"; fi
+if grep -q 'rtsp.port = 554' "$R/etc/machino/machino.conf"; then ok
+else bad "adding the board line destroyed the existing settings"; fi
+
+# Eine Konfiguration, die schon eine Auswahl hat, wird nicht angefasst.
+make_bundle; make_camera auto
+mkdir -p "$R/etc/machino"
+printf 'board = eigenes-profil\nrtsp.port = 555\n' > "$R/etc/machino/machino.conf"
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --minimal ) >"$WORK/out" 2>&1 ||
+    bad "install over an explicit config exited non-zero: $(cat "$WORK/out")"
+if [ "$(grep -c '^board' "$R/etc/machino/machino.conf")" = 1 ] &&
+   grep -q '^board = eigenes-profil' "$R/etc/machino/machino.conf"; then ok
+else bad "an existing board selection was overwritten or duplicated"; fi
+
 if [ "$SKIP" -gt 0 ]; then
     echo "openipc install tests: $PASS passed, $FAIL failed, $SKIP skipped"
 else
