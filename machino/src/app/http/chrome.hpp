@@ -1,30 +1,36 @@
 // Die Kopfleiste der Kamera-WebUI auf Machinos EIGENEN Seiten.
 //
-// Das Problem, das es loest: der Menueeintrag "Netzwerk & USB" steht im Menue
-// der Stock-WebUI, aber er fuehrt auf /machino/net -- eine Seite, die Machino
-// selbst ausliefert und die deren Kopfleiste nicht kennt. Wer daraufklickt,
-// verliert das Menue und kommt nur ueber den Zurueck-Knopf wieder heraus. Als
-// Integration ist das zu wenig.
+// Das Problem: der Menueeintrag "Netzwerk & USB" steht im Menue der Stock-WebUI,
+// fuehrt aber auf /machino/net -- eine Seite, die Machino selbst ausliefert und
+// die deren Kopfleiste nicht kennt. Wer daraufklickt, verliert das Menue und
+// kommt nur ueber den Zurueck-Knopf wieder heraus. Als Integration zu wenig.
 //
-// WIE: die Seite holt beim Laden EINE Seite der Stock-WebUI (gleiche Herkunft,
-// dieselbe Sitzung) und liest daraus nur die LINKS -- Beschriftung und Ziel.
-// Gezeichnet wird die Leiste dann in Machinos eigenem Stil.
+// WIE: die UI der Kamera wird BENUTZT, nicht nachgebaut. Alles liegt auf
+// derselben Herkunft, also kann die Seite es einfach laden:
 //
-// WARUM nicht deren Markup samt CSS uebernehmen: zwei vollstaendige
-// Stylesheets auf einer Seite streiten sich um body, nav und die Farben, und
-// deren Dropdowns brauchen zusaetzlich ihr Bootstrap-JavaScript. Das Ergebnis
-// waere ein zerlegtes Layout, das von Fremdcode abhaengt. Nur die Links zu
-// uebernehmen kostet nichts und bleibt trotzdem in Takt mit dem, was auf der
-// Kamera wirklich im Menue steht -- eine nachgebaute Liste waere schon beim
-// naechsten OpenIPC-Update falsch.
+//     /a/bootstrap.min.css        ihr Stylesheet
+//     /a/bootstrap.override.css   ihre Anpassungen (Farben, Dark/Light)
+//     /a/main.js                  ihr Verhalten
+//     <nav class="navbar">        ihr Markup, unveraendert uebernommen
+//
+// Ein Bootstrap-JavaScript gibt es auf dieser Kamera NICHT (geprueft:
+// /a/bootstrap.bundle.min.js, bootstrap.min.js, bootstrap.js -> alle 404).
+// Dropdowns, Collapse, das Markieren des aktiven Eintrags und der
+// Abmelden-Knopf stecken in main.js. Wer die Leiste ohne main.js will, muesste
+// dieses Verhalten nachschreiben -- ein erster Anlauf hier hat genau das getan
+// und war zu Recht als Fremdkoerper erkennbar.
+//
+// Das <nav> wird VERBATIM uebernommen statt nachgebaut, weil sein Inhalt von
+// der Firmware abhaengt (die Stock-Seite rendert Eintraege bedingt). Eine Kopie
+// im Machino-Quelltext waere beim naechsten OpenIPC-Update falsch.
 //
 // WARUM eine eigene Datei statt Inline-Skript: beide Machino-Seiten brauchen
-// dasselbe. Zwei Kopien in zwei Raw-Strings driften auseinander, und der
+// dasselbe, zwei Kopien in zwei Raw-Strings driften auseinander, und der
 // Browser kann eine eigene Datei zwischenspeichern.
 //
-// Schlaegt irgendetwas davon fehl -- keine Sitzung, Seite nicht erreichbar,
-// kein nav im Dokument -- passiert NICHTS: die Seite bleibt die eigenstaendige,
-// die sie heute ist. Eine Kopfleiste ist Komfort und darf keine Seite kosten.
+// Schlaegt etwas davon fehl -- keine Sitzung, Seite nicht erreichbar, kein nav
+// im Dokument -- passiert NICHTS: die Seite bleibt die eigenstaendige, die sie
+// ohnehin ist. Eine Kopfleiste ist Komfort und darf keine Seite kosten.
 #pragma once
 
 #include <cstddef>

@@ -126,13 +126,18 @@ void test_the_pages_carry_the_chrome()
 
     const std::string js(machino::http::machino_chrome_js(),
                          machino::http::machino_chrome_js_len());
-    // Gleiche Herkunft, damit die Sitzung mitgeht -- sonst kaeme immer nur
-    // die Anmeldeseite zurueck und die Leiste bliebe leer.
+    // Die UI der Kamera wird BENUTZT, nicht nachgebaut: ihr Stylesheet, ihr
+    // Verhalten, ihr Markup. Alles auf derselben Herkunft.
+    TCHECK(has(js, "/a/bootstrap.min.css"));
+    TCHECK(has(js, "/a/bootstrap.override.css"));
+    TCHECK(has(js, "/a/main.js"));
     TCHECK(has(js, "same-origin"));
-    // Nur die Links werden uebernommen. Wer deren Stylesheet oder Skripte
-    // nachlaedt, hat zwei Layouts auf einer Seite.
-    TCHECK(!has(js, "stylesheet"));
-    TCHECK(!has(js, "<script"));
+    // Das nav kommt unveraendert aus der ausgelieferten Seite. Eine im
+    // Quelltext nachgebaute Eintragsliste waere beim naechsten Update falsch,
+    // also darf hier keine stehen.
+    TCHECK(has(js, "nav.navbar"));
+    TCHECK(!has(js, "dropdown-item"));
+    TCHECK(!has(js, "dashboard.cgi"));
     // Und ein Fehlschlag bleibt folgenlos.
     TCHECK(has(js, "catch"));
 }

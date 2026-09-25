@@ -13,10 +13,16 @@ static const char kPage[] = R"MACHINO_HTML(<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Ger&auml;te &mdash; machino</title>
 <style>
-:root{--bg:#14161a;--panel:#1c2026;--line:#2c323b;--fg:#e6e8ea;--dim:#9aa3ad;
---ok:#4caf7d;--warn:#d9a13b;--bad:#d4564f;--acc:#4a90d9}
+:root{--bg:var(--bs-body-bg,#14161a);--panel:var(--bs-tertiary-bg,#1c2026);
+--line:var(--bs-border-color,#2c323b);--fg:var(--bs-body-color,#e6e8ea);
+--dim:var(--bs-secondary-color,#9aa3ad);--ok:var(--bs-success,#4caf7d);
+--warn:var(--bs-warning,#d9a13b);--bad:var(--bs-danger,#d4564f);
+--acc:var(--bs-primary,#4a90d9)}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif}
+body{margin:0}
+/* Ohne die Stock-CSS (nicht angemeldet, Datei fehlt) traegt die Seite ihr
+   eigenes Aussehen weiter -- die Fallbacks oben sind genau dafuer da. */
+body:not(.lite){background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif}
 header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;
 gap:16px;align-items:baseline;flex-wrap:wrap}
 h1{font-size:16px;margin:0;font-weight:600}
