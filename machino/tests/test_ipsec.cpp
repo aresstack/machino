@@ -404,6 +404,43 @@ void test_ap5_underlay_loss()
     remove(MCONF); remove(DCONF);
 }
 
+void test_ap6_routes_and_full_tunnel()
+{
+    // AP6: mehrere Routen aus dem Daemon-Status, source tsr|cp getrennt.
+    VpnStatus st = parse_status(
+        "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\n"
+        "route=192.168.178.0/24 tsr ipsec0\n"
+        "route=10.20.0.0/16 tsr ipsec0\n"
+        "route=10.99.0.0/24 cp ipsec0\n",
+        true, true);
+    ICHECK(st.routes.size() == 3);
+    ICHECK(st.routes[0].prefix == "192.168.178.0/24" && st.routes[0].source == "tsr");
+    ICHECK(st.routes[0].device == "ipsec0");
+    ICHECK(st.routes[2].source == "cp");
+    ICHECK(!st.full_tunnel_refused);
+
+    // full_tunnel_refused wird durchgereicht.
+    st = parse_status("state=CHILD_SA_ESTABLISHED\nfull_tunnel_refused=yes\n", true, true);
+    ICHECK(st.full_tunnel_refused);
+    ICHECK(st.routes.empty());
+
+    // AP6: die Config darf mehrere remote-Netze anfordern (komma-getrennt);
+    // jedes muss ein gueltiges CIDR sein, hoechstens vier.
+    IpsecConfig c = sample();
+    c.remote_subnet = "192.168.178.0/24, 10.20.0.0/16";
+    ICHECK(validate(c).empty());
+    c.remote_subnet = "192.168.178.0/24, garbage";
+    ICHECK(validate(c).find("garbage") != std::string::npos);
+    c.remote_subnet = "1.0.0.0/8,2.0.0.0/8,3.0.0.0/8,4.0.0.0/8,5.0.0.0/8";
+    ICHECK(!validate(c).empty());
+    // ... und die Liste faehrt unveraendert in die Daemon-Datei (der Daemon
+    // parst die Kommas).
+    c.remote_subnet = "192.168.178.0/24,10.20.0.0/16";
+    bool present = false;
+    const std::string d = to_weirdike_conf(c, "s3cret-psk", "", &present);
+    ICHECK(d.find("remote_subnet = 192.168.178.0/24,10.20.0.0/16\n") != std::string::npos);
+}
+
 } // namespace
 
 void run_ipsec_tests()
@@ -411,6 +448,7 @@ void run_ipsec_tests()
     test_review_findings();
     test_ap5_underlay_binding();
     test_ap5_underlay_loss();
+    test_ap6_routes_and_full_tunnel();
     test_config_roundtrip();
     test_validate_names_the_problem();
     test_psk_write_only_carry();

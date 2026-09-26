@@ -58,6 +58,7 @@
 
 #include "wd_config.h"
 #include "wd_net.h"
+#include "wd_routes.h"
 
 #define WD_CTL_PATH   "/var/run/weirdike.sock"
 #define WD_CONF_PATH  "/etc/weirdike/weirdike.conf"
@@ -180,15 +181,15 @@ typedef struct {
     uint32_t         started_ms;
     int              want_stop;
 
-    /* AP4: data path wiring. The CURRENT (narrowed) selectors gate TX and RX;
-     * the route mirrors them. Dropped-by-selector counters are visible via
-     * ctl status so a misrouted client shows up as numbers, not silence. */
+    /* AP4/AP6: data path wiring. The CURRENT (narrowed) selectors gate TX and
+     * RX; the route table (AP6) mirrors ALL negotiated remote nets + CP
+     * subnets and owns exactly them. Dropped-by-selector counters are visible
+     * via ctl status so a misrouted client shows up as numbers, not silence. */
     weirdike_child_sa_t child;
     int              have_child;
     int              tun_configured;
-    int              route_up;
-    uint8_t          route_net[4];
-    uint8_t          route_prefix;
+    wd_route_table   routes;
+    int              full_tunnel_refused;   /* peer offered 0.0.0.0/0 (status flag) */
     uint64_t         tx_drop_sel, rx_drop_sel;
 } wd_daemon;
 
@@ -223,6 +224,22 @@ static int child_remote_contains(const weirdike_child_sa_t *c, const uint8_t ip[
     return 0;
 }
 
+/* Is [lo,hi] entirely inside one accepted TSr? A CP subnet may only become a
+ * route if the WHOLE block sits within a negotiated selector -- checking just
+ * its base would let a /8 CP whose base falls in a /24 TSr drag traffic to
+ * millions of addresses the SA never covered (AP6 §6). */
+static int child_remote_covers_range(const weirdike_child_sa_t *c,
+                                     const uint8_t lo[4], const uint8_t hi[4])
+{
+    size_t n = c->n_remote_ts ? c->n_remote_ts : 1;
+    for (size_t i = 0; i < n; i++) {
+        const weirdike_ts_t *ts = c->n_remote_ts ? &c->remote_ts_list[i] : &c->remote_ts;
+        if (ts->address_family != 4) continue;
+        if (memcmp(lo, ts->start_addr, 4) >= 0 && memcmp(hi, ts->end_addr, 4) <= 0) return 1;
+    }
+    return 0;
+}
+
 /* start..end -> net/prefix, when the range IS a clean CIDR block (aligned
  * power-of-two). Responders narrow to subnets in practice; a ragged range
  * cannot be expressed as one kernel route and is reported instead. */
@@ -244,11 +261,66 @@ static int ts_range_to_cidr(const weirdike_ts_t *ts, uint8_t net[4], uint8_t *pr
     return 0;
 }
 
-/* Configure ipsec0 + install the split route, both derived from the CURRENT
- * (narrowed) selectors. Re-entrant: a rekey that narrows TSr swaps the route.
- * The gateway guard lives here too: a remote_ts that contains the IKE peer
- * would route the tunnel's OWN outer packets into the tunnel -- an
- * encapsulation loop. Refused loudly, the SA stays up for diagnosis. */
+/* Collect the desired route set from the NEGOTIATED selectors (all of TSr,
+ * AP6 §5) plus any CP subnets the gateway assigned (AP6 §6, tagged apart).
+ * A TSr entry that is not a clean CIDR block is reported and skipped -- it
+ * cannot be one kernel route. Returns the count. */
+static size_t collect_routes(const wd_daemon *d, wd_route *out, size_t cap,
+                             int *full_tunnel)
+{
+    *full_tunnel = 0;
+    size_t n = 0;
+    const weirdike_child_sa_t *c = &d->child;
+
+    size_t n_ts = c->n_remote_ts ? c->n_remote_ts : 1;
+    for (size_t i = 0; i < n_ts && n < cap; i++) {
+        const weirdike_ts_t *ts = c->n_remote_ts ? &c->remote_ts_list[i] : &c->remote_ts;
+        uint8_t net[4], prefix;
+        if (ts_range_to_cidr(ts, net, &prefix) != 0) {
+            wd_log(LOG_ERR, "data path: negotiated TSr #%u is not a CIDR block -- skipped",
+                   (unsigned)i);
+            continue;
+        }
+        if (prefix == 0) { *full_tunnel = 1; continue; }   /* 0.0.0.0/0: rejected downstream */
+        memcpy(out[n].net, net, 4); out[n].prefix = prefix; out[n].source = WD_SRC_TSR;
+        n++;
+    }
+
+    /* CP subnets: additional routing info from the gateway. Only installed
+     * when they sit INSIDE an accepted TSr -- a CP net may never drag traffic
+     * outside the cryptographically negotiated selector into ipsec0 (AP6 §6). */
+    weirdike_cp_t cp;
+    if (weirdike_get_cp(d->ike, &cp) == 0) {
+        for (size_t i = 0; i < cp.subnet_count && n < cap; i++) {
+            uint8_t pfx = 0;
+            uint32_t m = ((uint32_t)cp.subnet_mask[i][0] << 24) | ((uint32_t)cp.subnet_mask[i][1] << 16)
+                       | ((uint32_t)cp.subnet_mask[i][2] << 8)  |  (uint32_t)cp.subnet_mask[i][3];
+            for (int b = 31; b >= 0; b--) { if (m & (1u << b)) pfx++; else break; }
+            if (pfx == 0) continue;
+            /* consistency: the WHOLE CP block (base..broadcast) must fall
+             * inside an accepted TSr -- not just its base (AP6 §6). */
+            uint32_t base = (((uint32_t)cp.subnet[i][0] << 24) | ((uint32_t)cp.subnet[i][1] << 16)
+                          | ((uint32_t)cp.subnet[i][2] << 8) | cp.subnet[i][3]) & m;
+            uint32_t bcast = base | ~m;
+            uint8_t lo[4] = { (uint8_t)(base>>24), (uint8_t)(base>>16), (uint8_t)(base>>8), (uint8_t)base };
+            uint8_t hi[4] = { (uint8_t)(bcast>>24), (uint8_t)(bcast>>16), (uint8_t)(bcast>>8), (uint8_t)bcast };
+            if (!child_remote_covers_range(c, lo, hi)) {
+                wd_log(LOG_WARNING, "CP subnet %u.%u.%u.%u/%u not fully within negotiated TSr -- ignored",
+                       cp.subnet[i][0], cp.subnet[i][1], cp.subnet[i][2], cp.subnet[i][3],
+                       (unsigned)pfx);
+                continue;
+            }
+            memcpy(out[n].net, lo, 4); out[n].prefix = pfx; out[n].source = WD_SRC_CP;
+            n++;
+        }
+    }
+    return n;
+}
+
+/* Configure ipsec0 and reconcile ALL tunnel routes (AP6). Re-entrant: a rekey
+ * that changes the TSr set produces a route diff (add-before-remove) inside
+ * the route manager. Full tunnel (0.0.0.0/0) is refused with a status flag;
+ * the gateway/local-net guards live in the route manager. */
 static void data_path_install(wd_daemon *d)
 {
     char err[256];
@@ -269,36 +341,21 @@ static void data_path_install(wd_daemon *d)
         wd_log(LOG_NOTICE, "%s configured (mtu %d)", d->cfg.ifname, WD_TUN_MTU);
     }
 
-    uint8_t net[4], prefix;
-    if (ts_range_to_cidr(&d->child.remote_ts, net, &prefix) != 0) {
-        wd_log(LOG_ERR, "data path: narrowed TSr is not a CIDR block -- no route installed");
+    wd_route desired[WD_ROUTE_MAX];
+    size_t n = collect_routes(d, desired, WD_ROUTE_MAX, &d->full_tunnel_refused);
+    if (d->full_tunnel_refused)
+        wd_log(LOG_ERR, "data path: peer requested 0.0.0.0/0 (full tunnel) -- unsupported (AP6)");
+    if (n == 0) {
+        wd_log(LOG_ERR, "data path: no installable remote net -- no tunnel route");
         return;
     }
 
-    if (child_remote_contains(&d->child, d->tr.peer_ip)) {
-        wd_log(LOG_ERR, "data path: remote_ts contains the IKE gateway %u.%u.%u.%u -- "
-               "refusing the route (encapsulation loop)",
-               d->tr.peer_ip[0], d->tr.peer_ip[1], d->tr.peer_ip[2], d->tr.peer_ip[3]);
+    if (wd_routes_reconcile(&d->routes, d->cfg.ifname, desired, n, d->tr.peer_ip,
+                            err, sizeof(err)) != 0) {
+        wd_log(LOG_ERR, "data path: %s", err);
         return;
     }
-
-    if (d->route_up && d->route_prefix == prefix && memcmp(d->route_net, net, 4) == 0)
-        return;                                  /* same route, nothing to do */
-
-    if (d->route_up) {
-        wd_route_dev(d->cfg.ifname, d->route_net, d->route_prefix, 0, err, sizeof(err));
-        d->route_up = 0;
-    }
-    if (wd_route_dev(d->cfg.ifname, net, prefix, 1, err, sizeof(err)) != 0) {
-        wd_log(LOG_ERR, "data path: route %u.%u.%u.%u/%u: %s",
-               net[0], net[1], net[2], net[3], (unsigned)prefix, err);
-        return;
-    }
-    memcpy(d->route_net, net, 4);
-    d->route_prefix = prefix;
-    d->route_up = 1;
-    wd_log(LOG_NOTICE, "route %u.%u.%u.%u/%u -> %s installed",
-           net[0], net[1], net[2], net[3], (unsigned)prefix, d->cfg.ifname);
+    wd_log(LOG_NOTICE, "%u tunnel route(s) over %s", (unsigned)d->routes.n_owned, d->cfg.ifname);
 }
 
 /* A Child SA was (re)negotiated: rebuild the ESP session on the new keys. */
@@ -489,7 +546,10 @@ static void ctl_status(wd_daemon *d, char *buf, size_t cap)
               * on this daemon (NAT-T-only, PLATFORM.md) -- saying so here
               * keeps the status honest instead of implying raw ESP. */
              "ike_transport=%s\n"
-             "esp_transport=udp4500\n",
+             "esp_transport=udp4500\n"
+             /* AP6: full-tunnel refusal is a fact the UI must see, not a
+              * silent drop. */
+             "full_tunnel_refused=%s\n",
              state_name(d),
              d->cfg.gateway, (unsigned)d->cfg.port,
              d->cfg.ifname,
@@ -507,7 +567,20 @@ static void ctl_status(wd_daemon *d, char *buf, size_t cap)
              (unsigned long long)d->rx_bytes,
              (unsigned long long)d->tx_drop_sel,
              (unsigned long long)d->rx_drop_sel,
-             d->tr.active_port == 4500 ? "udp4500" : "udp500");
+             d->tr.active_port == 4500 ? "udp4500" : "udp500",
+             d->full_tunnel_refused ? "yes" : "no");
+
+    /* AP6 §12: one "route=" line per owned route, tagged with its source, so
+     * the status carries the INSTALLED truth (not the requested config). */
+    for (size_t i = 0; i < d->routes.n_owned; i++) {
+        const wd_route *r = &d->routes.owned[i];
+        char line[64];
+        snprintf(line, sizeof(line), "route=%u.%u.%u.%u/%u %s %s\n",
+                 r->net[0], r->net[1], r->net[2], r->net[3], (unsigned)r->prefix,
+                 r->source == WD_SRC_CP ? "cp" : "tsr", d->cfg.ifname);
+        size_t have_len = strlen(buf), add = strlen(line);
+        if (have_len + add < cap) memcpy(buf + have_len, line, add + 1);
+    }
 }
 
 static void ctl_serve(wd_daemon *d)
@@ -629,18 +702,21 @@ int main(int argc, char **argv)
     if (d.cfg.have_remote_ts) {
         uint8_t gw[4];
         if (wd_resolve4(d.cfg.gateway, gw) == 0) {
-            uint32_t mask = (d.cfg.remote_ts.prefix == 0)
-                              ? 0 : 0xffffffffu << (32 - d.cfg.remote_ts.prefix);
             uint32_t g = ((uint32_t)gw[0] << 24) | ((uint32_t)gw[1] << 16)
                        | ((uint32_t)gw[2] << 8)  |  (uint32_t)gw[3];
-            uint32_t n = ((uint32_t)d.cfg.remote_ts.ip[0] << 24) | ((uint32_t)d.cfg.remote_ts.ip[1] << 16)
-                       | ((uint32_t)d.cfg.remote_ts.ip[2] << 8)  |  (uint32_t)d.cfg.remote_ts.ip[3];
-            if ((g & mask) == (n & mask)) {
-                wd_log(LOG_ERR, "config: remote_subnet contains the gateway %u.%u.%u.%u -- "
-                       "refusing (encapsulation loop); exclude the gateway from remote_subnet",
-                       gw[0], gw[1], gw[2], gw[3]);
-                wd_config_wipe(&d.cfg);
-                return 1;
+            for (size_t i = 0; i < d.cfg.n_remote_ts; i++) {
+                const wd_cidr *r = &d.cfg.remote_ts_list[i];
+                uint32_t mask = (r->prefix == 0) ? 0 : 0xffffffffu << (32 - r->prefix);
+                uint32_t n = ((uint32_t)r->ip[0] << 24) | ((uint32_t)r->ip[1] << 16)
+                           | ((uint32_t)r->ip[2] << 8)  |  (uint32_t)r->ip[3];
+                if ((g & mask) == (n & mask)) {
+                    wd_log(LOG_ERR, "config: remote_subnet #%u contains the gateway "
+                           "%u.%u.%u.%u -- refusing (encapsulation loop); exclude the "
+                           "gateway from remote_subnet",
+                           (unsigned)i, gw[0], gw[1], gw[2], gw[3]);
+                    wd_config_wipe(&d.cfg);
+                    return 1;
+                }
             }
         }
     }
@@ -692,8 +768,18 @@ int main(int argc, char **argv)
     wc.dpd_interval_s   = d.cfg.dpd_interval_s;
 
     if (d.cfg.have_local_ts)  ts_from_cidr(&wc.local_ts,  &d.cfg.local_ts);
-    if (d.cfg.have_remote_ts) ts_from_cidr(&wc.remote_ts, &d.cfg.remote_ts);
-    else                      weirdike_ts_any_ipv4(&wc.remote_ts);
+    if (d.cfg.have_remote_ts) {
+        /* AP6: first remote net is remote_ts, the rest go into
+         * remote_ts_extra -- each its own TSr selector on the wire. */
+        ts_from_cidr(&wc.remote_ts, &d.cfg.remote_ts_list[0]);
+        size_t extra = d.cfg.n_remote_ts > 1 ? d.cfg.n_remote_ts - 1 : 0;
+        if (extra > WEIRDIKE_TS_MAX - 1) extra = WEIRDIKE_TS_MAX - 1;
+        for (size_t i = 0; i < extra; i++)
+            ts_from_cidr(&wc.remote_ts_extra[i], &d.cfg.remote_ts_list[i + 1]);
+        wc.n_remote_ts_extra = extra;
+    } else {
+        weirdike_ts_any_ipv4(&wc.remote_ts);
+    }
 
     if (d.cfg.local_id[0]) {
         wc.local_id.type = WEIRDIKE_ID_FQDN;
@@ -808,7 +894,7 @@ fail:
     /* AP4: leave no residue -- the split route and the UP flag must not
      * outlive the daemon (a dead tunnel that still attracts packets would
      * blackhole the remote net). Both calls are idempotent. */
-    if (d.route_up)       wd_route_dev(d.cfg.ifname, d.route_net, d.route_prefix, 0, err, sizeof(err));
+    wd_routes_teardown(&d.routes);
     if (d.tun_configured) wd_tun_down(d.cfg.ifname, err, sizeof(err));
     if (d.esp_up) esp_session_deinit(&d.esp);
     if (d.ike)    weirdike_free(d.ike);

@@ -17,6 +17,7 @@
 #define WD_MAX_PSK    128
 #define WD_MAX_IFNAME  16
 #define WD_MAX_ID      128
+#define WD_MAX_REMOTE_TS 4    /* == WEIRDIKE_TS_MAX; AP6 multi-subnet request */
 
 typedef struct {
     uint8_t  ip[4];
@@ -35,9 +36,15 @@ typedef struct {
     char     remote_id[WD_MAX_ID];    /* empty = accept whatever the responder sends */
 
     wd_cidr  local_ts;                /* the network we protect */
-    wd_cidr  remote_ts;               /* the network behind the gateway */
+    wd_cidr  remote_ts;               /* remote_ts_list[0]; kept for back-compat */
     int      have_local_ts;
     int      have_remote_ts;
+
+    /* AP6: up to WD_MAX_REMOTE_TS remote nets, requested as a comma-separated
+     * `remote_subnet`. remote_ts mirrors [0]. The responder may narrow or
+     * drop entries; only the NEGOTIATED ones ever become routes. */
+    wd_cidr  remote_ts_list[WD_MAX_REMOTE_TS];
+    size_t   n_remote_ts;
 
     int      nat_t;                   /* default 1 */
     uint32_t child_lifetime_s;        /* 0 = library default */

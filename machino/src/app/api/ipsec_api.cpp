@@ -208,6 +208,17 @@ Response ApiService::ipsec_status()
     if (!st.peer_ipv4.empty())          j.set("peerIpv4", Json::string(st.peer_ipv4));
     if (!st.ike_transport.empty())      j.set("ikeTransport", Json::string(st.ike_transport));
     if (!st.esp_transport.empty())      j.set("espTransport", Json::string(st.esp_transport));
+    // AP6: die INSTALLIERTEN Routen (Daemon-Wahrheit), source tsr|cp getrennt.
+    Json routes = Json::array();
+    for (const auto& r : st.routes) {
+        Json ro = Json::object();
+        ro.set("prefix", Json::string(r.prefix));
+        ro.set("source", Json::string(r.source));
+        ro.set("device", Json::string(r.device));
+        routes.push(ro);
+    }
+    j.set("routes", routes);
+    if (st.full_tunnel_refused) j.set("fullTunnelRefused", Json::boolean(true));
     if (!st.child.empty()) j.set("child", Json::string(st.child));
     j.set("childGeneration", Json::integer((long long)st.child_generation));
     j.set("ikeGeneration", Json::integer((long long)st.ike_generation));

@@ -110,6 +110,26 @@ jobs:
             /tmp/ping-rekey.txt
           if-no-files-found: ignore
 
+      - name: "AP6: mehrere TSr, Route-Ownership, Split-Tunnel (netns)"
+        # Zwei ausgehandelte Remote-Netze, beide Routen vom DAEMON, Ping+TCP
+        # durch beide; Rekey-Diff ohne Loch, disconnect entfernt nur eigene
+        # Routen, Full-Tunnel abgelehnt, lokale Netz-Ueberlappung geschuetzt.
+        run: |
+          set -o pipefail
+          sudo env WLD="$PWD/weirdike-openipc/build/weirdiked" \
+                   CTL="$PWD/weirdike-openipc/build/weirdikectl" \
+              sh weirdike-openipc/tools/interop-multinet.sh 2>&1 | tee /tmp/multinet.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: weirdike-multinet-log
+          path: |
+            /tmp/multinet.log
+            /tmp/weirdiked-multinet.log
+            /tmp/ping-multinet.txt
+          if-no-files-found: ignore
+
       - name: "Fetch the toolchain (T40 musl, same one machino uses)"
         run: |
           chmod +x build.sh

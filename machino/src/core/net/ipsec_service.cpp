@@ -109,6 +109,19 @@ VpnStatus parse_status(const std::string& text, bool daemon_running, bool enable
         else if (k == "rx_bytes")         st.rx_bytes = strtoull(v.c_str(), nullptr, 10);
         else if (k == "ike_transport")    st.ike_transport = v;
         else if (k == "esp_transport")    st.esp_transport = v;
+        else if (k == "full_tunnel_refused") st.full_tunnel_refused = (v == "yes" || v == "1" || v == "true");
+        else if (k == "route") {
+            // "prefix source device" (space-separated), vom Daemon.
+            VpnStatus::Route r;
+            size_t s1 = v.find(' ');
+            r.prefix = v.substr(0, s1);
+            if (s1 != std::string::npos) {
+                size_t s2 = v.find(' ', s1 + 1);
+                r.source = v.substr(s1 + 1, s2 == std::string::npos ? std::string::npos : s2 - s1 - 1);
+                if (s2 != std::string::npos) r.device = v.substr(s2 + 1);
+            }
+            if (!r.prefix.empty()) st.routes.push_back(r);
+        }
         // unbekannte Keys: ignorieren -- der Daemon darf wachsen
     }
 

@@ -40,6 +40,27 @@ bool cidr_ok(const std::string& s)
     return a < 256 && b < 256 && c < 256 && d < 256 && p <= 32;
 }
 
+// AP6: remote_subnet darf eine Komma-Liste sein (bis zu 4, WD_MAX_REMOTE_TS).
+// Jeder Eintrag ein gueltiges CIDR; leere Liste ist nicht ok.
+std::string cidr_list_check(const std::string& s)
+{
+    size_t pos = 0, n = 0;
+    while (pos < s.size()) {
+        size_t comma = s.find(',', pos);
+        std::string tok = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        pos = comma == std::string::npos ? s.size() : comma + 1;
+        // trim
+        size_t a = tok.find_first_not_of(" \t");
+        if (a == std::string::npos) continue;
+        size_t b = tok.find_last_not_of(" \t");
+        tok = tok.substr(a, b - a + 1);
+        if (!cidr_ok(tok)) return "remoteSubnet: '" + tok + "' ist kein gueltiges CIDR (a.b.c.d/n)";
+        if (++n > 4) return "remoteSubnet: hoechstens 4 Netze";
+    }
+    if (n == 0) return "remoteSubnet: leer";
+    return {};
+}
+
 // Die geschlossene AP2-Menge. Ein Eintrag ausserhalb wird MIT NAMEN abgelehnt.
 std::string check_algos(const char* field, const std::vector<std::string>& got,
                         const char* only)
@@ -119,10 +140,12 @@ std::string validate(const IpsecConfig& c)
     if (!c.remote_id.empty() && !id_ok(c.remote_id)) return "remoteId: unzulaessige Zeichen";
     if (!c.local_subnet.empty() && !cidr_ok(c.local_subnet))
         return "localSubnet: kein gueltiges CIDR (a.b.c.d/n)";
-    if (!c.remote_subnet.empty() && !cidr_ok(c.remote_subnet))
-        return "remoteSubnet: kein gueltiges CIDR (a.b.c.d/n)";
+    if (!c.remote_subnet.empty()) {
+        const std::string e = cidr_list_check(c.remote_subnet);
+        if (!e.empty()) return e;
+    }
     if (c.enabled && c.remote_subnet.empty())
-        return "remoteSubnet: erforderlich (AP4-Scope: genau EIN Split-Netz)";
+        return "remoteSubnet: erforderlich (AP6: 1..4 Split-Netze, komma-getrennt)";
     if (c.dpd_interval_s < 0 || c.dpd_interval_s > 3600)
         return "dpdInterval: 0..3600";
     if (c.ike_lifetime_s > 86400u * 7) return "ikeLifetime: 0..604800";

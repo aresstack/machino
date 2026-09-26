@@ -163,10 +163,30 @@ static void t_bind_underlay(void)
                 &c, err, sizeof(err)) != 0, "bad bind_dev rejected");
 }
 
+static void t_multi_remote_subnet(void)
+{
+    /* AP6: remote_subnet is a comma-separated list; remote_ts mirrors [0]. */
+    wd_config c; char err[256];
+    CHECK(parse("gateway=a.b\npsk=x\nremote_subnet = 192.168.178.0/24, 10.20.0.0/16\n",
+                &c, err, sizeof(err)) == 0, "two remote subnets accepted");
+    CHECK(c.n_remote_ts == 2, "two parsed");
+    CHECK(c.remote_ts_list[0].ip[0] == 192 && c.remote_ts_list[0].prefix == 24, "first is 192.168.178/24");
+    CHECK(c.remote_ts_list[1].ip[0] == 10 && c.remote_ts_list[1].prefix == 16, "second is 10.20/16");
+    CHECK(c.remote_ts.ip[0] == 192, "remote_ts mirrors [0]");
+
+    CHECK(parse("gateway=a.b\npsk=x\nremote_subnet = 1.0.0.0/8,2.0.0.0/8,3.0.0.0/8,4.0.0.0/8,5.0.0.0/8\n",
+                &c, err, sizeof(err)) != 0, "more than 4 refused");
+    CHECK(parse("gateway=a.b\npsk=x\nremote_subnet = 10.0.0.0/8, garbage\n",
+                &c, err, sizeof(err)) != 0, "one bad entry fails the whole list");
+    CHECK(parse("gateway=a.b\npsk=x\nremote_subnet = 10.0.0.0/8\n",
+                &c, err, sizeof(err)) == 0 && c.n_remote_ts == 1, "single still works");
+}
+
 int main(void)
 {
     t_minimal();
     t_bind_underlay();
+    t_multi_remote_subnet();
     t_required();
     t_unknown_key_is_an_error();
     t_hostname_validation();

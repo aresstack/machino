@@ -8,6 +8,7 @@
 #include "core/net/ipsec_config.hpp"
 
 #include <string>
+#include <vector>
 
 namespace machino { namespace ipsec {
 
@@ -60,6 +61,14 @@ struct VpnStatus {
     std::string peer_ipv4;
     std::string ike_transport;        // "udp500" | "udp4500" (Daemon)
     std::string esp_transport;        // "udp4500" (Daemon; NAT-T-only)
+
+    // AP6: die INSTALLIERTEN Tunnelrouten, wie der Daemon sie meldet (nicht
+    // die angeforderten). source: "tsr" (kryptographisch ausgehandelt) |
+    // "cp" (vom Gateway geliefert). full_tunnel_refused: der Peer bot
+    // 0.0.0.0/0 an, das lehnt AP6 ab.
+    struct Route { std::string prefix; std::string source; std::string device; };
+    std::vector<Route> routes;
+    bool               full_tunnel_refused = false;
 };
 
 // AP5: die Sicht des IPsec-Service auf die Uplinks — ein Auszug, keine

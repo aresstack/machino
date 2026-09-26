@@ -30,9 +30,9 @@ public:
             return false;
         }
 
-        const UplinkType want = wanted == Underlay::Cellular ? UplinkType::Cellular
-                              : wanted == Underlay::Wifi     ? UplinkType::Wifi
-                                                             : UplinkType::Ethernet;
+        const net::UplinkType want = wanted == Underlay::Cellular ? net::UplinkType::Cellular
+                              : wanted == Underlay::Wifi     ? net::UplinkType::Wifi
+                                                             : net::UplinkType::Ethernet;
         for (const auto& u : all) {
             if (u.type != want) continue;
             fill(u, out);
@@ -48,11 +48,11 @@ public:
 private:
     static void fill(const net::UplinkStatus& u, UnderlayView& out)
     {
-        out.kind = uplink_type_name(u.type);
+        out.kind = net::uplink_type_name(u.type);
         out.ifname = u.info.ifname;
         out.ipv4 = u.info.ipv4;
         out.gateway = u.info.gateway;
-        out.usable = u.state == LinkState::Connected && !out.ipv4.empty()
+        out.usable = u.state == net::LinkState::Connected && !out.ipv4.empty()
                      && !out.ifname.empty();
     }
 

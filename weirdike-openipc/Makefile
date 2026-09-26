@@ -42,7 +42,7 @@ CFLAGS  += -fstack-protector-strong -D_FORTIFY_SOURCE=2
 LDFLAGS += -Wl,-z,relro -Wl,-z,now
 
 CORE_SRC := $(wildcard $(VENDOR)/*.c)
-DAEMON_SRC := $(SRC)/weirdiked.c $(SRC)/wd_config.c $(SRC)/wd_net.c
+DAEMON_SRC := $(SRC)/weirdiked.c $(SRC)/wd_config.c $(SRC)/wd_net.c $(SRC)/wd_routes.c
 CTL_SRC    := $(SRC)/weirdikectl.c
 
 .PHONY: all clean test install
@@ -69,6 +69,10 @@ test: | $(OUT)
 	      -I$(SRC) -I$(VENDOR) -o $(OUT)/test_config \
 	      tests/test_config.c $(SRC)/wd_config.c
 	$(OUT)/test_config
+	$(CC) -std=c99 -Wall -Wextra -Wno-unused-parameter -g \
+	      -I$(SRC) -I$(VENDOR) -o $(OUT)/test_routes \
+	      tests/test_routes.c $(SRC)/wd_routes.c
+	$(OUT)/test_routes
 
 # Der AP1-Lifecycle-Test braucht mbedTLS (Crypto-Adapter) und ist deshalb ein
 # eigenes Ziel: `make test` bleibt ohne jede Abhaengigkeit lauffaehig.

@@ -181,7 +181,25 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
             if (wd_parse_cidr(v, &out->local_ts)) { seterr(err, errcap, "bad local_subnet", NULL); return -1; }
             out->have_local_ts = 1;
         } else if (!strcmp(k, "remote_subnet")) {
-            if (wd_parse_cidr(v, &out->remote_ts)) { seterr(err, errcap, "bad remote_subnet", NULL); return -1; }
+            /* AP6: comma-separated list, up to WD_MAX_REMOTE_TS. Each entry
+             * becomes its own TSr selector; remote_ts mirrors the first. */
+            out->n_remote_ts = 0;
+            char *save = NULL;
+            for (char *tok = strtok_r(v, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+                char *e = tok; while (*e == ' ' || *e == '\t') e++;
+                char *end = e + strlen(e);
+                while (end > e && (end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
+                if (!*e) continue;
+                if (out->n_remote_ts >= WD_MAX_REMOTE_TS) {
+                    seterr(err, errcap, "too many remote_subnet entries (max 4)", NULL); return -1;
+                }
+                if (wd_parse_cidr(e, &out->remote_ts_list[out->n_remote_ts])) {
+                    seterr(err, errcap, "bad remote_subnet", NULL); return -1;
+                }
+                out->n_remote_ts++;
+            }
+            if (out->n_remote_ts == 0) { seterr(err, errcap, "empty remote_subnet", NULL); return -1; }
+            out->remote_ts = out->remote_ts_list[0];
             out->have_remote_ts = 1;
         } else if (!strcmp(k, "nat_t")) {
             if (as_bool(v, &out->nat_t)) { seterr(err, errcap, "bad nat_t", NULL); return -1; }
