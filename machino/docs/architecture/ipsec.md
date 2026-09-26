@@ -227,3 +227,44 @@ ein Link auf die Cellular-Seite, keine zweite Modemconfig. 401 → zurueck auf
 
 Hardware-Abnahme (Kamera + EC200A, Connect per UI, echter Remote-Ping/TCP,
 sauberer Disconnect): PENDING_PHYSICAL.
+
+## AP9: EAP-MSCHAPv2 + Linux-Trust-Store
+
+Neben PSK kann der Tunnel per IKEv2/EAP-MSCHAPv2 aufgebaut werden: die Kamera
+weist sich mit Benutzername/Passwort aus, der Server mit einem Zertifikat,
+das gegen den gewaehlten Trust-Modus geprueft wird. Der EAP-Protokollteil und
+die Zertifikatspruefung liegen im WeirdIKE-Core; AP9 ist nur die
+Linux-Host-Integration (kein nachgebautes MSCHAPv2, keine zweite X.509-Kette).
+
+**Auth-Modell:** `auth = psk | eap-mschapv2`. Bei EAP: `eapUser` (Identity,
+kein Secret), `eapPassword` (write-only wie der PSK — nie GET, nie in einer
+Fehlermeldung; Anzeige `eapPasswordSet`). Das noetige Credential haengt am
+Modus: `connect()` verlangt PSK ODER (eapUser + eapPassword), nie beides,
+kein stiller PSK-Fallback.
+
+**Trust-Modi** (1:1 auf `weirdike_trust_mode_t` gemappt, UI-Labels lesbar):
+`anchor-pem` (Own CA — `caPem` Pflicht), `host-store` (System CA store),
+`host-store-plus-pem` (System store + `extraPem` als Chain-Material, KEIN
+zusaetzlicher Anchor), `none` (No CA validation, nur explizit waehlbar).
+`caPem`/`extraPem` sind oeffentlich, liegen aber als 0600-Dateien
+(`/etc/weirdike/ca.pem`, `extra.pem`) in Machinos Config, referenziert per
+`ca_pem_file`/`extra_pem_file` in der Daemon-Datei (der Parser bleibt eine
+reine Pufferfunktion; der Daemon liest die PEM-Dateien in `load_config`).
+
+**Linux-Host-Store:** der Daemon parst den ERSTEN vorhandenen Store dieses
+RootFS (`/etc/ssl/certs/ca-certificates.crt`, `/etc/ssl/cert.pem`,
+`/etc/ssl/certs/`) via mbedTLS in `weirdike_crypto_mbedtls_set_host_store`.
+Ist keiner da, wird der Store NICHT gesetzt — und der Core verweigert einen
+HOST_STORE-Modus beim Start (kein Rueckfall auf PEM-Anchor oder „keine
+Pruefung"). machinod meldet `hostStoreAvailable`, die UI graut die
+HOST_STORE-Optionen aus. Nichts wird heruntergeladen.
+
+**Server-Identitaet vs. IKE-ID:** die Zertifikatskette (Trust-Modus) und die
+IKE-`remoteId` sind getrennte Pruefungen mit getrennten Fehlern — eine
+gueltige Kette mit falscher ID scheitert an der ID, nicht „irgendwie".
+
+**CP bei EAP:** `request_cp = 1` — INTERNAL_IP4_ADDRESS/NETMASK/DNS/Subnets
+werden uebernommen, aber hostseitig nur unter den AP6-Routing-/Selector-
+Regeln (CP-Netz muss ganz in einem akzeptierten TSr liegen).
+
+Hardware-Abnahme (Cellular-Underlay, echter EAP-Peer): PENDING_PHYSICAL.

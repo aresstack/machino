@@ -84,6 +84,7 @@ struct VpnStatus {
     std::string peer_ipv4;
     std::string ike_transport;        // "udp500" | "udp4500" (Daemon)
     std::string esp_transport;        // "udp4500" (Daemon; NAT-T-only)
+    std::string auth;                 // AP9: "psk" | "eap-mschapv2" (Daemon)
 
     // AP7: der abgeleitete Runtime-Zustand + Reconnect-Sicht.
     VpnRuntimeState runtime = VpnRuntimeState::Disabled;
@@ -137,6 +138,11 @@ public:
                                 const std::string& gateway_ip, std::string& err) = 0;
     virtual bool del_peer_route(const std::string& peer_ip, const std::string& ifname,
                                 const std::string& gateway_ip, std::string& err) = 0;
+
+    // AP9: ist ein System-CA-Store in DIESEM RootFS vorhanden? (Der Daemon
+    // parst ihn; machinod fragt nur, um HOST_STORE in der UI auszugrauen und
+    // NIE heimlich auf NONE zurueckzufallen.) Default: nein.
+    virtual bool host_store_available() { return false; }
 };
 
 class IpsecService {
@@ -153,10 +159,15 @@ public:
     // psk-Zeile). Fehlende Datei = Defaults.
     IpsecConfig config() const;
     bool psk_set() const;
+    // AP9: Presence-Auskuenfte (nie der Wert).
+    bool eap_password_set() const;
+    bool ca_pem_set() const;
+    bool extra_pem_set() const;
+    bool host_store_available() const;   // fuer HOST_STORE-Ausgrauen in der UI
 
-    // Speichern: validieren, BEIDE Dateien atomar schreiben (0600), PSK
+    // Speichern: validieren, BEIDE Dateien atomar schreiben (0600), Secrets
     // write-only weiterreichen. Leerer Rueckgabestring = ok.
-    std::string set_config(const IpsecConfig& c, const std::string& psk_or_empty);
+    std::string set_config(const IpsecConfig& c, const IpsecSecrets& secrets);
 
     std::string connect();      // Underlay waehlen, aufloesen, Peer-Route, Daemon starten
     std::string disconnect();   // Daemon stoppen, Peer-Route entfernen
@@ -182,6 +193,12 @@ private:
     void teardown_session_(bool lost);
     VpnRuntimeState derive_runtime_(const VpnStatus& s) const;
     void schedule_reconnect_(uint32_t now_ms, const IpsecConfig& c);
+    std::string connect_(bool prefer_cached);
+    // AP9: die PEM-Dateien liegen neben der Daemon-Datei (/etc/weirdike/).
+    std::string ca_pem_path_() const;
+    std::string extra_pem_path_() const;
+    bool has_daemon_key_(const char* key) const;   // "key = ..." in weirdike.conf?
+    static bool file_exists_(const std::string& path);
 
     IIpsecBackend&  backend_;
     std::string     machino_path_, daemon_path_;
@@ -196,6 +213,7 @@ private:
     uint32_t last_child_gen_ = 0;
     uint32_t rekey_until_ms_ = 0;         // kurzes Fenster fuer Runtime=Rekeying
     uint32_t rng_ = 0x9e3779b9u;          // Jitter-PRNG (kein Secret)
+    std::string cached_gateway_, cached_peer_ip_;  // AP7: DNS-Cache fuer Reconnect
 };
 
 }} // namespace machino::ipsec

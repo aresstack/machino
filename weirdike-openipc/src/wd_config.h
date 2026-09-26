@@ -29,8 +29,30 @@ typedef struct {
     uint16_t port;                    /* default 500 */
     char     ifname[WD_MAX_IFNAME];   /* TUN interface, default ipsec0 */
 
+    /* AP9: auth = 0 (PSK) | 1 (EAP-MSCHAPv2). Matches WEIRDIKE_AUTH_*. */
+    int      auth;
+
     uint8_t  psk[WD_MAX_PSK];
     size_t   psk_len;
+
+    /* AP9: EAP-MSCHAPv2 (auth==1). eap_user is the identity (username), the
+     * password is a secret (zeroized on wipe). trust_mode matches
+     * weirdike_trust_mode_t (0 ANCHOR_PEM,1 HOST_STORE,2 HOST_STORE_PLUS_PEM,
+     * 3 NONE). ca_pem/extra_pem are PEM buffers read from 0600 files that
+     * machinod owns; empty = none. */
+    char     eap_user[WD_MAX_ID];
+    uint8_t  eap_password[WD_MAX_PSK];
+    size_t   eap_password_len;
+    int      trust_mode;
+    /* Paths the parser records (it stays a pure buffer function); load_config
+     * reads the PEM files into the buffers below (the 8 KiB config text cannot
+     * hold a 4 KiB cert inline). */
+    char     ca_pem_file[128];
+    char     extra_pem_file[128];
+    char     ca_pem[4096];            /* WEIRDIKE_MAX_CA_PEM */
+    size_t   ca_pem_len;
+    char     extra_pem[4096];         /* WEIRDIKE_MAX_EXTRA_PEM */
+    size_t   extra_pem_len;
 
     char     local_id[WD_MAX_ID];     /* empty = derive from source IP */
     char     remote_id[WD_MAX_ID];    /* empty = accept whatever the responder sends */

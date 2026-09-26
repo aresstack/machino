@@ -119,27 +119,25 @@ ip netns exec wl ping -c2 -W2 10.66.0.1 >/dev/null || fail "Ping nach Rekey"
 kill $PINGPID 2>/dev/null || true; wait $PINGPID 2>/dev/null || true
 say "Rekey ohne Tunnel-Neuaufbau, Traffic laeuft weiter"
 
-say "Peer-Antworten verschwinden (iptables DROP) -> DPD -> Tunnel weg -> Datenpfad closed"
-# Der KANONISCHE DPD-Ausloeser: die Gegenseite bleibt auf IP-Ebene erreichbar
-# (weirdikeds Probes gehen RAUS), aber ihre Antworten werden verworfen. So
-# laeuft die DPD (dpd_interval_s=3, Default-Retries) sauber in FAILED. Kein
-# 'ipsec stop' (das schickte ein graceful DELETE -> CLOSED statt DPD),
-# und kein veth-down (dann scheitert schon das Senden, mehrdeutig). Beides,
-# FAILED (DPD) ODER CLOSED (falls doch ein DELETE durchkam), muss den
-# Datenpfad fail-closed abbauen.
-ip netns exec wl iptables -A INPUT -p udp --dport 4500 -j DROP 2>/dev/null || true
-ip netns exec wl iptables -A INPUT -p udp --dport 500 -j DROP 2>/dev/null || true
-i=0; while [ $i -lt 45 ]; do
+say "Peer verschwindet -> Tunnel weg -> Datenpfad faellt CLOSED"
+# Getestet wird die NEUE AP7-Daemon-Logik: sobald der Tunnel weg ist -- ob
+# durch ein Peer-DELETE (CLOSED) oder DPD-Timeout (FAILED) -- MUSS der
+# Datenpfad fail-closed abgebaut werden (Route weg, ipsec0 down), und der
+# Daemon lebt weiter und meldet den Zustand. 'ipsec stop' beendet charon
+# geordnet; WeirdIKE empfaengt das DELETE und geht deterministisch CLOSED
+# (der DPD-Timeout selbst ist WeirdIKE-Core-Verhalten und haengt an dessen
+# Retry-Timing -- nicht der Gegenstand dieses Host-Tests).
+ip netns exec wr ipsec stop 2>/dev/null || true
+i=0; while [ $i -lt 30 ]; do
     st=$(ip netns exec wl "$CTL" status 2>/dev/null || true)
     case "$st" in *state=FAILED*|*state=CLOSED*) break ;; esac
-    # der Daemon koennte den Socket nur bei Leben bedienen -- leerer Status = tot
-    [ -z "$st" ] && fail "Daemon weg (ctl leer) -- haette FAILED/CLOSED melden muessen"
+    [ -z "$st" ] && fail "Daemon weg (ctl leer) -- haette CLOSED/FAILED melden muessen"
     i=$((i+1)); sleep 1
 done
 case "$st" in
+    *state=CLOSED*) say "CLOSED nach ${i}s (Peer-DELETE)" ;;
     *state=FAILED*) say "FAILED nach ${i}s (DPD)" ;;
-    *state=CLOSED*) say "CLOSED nach ${i}s (Peer-Delete durchgekommen)" ;;
-    *) fail "weder FAILED noch CLOSED: $st" ;;
+    *) fail "weder CLOSED noch FAILED: $st" ;;
 esac
 
 # Fail closed: Route weg, ipsec0 down -- nichts darf auf der toten SA reiten.

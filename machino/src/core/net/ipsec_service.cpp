@@ -139,6 +139,7 @@ VpnStatus parse_status(const std::string& text, bool daemon_running, bool enable
         else if (k == "rx_bytes")         st.rx_bytes = strtoull(v.c_str(), nullptr, 10);
         else if (k == "ike_transport")    st.ike_transport = v;
         else if (k == "esp_transport")    st.esp_transport = v;
+        else if (k == "auth")             st.auth = v;
         else if (k == "full_tunnel_refused") st.full_tunnel_refused = (v == "yes" || v == "1" || v == "true");
         else if (k == "route") {
             // "prefix source device" (space-separated), vom Daemon.
@@ -217,7 +218,8 @@ IpsecConfig IpsecService::config() const
     return c;
 }
 
-bool IpsecService::psk_set() const
+// "key = <nonempty>" in der Daemon-Datei? (Presence, nie der Wert.)
+bool IpsecService::has_daemon_key_(const char* key) const
 {
     bool existed = false;
     const std::string text = read_file(daemon_path_, existed);
@@ -228,34 +230,74 @@ bool IpsecService::psk_set() const
         std::string line = trim(text.substr(
             pos, eol == std::string::npos ? std::string::npos : eol - pos));
         pos = eol == std::string::npos ? text.size() : eol + 1;
-        if (line.rfind("psk", 0) == 0) {
-            size_t eq = line.find('=');
-            if (eq != std::string::npos && !trim(line.substr(eq + 1)).empty()) return true;
-        }
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (trim(line.substr(0, eq)) == key && !trim(line.substr(eq + 1)).empty()) return true;
     }
     return false;
 }
 
-std::string IpsecService::set_config(const IpsecConfig& c, const std::string& psk_or_empty)
+bool IpsecService::psk_set() const          { return has_daemon_key_("psk"); }
+bool IpsecService::eap_password_set() const  { return has_daemon_key_("eap_password"); }
+
+std::string IpsecService::ca_pem_path_() const
+{
+    const size_t slash = daemon_path_.find_last_of("/\\");
+    const std::string dir = slash == std::string::npos ? std::string() : daemon_path_.substr(0, slash + 1);
+    return dir + "ca.pem";
+}
+std::string IpsecService::extra_pem_path_() const
+{
+    const size_t slash = daemon_path_.find_last_of("/\\");
+    const std::string dir = slash == std::string::npos ? std::string() : daemon_path_.substr(0, slash + 1);
+    return dir + "extra.pem";
+}
+bool IpsecService::file_exists_(const std::string& path)
+{
+    FILE* f = ::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    const int ch = ::fgetc(f);          // leere Datei zaehlt nicht als "gesetzt"
+    ::fclose(f);
+    return ch != EOF;
+}
+bool IpsecService::ca_pem_set() const    { return file_exists_(ca_pem_path_()); }
+bool IpsecService::extra_pem_set() const { return file_exists_(extra_pem_path_()); }
+bool IpsecService::host_store_available() const { return backend_.host_store_available(); }
+
+std::string IpsecService::set_config(const IpsecConfig& c, const IpsecSecrets& secrets)
 {
     const std::string ve = validate(c);
     if (!ve.empty()) return ve;
-    const std::string pe = psk_check(psk_or_empty);
+    // Beide Secrets folgen denselben Regeln (kein \n, kein Randraum, <=64).
+    std::string pe = psk_check(secrets.psk);
     if (!pe.empty()) return pe;
+    pe = psk_check(secrets.eap_password);
+    if (!pe.empty()) return "eapPassword" + pe.substr(pe.find(':'));
+
+    // AP9: neue PEM-Inhalte VOR der Daemon-Datei schreiben (0600), damit die
+    // ca_pem_file/extra_pem_file-Zeilen auf existierende Dateien zeigen.
+    std::string err;
+    if (!secrets.ca_pem.empty() && !write_atomic_0600(ca_pem_path_(), secrets.ca_pem, err))
+        return "ca.pem: " + err;
+    if (!secrets.extra_pem.empty() && !write_atomic_0600(extra_pem_path_(), secrets.extra_pem, err))
+        return "extra.pem: " + err;
 
     bool existed = false;
     const std::string old_daemon = read_file(daemon_path_, existed);
-    bool psk_present = false;
-    const std::string daemon_conf = to_weirdike_conf(c, psk_or_empty, old_daemon, &psk_present);
+    bool cred_present = false;
+    const std::string ca_file    = file_exists_(ca_pem_path_())    ? ca_pem_path_()    : std::string();
+    const std::string extra_file = file_exists_(extra_pem_path_()) ? extra_pem_path_() : std::string();
+    const std::string daemon_conf = to_weirdike_conf(c, secrets, old_daemon, &cred_present,
+                                                     nullptr, ca_file, extra_file);
 
-    if (c.enabled && !psk_present)
-        return "psk: erforderlich, wenn enabled=true (write-only; einmal setzen genuegt)";
+    if (c.enabled && !cred_present)
+        return c.auth == Auth::EapMschapv2
+                 ? "eapPassword: erforderlich, wenn enabled=true (write-only; einmal setzen genuegt)"
+                 : "psk: erforderlich, wenn enabled=true (write-only; einmal setzen genuegt)";
 
     // Reihenfolge: erst die Daemon-Datei (traegt das Secret), dann die
     // machino-Wahrheit. Schlaegt Schritt 2 fehl, ist der alte machino-Stand
-    // noch da und der Daemon-Conf lediglich voraus -- kein halber Zustand,
-    // der enabled=true ohne PSK behauptet.
-    std::string err;
+    // noch da und der Daemon-Conf lediglich voraus -- kein halber Zustand.
     if (!write_atomic_0600(daemon_path_, daemon_conf, err))
         return "weirdike.conf: " + err;
     if (!write_atomic_0600(machino_path_, to_machino_conf(c), err))
@@ -265,10 +307,28 @@ std::string IpsecService::set_config(const IpsecConfig& c, const std::string& ps
 
 std::string IpsecService::connect()
 {
+    return connect_(false);
+}
+
+// prefer_cached: der Auto-Reconnect (tick) laeuft im Hauptthread des
+// MEDIENdaemons. Ein blockierendes getaddrinfo() dort friert das Video ein,
+// solange der Resolver braucht (bei gerade erst zurueckgekehrtem Underlay
+// zweistellige Sekunden) -- das verletzt "kein VPN-Fehler darf Video
+// herunterfahren". Deshalb nutzt der Reconnect die bereits aufgeloeste
+// Peer-IP der letzten Sitzung wieder (AP5 §6: Rekey/dieselbe Sitzung nutzt
+// dieselbe Adresse; nur ein bewusster connect() loest frisch auf).
+std::string IpsecService::connect_(bool prefer_cached)
+{
     const IpsecConfig c = config();
     if (!c.enabled) return "ipsec ist deaktiviert (enabled=false)";
     if (c.gateway.empty()) return "kein Gateway konfiguriert";
-    if (!psk_set()) return "kein PSK gesetzt";
+    // AP9: das passende Credential fuer den Auth-Modus.
+    if (c.auth == Auth::EapMschapv2) {
+        if (c.eap_user.empty())    return "kein EAP-Benutzer gesetzt";
+        if (!eap_password_set())   return "kein EAP-Passwort gesetzt";
+    } else {
+        if (!psk_set())            return "kein PSK gesetzt";
+    }
     if (backend_.daemon_running()) return {};   // idempotent
 
     session_ = Session{};
@@ -291,10 +351,15 @@ std::string IpsecService::connect()
     }
 
     // AP5 §6: DNS EINMAL, vor dem Tunnel. Die Session merkt sich die Adresse;
-    // Rekey laeuft im Daemon gegen dieselbe (er bekommt das Literal).
+    // Rekey laeuft im Daemon gegen dieselbe (er bekommt das Literal). Beim
+    // Auto-Reconnect die gecachte Adresse wiederverwenden (kein blockierendes
+    // getaddrinfo im Medien-Hauptthread), sofern das Gateway unveraendert ist.
     std::string peer_ip;
-    if (!backend_.resolve4(c.gateway, peer_ip) || peer_ip.empty())
+    if (prefer_cached && cached_gateway_ == c.gateway && !cached_peer_ip_.empty()) {
+        peer_ip = cached_peer_ip_;
+    } else if (!backend_.resolve4(c.gateway, peer_ip) || peer_ip.empty()) {
         return "gateway '" + c.gateway + "': DNS-Aufloesung fehlgeschlagen";
+    }
 
     // AP5 §5/§8: Peer-Hostroute ZUERST, auf dem gewaehlten Underlay. Sie
     // gehoert dem Service und ueberlebt jede spaeter verhandelte Tunnelroute.
@@ -313,9 +378,15 @@ std::string IpsecService::connect()
     net.gateway_ip = peer_ip;
     net.bind_ip = uv.ipv4;
     net.bind_dev = uv.ifname;
-    bool psk_present = false;
-    const std::string dconf = to_weirdike_conf(c, "", old_daemon, &psk_present, &net);
-    if (!psk_present) { teardown_session_(false); return "kein PSK gesetzt"; }
+    // Secrets bleiben leer -> to_weirdike_conf traegt psk/eap_password aus der
+    // alten Datei write-only weiter; die PEM-Pfade zeigen auf die Session-CA.
+    IpsecSecrets carry;
+    const std::string ca_file    = ca_pem_set()    ? ca_pem_path_()    : std::string();
+    const std::string extra_file = extra_pem_set() ? extra_pem_path_() : std::string();
+    bool cred_present = false;
+    const std::string dconf = to_weirdike_conf(c, carry, old_daemon, &cred_present,
+                                               &net, ca_file, extra_file);
+    if (!cred_present) { teardown_session_(false); return "kein Credential gesetzt"; }
     if (!write_atomic_0600(daemon_path_, dconf, err)) {
         teardown_session_(false);
         return "weirdike.conf: " + err;
@@ -338,6 +409,8 @@ std::string IpsecService::connect()
     // der Tunnel STABIL steht -- ChildEstablished, nicht schon beim Start).
     manual_stop_ = false;
     reconnect_scheduled_ = false;
+    cached_gateway_ = c.gateway;      // fuer den naechsten Auto-Reconnect
+    cached_peer_ip_ = peer_ip;
     return {};
 }
 
@@ -420,7 +493,7 @@ void IpsecService::tick(uint32_t now_ms)
     if (reconnect_scheduled_ && !manual_stop_ &&
         (int32_t)(now_ms - next_reconnect_ms_) >= 0) {
         reconnect_scheduled_ = false;
-        const std::string e = connect();      // setzt manual_stop_=false neu
+        const std::string e = connect_(true); // gecachte Peer-IP, kein DNS-Stall
         if (!e.empty()) {
             // Fehlgeschlagener Versuch: naechsten planen (weiter hochzaehlen).
             schedule_reconnect_(now_ms, c);

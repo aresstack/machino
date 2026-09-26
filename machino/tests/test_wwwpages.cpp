@@ -157,6 +157,13 @@ void run_wwwpages_tests()
     TCHECK(has(ips, "Negotiated TSr"));             // negotiated != configured
     TCHECK(has(ips, "Installed route"));            // installed getrennt
     TCHECK(has(ips, "machino-cellular.cgi"));       // Cellular-Link, keine 2. Modemconfig
+    // AP9: EAP-MSCHAPv2 + Trust-Modell in der UI.
+    TCHECK(has(ips, "eap-mschapv2"));
+    TCHECK(has(ips, "eapPassword"));                // write-only wie der PSK
+    TCHECK(has(ips, "trustMode"));
+    TCHECK(has(ips, "caPem"));
+    TCHECK(has(ips, "hostStoreAvailable"));         // HOST_STORE-Ausgrauen
+    TCHECK(has(ips, "No CA validation"));           // NONE nur explizit
 
     // Cellular haengt am usb.mode; seit der Zerlegung LIEST die Seite ihn
     // selbst, statt eine Variable einer anderen Seite zu erwarten.

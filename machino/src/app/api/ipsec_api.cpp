@@ -37,6 +37,10 @@ Json ipsec_config_json(const ipsec::IpsecConfig& c, bool psk_set)
     j.set("espEnc", algo_array(c.esp_enc));
     j.set("espHash", algo_array(c.esp_hash));
     j.set("pskSet", Json::boolean(psk_set));
+    // AP9: Auth-Modell (nur Presence, nie Secret-Werte).
+    j.set("auth", Json::string(ipsec::auth_name(c.auth)));
+    j.set("eapUser", Json::string(c.eap_user));
+    j.set("trustMode", Json::string(ipsec::trust_mode_name(c.trust_mode)));
     return j;
 }
 
@@ -90,7 +94,13 @@ bool take_algos(const Json& o, const char* k, std::vector<std::string>& out, std
 Response ApiService::ipsec_get()
 {
     if (!ipsec_) return fail(404, "not_found", "/api/v1/ipsec", "ipsec ist auf dieser Plattform nicht verdrahtet");
-    return Response{200, ipsec_config_json(ipsec_->config(), ipsec_->psk_set())};
+    Json j = ipsec_config_json(ipsec_->config(), ipsec_->psk_set());
+    // AP9: Presence + Host-Store-Verfuegbarkeit (fuer HOST_STORE-Ausgrauen).
+    j.set("eapPasswordSet", Json::boolean(ipsec_->eap_password_set()));
+    j.set("caPemSet", Json::boolean(ipsec_->ca_pem_set()));
+    j.set("extraPemSet", Json::boolean(ipsec_->extra_pem_set()));
+    j.set("hostStoreAvailable", Json::boolean(ipsec_->host_store_available()));
+    return Response{200, j};
 }
 
 Response ApiService::ipsec_put_config(const std::string& body)
@@ -108,7 +118,9 @@ Response ApiService::ipsec_put_config(const std::string& body)
     static const char* known[] = {"enabled","gateway","port","underlay","localId","remoteId",
                                   "localSubnet","remoteSubnet","natT","dpdIntervalS",
                                   "ikeLifetimeS","childLifetimeS",
-                                  "ikeEnc","ikeHash","ikeDh","espEnc","espHash","psk"};
+                                  "ikeEnc","ikeHash","ikeDh","espEnc","espHash","psk",
+                                  // AP9:
+                                  "auth","eapUser","eapPassword","trustMode","caPem","extraPem"};
     for (const auto& m : in.members()) {
         bool ok = false;
         for (const char* k : known) if (m.first == k) { ok = true; break; }
@@ -120,7 +132,9 @@ Response ApiService::ipsec_put_config(const std::string& body)
     ipsec::IpsecConfig c = ipsec_->config();
     long long port = c.port, dpd = c.dpd_interval_s;
     long long ikeLt = c.ike_lifetime_s, childLt = c.child_lifetime_s;
-    std::string underlay = ipsec::underlay_name(c.underlay), psk;
+    std::string underlay = ipsec::underlay_name(c.underlay);
+    std::string auth = ipsec::auth_name(c.auth), trust = ipsec::trust_mode_name(c.trust_mode);
+    ipsec::IpsecSecrets secrets;   // write-only: nur was gesendet wird
 
     if (!take_bool(in, "enabled", c.enabled, err) ||
         !take_string(in, "gateway", c.gateway, err) ||
@@ -139,7 +153,14 @@ Response ApiService::ipsec_put_config(const std::string& body)
         !take_algos(in, "ikeDh", c.ike_dh, err) ||
         !take_algos(in, "espEnc", c.esp_enc, err) ||
         !take_algos(in, "espHash", c.esp_hash, err) ||
-        !take_string(in, "psk", psk, err))
+        !take_string(in, "psk", secrets.psk, err) ||
+        // AP9:
+        !take_string(in, "auth", auth, err) ||
+        !take_string(in, "eapUser", c.eap_user, err) ||
+        !take_string(in, "eapPassword", secrets.eap_password, err) ||
+        !take_string(in, "trustMode", trust, err) ||
+        !take_string(in, "caPem", secrets.ca_pem, err) ||
+        !take_string(in, "extraPem", secrets.extra_pem, err))
         return fail(400, "invalid_value", path, err);
 
     c.port = (uint16_t)port;
@@ -148,13 +169,19 @@ Response ApiService::ipsec_put_config(const std::string& body)
     c.child_lifetime_s = (uint32_t)childLt;
     if (!ipsec::underlay_from_name(underlay, c.underlay))
         return fail(400, "invalid_value", path, "underlay: '" + underlay + "'");
+    if (!ipsec::auth_from_name(auth, c.auth))
+        return fail(400, "invalid_value", path, "auth: '" + auth + "'");
+    if (!ipsec::trust_mode_from_name(trust, c.trust_mode))
+        return fail(400, "invalid_value", path, "trustMode: '" + trust + "'");
 
-    const std::string e = ipsec_->set_config(c, psk);
+    const std::string e = ipsec_->set_config(c, secrets);
     if (!e.empty()) return fail(400, "invalid_value", path, e);
 
     Json j = Json::object();
     j.set("ok", Json::boolean(true));
     j.set("pskSet", Json::boolean(ipsec_->psk_set()));
+    j.set("eapPasswordSet", Json::boolean(ipsec_->eap_password_set()));
+    j.set("caPemSet", Json::boolean(ipsec_->ca_pem_set()));
     return Response{200, j};
 }
 
@@ -212,6 +239,7 @@ Response ApiService::ipsec_status()
     if (!st.peer_ipv4.empty())          j.set("peerIpv4", Json::string(st.peer_ipv4));
     if (!st.ike_transport.empty())      j.set("ikeTransport", Json::string(st.ike_transport));
     if (!st.esp_transport.empty())      j.set("espTransport", Json::string(st.esp_transport));
+    if (!st.auth.empty())               j.set("auth", Json::string(st.auth));   // AP9
     // AP6: die INSTALLIERTEN Routen (Daemon-Wahrheit), source tsr|cp getrennt.
     Json routes = Json::array();
     for (const auto& r : st.routes) {

@@ -60,11 +60,47 @@ page_title="IPsec"
 			<option value="wifi">Wi-Fi</option>
 			<option value="cellular">Cellular</option>
 		</select></div>
-	<div class="mb-2"><label class="form-label" for="cfg-psk">Pre-shared key
+	<div class="mb-2"><label class="form-label" for="cfg-auth">Authentication</label>
+		<select class="form-select form-select-sm" id="cfg-auth">
+			<option value="psk">Pre-shared key</option>
+			<option value="eap-mschapv2">EAP-MSCHAPv2 (username / password)</option>
+		</select></div>
+
+	<!-- PSK -->
+	<div id="auth-psk" class="mb-2"><label class="form-label" for="cfg-psk">Pre-shared key
 			<span id="cfg-pskset" class="badge text-bg-secondary">unknown</span></label>
 		<input class="form-control form-control-sm" id="cfg-psk" type="password"
 		       autocomplete="new-password" placeholder="leave blank to keep the stored key">
-		<div class="form-text">Authentication: pre-shared key. Write-only &mdash; the stored key is never shown.</div></div>
+		<div class="form-text">Write-only &mdash; the stored key is never shown.</div></div>
+
+	<!-- EAP-MSCHAPv2 -->
+	<div id="auth-eap" hidden>
+		<div class="mb-2"><label class="form-label" for="cfg-eapuser">Username</label>
+			<input class="form-control form-control-sm" id="cfg-eapuser" placeholder="user@example"></div>
+		<div class="mb-2"><label class="form-label" for="cfg-eappw">Password
+				<span id="cfg-eappwset" class="badge text-bg-secondary">unknown</span></label>
+			<input class="form-control form-control-sm" id="cfg-eappw" type="password"
+			       autocomplete="new-password" placeholder="leave blank to keep the stored password">
+			<div class="form-text">Write-only &mdash; the stored password is never shown.</div></div>
+		<div class="mb-2"><label class="form-label" for="cfg-trust">Trust mode</label>
+			<select class="form-select form-select-sm" id="cfg-trust">
+				<option value="anchor-pem">Own CA</option>
+				<option value="host-store">System CA store</option>
+				<option value="host-store-plus-pem">System CA store + extra certificates</option>
+				<option value="none">No CA validation</option>
+			</select>
+			<div class="form-text" id="cfg-trust-note"></div></div>
+		<div class="mb-2"><label class="form-label" for="cfg-capem">CA certificate (PEM)
+				<span id="cfg-capemset" class="badge text-bg-secondary">not set</span></label>
+			<textarea class="form-control form-control-sm mj-mono" id="cfg-capem" rows="3"
+			          placeholder="-----BEGIN CERTIFICATE-----"></textarea></div>
+		<div class="mb-2"><label class="form-label" for="cfg-extrapem">Extra chain certificates (PEM)
+				<span id="cfg-extrapemset" class="badge text-bg-secondary">not set</span></label>
+			<textarea class="form-control form-control-sm mj-mono" id="cfg-extrapem" rows="2"
+			          placeholder="intermediate certificates that only complete a chain"></textarea>
+			<div class="form-text">Server identity is the Remote identity above.</div></div>
+	</div>
+
 	<button id="cfg-save" class="btn btn-sm btn-primary" type="submit">Save</button>
 	</form>
 </div></div></div>
@@ -173,6 +209,32 @@ function row(tb, k, v) {
   tr.append(th, td); tb.appendChild(tr);
 }
 
+function setBadge(id, present, yes) {
+  const b = $(id);
+  b.textContent = present ? (yes || "stored") : "not set";
+  b.className = "badge " + (present ? "text-bg-success" : "text-bg-secondary");
+}
+
+function applyAuthVisibility() {
+  const eap = $("cfg-auth").value === "eap-mschapv2";
+  $("auth-psk").hidden = eap;
+  $("auth-eap").hidden = !eap;
+}
+
+let HOST_STORE_OK = false;
+function applyTrustAvailability() {
+  // AP9 §4/§8: grey out host-store modes when this image has no system CA
+  // store -- never a silent fallback, the operator must pick an own CA.
+  const opts = $("cfg-trust").options;
+  for (let i = 0; i < opts.length; i++) {
+    const v = opts[i].value;
+    const needsStore = (v === "host-store" || v === "host-store-plus-pem");
+    opts[i].disabled = needsStore && !HOST_STORE_OK;
+  }
+  $("cfg-trust-note").textContent = HOST_STORE_OK
+    ? "" : "No system CA store in this image — use an own CA (anchor-pem).";
+}
+
 async function loadConfig() {
   const res = await api("GET", "/api/v1/ipsec");
   if (res.status === 404) { msg("IPsec is not available on this platform.", "bad"); return; }
@@ -186,9 +248,16 @@ async function loadConfig() {
   $("cfg-remoteid").value = c.remoteId || "";
   $("cfg-localsubnet").value = c.localSubnet || "";
   $("cfg-remotesubnet").value = c.remoteSubnet || "";
-  const b = $("cfg-pskset");
-  b.textContent = c.pskSet ? "stored" : "not set";
-  b.className = "badge " + (c.pskSet ? "text-bg-success" : "text-bg-secondary");
+  $("cfg-auth").value = c.auth || "psk";
+  $("cfg-eapuser").value = c.eapUser || "";
+  $("cfg-trust").value = c.trustMode || "host-store";
+  HOST_STORE_OK = !!c.hostStoreAvailable;
+  setBadge("cfg-pskset", c.pskSet);
+  setBadge("cfg-eappwset", c.eapPasswordSet);
+  setBadge("cfg-capemset", c.caPemSet);
+  setBadge("cfg-extrapemset", c.extraPemSet);
+  applyAuthVisibility();
+  applyTrustAvailability();
 }
 
 function buildBody() {
@@ -200,18 +269,24 @@ function buildBody() {
     localId: $("cfg-localid").value.trim(),
     remoteId: $("cfg-remoteid").value.trim(),
     localSubnet: $("cfg-localsubnet").value.trim(),
-    remoteSubnet: $("cfg-remotesubnet").value.trim()
+    remoteSubnet: $("cfg-remotesubnet").value.trim(),
+    auth: $("cfg-auth").value,
+    eapUser: $("cfg-eapuser").value.trim(),
+    trustMode: $("cfg-trust").value
   };
-  // PSK write-only: only send it when the operator typed one.
-  const psk = $("cfg-psk").value;
-  if (psk) body.psk = psk;
+  // All secrets write-only: only send when the operator typed/pasted one.
+  const psk = $("cfg-psk").value;         if (psk) body.psk = psk;
+  const eappw = $("cfg-eappw").value;     if (eappw) body.eapPassword = eappw;
+  const capem = $("cfg-capem").value;     if (capem.trim()) body.caPem = capem;
+  const extra = $("cfg-extrapem").value;  if (extra.trim()) body.extraPem = extra;
   return body;
 }
 
 async function save() {
   const res = await api("PUT", "/api/v1/ipsec/config", buildBody());
   if (res.status === 200) {
-    $("cfg-psk").value = "";                 // never keep the typed key around
+    $("cfg-psk").value = ""; $("cfg-eappw").value = "";   // never keep secrets around
+    $("cfg-capem").value = ""; $("cfg-extrapem").value = "";
     msg("Saved.", "ok");
     loadConfig();
   } else {
@@ -242,6 +317,7 @@ async function loadStatus() {
 
   const a = $("ips-diag-a"); a.replaceChildren();
   row(a, "Runtime state", s.runtimeState || "–");
+  row(a, "Authentication", s.auth || "–");
   row(a, "IKE state", s.rawState || "–");
   row(a, "IKE generation", s.ikeGeneration != null ? String(s.ikeGeneration) : "–");
   row(a, "Child generation", s.childGeneration != null ? String(s.childGeneration) : "–");
@@ -282,6 +358,7 @@ async function loadStatus() {
 
 $("cfg-save").addEventListener("click", save);
 $("cfg-save2").addEventListener("click", save);
+$("cfg-auth").addEventListener("change", applyAuthVisibility);
 $("ips-connect").addEventListener("click", () => act("/api/v1/ipsec/connect", "Connect"));
 $("ips-disconnect").addEventListener("click", () => act("/api/v1/ipsec/disconnect", "Disconnect"));
 $("ips-reconnect").addEventListener("click", async () => {

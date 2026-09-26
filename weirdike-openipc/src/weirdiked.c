@@ -55,6 +55,7 @@
 #include "esp.h"
 #include "esp_session.h"
 #include "crypto_mbedtls.h"
+#include <mbedtls/x509_crt.h>   /* AP9: Linux host trust store (parse_path/parse_file) */
 
 #include "wd_config.h"
 #include "wd_net.h"
@@ -564,7 +565,9 @@ static void ctl_status(wd_daemon *d, char *buf, size_t cap)
              "esp_transport=udp4500\n"
              /* AP6: full-tunnel refusal is a fact the UI must see, not a
               * silent drop. */
-             "full_tunnel_refused=%s\n",
+             "full_tunnel_refused=%s\n"
+             /* AP9: auth mode (no secrets -- user/pw/PSK never appear). */
+             "auth=%s\n",
              state_name(d),
              d->cfg.gateway, (unsigned)d->cfg.port,
              d->cfg.ifname,
@@ -583,7 +586,8 @@ static void ctl_status(wd_daemon *d, char *buf, size_t cap)
              (unsigned long long)d->tx_drop_sel,
              (unsigned long long)d->rx_drop_sel,
              d->tr.active_port == 4500 ? "udp4500" : "udp500",
-             d->full_tunnel_refused ? "yes" : "no");
+             d->full_tunnel_refused ? "yes" : "no",
+             d->cfg.auth == 1 ? "eap-mschapv2" : "psk");
 
     /* AP6 §12: one "route=" line per owned route, tagged with its source, so
      * the status carries the INSTALLED truth (not the requested config). */
@@ -630,6 +634,31 @@ static void ctl_serve(wd_daemon *d)
 
 /* ------------------------------------------------------------------- startup */
 
+/* AP9: read a PEM file into a buffer. The buffer must be one byte larger than
+ * the content (NUL-terminated -- mbedTLS's PEM parser needs the terminator
+ * counted in the length). Public cert, but 0600 is required for consistent
+ * ownership with the rest of /etc/weirdike. */
+static int read_pem_file(const char *path, char *buf, size_t cap, size_t *out_len,
+                         char *err, size_t errcap)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) { snprintf(err, errcap, "cannot stat %s: %s", path, strerror(errno)); return -1; }
+    if (st.st_mode & (S_IRWXG | S_IRWXO)) {
+        snprintf(err, errcap, "%s is group/world accessible (mode %o) -- chmod 600 it",
+                 path, (unsigned)(st.st_mode & 07777));
+        return -1;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) { snprintf(err, errcap, "cannot open %s: %s", path, strerror(errno)); return -1; }
+    size_t n = fread(buf, 1, cap - 1, f);
+    int too_big = !feof(f);
+    fclose(f);
+    if (too_big) { snprintf(err, errcap, "%s larger than %u bytes", path, (unsigned)(cap - 1)); return -1; }
+    buf[n] = 0;
+    *out_len = n + 1;            /* mbedTLS counts the NUL */
+    return 0;
+}
+
 static int load_config(const char *path, wd_config *cfg, char *err, size_t errcap)
 {
     struct stat st;
@@ -655,7 +684,22 @@ static int load_config(const char *path, wd_config *cfg, char *err, size_t errca
 
     int rc = wd_config_parse(text, n, cfg, err, errcap);
     memset(text, 0, sizeof(text));          /* the PSK was in here */
-    return rc;
+    if (rc != 0) return rc;
+
+    /* AP9: the parser stays a pure buffer function; the PEM files are read
+     * HERE. They are public certificates, not secrets, but they still get the
+     * 0600 refusal via read_pem_file for consistency of ownership. */
+    if (cfg->ca_pem_file[0]) {
+        if (read_pem_file(cfg->ca_pem_file, cfg->ca_pem, sizeof(cfg->ca_pem),
+                          &cfg->ca_pem_len, err, errcap) != 0)
+            return -1;
+    }
+    if (cfg->extra_pem_file[0]) {
+        if (read_pem_file(cfg->extra_pem_file, cfg->extra_pem, sizeof(cfg->extra_pem),
+                          &cfg->extra_pem_len, err, errcap) != 0)
+            return -1;
+    }
+    return 0;
 }
 
 /* WeirdIKE deliberately offers no CIDR helper -- "hosts that need a specific
@@ -744,6 +788,43 @@ int main(int argc, char **argv)
     }
     weirdike_crypto_mbedtls_bind(&d.mbed, &d.crypto);
 
+    /* AP9: the Linux host trust store. Only needed for the HOST_STORE trust
+     * modes; parsed from the first CA directory/bundle that actually exists in
+     * THIS rootfs (never guessed, never downloaded). If none is present the
+     * store stays unset -- and the core then REFUSES a HOST_STORE mode at
+     * start rather than silently falling back. */
+    static mbedtls_x509_crt host_ca;    /* must outlive the adapter */
+    int host_store_ok = 0;
+    if (d.cfg.auth == 1 && (d.cfg.trust_mode == 1 || d.cfg.trust_mode == 2)) {
+        mbedtls_x509_crt_init(&host_ca);
+        static const char *cand_dir[]  = { "/etc/ssl/certs", NULL };
+        static const char *cand_file[] = { "/etc/ssl/certs/ca-certificates.crt",
+                                           "/etc/ssl/cert.pem", NULL };
+        for (int i = 0; cand_file[i] && !host_store_ok; i++)
+            if (mbedtls_x509_crt_parse_file(&host_ca, cand_file[i]) == 0) {
+                wd_log(LOG_NOTICE, "host trust store: %s", cand_file[i]);
+                host_store_ok = 1;
+            }
+        for (int i = 0; cand_dir[i] && !host_store_ok; i++)
+            if (mbedtls_x509_crt_parse_path(&host_ca, cand_dir[i]) == 0) {
+                wd_log(LOG_NOTICE, "host trust store: %s", cand_dir[i]);
+                host_store_ok = 1;
+            }
+        if (host_store_ok) {
+            weirdike_mbedtls_host_store_t hs;
+            memset(&hs, 0, sizeof(hs));
+            hs.ca_chain = &host_ca;
+            weirdike_crypto_mbedtls_set_host_store(&d.mbed, &hs);
+        } else {
+            /* Do NOT set the store. The core refuses HOST_STORE at start with a
+             * clear error -- that is the correct fail-closed behaviour. Warn so
+             * the operator sees why. */
+            wd_log(LOG_WARNING, "no system CA store in this image "
+                   "(/etc/ssl/certs, ca-certificates.crt, cert.pem) -- host-store "
+                   "trust mode will be refused; use an own CA (anchor-pem) instead");
+        }
+    }
+
     /* ---- sockets ---- */
     /* AP5: when the config pins an underlay, both sockets bind to that
      * concrete IP (and device). The transport then KNOWS its source without
@@ -774,9 +855,23 @@ int main(int argc, char **argv)
     memset(&wc, 0, sizeof(wc));
     wc.server_host      = d.cfg.gateway;
     wc.server_port      = d.cfg.port;
-    wc.auth             = WEIRDIKE_AUTH_PSK;
-    wc.psk              = d.cfg.psk;
-    wc.psk_len          = d.cfg.psk_len;
+    if (d.cfg.auth == 1) {
+        /* AP9: EAP-MSCHAPv2. The server authenticates with a certificate that
+         * must satisfy the chosen trust mode; we authenticate with user+pw. */
+        wc.auth             = WEIRDIKE_AUTH_EAP_MSCHAPV2;
+        wc.eap_identity     = (const uint8_t *)d.cfg.eap_user;
+        wc.eap_identity_len = strlen(d.cfg.eap_user);
+        wc.eap_password     = d.cfg.eap_password;
+        wc.eap_password_len = d.cfg.eap_password_len;
+        wc.trust_mode       = d.cfg.trust_mode;
+        wc.request_cp       = 1;                 /* pull IP/DNS/subnets via CP */
+        if (d.cfg.ca_pem_len)    { wc.ca_pem = d.cfg.ca_pem;       wc.ca_pem_len = d.cfg.ca_pem_len; }
+        if (d.cfg.extra_pem_len) { wc.extra_pem = d.cfg.extra_pem; wc.extra_pem_len = d.cfg.extra_pem_len; }
+    } else {
+        wc.auth             = WEIRDIKE_AUTH_PSK;
+        wc.psk              = d.cfg.psk;
+        wc.psk_len          = d.cfg.psk_len;
+    }
     wc.enable_nat_t     = d.cfg.nat_t;
     wc.child_lifetime_s = d.cfg.child_lifetime_s;
     wc.ike_lifetime_s   = d.cfg.ike_lifetime_s;

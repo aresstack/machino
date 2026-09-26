@@ -128,6 +128,57 @@ std::string psk_check(const std::string& psk)
     return {};
 }
 
+const char* auth_name(Auth a)
+{
+    switch (a) { case Auth::Psk: return "psk"; case Auth::EapMschapv2: return "eap-mschapv2"; }
+    return "psk";
+}
+bool auth_from_name(const std::string& s, Auth& out)
+{
+    if (s == "psk") out = Auth::Psk;
+    else if (s == "eap-mschapv2") out = Auth::EapMschapv2;
+    else return false;
+    return true;
+}
+
+const char* trust_mode_name(TrustMode t)
+{
+    switch (t) {
+        case TrustMode::AnchorPem: return "anchor-pem";
+        case TrustMode::HostStore: return "host-store";
+        case TrustMode::HostStorePlusPem: return "host-store-plus-pem";
+        case TrustMode::None: return "none";
+    }
+    return "host-store";
+}
+bool trust_mode_from_name(const std::string& s, TrustMode& out)
+{
+    if (s == "anchor-pem") out = TrustMode::AnchorPem;
+    else if (s == "host-store") out = TrustMode::HostStore;
+    else if (s == "host-store-plus-pem") out = TrustMode::HostStorePlusPem;
+    else if (s == "none") out = TrustMode::None;
+    else return false;
+    return true;
+}
+
+// AP9: eine "key = ..."-Zeile aus dem alten Daemon-Conf woertlich holen
+// (write-only-Weitertragen von psk und eap_password). key wird exakt am
+// Zeilenanfang gematcht, damit "psk" nicht "psk_foo" trifft.
+static std::string carry_line(const std::string& old_conf, const std::string& key)
+{
+    size_t pos = 0;
+    while (pos < old_conf.size()) {
+        size_t eol = old_conf.find('\n', pos);
+        std::string line = old_conf.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos);
+        pos = eol == std::string::npos ? old_conf.size() : eol + 1;
+        std::string t = trim(line);
+        size_t eq = t.find('=');
+        if (eq == std::string::npos) continue;
+        if (trim(t.substr(0, eq)) == key) return t + "\n";
+    }
+    return {};
+}
+
 std::string validate(const IpsecConfig& c)
 {
     if (!c.gateway.empty() && !host_ok(c.gateway))
@@ -146,6 +197,14 @@ std::string validate(const IpsecConfig& c)
     }
     if (c.enabled && c.remote_subnet.empty())
         return "remoteSubnet: erforderlich (AP6: 1..4 Split-Netze, komma-getrennt)";
+    // AP9: EAP braucht eine Identity; das Passwort/PEM pruefen die Service-
+    // Ebene (Presence) und der Daemon (Trust). eap_user ist FQDN/RFC822-artig.
+    if (c.auth == Auth::EapMschapv2) {
+        if (c.enabled && c.eap_user.empty())
+            return "eapUser: erforderlich fuer eap-mschapv2";
+        if (!c.eap_user.empty() && !id_ok(c.eap_user))
+            return "eapUser: unzulaessige Zeichen";
+    }
     if (c.dpd_interval_s < 0 || c.dpd_interval_s > 3600)
         return "dpdInterval: 0..3600";
     if (c.ike_lifetime_s > 86400u * 7) return "ikeLifetime: 0..604800";
@@ -177,6 +236,11 @@ std::string to_machino_conf(const IpsecConfig& c)
     s += "child_lifetime_s = " + std::to_string(c.child_lifetime_s) + "\n";
     s += "ike = aes256cbc,sha256,dh14\n";
     s += "esp = aes256cbc,sha256\n";
+    // AP9: Auth-Modell (ohne Secret): der PSK/das EAP-Passwort/das PEM leben
+    // NICHT in der machino-Datei.
+    s += "auth = " + std::string(auth_name(c.auth)) + "\n";
+    if (!c.eap_user.empty()) s += "eap_user = " + c.eap_user + "\n";
+    s += "trust_mode = " + std::string(trust_mode_name(c.trust_mode)) + "\n";
     return s;
 }
 
@@ -206,6 +270,9 @@ bool from_machino_conf(const std::string& text, IpsecConfig& out, std::string& e
         else if (k == "ike_lifetime_s") c.ike_lifetime_s = (uint32_t)strtoul(v.c_str(), nullptr, 10);
         else if (k == "child_lifetime_s") c.child_lifetime_s = (uint32_t)strtoul(v.c_str(), nullptr, 10);
         else if (k == "ike" || k == "esp") { /* informativ; die Menge ist geschlossen */ }
+        else if (k == "auth") { if (!auth_from_name(v, c.auth)) { err = "auth: '" + v + "'"; return false; } }
+        else if (k == "eap_user") c.eap_user = v;
+        else if (k == "trust_mode") { if (!trust_mode_from_name(v, c.trust_mode)) { err = "trust_mode: '" + v + "'"; return false; } }
         else { err = "unbekannter Schluessel: " + k; return false; }
     }
     const std::string ve = validate(c);
@@ -214,30 +281,24 @@ bool from_machino_conf(const std::string& text, IpsecConfig& out, std::string& e
     return true;
 }
 
-std::string to_weirdike_conf(const IpsecConfig& c, const std::string& psk,
-                             const std::string& old_daemon_conf, bool* psk_present,
-                             const SessionNet* net)
+std::string to_weirdike_conf(const IpsecConfig& c, const IpsecSecrets& secrets,
+                             const std::string& old_daemon_conf, bool* cred_present,
+                             const SessionNet* net,
+                             const std::string& ca_pem_file,
+                             const std::string& extra_pem_file)
 {
-    // PSK write-only: neuer Wert gewinnt; sonst den alten Zeilenwert
-    // unveraendert weitertragen (nur der Daemon liest ihn je wieder).
-    std::string psk_line;
-    if (!psk.empty()) {
-        psk_line = "psk = " + psk + "\n";
+    // Das aktive Secret write-only: neuer Wert gewinnt, sonst alten weitertragen.
+    std::string cred_line;
+    if (c.auth == Auth::EapMschapv2) {
+        cred_line = !secrets.eap_password.empty()
+                      ? "eap_password = " + secrets.eap_password + "\n"
+                      : carry_line(old_daemon_conf, "eap_password");
     } else {
-        size_t pos = 0;
-        while (pos < old_daemon_conf.size()) {
-            size_t eol = old_daemon_conf.find('\n', pos);
-            std::string line = old_daemon_conf.substr(
-                pos, eol == std::string::npos ? std::string::npos : eol - pos);
-            pos = eol == std::string::npos ? old_daemon_conf.size() : eol + 1;
-            std::string t = trim(line);
-            if (t.rfind("psk", 0) == 0 && t.find('=') != std::string::npos) {
-                psk_line = t + "\n";
-                break;
-            }
-        }
+        cred_line = !secrets.psk.empty()
+                      ? "psk = " + secrets.psk + "\n"
+                      : carry_line(old_daemon_conf, "psk");
     }
-    if (psk_present) *psk_present = !psk_line.empty();
+    if (cred_present) *cred_present = !cred_line.empty();
 
     std::string s;
     // Session-Pinnung: das VORAB aufgeloeste Gateway als Literal (der Daemon
@@ -245,7 +306,16 @@ std::string to_weirdike_conf(const IpsecConfig& c, const std::string& psk,
     // Peer-Hostroute des Service zeigt garantiert auf DIESELBE Adresse).
     s += "gateway = " + (net && !net->gateway_ip.empty() ? net->gateway_ip : c.gateway) + "\n";
     s += "port = " + std::to_string(c.port) + "\n";
-    s += psk_line;
+    s += "auth = " + std::string(auth_name(c.auth)) + "\n";
+    if (c.auth == Auth::EapMschapv2) {
+        if (!c.eap_user.empty()) s += "eap_user = " + c.eap_user + "\n";
+        s += cred_line;                                  // eap_password
+        s += "trust_mode = " + std::string(trust_mode_name(c.trust_mode)) + "\n";
+        if (!ca_pem_file.empty())    s += "ca_pem_file = " + ca_pem_file + "\n";
+        if (!extra_pem_file.empty()) s += "extra_pem_file = " + extra_pem_file + "\n";
+    } else {
+        s += cred_line;                                  // psk
+    }
     if (net && !net->bind_ip.empty())  s += "bind_ip = " + net->bind_ip + "\n";
     if (net && !net->bind_dev.empty()) s += "bind_dev = " + net->bind_dev + "\n";
     if (!c.local_id.empty())  s += "local_id = " + c.local_id + "\n";

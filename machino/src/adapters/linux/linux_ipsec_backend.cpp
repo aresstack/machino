@@ -9,6 +9,7 @@
 #include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -152,6 +153,19 @@ bool LinuxIpsecBackend::peer_route(const std::string& peer_ip, const std::string
     if (rc < 0) err = std::string(add ? "SIOCADDRT: " : "SIOCDELRT: ") + strerror(errno);
     ::close(s);
     return rc == 0;
+}
+
+bool LinuxIpsecBackend::host_store_available()
+{
+    // AP9: nur nachsehen, was DIESES RootFS mitbringt -- nie herunterladen.
+    // Dieselben Kandidaten wie im Daemon (der sie tatsaechlich parst).
+    static const char* cand[] = {
+        "/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem", "/etc/ssl/certs", nullptr };
+    for (int i = 0; cand[i]; i++) {
+        struct stat st;
+        if (::stat(cand[i], &st) == 0 && (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))) return true;
+    }
+    return false;
 }
 
 bool LinuxIpsecBackend::add_peer_route(const std::string& peer_ip, const std::string& ifname,

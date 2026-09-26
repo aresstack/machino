@@ -171,6 +171,31 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
             out->psk_len = pl;
             /* scrub the copy that lives in our stack line buffer */
             memset(v, 0, pl);
+        } else if (!strcmp(k, "auth")) {
+            if (!strcmp(v, "psk")) out->auth = 0;
+            else if (!strcmp(v, "eap-mschapv2")) out->auth = 1;
+            else { seterr(err, errcap, "bad auth (psk|eap-mschapv2)", NULL); return -1; }
+        } else if (!strcmp(k, "eap_user")) {
+            if (strlen(v) >= WD_MAX_ID) { seterr(err, errcap, "eap_user too long", NULL); return -1; }
+            snprintf(out->eap_user, sizeof(out->eap_user), "%s", v);
+        } else if (!strcmp(k, "eap_password")) {
+            size_t pl = strlen(v);
+            if (pl == 0 || pl > WD_MAX_PSK) { seterr(err, errcap, "eap_password missing or too long", NULL); return -1; }
+            memcpy(out->eap_password, v, pl);
+            out->eap_password_len = pl;
+            memset(v, 0, pl);          /* scrub the stack copy */
+        } else if (!strcmp(k, "trust_mode")) {
+            if (!strcmp(v, "anchor-pem")) out->trust_mode = 0;
+            else if (!strcmp(v, "host-store")) out->trust_mode = 1;
+            else if (!strcmp(v, "host-store-plus-pem")) out->trust_mode = 2;
+            else if (!strcmp(v, "none")) out->trust_mode = 3;
+            else { seterr(err, errcap, "bad trust_mode", NULL); return -1; }
+        } else if (!strcmp(k, "ca_pem_file")) {
+            if (strlen(v) >= sizeof(out->ca_pem_file)) { seterr(err, errcap, "ca_pem_file path too long", NULL); return -1; }
+            snprintf(out->ca_pem_file, sizeof(out->ca_pem_file), "%s", v);
+        } else if (!strcmp(k, "extra_pem_file")) {
+            if (strlen(v) >= sizeof(out->extra_pem_file)) { seterr(err, errcap, "extra_pem_file path too long", NULL); return -1; }
+            snprintf(out->extra_pem_file, sizeof(out->extra_pem_file), "%s", v);
         } else if (!strcmp(k, "local_id")) {
             if (strlen(v) >= WD_MAX_ID) { seterr(err, errcap, "local_id too long", NULL); return -1; }
             snprintf(out->local_id, sizeof(out->local_id), "%s", v);
@@ -242,7 +267,13 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
     }
 
     if (!out->gateway[0]) { seterr(err, errcap, "gateway is required", NULL); return -1; }
-    if (!out->psk_len)    { seterr(err, errcap, "psk is required", NULL); return -1; }
+    /* AP9: the required credential depends on the auth mode. */
+    if (out->auth == 1) {
+        if (!out->eap_user[0])     { seterr(err, errcap, "eap_user is required for eap-mschapv2", NULL); return -1; }
+        if (!out->eap_password_len){ seterr(err, errcap, "eap_password is required for eap-mschapv2", NULL); return -1; }
+    } else {
+        if (!out->psk_len)         { seterr(err, errcap, "psk is required", NULL); return -1; }
+    }
 
     (void)lineno;
     return 0;
@@ -253,4 +284,8 @@ void wd_config_wipe(wd_config *c)
     if (!c) return;
     memset(c->psk, 0, sizeof(c->psk));
     c->psk_len = 0;
+    /* AP9: the EAP password is a secret too. (ca/extra PEM are public, no wipe
+     * needed, but zeroing them is cheap and keeps the struct tidy.) */
+    memset(c->eap_password, 0, sizeof(c->eap_password));
+    c->eap_password_len = 0;
 }

@@ -182,11 +182,41 @@ static void t_multi_remote_subnet(void)
                 &c, err, sizeof(err)) == 0 && c.n_remote_ts == 1, "single still works");
 }
 
+static void t_eap_mschapv2(void)
+{
+    /* AP9: auth=eap-mschapv2 braucht eap_user+eap_password statt psk. */
+    wd_config c; char err[256];
+    CHECK(parse("gateway=a.b\nauth=eap-mschapv2\neap_user=u@x\neap_password=pw\n"
+                "trust_mode=host-store\n", &c, err, sizeof(err)) == 0, "eap config ok");
+    CHECK(c.auth == 1, "auth=eap parsed");
+    CHECK(strcmp(c.eap_user, "u@x") == 0, "eap_user parsed");
+    CHECK(c.eap_password_len == 2, "eap_password parsed");
+    CHECK(c.trust_mode == 1, "trust_mode=host-store");
+
+    /* eap ohne Passwort -> Fehler (nicht psk-Fehler). */
+    CHECK(parse("gateway=a.b\nauth=eap-mschapv2\neap_user=u@x\n",
+                &c, err, sizeof(err)) != 0, "eap without password refused");
+    /* eap braucht KEIN psk. */
+    CHECK(parse("gateway=a.b\nauth=eap-mschapv2\neap_user=u@x\neap_password=pw\n",
+                &c, err, sizeof(err)) == 0, "eap needs no psk");
+    /* psk-Modus braucht weiterhin psk. */
+    CHECK(parse("gateway=a.b\nauth=psk\n", &c, err, sizeof(err)) != 0, "psk mode still needs psk");
+    /* bad trust_mode benannt abgelehnt. */
+    CHECK(parse("gateway=a.b\nauth=eap-mschapv2\neap_user=u\neap_password=p\ntrust_mode=xxx\n",
+                &c, err, sizeof(err)) != 0, "bad trust_mode refused");
+    /* wipe loescht auch das EAP-Passwort. */
+    CHECK(parse("gateway=a.b\nauth=eap-mschapv2\neap_user=u\neap_password=secretpw\n",
+                &c, err, sizeof(err)) == 0, "eap parse for wipe");
+    wd_config_wipe(&c);
+    CHECK(c.eap_password_len == 0, "wipe cleared eap_password_len");
+}
+
 int main(void)
 {
     t_minimal();
     t_bind_underlay();
     t_multi_remote_subnet();
+    t_eap_mschapv2();
     t_required();
     t_unknown_key_is_an_error();
     t_hostname_validation();

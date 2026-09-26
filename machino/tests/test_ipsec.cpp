@@ -81,6 +81,10 @@ struct FakeUplinks : IIpsecUplinks {
     }
 };
 
+// AP9: set_config nimmt jetzt IpsecSecrets; die alten PSK-Tests reichen nur
+// den PSK.
+IpsecSecrets S(const std::string& psk) { IpsecSecrets s; s.psk = psk; return s; }
+
 IpsecConfig sample()
 {
     IpsecConfig c;
@@ -150,20 +154,21 @@ void test_psk_write_only_carry()
     // Erster Schreibvorgang traegt den PSK, der zweite (ohne PSK) MUSS ihn
     // unveraendert weitertragen -- und er darf nur in der Daemon-Datei stehen.
     bool present = false;
-    const std::string d1 = to_weirdike_conf(sample(), "s3cret-psk", "", &present);
+    const std::string d1 = to_weirdike_conf(sample(), S("s3cret-psk"), "", &present);
     ICHECK(present);
     ICHECK(d1.find("psk = s3cret-psk\n") != std::string::npos);
 
-    const std::string d2 = to_weirdike_conf(sample(), "", d1, &present);
+    const std::string d2 = to_weirdike_conf(sample(), S(""), d1, &present);
     ICHECK(present);
     ICHECK(d2.find("psk = s3cret-psk\n") != std::string::npos);
 
-    const std::string d3 = to_weirdike_conf(sample(), "", "", &present);
+    const std::string d3 = to_weirdike_conf(sample(), S(""), "", &present);
     ICHECK(!present);
-    ICHECK(d3.find("psk") == std::string::npos);
+    ICHECK(d3.find("psk =") == std::string::npos);
 
-    // Die machino-Datei kennt das Secret NICHT.
-    ICHECK(to_machino_conf(sample()).find("psk") == std::string::npos);
+    // Die machino-Datei kennt das Secret NICHT (die 'auth = psk'-Zeile ist
+    // KEIN Secret; die verbotene Zeile ist 'psk = <wert>').
+    ICHECK(to_machino_conf(sample()).find("psk =") == std::string::npos);
 }
 
 void test_service_persists_and_guards()
@@ -174,10 +179,10 @@ void test_service_persists_and_guards()
 
     // enabled=true ohne PSK: das Speichern wird abgelehnt, BEVOR etwas auf
     // der Platte landet.
-    ICHECK(!svc.set_config(sample(), "").empty());
+    ICHECK(!svc.set_config(sample(), S("")).empty());
     ICHECK(slurp(MCONF).empty());
 
-    ICHECK(svc.set_config(sample(), "s3cret-psk").empty());
+    ICHECK(svc.set_config(sample(), S("s3cret-psk")).empty());
     ICHECK(svc.psk_set());
     const std::string m = slurp(MCONF);
     ICHECK(!m.empty());
@@ -190,7 +195,7 @@ void test_service_persists_and_guards()
 
     // Speichern ohne neuen PSK laesst den alten stehen.
     IpsecConfig c3 = c2; c3.port = 4500;
-    ICHECK(svc.set_config(c3, "").empty());
+    ICHECK(svc.set_config(c3, S("")).empty());
     ICHECK(svc.psk_set());
     ICHECK(slurp(DCONF).find("psk = s3cret-psk") != std::string::npos);
 
@@ -208,7 +213,7 @@ void test_connect_disconnect()
     ICHECK(svc.disconnect().empty());
     ICHECK(be.starts == 0 && be.stops == 0);
 
-    ICHECK(svc.set_config(sample(), "s3cret-psk").empty());
+    ICHECK(svc.set_config(sample(), S("s3cret-psk")).empty());
     ICHECK(svc.connect().empty());
     ICHECK(be.starts == 1 && be.running);
     ICHECK(svc.connect().empty());          // schon verbunden: kein 2. Start
@@ -293,12 +298,12 @@ void test_review_findings()
     remove(MCONF); remove(DCONF);
     FakeBackend be;
     IpsecService svc(be, MCONF, DCONF);
-    ICHECK(!svc.set_config(sample(), "x\npsk-injection").empty());
+    ICHECK(!svc.set_config(sample(), S("x\npsk-injection")).empty());
     ICHECK(slurp(DCONF).empty());
 
     // Review-Fund 3: stirbt der Daemon zwischen zwei Aufrufen (ctl liefert
     // running=true, aber leeren Text), wird daraus KEIN failed fantasiert.
-    ICHECK(svc.set_config(sample(), "s3cret-psk").empty());
+    ICHECK(svc.set_config(sample(), S("s3cret-psk")).empty());
     be.running = true; be.status_text = "";
     ICHECK(svc.status().state == VpnState::Disconnected);
 
@@ -314,7 +319,7 @@ void test_ap5_underlay_binding()
 
     IpsecConfig c = sample();
     c.underlay = Underlay::Cellular;
-    ICHECK(svc.set_config(c, "s3cret-psk").empty());
+    ICHECK(svc.set_config(c, S("s3cret-psk")).empty());
 
     // cellular unbrauchbar: Connect VERWEIGERT, nichts gestartet, keine Route.
     up.cell.usable = false;
@@ -346,7 +351,7 @@ void test_ap5_underlay_binding()
 
     // ethernet gewuenscht: Socket an A, nicht B.
     c.underlay = Underlay::Ethernet;
-    ICHECK(svc.set_config(c, "").empty());
+    ICHECK(svc.set_config(c, S("")).empty());
     ICHECK(svc.connect().empty());
     d = slurp(DCONF);
     ICHECK(d.find("bind_ip = 10.0.0.5\n") != std::string::npos);
@@ -372,7 +377,7 @@ void test_ap5_underlay_loss()
 
     IpsecConfig c = sample();
     c.underlay = Underlay::Cellular;
-    ICHECK(svc.set_config(c, "s3cret-psk").empty());
+    ICHECK(svc.set_config(c, S("s3cret-psk")).empty());
     ICHECK(svc.connect().empty());
     be.status_text = "state=CHILD_SA_ESTABLISHED\n";
 
@@ -437,7 +442,7 @@ void test_ap6_routes_and_full_tunnel()
     // parst die Kommas).
     c.remote_subnet = "192.168.178.0/24,10.20.0.0/16";
     bool present = false;
-    const std::string d = to_weirdike_conf(c, "s3cret-psk", "", &present);
+    const std::string d = to_weirdike_conf(c, S("s3cret-psk"), "", &present);
     ICHECK(d.find("remote_subnet = 192.168.178.0/24,10.20.0.0/16\n") != std::string::npos);
 }
 
@@ -455,7 +460,7 @@ void test_ap7_lifecycle()
     FakeBackend be; FakeUplinks up;
     IpsecService svc(be, MCONF, DCONF, &up);
     IpsecConfig c = sample(); c.underlay = Underlay::Cellular;
-    ICHECK(svc.set_config(c, "s3cret-psk").empty());
+    ICHECK(svc.set_config(c, S("s3cret-psk")).empty());
     ICHECK(svc.connect().empty());
     be.status_text = "state=CHILD_SA_ESTABLISHED\nchild_generation=1\n"
                      "route=10.66.0.0/24 tsr ipsec0\n";
@@ -515,7 +520,7 @@ void test_ap7_terminal_no_reconnect()
     FakeBackend be; FakeUplinks up;
     IpsecService svc(be, MCONF, DCONF, &up);
     IpsecConfig c = sample(); c.underlay = Underlay::Cellular;
-    ICHECK(svc.set_config(c, "s3cret-psk").empty());
+    ICHECK(svc.set_config(c, S("s3cret-psk")).empty());
     ICHECK(svc.connect().empty());
 
     // Daemon meldet FAILED (z.B. DPD/Peer weg) -> Abbau + Reconnect geplant.
@@ -533,11 +538,93 @@ void test_ap7_terminal_no_reconnect()
     remove(MCONF); remove(DCONF);
 }
 
+void test_ap9_eap_mschapv2()
+{
+    // Auth/Trust-Namen matchen die WeirdIKE-Typen.
+    Auth a; TrustMode t;
+    ICHECK(auth_from_name("eap-mschapv2", a) && a == Auth::EapMschapv2);
+    ICHECK(!auth_from_name("kerberos", a));
+    ICHECK(trust_mode_from_name("host-store", t) && t == TrustMode::HostStore);
+    ICHECK(trust_mode_from_name("anchor-pem", t) && t == TrustMode::AnchorPem);
+    ICHECK(!trust_mode_from_name("trust-me", t));
+
+    // validate: EAP braucht eine Identity, wenn enabled.
+    IpsecConfig c = sample();
+    c.auth = Auth::EapMschapv2; c.eap_user.clear();
+    ICHECK(validate(c).find("eapUser") != std::string::npos);
+    c.eap_user = "user@example";
+    ICHECK(validate(c).empty());
+
+    // machino-Datei traegt auth/eap_user/trust_mode, aber NIE ein Passwort.
+    c.trust_mode = TrustMode::AnchorPem;
+    const std::string m = to_machino_conf(c);
+    ICHECK(m.find("auth = eap-mschapv2") != std::string::npos);
+    ICHECK(m.find("eap_user = user@example") != std::string::npos);
+    ICHECK(m.find("trust_mode = anchor-pem") != std::string::npos);
+    ICHECK(m.find("eap_password") == std::string::npos);
+
+    // Daemon-Datei: eap_password write-only (neu -> carry), plus trust_mode
+    // und die PEM-Pfade nur bei EAP.
+    IpsecSecrets sec; sec.eap_password = "s3cret-pw";
+    bool present = false;
+    const std::string d1 = to_weirdike_conf(c, sec, "", &present, nullptr,
+                                            "/etc/weirdike/ca.pem", "");
+    ICHECK(present);
+    ICHECK(d1.find("auth = eap-mschapv2") != std::string::npos);
+    ICHECK(d1.find("eap_password = s3cret-pw\n") != std::string::npos);
+    ICHECK(d1.find("trust_mode = anchor-pem") != std::string::npos);
+    ICHECK(d1.find("ca_pem_file = /etc/weirdike/ca.pem") != std::string::npos);
+    ICHECK(d1.find("psk =") == std::string::npos);      // kein PSK bei EAP
+
+    // Zweiter Schreibvorgang ohne neues Passwort traegt das alte weiter.
+    IpsecSecrets empty;
+    const std::string d2 = to_weirdike_conf(c, empty, d1, &present, nullptr, "", "");
+    ICHECK(present);
+    ICHECK(d2.find("eap_password = s3cret-pw\n") != std::string::npos);
+
+    // Service: EAP-Presence, PEM 0600-Dateien, connect braucht user+password.
+    remove(MCONF); remove(DCONF); remove("ca.pem"); remove("extra.pem");
+    FakeBackend be; FakeUplinks up;
+    IpsecService svc(be, MCONF, DCONF, &up);
+    IpsecConfig ec = sample(); ec.underlay = Underlay::Cellular;
+    ec.auth = Auth::EapMschapv2; ec.eap_user = "user@example";
+    ec.trust_mode = TrustMode::AnchorPem;
+
+    // enabled ohne Passwort: abgelehnt, bevor etwas persistiert.
+    ICHECK(!svc.set_config(ec, IpsecSecrets{}).empty());
+
+    IpsecSecrets s2; s2.eap_password = "s3cret-pw"; s2.ca_pem = "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n";
+    ICHECK(svc.set_config(ec, s2).empty());
+    ICHECK(svc.eap_password_set());
+    ICHECK(svc.ca_pem_set());
+    ICHECK(!svc.psk_set());
+    // Secret nie in der machino-Datei.
+    ICHECK(slurp(MCONF).find("s3cret-pw") == std::string::npos);
+    ICHECK(slurp(DCONF).find("eap_password = s3cret-pw") != std::string::npos);
+
+    // connect: EAP-Pfad. (Kein PSK noetig.)
+    ICHECK(svc.connect().empty());
+    ICHECK(be.running);
+    ICHECK(svc.disconnect().empty());
+
+    // Ein EAP-Config OHNE gesetztes Passwort (frische Dateien) -> connect
+    // verweigert mit klarer Meldung, kein stiller PSK-Fallback.
+    remove(MCONF); remove(DCONF);
+    IpsecService svc2(be, MCONF, DCONF, &up);
+    ICHECK(svc2.set_config(ec, s2).empty());
+    remove(DCONF);                                   // Passwort weg
+    ICHECK(svc2.connect() == "kein EAP-Passwort gesetzt");
+
+    remove(MCONF); remove(DCONF);
+    remove("ca.pem"); remove("extra.pem");   // ca_pem_path_ liegt neben DCONF (hier: cwd)
+}
+
 } // namespace
 
 void run_ipsec_tests()
 {
     test_review_findings();
+    test_ap9_eap_mschapv2();
     test_ap5_underlay_binding();
     test_ap5_underlay_loss();
     test_ap6_routes_and_full_tunnel();
