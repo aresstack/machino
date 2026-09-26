@@ -25,7 +25,7 @@ TARGET  := machino-nna
 # hauseigene Toolchain setzt es per Default, die k1-discovery-Auslieferung
 # desselben gcc720 nicht.
 CXXFLAGS := -std=c++11 -muclibc -mfp64 -mnan=2008 -mabs=2008 -Wall -EL -O2 \
-            -march=mips32r2 -mmxu3-ext-abi -flax-vector-conversions -D_GNU_SOURCE \
+            -march=mips32r2 -mmxu3 -mmxu3-ext-abi -flax-vector-conversions -D_GNU_SOURCE \
             -I$(INFERENCEKIT)/include
 LDFLAGS  := -muclibc -static
 LIBS     := -L$(INFERENCEKIT)/lib/uclibc -lvenus -lpthread -lrt -ldl -lm

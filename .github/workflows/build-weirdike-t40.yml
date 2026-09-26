@@ -37,7 +37,13 @@ jobs:
           mkdir -p build/obj
           for f in vendor/weirdike/*.c; do
             case "$f" in *crypto_mbedtls.c) continue;; esac
-            gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-parameter -Os -D_GNU_SOURCE \
+            # -Wno-format-truncation: ts_str() in weirdike.c formatiert eine
+            # Traffic-Selector-Beschreibung in einen bewusst knappen Puffer;
+            # gcc-12+ meldet die MOEGLICHE Trunkierung als Fehler. Vendor-Code
+            # wird nicht in-place editiert (PINNED_COMMIT-Regel), also traegt
+            # der Pruefschritt das Flag -- unsere eigenen src/ bleiben strikt.
+            gcc -std=c99 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-format-truncation \
+                -Os -D_GNU_SOURCE \
                 -Ivendor/weirdike -c "$f" -o "build/obj/$(basename "$f" .c).o"
           done
           echo "core objects: $(ls build/obj/*.o | wc -l)"
