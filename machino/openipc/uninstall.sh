@@ -112,6 +112,17 @@ rm -f "$ROOT/usr/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-wifi-role"
 # Der NNA-Helfer geht mit; die Modelle unter /etc/machino/models BLEIBEN --
 # Nutzdaten des Betreibers, dieselbe Regel wie /etc/machino/payload.
 rm -f "$ROOT/usr/sbin/machino-nna"
+# WeirdIKE: Daemon, ctl, Initskript und Seite gehen mit; die Config mit dem
+# PSK bleibt (Betreibergeheimnis, wie die Modelle). Die tun-Zeile in
+# /etc/modules war unsere -- exakt sie wird entfernt.
+if [ -x "$ROOT/etc/init.d/S99weirdike" ]; then run_live "$ROOT/etc/init.d/S99weirdike" stop; fi
+rm -f "$ROOT/usr/sbin/weirdiked" "$ROOT/usr/sbin/weirdikectl"
+rm -f "$ROOT/etc/init.d/S99weirdike" "$WWW/cgi-bin/ipsec.cgi"
+rm -f "$ROOT/etc/weirdike/weirdike.conf.example"
+if [ -f "$ROOT/etc/modules" ] && grep -qx tun "$ROOT/etc/modules" 2>/dev/null; then
+    grep -vx tun "$ROOT/etc/modules" > "$ROOT/etc/modules.new" &&
+        mv "$ROOT/etc/modules.new" "$ROOT/etc/modules"
+fi
 rm -f "$ROOT/usr/sbin/machino-dyndns" "$ROOT/etc/machino/dyndns.conf"
 rm -f "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
 

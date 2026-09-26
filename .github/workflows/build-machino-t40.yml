@@ -128,7 +128,7 @@ jobs:
         run: |
           set -u
           mkdir -p wifi-payload
-          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml build-nna-t40.yml; do
+          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml build-nna-t40.yml build-weirdike-t40.yml; do
             id=$(gh run list --workflow "$wf" --status success --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
             if [ -z "${id:-}" ] || [ "$id" = "null" ]; then
               echo "::warning::no successful run of $wf to take a payload from"
@@ -210,6 +210,16 @@ jobs:
           # einkompiliert. ip-up sagt machino, wie das Interface heisst.
           cp -f machino/openipc/ppp-ip-up.script             "$O/ppp-ip-up.script"
           cp -f machino/openipc/ppp-ip-down.script           "$O/ppp-ip-down.script"
+          # IPsec (WeirdIKE): eigener Daemon, eigenes Paket -- install.sh
+          # installiert NUR mit --with-weirdike. Best effort wie alles hier.
+          _wd=$(find wifi-payload/build-weirdike-t40.yml -type d -name 'weirdike-openipc-t40' 2>/dev/null | head -1)
+          if [ -n "$_wd" ]; then
+            mkdir -p "$O/weirdike"
+            cp -f "$_wd"/weirdiked "$_wd"/weirdikectl "$_wd"/S99weirdike \
+                  "$_wd"/ipsec.cgi "$_wd"/weirdike.conf.example "$O/weirdike/" 2>/dev/null || true
+            echo "weirdike bundled"
+          fi
+
           # NNA (KI): Helfer + Modell, best effort wie alle Nutzlasten.
           # install.sh installiert sie NUR mit --with-nna-payload -- mehrere
           # MB auf einem fast vollen Overlay sind eine Entscheidung.

@@ -74,6 +74,13 @@ FAKE
     mkdir -p "$B/nna"
     printf 'fake-machino-nna\n' > "$B/nna/machino-nna"
     printf 'fake-magik-model\n' > "$B/nna/yolov5s_t40_magik.bin"
+    # WeirdIKE (IPsec), NUR mit --with-weirdike.
+    mkdir -p "$B/weirdike"
+    printf 'fake-weirdiked\n'    > "$B/weirdike/weirdiked"
+    printf 'fake-weirdikectl\n'  > "$B/weirdike/weirdikectl"
+    printf '#!/bin/sh\nexit 0\n' > "$B/weirdike/S99weirdike"
+    printf 'fake-ipsec-page\n'   > "$B/weirdike/ipsec.cgi"
+    printf 'gateway = x\n'       > "$B/weirdike/weirdike.conf.example"
     # Die WLAN-Nutzlast so, wie das Release-Artefakt sie traegt: Treiber,
     # Firmware und hostapd unter wifi/. Sie wird per Default installiert und
     # ist ohne usb.wifi.enabled=true wirkungslos.
@@ -797,6 +804,32 @@ has "model installed on request"        "$WORK/root/etc/machino/models/yolov5s_t
 run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
 hasnt "NNA helper removed again"        "$WORK/root/usr/sbin/machino-nna"
 has "models survive the uninstall"      "$WORK/root/etc/machino/models/yolov5s_t40_magik.bin"
+
+# IPsec (WeirdIKE): eigener Daemon, nur auf Wunsch. Die Betreiber-Config
+# (PSK!) wird nie angefasst und ueberlebt ein Deinstallieren; die tun-Zeile
+# in /etc/modules kommt mit dem Paket und geht mit ihm.
+make_bundle; make_camera auto
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
+hasnt "no weirdiked by default"        "$WORK/root/usr/sbin/weirdiked"
+make_bundle; make_camera auto
+run_install --with-weirdike || bad "--with-weirdike was refused: $(cat "$WORK/out")"
+has "weirdiked installed on request"   "$WORK/root/usr/sbin/weirdiked"
+has "weirdikectl installed"            "$WORK/root/usr/sbin/weirdikectl"
+has "S99weirdike installed"            "$WORK/root/etc/init.d/S99weirdike"
+has "ipsec page installed"             "$WORK/root/var/www/cgi-bin/ipsec.cgi"
+has "conf example installed"           "$WORK/root/etc/weirdike/weirdike.conf.example"
+if grep -qx tun "$WORK/root/etc/modules" 2>/dev/null; then ok
+else bad "tun line missing from /etc/modules"; fi
+# Eine echte Betreiber-Config anlegen: sie muss den Uninstall ueberleben.
+printf 'gateway = real\npsk = secret\n' > "$WORK/root/etc/weirdike/weirdike.conf"
+run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
+hasnt "weirdiked removed again"        "$WORK/root/usr/sbin/weirdiked"
+hasnt "S99weirdike removed again"      "$WORK/root/etc/init.d/S99weirdike"
+hasnt "ipsec page removed again"       "$WORK/root/var/www/cgi-bin/ipsec.cgi"
+has "operator config survives"         "$WORK/root/etc/weirdike/weirdike.conf"
+if grep -qx tun "$WORK/root/etc/modules" 2>/dev/null; then
+    bad "tun line not removed from /etc/modules"
+else ok; fi
 
 # Switching the radio on while refusing its driver is not a configuration,
 # it is a boot that fails. It has to be refused up front.

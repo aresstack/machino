@@ -126,7 +126,7 @@ EOF
 }
 
 cmd_install() {
-    owner=cam-tool; platform=""; pages=0; nowifi=0; nocell=0; withnna=0
+    owner=cam-tool; platform=""; pages=0; nowifi=0; nocell=0; withnna=0; withweirdike=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --owner)    shift; owner="${1:-cam-tool}" ;;
@@ -148,6 +148,7 @@ cmd_install() {
             --without-wifi-payload)     nowifi=1 ;;
             --without-cellular-payload) nocell=1 ;;
             --with-nna-payload)         withnna=1 ;;
+            --with-weirdike)            withweirdike=1 ;;
             --minimal)                  nowifi=1; nocell=1 ;;
             *) die "install: unknown option '$1'" ;;
         esac
@@ -211,6 +212,7 @@ cmd_install() {
     [ "$nowifi" = "1" ] && _pageopts="$_pageopts --without-wifi-payload"
     [ "$nocell" = "1" ] && _pageopts="$_pageopts --without-cellular-payload"
     [ "${withnna:-0}" = "1" ] && _pageopts="$_pageopts --with-nna-payload"
+    [ "${withweirdike:-0}" = "1" ] && _pageopts="$_pageopts --with-weirdike"
     # shellcheck disable=SC2086 -- feste Schalter, kein Benutzertext
     MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" $_pageopts || die "install.sh failed"
 
@@ -317,7 +319,7 @@ case "${1:-}" in
         cat >&2 <<EOF
 usage: machino-manager <command>
   install [--owner NAME] [--platform P] [--with-pages]
-          [--without-wifi-payload] [--without-cellular-payload] [--with-nna-payload] [--minimal]
+          [--without-wifi-payload] [--without-cellular-payload] [--with-nna-payload] [--with-weirdike] [--minimal]
             --with-pages: also add the machino entries to the stock WebUI
             menu. OFF by default - the deploy does not touch OpenIPC's
             files. The pages are reachable at /cgi-bin/machino-usb.cgi and
@@ -330,6 +332,8 @@ usage: machino-manager <command>
             --with-nna-payload: install the NNA inference helper and any
             bundled detection model (several MB; OFF by default). Also
             passed straight to install.sh.
+            --with-weirdike: install the IKEv2/IPsec client (weirdiked).
+            OFF by default; idle until /etc/weirdike/weirdike.conf exists.
   uninstall [--owner NAME] [--force]
   status        machine-readable JSON: state = OFF|ON|BROKEN|EXTERNAL
 EOF

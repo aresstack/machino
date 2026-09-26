@@ -33,6 +33,9 @@ WITH_CELL_PAYLOAD=1
 # Mehrere MB Helfer+Modell auf einem fast vollen Overlay sind eine
 # Entscheidung, kein Default.
 WITH_NNA_PAYLOAD=0
+# IPsec (WeirdIKE) genauso: ein eigener Daemon mit eigenem Initskript und
+# einem Preshared-Key in der Config -- ein VPN ist eine Entscheidung.
+WITH_WEIRDIKE=0
 
 # Der eine Schalter fuer den einen Port. Leer heisst "nicht angefasst": eine
 # Neuinstallation ueber eine bestehende hinweg darf die Wahl des Betreibers
@@ -122,6 +125,13 @@ only works after someone has copied files over by SSH is not a switch.
                         nearly full -- AI is an explicit choice, and the AI
                         page can free the space (majestic backup) first.
 
+  --with-weirdike       install the IKEv2/IPsec client (weirdiked, weirdikectl,
+                        S99weirdike, the ipsec.cgi status page). OFF by
+                        default. The daemon does not start until you create
+                        /etc/weirdike/weirdike.conf (mode 0600, see the
+                        installed .example); a missing or broken VPN never
+                        touches the video path. Loads the tun module at boot.
+
   --with-access-point   accepted and ignored; hostapd is part of the default
                         payload now. Kept so existing install commands and
                         scripts do not break.
@@ -145,6 +155,7 @@ EOF
         --without-wifi-payload) WITH_WIFI_PAYLOAD=0 ;;
         --without-cellular-payload) WITH_CELL_PAYLOAD=0 ;;
         --with-nna-payload) WITH_NNA_PAYLOAD=1 ;;
+        --with-weirdike) WITH_WEIRDIKE=1 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -754,6 +765,33 @@ if [ "$WITH_NNA_PAYLOAD" = "1" ]; then
     # ist oeffentlich noch nicht gefunden (OpenIPC #2031), und Binaermodule
     # gehoeren erst nach der Hardware-Abnahme hinein. Die KI-Seite zeigt den
     # Zustand ehrlich an.
+fi
+
+# ------------------------------------------------------ IPsec (WeirdIKE) ---
+#
+# Eigener Daemon, eigenes Initskript, eigenes Paket -- Machino enthaelt
+# keinerlei VPN-Code (weirdike-openipc/README). Nur auf Wunsch. Die Config
+# mit dem PSK legt der Betreiber selbst an; installiert wird nur das
+# .example daneben, eine vorhandene Config wird NIE angefasst.
+if [ "$WITH_WEIRDIKE" = "1" ]; then
+    [ -r "$HERE/weirdike/weirdiked" ] ||
+        die "--with-weirdike, but the bundle carries no weirdike/weirdiked (see build-weirdike-t40)"
+    put 0755 "$HERE/weirdike/weirdiked"   "$ROOT/usr/sbin/weirdiked"   || die "cannot install weirdiked"
+    put 0755 "$HERE/weirdike/weirdikectl" "$ROOT/usr/sbin/weirdikectl" || die "cannot install weirdikectl"
+    put 0755 "$HERE/weirdike/S99weirdike" "$ROOT/etc/init.d/S99weirdike" || die "cannot install S99weirdike"
+    if [ -r "$HERE/weirdike/ipsec.cgi" ]; then
+        put 0755 "$HERE/weirdike/ipsec.cgi" "$CGI/ipsec.cgi" || die "cannot install ipsec.cgi"
+    fi
+    mkdir -p "$ROOT/etc/weirdike"
+    put 0600 "$HERE/weirdike/weirdike.conf.example" "$ROOT/etc/weirdike/weirdike.conf.example" ||
+        die "cannot install weirdike.conf.example"
+    # Userspace-ESP laeuft ueber TUN; das Modul liegt im Image, wird aber
+    # nicht geladen. Eine Zeile in /etc/modules laedt es bei S35modules --
+    # idempotent, und der Uninstaller entfernt genau diese Zeile wieder.
+    if ! grep -qx tun "$ROOT/etc/modules" 2>/dev/null; then
+        echo tun >> "$ROOT/etc/modules" || die "cannot add tun to /etc/modules"
+    fi
+    say "installed weirdike (daemon idle until /etc/weirdike/weirdike.conf exists, mode 0600)"
 fi
 
 # ---------------------------------------------------------- USB-Auswahl ---
