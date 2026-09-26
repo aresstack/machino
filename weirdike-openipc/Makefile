@@ -28,10 +28,13 @@ CFLAGS  += -std=c99 -Os -Wall -Wextra -Wno-unused-parameter \
            -I$(VENDOR) -I$(SRC)
 ifneq ($(MBEDTLS),)
 CFLAGS  += -I$(MBEDTLS)/include
-LDFLAGS += -L$(MBEDTLS)/library
+# fetch-mbedtls.sh (der gemeinsame Pin mit machino) baut EIN Archiv
+# libmbedall-<cc>.a im mbedTLS-Wurzelverzeichnis -- es gibt dort kein
+# library/libmbedcrypto.a. Der alte -L/library-Pfad linkte gegen Dateien,
+# die nie existieren (roter Cross-Build 2026-09-26).
+LIBS    += $(MBEDTLS)/libmbedall-$(notdir $(CC)).a
 endif
 LDFLAGS += -Wl,--gc-sections
-LIBS    += -lmbedcrypto -lmbedx509
 
 # Hardening: the whole point of this binary is to be exposed to a hostile
 # network, so it gets the flags the platform supports.

@@ -61,9 +61,10 @@ jobs:
       - name: "Cross-build weirdiked and weirdikectl"
         run: |
           TC=$(ls -d toolchain/xburst2-musl/*/bin | head -1)
+          set -o pipefail
           make -C weirdike-openipc -j"$(nproc)" \
             MBEDTLS="$PWD/3p/mbedtls-3.6.7" \
-            CROSS_COMPILE="$PWD/$TC/mipsel-linux-"
+            CROSS_COMPILE="$PWD/$TC/mipsel-linux-" 2>&1 | tee /tmp/weirdike-build.log
           make -C weirdike-openipc \
             MBEDTLS="$PWD/3p/mbedtls-3.6.7" \
             CROSS_COMPILE="$PWD/$TC/mipsel-linux-" strip
@@ -110,3 +111,13 @@ jobs:
         with:
           name: weirdike-openipc-t40
           path: bundle/weirdike-openipc-t40
+
+      # Build-Log als Artefakt, GERADE im Fehlerfall: Job-Logs brauchen ein
+      # Token, Artefakte via nightly.link nicht (dieselbe Lehre wie beim
+      # machino- und beim nna-Build).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: weirdike-build-log
+          path: /tmp/weirdike-build.log
+          if-no-files-found: ignore
