@@ -4,6 +4,7 @@
 // silent helper degrades to timeouts/errors and a respawn after backoff --
 // and none of it ever blocks start() on a model load.
 #include "core/detection/nna_detector.hpp"
+#include "core/detection/nna_manifest.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -275,6 +276,33 @@ void test_missing_helper_is_not_installed_not_a_crash() {
     NCHECK(r.proc.spawns >= 2);
 }
 
+void test_model_manifest_gate() {
+    // Ein gueltiges Manifest, wie die CI es erzeugt.
+    const std::string good =
+        "{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\","
+        "\"soc\":\"t40nn\",\"modelFile\":\"yolov5s_t40_magik.bin\"}";
+    NnaManifestCheck c = nna_manifest_check(good, "yolov5s_t40_magik.bin");
+    NCHECK(c.ok);
+
+    // Jede Ablehnung traegt ihren STABILEN Code -- "incompatible" ohne Warum
+    // war der ausdruecklich verbotene Zustand.
+    c = nna_manifest_check("{nicht json", "m.bin");
+    NCHECK(!c.ok && c.reason_code == "AI_MANIFEST_INVALID");
+    c = nna_manifest_check("{\"schemaVersion\":2,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\"}", "m.bin");
+    NCHECK(!c.ok && c.reason_code == "AI_MANIFEST_INVALID");
+    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"tflite\",\"nnaGeneration\":\"nna1\"}", "m.bin");
+    NCHECK(!c.ok && c.reason_code == "AI_MODEL_INCOMPATIBLE_BACKEND");
+    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna2\"}", "m.bin");
+    NCHECK(!c.ok && c.reason_code == "AI_MODEL_INCOMPATIBLE_NNA");
+    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\",\"soc\":\"t41\"}", "m.bin");
+    NCHECK(!c.ok && c.reason_code == "AI_MODEL_INCOMPATIBLE_SOC");
+    c = nna_manifest_check(good, "andere.bin");
+    NCHECK(!c.ok && c.reason_code == "AI_MODEL_FILE_MISMATCH");
+    // soc leer = jede Plattform dieser Generation.
+    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\"}", "m.bin");
+    NCHECK(c.ok);
+}
+
 } // namespace
 
 void run_nna_detector_tests() {
@@ -284,5 +312,6 @@ void run_nna_detector_tests() {
     test_load_error_and_ready_timeout_fail_closed();
     test_malformed_lines_never_crash();
     test_start_stop_start_cycles_cleanly();
+    test_model_manifest_gate();
     test_missing_helper_is_not_installed_not_a_crash();
 }

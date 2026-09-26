@@ -3,6 +3,7 @@
 #include "adapters/ingenic/detection/nna_source.hpp"
 #include "adapters/linux/linux_nna_process.hpp"
 #include "core/detection/nna_detector.hpp"
+#include "core/detection/nna_manifest.hpp"
 #include "core/log.hpp"
 #include "core/runtime_stats.hpp"
 #include "adapters/ingenic/ingenic_encoder.hpp"
@@ -163,18 +164,48 @@ std::unique_ptr<IDetector> IngenicPlatform::create_detector(int chn, const Detec
         // ohne Warum war beim WLAN der Zeitfresser. Der Geraeteknoten zuerst --
         // ohne nmem-Bootarg und soc-nna.ko gibt es ihn nicht, und ein Helfer,
         // der dann im Backoff gegen ENODEV anrennt, waere nur Laerm.
+        // Stabile Reason-Codes (AP-NNA4 §20): "unavailable" ohne Warum war der
+        // verbotene Zustand. Die KI-Seite und der Log sprechen dieselben Codes.
         if (::access("/dev/soc-nna", F_OK) != 0) {
-            LOGW(MOD, "person: /dev/soc-nna fehlt - nmem-Bootarg gesetzt und soc-nna.ko geladen? (Cam-Tool: NNA-Patch)");
+            LOGW(MOD, "person: NNA_DEVICE_MISSING - /dev/soc-nna fehlt (nmem-Bootarg gesetzt und soc-nna.ko geladen? Cam-Tool: NNA-Dialog)");
             return nullptr;
         }
         if (::access(kNnaHelperPath, X_OK) != 0) {
-            LOGW(MOD, "person: %s fehlt - NNA-Payload nicht installiert", kNnaHelperPath);
+            LOGW(MOD, "person: NNA_RUNTIME_MISSING - %s fehlt (NNA-Payload nicht installiert)", kNnaHelperPath);
             return nullptr;
         }
         if (p.model_path.empty() || ::access(p.model_path.c_str(), R_OK) != 0) {
-            LOGW(MOD, "person: Modell '%s' nicht lesbar - ai.model_path pruefen (Seite AI, /etc/machino/models)",
+            LOGW(MOD, "person: AI_MODEL_MISSING - Modell '%s' nicht lesbar (ai.model_path pruefen, Seite AI)",
                  p.model_path.c_str());
             return nullptr;
+        }
+        // Manifest-Gate: liegt neben dem Modell ein manifest.json, MUSS es zu
+        // Backend/NNA-Generation/SoC/Dateiname passen. Fehlt es, bleibt die
+        // nackte .bin nutzbar (Entwicklungsmodus) -- gesagt wird es.
+        {
+            const size_t slash = p.model_path.find_last_of('/');
+            const std::string dir =
+                slash == std::string::npos ? std::string(".") : p.model_path.substr(0, slash);
+            const std::string base =
+                slash == std::string::npos ? p.model_path : p.model_path.substr(slash + 1);
+            const std::string mpath = dir + "/manifest.json";
+            if (FILE* mf = ::fopen(mpath.c_str(), "rb")) {
+                std::string text;
+                char buf[512];
+                size_t n;
+                while ((n = ::fread(buf, 1, sizeof buf, mf)) > 0 && text.size() < 65536)
+                    text.append(buf, n);
+                ::fclose(mf);
+                const detection::NnaManifestCheck chk =
+                    detection::nna_manifest_check(text, base);
+                if (!chk.ok) {
+                    LOGW(MOD, "person: %s - %s (%s)", chk.reason_code.c_str(),
+                         chk.detail.c_str(), mpath.c_str());
+                    return nullptr;
+                }
+            } else {
+                LOGI(MOD, "person: kein manifest.json neben dem Modell - Entwicklungsmodus, keine Kompatibilitaetspruefung");
+            }
         }
         // Analysegeometrie wie beim Motion-Backend: ~640 breit, Seitenverhaeltnis
         // vom Sensor; das Letterboxing auf die Modellgeometrie macht der Helfer.
