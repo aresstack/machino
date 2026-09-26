@@ -467,7 +467,15 @@ Json ApiService::telemetry_json() {
         a.set("inference_fps_requested", Json::integer(ai.requested_fps));
         a.set("effective_fps", ai.effective_fps > 0.0 ? Json::number(ai.effective_fps) : Json::null());
         a.set("completed", Json::integer((long long)ai.completed));
+        a.set("skipped", Json::integer((long long)ai.skipped));
         a.set("failed", Json::integer((long long)ai.failed));
+        // Nur wenn gemessen (NNA-Helfer-Umlauf); IVS kennt seine Dauer nicht.
+        a.set("last_infer_duration_ms", ai.last_infer_duration_ms >= 0
+                                            ? Json::integer(ai.last_infer_duration_ms)
+                                            : Json::null());
+        a.set("avg_infer_duration_ms", ai.avg_infer_duration_ms > 0.0
+                                           ? Json::number(ai.avg_infer_duration_ms)
+                                           : Json::null());
         a.set("detections_total", Json::integer((long long)ai.detections_total));
         a.set("skipped", Json::integer((long long)ai.skipped));
         a.set("motion", Json::boolean(ai.motion_now));

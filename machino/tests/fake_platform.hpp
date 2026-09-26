@@ -133,7 +133,12 @@ public:
         out.motion = (n < motion_frames_);          // first N results carry motion, the rest are quiet
         if (out.motion) {
             out.motion_level = 42;
-            detection::Detection d; d.label = "motion"; d.confidence = 80; out.detections.push_back(d);
+            detection::Detection d; d.label = "motion"; d.confidence = 80;
+            // Eine echte Box + gemessene Dauer, damit die Service-Seite der
+            // Box-Serialisierung und der Dauer-Telemetrie hosttestbar ist.
+            d.box = detection::Box{0.25f, 0.25f, 0.5f, 0.5f};
+            out.detections.push_back(d);
+            out.infer_duration_ms = 8;
         }
         return Result::ok();
     }

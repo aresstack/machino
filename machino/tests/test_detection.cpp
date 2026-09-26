@@ -127,11 +127,38 @@ void test_events_on_detection_not_empty_frames() {
     unsigned c1 = t1.completed;
     DCHECK(wait_for([&] { return svc.telemetry().completed >= c1 + 5; }));
 
-    int detev = 0, aiev = 0; Event e;
-    while (sub->pop(e)) { if (e.type == "detection") ++detev; else if (e.type == "ai") ++aiev; }
+    int detev = 0, aiev = 0, boxed = 0; Event e;
+    while (sub->pop(e)) {
+        if (e.type == "detection") {
+            ++detev;
+            // §AP-NNA3: das Ereignis traegt die BOX -- ein Abonnent braucht
+            // WO, nicht nur DASS. Werte wie die Attrappe sie setzt.
+            if (e.data.find("\"box\"") != std::string::npos
+                && e.data.find("\"w\":0.5") != std::string::npos)
+                ++boxed;
+        } else if (e.type == "ai") ++aiev;
+    }
     DCHECK(aiev == 1);                                      // one lifecycle "ai" event on start
     DCHECK(detev == 4);                                     // 3 motion frames + 1 off-transition, no empty-frame spam
+    DCHECK(boxed == 3);                                     // jede echte Detektion mit Box, die Off-Transition ohne
     DCHECK(t1.detections_total == 3);
+    // Die gemessene Dauer der Attrappe (8 ms) landet in der Telemetrie.
+    DCHECK(t1.last_infer_duration_ms == 8);
+    DCHECK(t1.avg_infer_duration_ms > 0.0);
+    svc.shutdown();
+}
+
+// ---- Wechsel motion -> person -> motion: sauberer Restart je Wechsel --------
+void test_detector_switch_roundtrip() {
+    Rig r;
+    DetectionService svc(r.mgr, r.platform, r.bus, ai(true, "motion", 5));
+    DCHECK(svc.state() == AiState::Active && r.platform.last_detector.detector == "motion");
+    DCHECK(bool(svc.set_detector("person")));
+    DCHECK(svc.state() == AiState::Active && r.platform.last_detector.detector == "person");
+    DCHECK(bool(svc.set_detector("motion")));
+    DCHECK(svc.state() == AiState::Active && r.platform.last_detector.detector == "motion");
+    DCHECK(r.log.count("det.create") == 3 && r.log.count("det.destroy") == 2);
+    DCHECK(r.log.count("platform.bring_up") == 1);          // die Basis blinzelt nie
     svc.shutdown();
 }
 
@@ -199,5 +226,6 @@ void run_detection_tests() {
     test_timeout_is_not_failure();
     test_fps_change_restarts();
     test_disable_releases_demand();
+    test_detector_switch_roundtrip();
     test_latest_frame_slot();
 }

@@ -30,12 +30,16 @@ struct AiTelemetry {
     std::string last_error;
     int         requested_fps = 0;
     unsigned    completed = 0;         // analysed results consumed
-    unsigned    skipped = 0;           // frames dropped by the latest-frame slot (frame-driven)
+    unsigned    skipped = 0;           // frames the backend knowingly dropped (newest wins)
     unsigned    failed = 0;            // poll/inference failures
     unsigned    detections_total = 0;  // frames that carried a detection
     double      effective_fps = 0.0;
     int64_t     last_inference_ms = -1;   // realtime epoch ms
     int64_t     last_detection_ms = -1;
+    // Nur wenn das Backend die Dauer wirklich misst (NNA-Helfer-Umlauf);
+    // -1/0 sonst -- IVS wartet auf Treiberergebnisse und KANN es nicht wissen.
+    int64_t     last_infer_duration_ms = -1;
+    double      avg_infer_duration_ms = 0.0;
     bool        motion_now = false;
 };
 
@@ -78,6 +82,7 @@ private:
     mutable std::mutex tel_m_;
     unsigned completed_ = 0, failed_ = 0, detections_ = 0;
     int64_t  last_inference_ms_ = -1, last_detection_ms_ = -1;
+    int64_t  last_dur_ms_ = -1; double dur_sum_ms_ = 0.0; unsigned dur_n_ = 0;
     int64_t  win_start_ms_ = 0; unsigned win_completed_ = 0; double eff_fps_ = 0.0;
     bool     motion_now_ = false;
 };

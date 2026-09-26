@@ -47,6 +47,11 @@ public:
 
     // FrameView: run inference on one frame now. Only for FrameView backends.
     virtual Result infer(const FrameView& in, detection::DetectionResult& out) { (void)in; (void)out; return Result::unsupported(); }
+
+    // Frames, die das Backend WISSENTLICH ausgelassen hat (Inferenz langsamer
+    // als die Quelle; newest wins). 0 bei Backends, die es nicht wissen koennen
+    // -- IVS verwirft im Treiber, ohne es zu melden. Monoton seit start().
+    virtual unsigned skipped() const { return 0; }
 };
 
 } // namespace machino

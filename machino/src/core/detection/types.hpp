@@ -26,6 +26,11 @@ struct DetectionResult {
     bool     motion = false;            // any motion at all this frame
     int      motion_level = 0;          // 0..100 coarse activity, backend-defined
     int64_t  frame_pts_us = 0;          // source frame timestamp (platform clock)
+    // Wie lange DIESE Inferenz dauerte, wenn das Backend es weiss (-1 sonst).
+    // Der IVS-poll() kann es nicht wissen (er WARTET auf Ergebnisse, die
+    // Analyse laeuft im Treiber); der NNA-Detector misst den Helfer-Umlauf.
+    // Eine Zahl, die niemand gemessen hat, waere schlimmer als keine.
+    int64_t  infer_duration_ms = -1;
     bool     any() const { return motion || !detections.empty(); }
 };
 

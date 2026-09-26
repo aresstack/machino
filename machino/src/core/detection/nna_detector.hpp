@@ -55,6 +55,7 @@ public:
     Result start() override;
     Result stop()  override;
     Result poll(detection::DetectionResult& out, int timeout_ms) override;
+    unsigned skipped() const override { return skipped_; }
 
 private:
     enum class Helper { Down, Loading, Ready };
@@ -74,6 +75,7 @@ private:
     int64_t loading_since_ms_ = 0;
     int64_t last_spawn_ms_ = -1;
     int64_t next_due_ms_ = 0;
+    unsigned skipped_ = 0;
 };
 
 }} // namespace machino::detection

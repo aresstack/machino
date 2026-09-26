@@ -174,9 +174,18 @@ Result NnaDetector::poll(detection::DetectionResult& out, int timeout_ms) {
     const int64_t t = now_();
     if (t < next_due_ms_) return Result::timeout();
     next_due_ms_ = (next_due_ms_ == 0 ? t : next_due_ms_) + period;
-    if (next_due_ms_ < t) next_due_ms_ = t + period;   // fell behind: don't burst
+    if (next_due_ms_ < t) {
+        // Hinter dem Takt: die verpassten Perioden sind Frames, die die Quelle
+        // produziert hat und die BEWUSST nicht mehr analysiert werden --
+        // newest wins, kein Aufholen im Burst. Genau das ist "skipped".
+        skipped_ += (unsigned)((t - next_due_ms_) / period + 1);
+        next_due_ms_ = t + period;
+    }
 
-    return infer_one(out);
+    const int64_t t0 = now_();
+    Result r = infer_one(out);
+    if (r) out.infer_duration_ms = now_() - t0;
+    return r;
 }
 
 bool parse_det_line(const std::string& line, Detection& out) {

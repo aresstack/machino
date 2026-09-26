@@ -64,7 +64,7 @@ Result DetectionService::start_locked() {
         LOGW(MOD, "detector '%s' start failed", cfg_.detector.c_str());
         return sr;
     }
-    { std::lock_guard<std::mutex> lk(tel_m_); completed_ = failed_ = detections_ = 0; win_start_ms_ = now_ms(); win_completed_ = 0; eff_fps_ = 0; motion_now_ = false; last_inference_ms_ = last_detection_ms_ = -1; }
+    { std::lock_guard<std::mutex> lk(tel_m_); completed_ = failed_ = detections_ = 0; win_start_ms_ = now_ms(); win_completed_ = 0; eff_fps_ = 0; motion_now_ = false; last_inference_ms_ = last_detection_ms_ = -1; last_dur_ms_ = -1; dur_sum_ms_ = 0; dur_n_ = 0; }
     quit_ = false;
     thread_ = std::thread([this] { run(); });
     state_ = AiState::Active;
@@ -104,6 +104,11 @@ void DetectionService::run() {
             int64_t span = t - win_start_ms_;
             if (span >= 1000) { eff_fps_ = (double)win_completed_ * 1000.0 / (double)span; win_start_ms_ = t; win_completed_ = 0; }
             if (r.any()) { ++detections_; last_detection_ms_ = t; }
+            if (r.infer_duration_ms >= 0) {
+                last_dur_ms_ = r.infer_duration_ms;
+                dur_sum_ms_ += (double)r.infer_duration_ms;
+                ++dur_n_;
+            }
             motion_now_ = r.motion;
         }
         // Emit on a detection or on a motion on/off transition, never per empty frame.
@@ -117,6 +122,18 @@ void DetectionService::run() {
                 o.set("label", Json::string(d.label.empty() ? "object" : d.label));
                 o.set("confidence", Json::integer(d.confidence));
                 if (d.class_id >= 0) o.set("class_id", Json::integer(d.class_id));
+                // Die Box gehoert INS Ereignis: ein Abonnent, der auf eine
+                // Person reagieren will, braucht WO, nicht nur DASS. Nur wenn
+                // sie echt ist -- Motion liefert Ganzbild ({}), und eine
+                // erfundene 0/0/0/0-Box waere eine Aussage.
+                if (d.box.w > 0.f && d.box.h > 0.f) {
+                    Json b = Json::object();
+                    b.set("x", Json::number(d.box.x));
+                    b.set("y", Json::number(d.box.y));
+                    b.set("w", Json::number(d.box.w));
+                    b.set("h", Json::number(d.box.h));
+                    o.set("box", b);
+                }
                 arr.push(o);
             }
             j.set("detections", arr);
@@ -162,9 +179,12 @@ AiTelemetry DetectionService::telemetry() const {
     AiTelemetry t;
     t.state = state_; t.enabled = cfg_.enabled; t.detector = cfg_.detector; t.backend = backend_;
     t.last_error = last_error_; t.requested_fps = cfg_.inference_fps;
+    if (det_) t.skipped = det_->skipped();
     std::lock_guard<std::mutex> tl(tel_m_);
     t.completed = completed_; t.failed = failed_; t.detections_total = detections_;
     t.effective_fps = eff_fps_; t.last_inference_ms = last_inference_ms_; t.last_detection_ms = last_detection_ms_;
+    t.last_infer_duration_ms = last_dur_ms_;
+    t.avg_infer_duration_ms = dur_n_ > 0 ? dur_sum_ms_ / (double)dur_n_ : 0.0;
     t.motion_now = motion_now_;
     return t;
 }

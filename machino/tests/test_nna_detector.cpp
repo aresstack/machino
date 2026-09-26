@@ -149,6 +149,19 @@ void test_pacing_holds_the_inference_rate() {
     r.clock += 100;
     r.proc.lines.push_back("result 2 0\n");
     NCHECK(d.poll(out, 10));
+    NCHECK(d.skipped() == 0);                            // im Takt: nichts ausgelassen
+    NCHECK(out.infer_duration_ms == 0);                  // gemessen (gefrorene Testuhr)
+
+    // Weit hinter dem Takt (5 Perioden): newest wins, kein Burst -- die
+    // verpassten Perioden werden als skipped GEZAEHLT, nicht nachgeholt.
+    r.clock += 1000;
+    r.proc.lines.push_back("result 3 0\n");
+    NCHECK(d.poll(out, 10));
+    NCHECK(d.skipped() >= 4);
+    const size_t frames_after = r.proc.written.size();
+    r.proc.lines.push_back("result 4 0\n");
+    NCHECK(d.poll(out, 10).status == Status::Timeout);   // und direkt danach: nicht faellig
+    NCHECK(r.proc.written.size() == frames_after);
 }
 
 void test_dead_helper_respawns_after_backoff_video_never_involved() {
