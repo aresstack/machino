@@ -73,6 +73,14 @@ struct ExposureReadback {
     uint32_t exposure_value = 0; // integration x again x dgain
     uint32_t integration_time = 0;
     uint32_t again = 0, dgain = 0, isp_dgain = 0;
+    // "Is the shutter at its AE ceiling?" -- answered here, against the
+    // driver's own limits, because no browser-side threshold is portable
+    // (the WebUI's video-check says exactly this, and without the answer it
+    // convicts from the picture alone: a stalled player reads as a blind
+    // camera). have_ guards it for the same reason isp_exptime is guarded
+    // above: a false "not at max" nobody measured is a statement, not a gap.
+    bool     have_exposure_max = false;
+    bool     exposure_is_max = false;
 };
 
 class IImageControl {

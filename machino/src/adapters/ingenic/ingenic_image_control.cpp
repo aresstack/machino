@@ -178,7 +178,14 @@ Result IngenicImageControl::exposure(ExposureReadback& out) {
     out.have_expr  = (r2 == 0);
     if (r1 == 0) { out.luma = s.luma; out.target = s.target; out.stable = s.stable; }
     if (r2 == 0) { out.total_gain_db = e.TotalGainDb; out.exposure_value = e.ExposureValue; out.integration_time = e.AeShortIntegrationTime;
-                   out.again = e.AeShortAGain; out.dgain = e.AeShortDGain; out.isp_dgain = e.AeShortIspDGain; }
+                   out.again = e.AeShortAGain; out.dgain = e.AeShortDGain; out.isp_dgain = e.AeShortIspDGain;
+                   // Same field family the values above trust (Short carries
+                   // the live numbers on this SoC); the plain pair is the
+                   // fallback where a build leaves the Short limits at 0.
+                   uint32_t it = e.AeShortIntegrationTime, itmax = e.AeShortMaxIntegrationTime;
+                   if (itmax == 0) { it = e.AeIntegrationTime; itmax = e.AeMaxIntegrationTime; }
+                   out.have_exposure_max = (itmax > 0);
+                   out.exposure_is_max = (itmax > 0 && it >= itmax); }
     return Result::ok();
 }
 

@@ -587,6 +587,13 @@ std::string majestic_metrics(const Json& telemetry, const Json& state, const Lin
     if (tel_num(telemetry, "exposure", "digital_gain", v))     g("isp_dgain", v);
     if (tel_num(telemetry, "exposure", "isp_digital_gain", v)) g("isp_ispdgain", v);
     if (tel_num(telemetry, "exposure", "integration_time", v)) g("isp_exptime", v);
+    // Bool, not number, in the telemetry -- and only published when measured.
+    // The WebUI's video-check needs BOTH isp_avelum and isp_exposureismax to
+    // trust the sensor; missing either, it convicts from the picture alone,
+    // and a player stalled on a bad uplink then reads as a blind camera.
+    if (const Json* ex = telemetry.get("exposure"); ex && ex->is_object())
+        if (const Json* im = ex->get("is_max"); im && im->is_bool())
+            g("isp_exposureismax", im->as_bool() ? 1 : 0);
     if (tel_num(telemetry, "power", "sensor_fps", v))          g("isp_fps", v);
 
     // --- encoder throughput (monotonic byte counters, one per stream) -------

@@ -446,6 +446,7 @@ Json ApiService::telemetry_json() {
     ae.set("stable", ex.have_scene ? Json::boolean(ex.stable) : Json::null()); ae.set("integration_time", ex.have_expr ? Json::integer(ex.integration_time) : Json::null());
     ae.set("analog_gain", ex.have_expr ? Json::integer(ex.again) : Json::null()); ae.set("digital_gain", ex.have_expr ? Json::integer(ex.dgain) : Json::null());
     ae.set("isp_digital_gain", ex.have_expr ? Json::integer(ex.isp_dgain) : Json::null()); ae.set("total_gain_db", ex.have_expr ? Json::integer(ex.total_gain_db) : Json::null());
+    ae.set("is_max", ex.have_exposure_max ? Json::boolean(ex.exposure_is_max) : Json::null());
     j.set("exposure", ae);
     Json pw = Json::object(); pw.set("sensor_fps", opt(t.effective_sensor_fps)); pw.set("sensor_fps_requested", Json::integer(t.requested_sensor_fps));
     pw.set("isp_clock_hz", opt(t.isp_clock_hz)); pw.set("encoder_clock_hz", opt(t.encoder_clock_hz));

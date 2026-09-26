@@ -136,6 +136,7 @@ void test_webui_metrics() {
     exp.set("digital_gain", Json::integer(64));
     exp.set("isp_digital_gain", Json::integer(16));
     exp.set("integration_time", Json::integer(1000));
+    exp.set("is_max", Json::boolean(true));
     tel.set("exposure", exp);
     Json pw = Json::object(); pw.set("sensor_fps", Json::integer(20)); tel.set("power", pw);
 
@@ -163,11 +164,25 @@ void test_webui_metrics() {
     CCHECK(has_sub(m, "node_network_transmit_bytes_total{device=\"eth0\"} 6000"));
     CCHECK(has_sub(m, "isp_avelum 42"));
     CCHECK(has_sub(m, "isp_again 1024"));
+    // Without this line the WebUI's video-check refuses to trust the sensor
+    // and convicts a stalled player as a blind camera (measured over LTE,
+    // 2026-09-26). A bool in the telemetry, 0/1 on the wire like majestic.
+    CCHECK(has_sub(m, "isp_exposureismax 1"));
     CCHECK(has_sub(m, "isp_fps 20"));
     CCHECK(has_sub(m, "venc0_rcvd_bytes 123456"));
     CCHECK(has_sub(m, "venc1_rcvd_bytes 789"));
     // no thermal zone in the sample -> the metric is omitted, not printed as 0
     CCHECK(!has_sub(m, "node_hwmon_temp_celsius"));
+
+    // Not measured (null in the telemetry, as api_service publishes when the
+    // driver has no AE ceiling to compare against) -> omitted, not a 0 that
+    // reads as "the exposure has room left".
+    Json tel2 = tel;
+    Json exp2 = *tel2.get("exposure");
+    exp2.set("is_max", Json::null());
+    tel2.set("exposure", exp2);
+    const std::string m2 = majestic_metrics(tel2, state, lin);
+    CCHECK(!has_sub(m2, "isp_exposureismax"));
 }
 
 // majestic_config must alias native width/height/bitrate_kbps into the
