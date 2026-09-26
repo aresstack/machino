@@ -104,11 +104,15 @@ swan_stop_everywhere() {
 start_swan() {
     swan_stop_everywhere
     ip netns exec wr ipsec start
-    # charon braucht einen Moment, bis 500/4500 lauschen
+    # Nachweis, dass charon WIRKLICH IM wr-NS lauscht -- "ipsec status"
+    # alleine kann gegen Host-Reste gruen sein (Verdacht aus rotem Lauf 2).
     i=0; while [ $i -lt 20 ]; do
-        ip netns exec wr ipsec status >/dev/null 2>&1 && break
+        ip netns exec wr ss -uln 2>/dev/null | grep -q ':500 ' && break
         i=$((i+1)); sleep 1
     done
+    ip netns exec wr ss -uln | grep -q ':500 ' \
+        || fail "charon lauscht nicht im wr-ns (ss -uln: $(ip netns exec wr ss -uln | tr '\n' ' '))"
+    ip netns exec wr ipsec status >/dev/null 2>&1 || fail "charon-ctl im wr-ns nicht ansprechbar"
 }
 
 run_case() { # $1 name  $2 erwartetes state-Muster  $3 erwartetes last_notify ('' = egal)

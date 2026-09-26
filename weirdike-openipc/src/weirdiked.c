@@ -239,15 +239,18 @@ static void pump_tun(wd_daemon *d)
     }
 }
 
-/* One inbound UDP datagram from port 4500. */
-static void on_udp4500(wd_daemon *d, const uint8_t *dg, size_t len)
+/* One inbound UDP datagram from port 4500. `from` is the OBSERVED packet
+ * source -- the core needs it for NAT-D verification (roter Lauf 2: with
+ * from=NULL the core must abort NAT-T with "no observed source endpoint"). */
+static void on_udp4500(wd_daemon *d, const uint8_t *dg, size_t len,
+                       const weirdike_endpoint_t *from)
 {
     size_t off = 0;
     switch (natt_classify(dg, len, &off)) {
     case NATT_DATAGRAM_IKE:
         /* Hand over the datagram as received, marker included: the core
          * classifies it again and strips the marker itself. */
-        weirdike_input_datagram(d->ike, dg, len, NULL);
+        weirdike_input_datagram(d->ike, dg, len, from);
         break;
 
     case NATT_DATAGRAM_ESP: {
@@ -543,6 +546,7 @@ int main(int argc, char **argv)
     }
 
     /* ------------------------------------------------------------- main loop */
+    int failed_logged = 0;
     while (!g_signal && !d.want_stop) {
         uint32_t now = wd_now_ms();
         uint32_t wait = weirdike_next_deadline_ms(d.ike, now);
@@ -560,13 +564,29 @@ int main(int argc, char **argv)
 
         if (p[0].revents & POLLIN) {
             uint8_t dg[WD_MAX_DGRAM];
-            ssize_t n = recv(d.tr.fd500, dg, sizeof(dg), 0);
-            if (n > 0) weirdike_input_datagram(d.ike, dg, (size_t)n, NULL);
+            struct sockaddr_in sa; socklen_t sl = sizeof(sa);
+            ssize_t n = recvfrom(d.tr.fd500, dg, sizeof(dg), 0,
+                                 (struct sockaddr *)&sa, &sl);
+            if (n > 0) {
+                weirdike_endpoint_t from;
+                memset(&from, 0, sizeof(from));
+                memcpy(from.ip, &sa.sin_addr.s_addr, 4);
+                from.port = ntohs(sa.sin_port);
+                weirdike_input_datagram(d.ike, dg, (size_t)n, &from);
+            }
         }
         if (p[1].revents & POLLIN) {
             uint8_t dg[WD_MAX_DGRAM];
-            ssize_t n = recv(d.tr.fd4500, dg, sizeof(dg), 0);
-            if (n > 0) on_udp4500(&d, dg, (size_t)n);
+            struct sockaddr_in sa; socklen_t sl = sizeof(sa);
+            ssize_t n = recvfrom(d.tr.fd4500, dg, sizeof(dg), 0,
+                                 (struct sockaddr *)&sa, &sl);
+            if (n > 0) {
+                weirdike_endpoint_t from;
+                memset(&from, 0, sizeof(from));
+                memcpy(from.ip, &sa.sin_addr.s_addr, 4);
+                from.port = ntohs(sa.sin_port);
+                on_udp4500(&d, dg, (size_t)n, &from);
+            }
         }
         if (p[2].revents & POLLIN) pump_tun(&d);
         if (p[3].revents & POLLIN) ctl_serve(&d);
@@ -580,7 +600,13 @@ int main(int argc, char **argv)
             d.esp_up = 0;
             wd_log(LOG_NOTICE, "child SA gone, data path down");
         }
-        if (st == WEIRDIKE_STATE_FAILED) {
+        if (st == WEIRDIKE_STATE_FAILED && !failed_logged) {
+            /* Log once, but KEEP RUNNING: the control socket must still be
+             * able to answer "state=FAILED last_notify=..." -- both the AP2
+             * negative interop cases and the AP3 status API read the failure
+             * from here. Exiting made weirdikectl come back empty (roter
+             * Lauf 2). The daemon ends on signal or ctl "down" only. */
+            failed_logged = 1;
             weirdike_diag_t dg;
             if (weirdike_get_diag(d.ike, &dg) == 0) {
                 wd_log(LOG_ERR, "negotiation failed: reached=%d notify=%u auth_rejected=%d local_auth_fail=%d",
@@ -589,7 +615,6 @@ int main(int argc, char **argv)
             } else {
                 wd_log(LOG_ERR, "negotiation failed");
             }
-            break;
         }
     }
 
