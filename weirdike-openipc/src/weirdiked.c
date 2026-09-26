@@ -884,6 +884,16 @@ int main(int argc, char **argv)
             d.esp_up = 0;
             wd_log(LOG_NOTICE, "child SA gone, data path down");
         }
+        /* AP7 §3: a peer-initiated close (IKE SA DELETE -> CLOSED) also means
+         * the tunnel is gone -- fail closed, same as a DPD failure. Without
+         * this the routes/ipsec0 would linger after the peer hung up until the
+         * daemon exits. Not on OUR OWN teardown (want_stop): the exit path
+         * handles that. */
+        if (st == WEIRDIKE_STATE_CLOSED && !d.want_stop &&
+            (d.tun_configured || d.routes.n_owned || d.esp_up)) {
+            wd_log(LOG_WARNING, "peer closed the tunnel -- tearing down data path");
+            data_path_teardown(&d);
+        }
         if (st == WEIRDIKE_STATE_FAILED && !failed_logged) {
             /* Log once, but KEEP RUNNING: the control socket must still be
              * able to answer "state=FAILED last_notify=..." -- both the AP2
