@@ -136,6 +136,10 @@ Json ApiService::capabilities_json() const {
     ai.set("person", Json::string(cap_name(c.ai.person)));
     Json detectors = Json::array();
     if (c.ai.motion == Cap::Supported) detectors.push(Json::string("motion"));
+    // person erscheint erst, wenn die Plattform es als Supported meldet --
+    // also nach der Hardware-Abnahme (AP-NNA6). Ein Eintrag, der beim
+    // Auswaehlen "unavailable" wirft, waere ein kaputter Menuepunkt.
+    if (c.ai.person == Cap::Supported) detectors.push(Json::string("person"));
     ai.set("detectors", detectors);
     Json aifps = Json::object(); aifps.set("status", Json::string(cap_name(c.ai.available)));
     aifps.set("apply", Json::string(c.ai.available == Cap::Supported ? "live" : "unsupported"));

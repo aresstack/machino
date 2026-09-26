@@ -66,7 +66,8 @@ SRC := src/core/log.cpp $(CORE_SRC) \
        src/adapters/ingenic/ingenic_image_control.cpp \
        src/adapters/ingenic/ingenic_platform.cpp src/adapters/ingenic/ingenic_framesource.cpp \
        src/adapters/ingenic/ingenic_encoder.cpp src/adapters/ingenic/ingenic_jpeg.cpp \
-       src/adapters/ingenic/detection/ivs_motion.cpp
+       src/adapters/ingenic/detection/ivs_motion.cpp src/adapters/ingenic/detection/nna_source.cpp \
+       src/adapters/linux/linux_nna_process.cpp
 OBJ := $(SRC:.cpp=.o)
 
 # host unit tests: core + profiles + lifecycle + performance + API (fakes) + the SDK-free adapter conversion

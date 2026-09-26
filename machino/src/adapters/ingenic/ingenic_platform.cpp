@@ -1,11 +1,21 @@
 #include "adapters/ingenic/ingenic_platform.hpp"
 #include "adapters/ingenic/detection/ivs_motion.hpp"
-#include "adapters/ingenic/ingenic_encoder.hpp"
-#include "adapters/ingenic/ingenic_framesource.hpp"
+#include "adapters/ingenic/detection/nna_source.hpp"
+#include "adapters/linux/linux_nna_process.hpp"
+#include "core/detection/nna_detector.hpp"
 #include "core/log.hpp"
 #include "core/runtime_stats.hpp"
+#include "adapters/ingenic/ingenic_encoder.hpp"
+#include "adapters/ingenic/ingenic_framesource.hpp"
 #include <cstdio>
 #include <cstring>
+#include <unistd.h>
+
+namespace machino { namespace ingenic {
+// Wo der Helfer liegt, wenn die NNA-Payload installiert ist. Eine Konstante
+// statt Konfiguration: es gibt genau einen Installationsweg (install.sh).
+static const char* kNnaHelperPath = "/usr/sbin/machino-nna";
+}} // namespace machino::ingenic
 
 namespace machino { namespace ingenic {
 
@@ -38,7 +48,9 @@ CapabilitySet IngenicPlatform::capabilities() const {
     c.encoder.hardware      = Cap::Supported;
     c.ai.available          = Cap::Supported;   // IMP_IVS analysis pipeline (motion)
     c.ai.motion             = Cap::Supported;   // IMP_IVS_CreateMoveInterface backend
-    c.ai.person             = Cap::Unknown;     // NNA/model backend not built yet
+    c.ai.person             = Cap::Unknown;     // venus_nna backend gebaut, aber PENDING_PHYSICAL
+                                                // (AP-NNA6): Supported sagt erst, wer eine Inferenz
+                                                // auf der echten NNA gesehen hat
     power_.fill_capabilities(c);
     return c;
 }
@@ -111,14 +123,79 @@ std::unique_ptr<IJpegEncoder> IngenicPlatform::create_jpeg(int chn, const JpegPa
     return IngenicJpegEncoder::create(chn, p, nw, nh);
 }
 
+namespace {
+
+// NnaDetector nimmt seine Ports als Referenzen (die Hosttests halten die
+// Attrappen auf dem Stack); hier draussen muss jemand Prozess und Quelle
+// BESITZEN, solange der Detector lebt. Genau das tut dieser Umschlag --
+// Reihenfolge der Member = Abbauordnung: erst der Detector (beendet den
+// Helfer, stoppt die Quelle), dann Quelle und Prozess selbst.
+class OwnedNnaDetector final : public IDetector {
+public:
+    OwnedNnaDetector(std::unique_ptr<INnaProcess> proc,
+                     std::unique_ptr<IAnalysisSource> src,
+                     detection::NnaDetectorConfig cfg)
+        : proc_(std::move(proc)), src_(std::move(src)),
+          det_(*proc_, *src_, std::move(cfg)) {}
+
+    DetectorInput input_mode() const override { return det_.input_mode(); }
+    const char*   backend()    const override { return det_.backend(); }
+    Result start() override { return det_.start(); }
+    Result stop()  override { return det_.stop(); }
+    Result poll(detection::DetectionResult& out, int t) override { return det_.poll(out, t); }
+
+private:
+    std::unique_ptr<INnaProcess>     proc_;
+    std::unique_ptr<IAnalysisSource> src_;
+    detection::NnaDetector           det_;
+};
+
+} // namespace
+
 std::unique_ptr<IDetector> IngenicPlatform::create_detector(int chn, const DetectorParams& p) {
-    if (p.detector != "motion") {                          // only the IMP_IVS motion backend exists so far
-        LOGW(MOD, "detector backend '%s' not implemented on this platform", p.detector.c_str());
-        return nullptr;
-    }
     int nw = hw_.sensor.native_width  > 0 ? hw_.sensor.native_width  : hw_.mode.value.width;
     int nh = hw_.sensor.native_height > 0 ? hw_.sensor.native_height : hw_.mode.value.height;
-    return create_motion_detector(chn, p, nw, nh);
+    if (p.detector == "motion")
+        return create_motion_detector(chn, p, nw, nh);
+
+    if (p.detector == "person") {
+        // Jede Voraussetzung einzeln und mit Grund verweigert: "unavailable"
+        // ohne Warum war beim WLAN der Zeitfresser. Der Geraeteknoten zuerst --
+        // ohne nmem-Bootarg und soc-nna.ko gibt es ihn nicht, und ein Helfer,
+        // der dann im Backoff gegen ENODEV anrennt, waere nur Laerm.
+        if (::access("/dev/soc-nna", F_OK) != 0) {
+            LOGW(MOD, "person: /dev/soc-nna fehlt - nmem-Bootarg gesetzt und soc-nna.ko geladen? (Cam-Tool: NNA-Patch)");
+            return nullptr;
+        }
+        if (::access(kNnaHelperPath, X_OK) != 0) {
+            LOGW(MOD, "person: %s fehlt - NNA-Payload nicht installiert", kNnaHelperPath);
+            return nullptr;
+        }
+        if (p.model_path.empty() || ::access(p.model_path.c_str(), R_OK) != 0) {
+            LOGW(MOD, "person: Modell '%s' nicht lesbar - ai.model_path pruefen (Seite AI, /etc/machino/models)",
+                 p.model_path.c_str());
+            return nullptr;
+        }
+        // Analysegeometrie wie beim Motion-Backend: ~640 breit, Seitenverhaeltnis
+        // vom Sensor; das Letterboxing auf die Modellgeometrie macht der Helfer.
+        int aw = p.source_width  > 0 ? p.source_width  : 640;
+        int ah = p.source_height > 0 ? p.source_height : (nw > 0 ? (nh * 640 / nw) : 360);
+        if (nw > 0 && aw > nw) aw = nw;
+        if (nh > 0 && ah > nh) ah = nh;
+        aw &= ~1; ah &= ~1;
+        auto src = create_nna_source(chn, aw, ah, p.inference_fps, nw, nh);
+        if (!src) return nullptr;
+        detection::NnaDetectorConfig cfg;
+        cfg.helper_path   = kNnaHelperPath;
+        cfg.model_path    = p.model_path;
+        cfg.frame_path    = "/tmp/machino-nna.frame";   // tmpfs; nie auf dem Overlay
+        cfg.inference_fps = p.inference_fps;
+        return std::make_unique<OwnedNnaDetector>(
+            std::make_unique<linuxsys::LinuxNnaProcess>(), std::move(src), std::move(cfg));
+    }
+
+    LOGW(MOD, "detector backend '%s' not implemented on this platform", p.detector.c_str());
+    return nullptr;
 }
 
 Result IngenicPlatform::bind(IFrameSource& fs, IEncoder& enc) {
