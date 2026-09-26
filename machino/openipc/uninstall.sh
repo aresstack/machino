@@ -120,8 +120,11 @@ rm -f "$ROOT/usr/sbin/weirdiked" "$ROOT/usr/sbin/weirdikectl"
 rm -f "$ROOT/etc/init.d/S99weirdike" "$WWW/cgi-bin/ipsec.cgi"
 rm -f "$ROOT/etc/weirdike/weirdike.conf.example"
 if [ -f "$ROOT/etc/modules" ] && grep -qx tun "$ROOT/etc/modules" 2>/dev/null; then
-    grep -vx tun "$ROOT/etc/modules" > "$ROOT/etc/modules.new" &&
-        mv "$ROOT/etc/modules.new" "$ROOT/etc/modules"
+    # grep -v liefert Exit 1, wenn NICHTS uebrig bleibt (Datei bestand nur aus
+    # "tun") -- ein "&& mv" liesse die Zeile dann ausgerechnet im haeufigsten
+    # Fall stehen. Dieselbe Exit-Code-Falle wie write_state (CI 2026-09-26).
+    grep -vx tun "$ROOT/etc/modules" > "$ROOT/etc/modules.new" || true
+    mv "$ROOT/etc/modules.new" "$ROOT/etc/modules"
 fi
 rm -f "$ROOT/usr/sbin/machino-dyndns" "$ROOT/etc/machino/dyndns.conf"
 rm -f "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
@@ -263,7 +266,19 @@ rm -f "$ROOT/usr/bin/machino" "$ROOT/usr/sbin/streamerctl" "$ROOT/usr/sbin/machi
 if [ "$KEEP_CONFIG" = "1" ]; then
     say "keeping $STATE_DIR (configuration and board profiles)"
 else
-    rm -rf "$STATE_DIR"
+    # Die Erkennungsmodelle sind NUTZDATEN des Betreibers (mehrere MB, extern
+    # beschafft) und ueberleben das Deinstallieren -- dieselbe Regel wie die
+    # weirdike-Config. Alles andere unter /etc/machino gehoert machino.
+    if [ -d "$STATE_DIR/models" ]; then
+        for _e in "$STATE_DIR"/* "$STATE_DIR"/.[!.]*; do
+            [ -e "$_e" ] || continue
+            [ "$_e" = "$STATE_DIR/models" ] && continue
+            rm -rf "$_e"
+        done
+        say "keeping $STATE_DIR/models (operator data)"
+    else
+        rm -rf "$STATE_DIR"
+    fi
 fi
 rm -f "$ROOT/var/log/machino.log" "$ROOT/var/run/machino.pid"
 
