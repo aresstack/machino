@@ -358,6 +358,21 @@ static void data_path_install(wd_daemon *d)
     wd_log(LOG_NOTICE, "%u tunnel route(s) over %s", (unsigned)d->routes.n_owned, d->cfg.ifname);
 }
 
+/* AP7 §3/§8: fail closed. On a lost tunnel (DPD gave up -> FAILED, or a
+ * hard stop) the data path must come DOWN, not linger: routes withdrawn,
+ * ipsec0 down, ESP session zeroized. Every step idempotent, so this is safe
+ * to call from the FAILED transition AND the exit path. No traffic may ride a
+ * half-dead SA. */
+static void data_path_teardown(wd_daemon *d)
+{
+    char err[128];
+    wd_routes_teardown(&d->routes);
+    if (d->tun_configured) { wd_tun_down(d->cfg.ifname, err, sizeof(err)); d->tun_configured = 0; }
+    if (d->esp_up) { esp_session_deinit(&d->esp); d->esp_up = 0; }
+    d->have_child = 0;
+    d->esp_generation = 0;
+}
+
 /* A Child SA was (re)negotiated: rebuild the ESP session on the new keys. */
 static void esp_refresh(wd_daemon *d)
 {
@@ -884,19 +899,30 @@ int main(int argc, char **argv)
             } else {
                 wd_log(LOG_ERR, "negotiation failed");
             }
+            /* AP7 §3: a FAILED that arrives AFTER the data path was up is a
+             * lost tunnel (DPD gave up mid-session). Fail closed -- withdraw
+             * routes and bring ipsec0 down so nothing rides the dead SA. The
+             * daemon stays alive to report FAILED; machinod's reconnect policy
+             * decides what happens next. */
+            if (d.tun_configured || d.routes.n_owned || d.esp_up) {
+                wd_log(LOG_WARNING, "tunnel lost after establishment -- tearing down data path");
+                data_path_teardown(&d);
+            }
         }
+        /* A FAILED that later clears (a fresh connect attempt inside the same
+         * process is not how this daemon works, but a peer that recovers the
+         * IKE SA can) resets the one-shot latch. */
+        if (st != WEIRDIKE_STATE_FAILED) failed_logged = 0;
     }
 
     if (g_signal) wd_log(LOG_NOTICE, "signal %d, shutting down", (int)g_signal);
     if (d.ike) weirdike_disconnect(d.ike, wd_now_ms());
 
 fail:
-    /* AP4: leave no residue -- the split route and the UP flag must not
-     * outlive the daemon (a dead tunnel that still attracts packets would
-     * blackhole the remote net). Both calls are idempotent. */
-    wd_routes_teardown(&d.routes);
-    if (d.tun_configured) wd_tun_down(d.cfg.ifname, err, sizeof(err));
-    if (d.esp_up) esp_session_deinit(&d.esp);
+    /* AP4/AP7: leave no residue -- routes withdrawn, ipsec0 down, ESP keys
+     * zeroized. data_path_teardown is idempotent (safe even if FAILED already
+     * tore it down, or if we bailed before the data path came up). */
+    data_path_teardown(&d);
     if (d.ike)    weirdike_free(d.ike);
     free(d.esp_scratch);
     weirdike_crypto_mbedtls_free(&d.mbed);

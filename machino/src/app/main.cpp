@@ -1125,10 +1125,11 @@ int main(int argc, char** argv) {
                         // changing at all, and that new gateway still has to
                         // reach the kernel.
                         apply_routes();
-                        // AP5 §9: NACH der Uplink-Neubewertung. Faellt das
-                        // Session-Underlay weg, baut der Service ab und
-                        // meldet underlayLost -- kein stiller Wechsel.
-                        ipsec_service.tick();
+                        // AP5 §9 / AP7 §9,§10: NACH der Uplink-Neubewertung.
+                        // Underlay-/DPD-Verlust -> Abbau; wiederherstellbare
+                        // Fehler -> Reconnect mit Backoff (kein stiller
+                        // Uplink-Wechsel, kein Reconnect nach manuellem Stopp).
+                        ipsec_service.tick((uint32_t)now_ms());
                     }
                 }
             }

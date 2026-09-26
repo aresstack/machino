@@ -130,6 +130,25 @@ jobs:
             /tmp/ping-multinet.txt
           if-no-files-found: ignore
 
+      - name: "AP7: Daemon-Lifecycle -- Rekey unter Traffic, Peer-Verlust/DPD (netns)"
+        # Child-Rekey ohne Tunnel-Neuaufbau; Peer weg -> DPD -> FAILED ->
+        # Datenpfad faellt closed (Route weg, ipsec0 down), Daemon lebt weiter.
+        run: |
+          set -o pipefail
+          sudo env WLD="$PWD/weirdike-openipc/build/weirdiked" \
+                   CTL="$PWD/weirdike-openipc/build/weirdikectl" \
+              sh weirdike-openipc/tools/interop-lifecycle.sh 2>&1 | tee /tmp/lifecycle-run.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: weirdike-lifecycle-run-log
+          path: |
+            /tmp/lifecycle-run.log
+            /tmp/weirdiked-lifecycle.log
+            /tmp/ping-lifecycle.txt
+          if-no-files-found: ignore
+
       - name: "Fetch the toolchain (T40 musl, same one machino uses)"
         run: |
           chmod +x build.sh

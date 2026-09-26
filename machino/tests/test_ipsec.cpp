@@ -377,13 +377,13 @@ void test_ap5_underlay_loss()
     be.status_text = "state=CHILD_SA_ESTABLISHED\n";
 
     // Solange das Underlay unveraendert ist, tut tick() nichts.
-    svc.tick();
+    svc.tick(1000);
     ICHECK(be.running && be.routes.size() == 1);
 
     // Cellular faellt weg: Abbau (Daemon stop, Route weg) und Failed/
     // underlayLost -- KEIN stiller Wechsel auf ethernet.
     up.cell.usable = false;
-    svc.tick();
+    svc.tick(2000);
     ICHECK(!be.running);
     ICHECK(be.routes.empty());
     be.status_text.clear();
@@ -441,6 +441,98 @@ void test_ap6_routes_and_full_tunnel()
     ICHECK(d.find("remote_subnet = 192.168.178.0/24,10.20.0.0/16\n") != std::string::npos);
 }
 
+void test_ap7_lifecycle()
+{
+    // Runtime-Zustand + Backoff-Delays (reine Funktion).
+    ICHECK(reconnect_delay_ms(1) == 0);
+    ICHECK(reconnect_delay_ms(2) == 2000);
+    ICHECK(reconnect_delay_ms(3) == 5000);
+    ICHECK(reconnect_delay_ms(4) == 10000);
+    ICHECK(reconnect_delay_ms(9) == 30000);
+
+    // Runtime-Ableitung: Child + Route = DataPlaneUp.
+    remove(MCONF); remove(DCONF);
+    FakeBackend be; FakeUplinks up;
+    IpsecService svc(be, MCONF, DCONF, &up);
+    IpsecConfig c = sample(); c.underlay = Underlay::Cellular;
+    ICHECK(svc.set_config(c, "s3cret-psk").empty());
+    ICHECK(svc.connect().empty());
+    be.status_text = "state=CHILD_SA_ESTABLISHED\nchild_generation=1\n"
+                     "route=10.66.0.0/24 tsr ipsec0\n";
+    VpnStatus st = svc.status();
+    ICHECK(st.runtime == VpnRuntimeState::DataPlaneUp);
+    ICHECK(std::string(vpn_runtime_state_name(st.runtime)) == "dataPlaneUp");
+    ICHECK(!st.manual_stop);
+
+    // stabiler Tick setzt den Backoff auf 0.
+    svc.tick(1000);
+    ICHECK(be.running);
+
+    // Underlay-Verlust -> Abbau + geplanter Reconnect (wiederherstellbar).
+    up.cell.usable = false;
+    svc.tick(2000);
+    ICHECK(!be.running);
+    st = svc.status();
+    ICHECK(st.runtime == VpnRuntimeState::Failed);
+    ICHECK(st.reconnect_attempt == 1);            // 1. Versuch geplant
+
+    // Reconnect ist bei attempt 1 sofort faellig, aber cellular ist noch weg
+    // -> connect() scheitert -> naechster Versuch geplant (attempt 2).
+    svc.tick(2000);
+    ICHECK(!be.running);
+    ICHECK(svc.status().reconnect_attempt == 2);
+    // attempt 2 = 2s Delay: ein Tick unmittelbar danach zuendet NICHT.
+    svc.tick(2100);
+    ICHECK(svc.status().reconnect_attempt == 2);
+
+    // Underlay kommt zurueck: der faellige Reconnect verbindet.
+    up.cell.usable = true;
+    svc.tick(60000);
+    ICHECK(be.running);
+    be.status_text = "state=CHILD_SA_ESTABLISHED\nchild_generation=1\n"
+                     "route=10.66.0.0/24 tsr ipsec0\n";
+    svc.tick(61000);
+    ICHECK(svc.status().reconnect_attempt == 0);   // stabil -> Reset
+
+    // Manueller Stopp verbietet Auto-Reconnect.
+    ICHECK(svc.disconnect().empty());
+    ICHECK(svc.status().manual_stop);
+    up.cell.usable = false;                         // egal
+    svc.tick(62000);
+    ICHECK(!be.running);
+    ICHECK(svc.status().reconnect_attempt == 0);    // NICHTS geplant
+
+    remove(MCONF); remove(DCONF);
+}
+
+void test_ap7_terminal_no_reconnect()
+{
+    // Ein Auth-Fehlschlag (Notify 24) ist terminal: kein Auto-Reconnect in
+    // eine Wand. (Der Daemon meldet FAILED; tick baut ab, plant aber nichts,
+    // weil ein FAILED mit Auth-Notify nicht durch Wiederholen heilt --
+    // hier ueber die Config-Gate simuliert: kein PSK -> nicht wiederherstellbar.)
+    remove(MCONF); remove(DCONF);
+    FakeBackend be; FakeUplinks up;
+    IpsecService svc(be, MCONF, DCONF, &up);
+    IpsecConfig c = sample(); c.underlay = Underlay::Cellular;
+    ICHECK(svc.set_config(c, "s3cret-psk").empty());
+    ICHECK(svc.connect().empty());
+
+    // Daemon meldet FAILED (z.B. DPD/Peer weg) -> Abbau + Reconnect geplant.
+    be.status_text = "state=FAILED\nlast_notify=0\n";
+    svc.tick(1000);
+    ICHECK(!be.running);
+    ICHECK(svc.status().reconnect_attempt == 1);
+
+    // Jetzt wird die Config unbrauchbar (PSK-Datei weg): der naechste
+    // faellige Reconnect-Versuch plant NICHTS mehr.
+    remove(DCONF);                                  // psk_set() -> false
+    svc.tick(2000);
+    ICHECK(svc.status().reconnect_attempt == 0);
+
+    remove(MCONF); remove(DCONF);
+}
+
 } // namespace
 
 void run_ipsec_tests()
@@ -449,6 +541,8 @@ void run_ipsec_tests()
     test_ap5_underlay_binding();
     test_ap5_underlay_loss();
     test_ap6_routes_and_full_tunnel();
+    test_ap7_lifecycle();
+    test_ap7_terminal_no_reconnect();
     test_config_roundtrip();
     test_validate_names_the_problem();
     test_psk_write_only_carry();

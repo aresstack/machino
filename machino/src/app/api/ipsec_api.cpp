@@ -185,6 +185,10 @@ Response ApiService::ipsec_status()
     Json j = Json::object();
     j.set("daemonRunning", Json::boolean(st.daemon_running));
     j.set("state", Json::string(ipsec::vpn_state_name(st.state)));
+    // AP7: der explizite Runtime-Zustand + Reconnect-Sicht.
+    j.set("runtimeState", Json::string(ipsec::vpn_runtime_state_name(st.runtime)));
+    j.set("manualStop", Json::boolean(st.manual_stop));
+    if (st.reconnect_attempt > 0) j.set("reconnectAttempt", Json::integer(st.reconnect_attempt));
     if (st.state == ipsec::VpnState::Failed) {
         Json f = Json::object();
         f.set("code", Json::string(ipsec::vpn_failure_name(st.failure)));

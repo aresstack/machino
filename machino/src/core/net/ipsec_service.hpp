@@ -24,6 +24,29 @@ enum class VpnState {
 };
 const char* vpn_state_name(VpnState s);
 
+// AP7: der explizite Runtime-Lebenszyklus. Kombiniert die machinod-Phase
+// (connect() ist mehrstufig) mit der Protokollwahrheit des Daemons. Der
+// API/UI-Status wird HIERAUS abgeleitet, nicht aus verstreuten if-Flags.
+enum class VpnRuntimeState {
+    Disabled,        // enabled=false
+    Idle,            // enabled, aber keine Session
+    Resolving,       // connect(): DNS
+    Binding,         // connect(): Underlay + Peer-Route + Daemonstart
+    IkeConnecting,   // Daemon: SA_INIT/AUTH unterwegs
+    IkeEstablished,  // Daemon: IKE steht, noch kein Child
+    ChildEstablished,// Daemon: Child ausgehandelt
+    DataPlaneUp,     // Child + mindestens eine Route installiert
+    Rekeying,        // Child-Generation hat gerade gewechselt
+    Disconnecting,   // geordneter Abbau laeuft
+    Failed,          // Fehlgeschlagen (siehe VpnFailure)
+};
+const char* vpn_runtime_state_name(VpnRuntimeState s);
+
+// AP7 §10: Reconnect-Backoff (rein, testbar). attempt ist 1-basiert.
+//   1 -> 0ms (sofort), 2 -> 2s, 3 -> 5s, 4 -> 10s, danach 30s.
+// Der Aufrufer legt Jitter drauf; diese Funktion ist deterministisch.
+uint32_t reconnect_delay_ms(int attempt);
+
 // Getrennte Fehlerklassen — WeirdIKEs Diag-Trennung wird NICHT wieder zu
 // "connection failed" zusammengeworfen. Quelle: state + last_notify.
 enum class VpnFailure {
@@ -61,6 +84,11 @@ struct VpnStatus {
     std::string peer_ipv4;
     std::string ike_transport;        // "udp500" | "udp4500" (Daemon)
     std::string esp_transport;        // "udp4500" (Daemon; NAT-T-only)
+
+    // AP7: der abgeleitete Runtime-Zustand + Reconnect-Sicht.
+    VpnRuntimeState runtime = VpnRuntimeState::Disabled;
+    int         reconnect_attempt = 0;    // 0 = kein Reconnect anhaengig
+    bool        manual_stop = false;      // Betreiber hat gestoppt -> kein Auto-Reconnect
 
     // AP6: die INSTALLIERTEN Tunnelrouten, wie der Daemon sie meldet (nicht
     // die angeforderten). source: "tsr" (kryptographisch ausgehandelt) |
@@ -134,26 +162,40 @@ public:
     std::string disconnect();   // Daemon stoppen, Peer-Route entfernen
     VpnStatus   status();
 
-    // AP5 §9: regelmaessig aus dem Hauptthread. Faellt das SESSION-Underlay
-    // weg (Interface/Adresse anders oder unbrauchbar), wird abgebaut und
-    // Failed/UnderlayLost gemeldet. KEIN stiller Wechsel auf einen anderen
-    // Uplink — bei underlay=cellular nie, bei auto erst ein neuer Connect.
-    void tick();
+    // AP5 §9 / AP7 §9,§10: regelmaessig aus dem Hauptthread mit der Uhr des
+    // Aufrufers. Faellt das SESSION-Underlay weg, wird abgebaut und
+    // Failed/UnderlayLost gemeldet (kein stiller Uplink-Wechsel). Nach einem
+    // WIEDERHERSTELLBAREN Fehlschlag/Verlust plant tick() einen Reconnect mit
+    // Backoff (1:sofort, 2:2s, 3:5s, 4:10s, dann 30s, +Jitter); manualStop,
+    // ungueltige Config, fehlender PSK und Auth/Proposal-Fehler verhindern
+    // ihn. Ein stabiler Connect setzt den Backoff zurueck.
+    void tick(uint32_t now_ms);
 
 private:
     struct Session {
         bool        active = false;
-        bool        lost = false;         // Underlay weggefallen -> Failed
+        bool        lost = false;         // Underlay weg / DPD-Verlust -> Failed
         std::string underlay_kind, ifname, ipv4, gateway_ip;
         std::string peer_ip;
         bool        peer_route = false;
     };
     void teardown_session_(bool lost);
+    VpnRuntimeState derive_runtime_(const VpnStatus& s) const;
+    void schedule_reconnect_(uint32_t now_ms, const IpsecConfig& c);
 
     IIpsecBackend&  backend_;
     std::string     machino_path_, daemon_path_;
     IIpsecUplinks*  uplinks_ = nullptr;
     Session         session_;
+
+    // AP7 Reconnect/Runtime-Buchhaltung.
+    bool     manual_stop_ = false;        // disconnect() setzt, connect() loescht
+    int      reconnect_attempt_ = 0;
+    uint32_t next_reconnect_ms_ = 0;
+    bool     reconnect_scheduled_ = false;
+    uint32_t last_child_gen_ = 0;
+    uint32_t rekey_until_ms_ = 0;         // kurzes Fenster fuer Runtime=Rekeying
+    uint32_t rng_ = 0x9e3779b9u;          // Jitter-PRNG (kein Secret)
 };
 
 }} // namespace machino::ipsec

@@ -58,6 +58,36 @@ const char* vpn_state_name(VpnState s)
     return "failed";
 }
 
+const char* vpn_runtime_state_name(VpnRuntimeState s)
+{
+    switch (s) {
+        case VpnRuntimeState::Disabled:         return "disabled";
+        case VpnRuntimeState::Idle:             return "idle";
+        case VpnRuntimeState::Resolving:        return "resolving";
+        case VpnRuntimeState::Binding:          return "binding";
+        case VpnRuntimeState::IkeConnecting:    return "ikeConnecting";
+        case VpnRuntimeState::IkeEstablished:   return "ikeEstablished";
+        case VpnRuntimeState::ChildEstablished: return "childEstablished";
+        case VpnRuntimeState::DataPlaneUp:      return "dataPlaneUp";
+        case VpnRuntimeState::Rekeying:         return "rekeying";
+        case VpnRuntimeState::Disconnecting:    return "disconnecting";
+        case VpnRuntimeState::Failed:           return "failed";
+    }
+    return "failed";
+}
+
+uint32_t reconnect_delay_ms(int attempt)
+{
+    switch (attempt) {
+        case 0:
+        case 1:  return 0;
+        case 2:  return 2000;
+        case 3:  return 5000;
+        case 4:  return 10000;
+        default: return 30000;
+    }
+}
+
 const char* vpn_failure_name(VpnFailure f)
 {
     switch (f) {
@@ -150,6 +180,27 @@ IpsecService::IpsecService(IIpsecBackend& backend,
       daemon_path_(std::move(daemon_conf_path)),
       uplinks_(uplinks)
 {
+}
+
+// AP7: der explizite Runtime-Zustand aus (Daemon-Status + Session). Ein
+// Child mit mindestens einer Route ist DataPlaneUp; ohne Route bleibt es
+// ChildEstablished (AP6 kann eine Route ablehnen, ohne dass die SA faellt).
+VpnRuntimeState IpsecService::derive_runtime_(const VpnStatus& s) const
+{
+    if (s.state == VpnState::Disabled) return VpnRuntimeState::Disabled;
+    if (s.state == VpnState::Failed)   return VpnRuntimeState::Failed;
+    if (!s.daemon_running) return session_.active ? VpnRuntimeState::Binding
+                                                  : VpnRuntimeState::Idle;
+    switch (s.state) {
+        case VpnState::Connecting:     return VpnRuntimeState::IkeConnecting;
+        case VpnState::IkeEstablished: return VpnRuntimeState::IkeEstablished;
+        case VpnState::ChildEstablished:
+            if (rekey_until_ms_ != 0) return VpnRuntimeState::Rekeying;
+            return s.routes.empty() ? VpnRuntimeState::ChildEstablished
+                                    : VpnRuntimeState::DataPlaneUp;
+        case VpnState::Disconnected:   return VpnRuntimeState::Idle;
+        default:                       return VpnRuntimeState::Idle;
+    }
 }
 
 IpsecConfig IpsecService::config() const
@@ -281,6 +332,12 @@ std::string IpsecService::connect()
     session_.ipv4 = uv.ipv4;
     session_.gateway_ip = uv.gateway;
     session_.peer_ip = peer_ip;
+
+    // AP7: ein bewusster Connect hebt den manualStop auf und ist der Anker
+    // fuer den Backoff-Reset (der endgueltige Reset kommt in tick(), sobald
+    // der Tunnel STABIL steht -- ChildEstablished, nicht schon beim Start).
+    manual_stop_ = false;
+    reconnect_scheduled_ = false;
     return {};
 }
 
@@ -298,6 +355,13 @@ void IpsecService::teardown_session_(bool lost)
 
 std::string IpsecService::disconnect()
 {
+    // AP7 §10/§11: ein Betreiber-Stopp verbietet Auto-Reconnect (bis zum
+    // naechsten bewussten connect()). Der Daemon macht den geordneten Abbau
+    // selbst (ctl "down" -> RFC-7296 DELETE, bounded, dann S99 stop).
+    manual_stop_ = true;
+    reconnect_scheduled_ = false;
+    reconnect_attempt_ = 0;
+
     std::string err, out;
     if (backend_.daemon_running()) {
         if (!backend_.stop_daemon(err))
@@ -309,23 +373,76 @@ std::string IpsecService::disconnect()
     return out;
 }
 
-void IpsecService::tick()
+// AP7 §9,§10: die Reconnect-Schleife. Aufgerufen aus dem Hauptthread mit der
+// Uhr des Aufrufers. Baut bei Underlay-Verlust ab und plant nach einem
+// WIEDERHERSTELLBAREN Fehlschlag einen Reconnect mit Backoff+Jitter.
+void IpsecService::tick(uint32_t now_ms)
 {
-    if (!session_.active || !uplinks_) return;
+    const IpsecConfig c = config();
 
-    UnderlayView uv;
-    std::string uerr;
-    IpsecConfig c = config();
-    const bool ok = uplinks_->select(c.underlay, uv, uerr) && uv.usable;
+    // 1) Rekey-Fenster (nur fuer den Runtime-Zustand) auslaufen lassen.
+    if (rekey_until_ms_ && (int32_t)(now_ms - rekey_until_ms_) >= 0) rekey_until_ms_ = 0;
 
-    // Session ist an das KONKRETE Interface + Adresse gebunden. Anderes
-    // Interface oder andere Adresse = das alte Underlay ist weg; die SA
-    // einfach umzuziehen waere vorgetaeuschtes MOBIKE.
-    if (ok && uv.ifname == session_.ifname && uv.ipv4 == session_.ipv4) return;
+    // 2) Laufende Session: Underlay-Verlust und DPD-Verlust erkennen.
+    if (session_.active) {
+        bool lost = false;
+        if (uplinks_) {
+            UnderlayView uv; std::string uerr;
+            const bool ok = uplinks_->select(c.underlay, uv, uerr) && uv.usable;
+            // an KONKRETES Interface + Adresse gebunden; Wechsel = altes weg.
+            if (!ok || uv.ifname != session_.ifname || uv.ipv4 != session_.ipv4) lost = true;
+        }
+        // DPD-Verlust: der Daemon meldet FAILED, nachdem er lief.
+        std::string text;
+        const bool running = backend_.ctl_status(text) && !text.empty();
+        if (!lost && running) {
+            const VpnStatus s = parse_status(text, running, c.enabled);
+            if (s.state == VpnState::Failed) lost = true;
+            // Rekey sichtbar machen: Child-Generation ist gestiegen.
+            if (s.child_generation > last_child_gen_ && last_child_gen_ != 0)
+                rekey_until_ms_ = now_ms + 3000;
+            if (s.child_generation) last_child_gen_ = s.child_generation;
+            // stabil (Child steht) -> Backoff-Reset.
+            if (s.state == VpnState::ChildEstablished) reconnect_attempt_ = 0;
+        }
+        if (!lost && !running) lost = true;   // Daemon unerwartet weg
 
-    std::string err;
-    backend_.stop_daemon(err);
-    teardown_session_(true);
+        if (lost) {
+            backend_.stop_daemon(text);
+            teardown_session_(true);
+            // Reconnect nur, wenn wiederherstellbar und nicht manuell gestoppt.
+            schedule_reconnect_(now_ms, c);
+        }
+        return;
+    }
+
+    // 3) Kein Session, aber ein geplanter Reconnect ist faellig.
+    if (reconnect_scheduled_ && !manual_stop_ &&
+        (int32_t)(now_ms - next_reconnect_ms_) >= 0) {
+        reconnect_scheduled_ = false;
+        const std::string e = connect();      // setzt manual_stop_=false neu
+        if (!e.empty()) {
+            // Fehlgeschlagener Versuch: naechsten planen (weiter hochzaehlen).
+            schedule_reconnect_(now_ms, c);
+        }
+    }
+}
+
+// Plant den naechsten Reconnect, sofern sinnvoll. Terminale Ursachen
+// (manualStop, ungueltige Config, fehlender PSK) planen NICHTS.
+void IpsecService::schedule_reconnect_(uint32_t now_ms, const IpsecConfig& c)
+{
+    if (manual_stop_ || !c.enabled) { reconnect_scheduled_ = false; return; }
+    if (!validate(c).empty() || c.gateway.empty() || !psk_set()) {
+        reconnect_scheduled_ = false; return;
+    }
+    reconnect_attempt_++;
+    // xorshift-Jitter 0..25% des Delays (kein Secret; nur Herdenschutz).
+    rng_ ^= rng_ << 13; rng_ ^= rng_ >> 17; rng_ ^= rng_ << 5;
+    uint32_t base = reconnect_delay_ms(reconnect_attempt_);
+    uint32_t jit = base ? (rng_ % (base / 4 + 1)) : 0;
+    next_reconnect_ms_ = now_ms + base + jit;
+    reconnect_scheduled_ = true;
 }
 
 VpnStatus IpsecService::status()
@@ -352,6 +469,11 @@ VpnStatus IpsecService::status()
         st.state = VpnState::Failed;
         st.failure = VpnFailure::UnderlayLost;
     }
+
+    // AP7: Runtime-Zustand + Reconnect-Sicht.
+    st.manual_stop = manual_stop_;
+    st.reconnect_attempt = reconnect_scheduled_ ? reconnect_attempt_ : 0;
+    st.runtime = derive_runtime_(st);
     return st;
 }
 

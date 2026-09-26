@@ -137,3 +137,57 @@ Cellular-Secrets (APN, SIM-PIN) in diesem Status.
 **Hardware-Gate (AP5 §12):** PENDING_PHYSICAL — Kamera + EC200A, `actualUnderlay=cellular`,
 CHILD established, `natDetected` korrekt, echter Ping/TCP durchs VPN,
 Ethernet bleibt parallel als Management. Keine Aenderung an APN-/Modemlogik.
+
+## AP7: Lifecycle-Haertung (DPD, Rekey, Reconnect, Fehlerfaelle)
+
+Arbeitsteilung: die **Protokoll**-Lebenszyklen (DPD, NAT-T-Keepalive,
+Child-Rekey, IKE-SA-Rekey, Sequence-Exhaustion) macht der Daemon bzw. der
+WeirdIKE-Core; der **Host**-Lebenszyklus (expliziter Runtime-Zustand,
+Reconnect-Policy, geordneter Abbau, manualStop) lebt in machinods
+IpsecService. machinod baut KEINE zweite IKE-Zustandsmaschine — die
+Protokollwahrheit kommt aus `weirdike_state/get_diag/get_child_sa` (im
+Daemon) und darueber aus dem ctl-Status.
+
+**Runtime-Zustand** (`runtimeState` im API-Status), abgeleitet aus
+Daemon-Status + Session: `disabled → idle → resolving → binding →
+ikeConnecting → ikeEstablished → childEstablished → dataPlaneUp`, dazu
+`rekeying` (Child-Generation gerade gewechselt), `disconnecting`, `failed`.
+Ein Child mit mindestens einer installierten Route ist `dataPlaneUp`.
+
+**Fail closed (§3/§8):** ein `FAILED`, das NACH dem Aufbau eintrifft (DPD
+hat aufgegeben), reisst im Daemon den Datenpfad ab — Routen zurueckgezogen,
+ipsec0 down, ESP-Keys zeroisiert — der Daemon lebt aber weiter und meldet
+`FAILED`. ESP-Sequence-Exhaustion erzwingt einen Rekey (nie
+Sequence-Reuse). Ein DPD-Verlust bleibt nie „UI Connected".
+
+**Child-Rekey (§5):** neue Generation → neue esp_session auf den neuen
+Keys, ipsec0/Routen bleiben, kein Traffic-Loch (add-before-remove im
+Route-Manager). Im Namespace-CI unter Dauer-Ping bewiesen.
+
+**Reconnect-Policy (§10):** nach einem WIEDERHERSTELLBAREN Verlust plant
+`tick()` einen Reconnect mit Backoff (1: sofort, 2: 2 s, 3: 5 s, 4: 10 s,
+danach 30 s) plus Jitter. Ein stabiler Connect (Child steht) setzt den
+Zaehler zurueck. **Kein** Reconnect bei manualStop, ungueltiger Config,
+fehlendem PSK. Ein neuer Uplink wird nur bei `underlay=auto` gewaehlt; bei
+`underlay=cellular` nie heimlich gewechselt.
+
+**Geordneter Disconnect (§11):** ctl `down` → der Daemon sendet ein
+RFC-7296-DELETE (bounded — ein haengender Peer blockiert den Stopp nicht),
+dann `S99weirdike stop`; die Peer-Route entfernt machinod auch dann, wenn
+der Stopp scheitert.
+
+**Crash/Restart (§12):** es wird NUR Konfiguration persistiert, nie SPIs,
+Message-IDs, Keys oder Replay-Fenster. Der Daemon-TUN ist non-persistent —
+ein `SIGKILL` laesst ipsec0 und seine Routen vom Kernel automatisch
+verschwinden. machinods Peer-`/32` ist die einzige persistente Eigenroute;
+`connect()` raeumt eine stale Peer-Route vor dem Neuanlegen ab.
+
+### Ehrlich dokumentierte WeirdIKE-Grenzen
+
+- **Simultaner IKE-SA-Rekey:** WeirdIKE loest eine gleichzeitige, beidseitig
+  initiierte IKE-SA-Rekey-Kollision NICHT vollstaendig auf (keine
+  Nonce-Collision-Resolution); der aktuelle Stand ist `TEMPORARY_FAILURE` +
+  Retry. Status/Docs behaupten NICHT, das sei fertig.
+- **Kein MOBIKE:** eine bestehende IKE-SA wird nicht auf ein anderes
+  Interface umgehaengt; Underlay-Wechsel = sauberer Abbau + kompletter
+  Neuaufbau.
