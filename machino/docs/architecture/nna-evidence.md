@@ -48,6 +48,40 @@ was nicht messbar war, steht als UNKNOWN.
   der Produktweg ist ein EIGENES TransformKit-Modell, das Stock-Modell bleibt
   lokale Referenz.
 
+## Nachmessungen aus dem AP1-Review (2026-09-26 Nacht)
+
+Fingerprints (SHA-256, Stock-Dump; Build-IDs tragen die ELFs keine):
+
+```
+72f95528…d44a94  libvenus.so           2 775 076 B
+230aea68…f4d857  libants_ivs.so          258 128 B
+9230d7b0…4fe2a2a libants_ai_common.so    128 900 B
+0dbe48f5…573e9c  ivs_detect.bin        3 272 890 B
+a7710fe7…93cd3a  soc-nna.ko               20 388 B  (license=GPL v2,
+                 version=20190724a, vermagic 4.4.94, parm: nna_clk)
+```
+
+Symbolvergleich Stock-`libvenus.so` gegen öffentliche `libvenus.a` (nna1):
+**106 von 126** exportierten `magik::venus`-Symbolen sind GEMANGELT IDENTISCH
+in der öffentlichen Bibliothek; Kern-API (venus_init, net_create,
+venus_deinit) in beiden, die 20 Nur-Stock-Symbole sind überwiegend
+Signaturvarianten. Klassifikation im Sinne des AP1-Rasters:
+**PUBLIC_RUNTIME_LIKELY_COMPATIBLE** — für unseren Weg ohnehin nachrangig,
+weil der Helfer VOLLSTÄNDIG aus der öffentlichen Bibliothek gebaut wird und
+kein Stock-Userland lädt.
+
+**Der wichtigste Review-Fund — Treiber-Versions-Gate:** die ÖFFENTLICHE
+libvenus prüft beim Start die soc-nna-Treiberversion und bricht bei
+Abweichung ab ("The soc-nna version is %08x drivers_version is %p Don't
+match"). Der Stock-Treiber meldet version=20190724a. Ob die öffentliche
+nna1-Runtime (Changelog deutlich jünger) genau diese Version akzeptiert,
+ist **UNKNOWN und der erste Messpunkt von AP-NNA6** — schlimmstenfalls
+braucht der öffentliche Weg einen passenderen soc-nna.ko, den das Toolkit
+nicht mitliefert (Quelle weiterhin offen, OpenIPC firmware#2031).
+Zweites Gate derselben Art: Modell↔Runtime-Versionscheck ("model version
+… venus version … mismatch") — für uns entschärft, weil Modell und
+Runtime aus DEMSELBEN Toolkit-Stand kommen (CI baut beide zusammen).
+
 ## Lizenz / Shipping
 
 - magik-toolkit: **kein LICENSE-File** im Repo; Quellheader tragen
