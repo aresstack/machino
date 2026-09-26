@@ -219,6 +219,32 @@ void test_an_unconnected_uplink_gets_no_route_but_stays_managed()
     TCHECK(p.find("usb0") == nullptr);
 }
 
+void test_a_gatewayless_broadcast_uplink_gets_no_route_but_ppp_does()
+{
+    // eth0 mit Fallback-Adresse OHNE Router: es traegt eine IP, hat aber kein
+    // Gateway. Frueher bekam es `default dev eth0 scope link` und ueberschattete
+    // mit niedriger Metrik die Mobilfunk-Route -- gemessen 2026-09-26 kein
+    // Internet. Ein Broadcast-Link ohne Gateway darf keine Default-Route
+    // bekommen; ein Mobilfunk-PPP-Link (Punkt-zu-Punkt) dagegen schon.
+    std::vector<UplinkStatus> u = {
+        up("eth0", UplinkType::Ethernet, "eth0", "192.168.1.11", ""),           // kein GW
+        up("cellular", UplinkType::Cellular, "usb0", "192.168.43.100", "192.168.43.1", "", true),
+    };
+    const RoutePlan p = plan_routes(u, UplinkPolicy{}, "cellular");
+    TCHECK(p.find("eth0") == nullptr);          // gateway-los + Broadcast -> keine Route
+    TCHECK(p.find("usb0") != nullptr);          // Mobilfunk mit GW -> Route
+    // eth0 bleibt verwaltet, damit seine stehengebliebene Route abgeraeumt wird.
+    TCHECK(p.managed_ifnames.size() == 2);
+
+    // PPP-Fall: Mobilfunk-Punkt-zu-Punkt hat kein Gateway und bekommt trotzdem
+    // eine (device-)Default-Route.
+    std::vector<UplinkStatus> u2 = {
+        up("ppp", UplinkType::Cellular, "ppp0", "10.64.64.64", "", "", true),
+    };
+    const RoutePlan p2 = plan_routes(u2, UplinkPolicy{}, "ppp");
+    TCHECK(p2.find("ppp0") != nullptr);
+}
+
 void test_an_uplink_with_no_interface_name_is_not_managed_at_all()
 {
     // A cellular uplink before the modem has enumerated has no interface. It
@@ -692,6 +718,7 @@ void run_route_plan_tests()
     test_an_uplink_outside_the_policy_is_reachable_but_never_preferred();
     test_an_id_entry_outranks_a_type_entry();
     test_an_unconnected_uplink_gets_no_route_but_stays_managed();
+    test_a_gatewayless_broadcast_uplink_gets_no_route_but_ppp_does();
     test_an_uplink_with_no_interface_name_is_not_managed_at_all();
     test_a_gatewayless_uplink_still_gets_a_route();
 

@@ -7,6 +7,10 @@
 #include <cstring>
 #include <dirent.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 namespace machino { namespace linuxsys {
 
@@ -163,9 +167,49 @@ bool LinuxEcmBackend::read_address(const std::string& ifname, LinkAddress& out)
         p = eol + 1;
     }
     // Der Zustand eines ANDEREN Interface ist fuer uns keiner.
-    if (iface != ifname) return false;
-    out = a;
-    return a.has_address();
+    if (iface == ifname && a.has_address()) {
+        out = a;
+        return true;
+    }
+
+    // Fallback: die State-Datei kann waehrend einer Lease-Erneuerung kurz fehlen
+    // (deconfig -> bound entfernt und schreibt sie neu). Traegt das Interface
+    // aber eine echte IPv4, IST die Verbindung da -- und ecm_link darf sie dann
+    // NICHT abreissen. Presence kommt vom Interface (getifaddrs), Gateway/DNS
+    // aus der State-Datei; fehlt sie gerade, behaelt ecm_link das zuletzt
+    // bekannte Gateway. Genau diese State-Datei-Race war der Teardown-Churn
+    // (gemessen 2026-09-26).
+    LinkAddress fromiface;
+    if (read_iface_ipv4(ifname, fromiface)) {
+        out = fromiface;
+        return true;
+    }
+    return false;
+}
+
+bool LinuxEcmBackend::read_iface_ipv4(const std::string& ifname, LinkAddress& out) const
+{
+    struct ifaddrs* ifa = nullptr;
+    if (::getifaddrs(&ifa) != 0) return false;
+    bool found = false;
+    for (struct ifaddrs* p = ifa; p; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
+        if (ifname != p->ifa_name) continue;
+        char ip[INET_ADDRSTRLEN] = {0};
+        const auto* sin = reinterpret_cast<const struct sockaddr_in*>(p->ifa_addr);
+        if (!::inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof ip)) continue;
+        out = LinkAddress{};
+        out.ipv4 = ip;
+        if (p->ifa_netmask) {
+            char nm[INET_ADDRSTRLEN] = {0};
+            const auto* snm = reinterpret_cast<const struct sockaddr_in*>(p->ifa_netmask);
+            if (::inet_ntop(AF_INET, &snm->sin_addr, nm, sizeof nm)) out.netmask = nm;
+        }
+        found = true;
+        break;
+    }
+    ::freeifaddrs(ifa);
+    return found && out.has_address();
 }
 
 }} // namespace machino::linuxsys

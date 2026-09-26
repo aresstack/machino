@@ -358,6 +358,15 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
             enter(DataLinkState::Addressing, "Adresse verloren, hole neue");
             return st_;
         }
+        // Das Gateway (und DNS) durch eine transiente Luecke bewahren: fehlt der
+        // frische Read sie, aber die IPv4 ist unveraendert, kam der Wert aus dem
+        // Interface-Fallback (State-Datei gerade weg). Sonst verloere der Uplink
+        // sein Gateway und route_plan setzte eine Route ins Leere.
+        if (a.gateway.empty() && a.ipv4 == st_.address.ipv4 && !st_.address.gateway.empty()) {
+            a.gateway = st_.address.gateway;
+            if (a.dns1.empty()) a.dns1 = st_.address.dns1;
+            if (a.dns2.empty()) a.dns2 = st_.address.dns2;
+        }
         st_.address = a;
     }
 

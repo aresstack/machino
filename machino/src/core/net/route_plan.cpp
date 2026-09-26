@@ -89,6 +89,16 @@ RoutePlan plan_routes(const std::vector<UplinkStatus>& uplinks,
         // route rather than a route to nowhere.
         if (u.state != LinkState::Connected || u.info.ipv4.empty()) continue;
 
+        // Eine gateway-lose Default-Route ist NUR auf einem Punkt-zu-Punkt-Link
+        // sinnvoll (Mobilfunk-PPP: der Peer ist implizit). Auf einem
+        // Broadcast-Link (Ethernet, WLAN) waere `default dev ethX scope link`
+        // eine Route ins Leere -- und weil eth0 bei aktivem WLAN-Profil nur die
+        // Fallback-Adresse OHNE Router traegt, bekam es genau so eine und
+        // ueberschattete mit seiner niedrigen Metrik die funktionierende
+        // Mobilfunk-Route. Gemessen 2026-09-26: kein Internet, bis diese Route
+        // weg war. Also: kein Gateway + kein Mobilfunk -> keine Route.
+        if (u.info.gateway.empty() && u.type != UplinkType::Cellular) continue;
+
         RouteIntent r;
         r.uplink_id = u.id;
         r.ifname    = u.info.ifname;

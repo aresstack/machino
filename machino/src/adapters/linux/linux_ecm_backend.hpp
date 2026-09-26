@@ -40,6 +40,9 @@ public:
 
 private:
     bool write_request(const std::string& line);
+    // Presence-Wahrheit vom Interface (getifaddrs), Fallback wenn die
+    // State-Datei waehrend einer Lease-Erneuerung kurz fehlt.
+    bool read_iface_ipv4(const std::string& ifname, LinkAddress& out) const;
 
     std::string sys_root_;
     std::string request_path_;
