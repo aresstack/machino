@@ -109,6 +109,9 @@ rm -f "$WWW/cgi-bin/machino-devices.cgi" "$WWW/cgi-bin/machino-network.cgi"
 rm -f "$WWW/cgi-bin/machino-cgi-run.cgi" "$WWW/cgi-bin/machino-dyndns.cgi"
 rm -f "$WWW/cgi-bin/machino-ai.cgi"
 rm -f "$ROOT/usr/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-wifi-role"
+# Der NNA-Helfer geht mit; die Modelle unter /etc/machino/models BLEIBEN --
+# Nutzdaten des Betreibers, dieselbe Regel wie /etc/machino/payload.
+rm -f "$ROOT/usr/sbin/machino-nna"
 rm -f "$ROOT/usr/sbin/machino-dyndns" "$ROOT/etc/machino/dyndns.conf"
 rm -f "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
 

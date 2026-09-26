@@ -128,7 +128,7 @@ jobs:
         run: |
           set -u
           mkdir -p wifi-payload
-          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml; do
+          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml build-nna-t40.yml; do
             id=$(gh run list --workflow "$wf" --status success --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
             if [ -z "${id:-}" ] || [ "$id" = "null" ]; then
               echo "::warning::no successful run of $wf to take a payload from"
@@ -210,6 +210,15 @@ jobs:
           # einkompiliert. ip-up sagt machino, wie das Interface heisst.
           cp -f machino/openipc/ppp-ip-up.script             "$O/ppp-ip-up.script"
           cp -f machino/openipc/ppp-ip-down.script           "$O/ppp-ip-down.script"
+          # NNA (KI): Helfer + Modell, best effort wie alle Nutzlasten.
+          # install.sh installiert sie NUR mit --with-nna-payload -- mehrere
+          # MB auf einem fast vollen Overlay sind eine Entscheidung.
+          mkdir -p "$O/nna"
+          _nna=$(find wifi-payload/build-nna-t40.yml -type f -name machino-nna 2>/dev/null | head -1)
+          [ -n "$_nna" ] && cp -f "$_nna" "$O/nna/machino-nna" && echo "nna helper bundled"
+          _nmodel=$(find wifi-payload/build-nna-t40.yml -type f -name '*_magik.bin' 2>/dev/null | head -1)
+          [ -n "$_nmodel" ] && cp -f "$_nmodel" "$O/nna/$(basename "$_nmodel")" && echo "nna model bundled: $(basename "$_nmodel")"
+
           mkdir -p "$O/cellular/modules"
           # pppd und chat, best effort wie die uebrigen Nutzlasten: ein
           # abgelaufenes Artefakt darf den Hauptbuild nicht rot machen. Fehlen

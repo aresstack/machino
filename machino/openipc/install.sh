@@ -29,6 +29,10 @@ WITH_DEVPAGE=0
 # Schalter nicht, er meldet nur ehrlich, dass nichts zu schalten da ist.
 WITH_WIFI_PAYLOAD=1
 WITH_CELL_PAYLOAD=1
+# NNA (KI) ist andersherum gepolt: AUS, bis jemand --with-nna-payload sagt.
+# Mehrere MB Helfer+Modell auf einem fast vollen Overlay sind eine
+# Entscheidung, kein Default.
+WITH_NNA_PAYLOAD=0
 
 # Der eine Schalter fuer den einen Port. Leer heisst "nicht angefasst": eine
 # Neuinstallation ueber eine bestehende hinweg darf die Wahl des Betreibers
@@ -112,6 +116,12 @@ only works after someone has copied files over by SSH is not a switch.
   --without-cellular-payload
                         the same for the modem modules and the helper.
 
+  --with-nna-payload    install the NNA inference helper (machino-nna) and any
+                        bundled detection model into /etc/machino/models. OFF
+                        by default: several MB on an overlay that is usually
+                        nearly full -- AI is an explicit choice, and the AI
+                        page can free the space (majestic backup) first.
+
   --with-access-point   accepted and ignored; hostapd is part of the default
                         payload now. Kept so existing install commands and
                         scripts do not break.
@@ -134,6 +144,7 @@ EOF
         --with-wifi) USB_MODE=wifi ;;          # Altname, siehe --help
         --without-wifi-payload) WITH_WIFI_PAYLOAD=0 ;;
         --without-cellular-payload) WITH_CELL_PAYLOAD=0 ;;
+        --with-nna-payload) WITH_NNA_PAYLOAD=1 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -711,6 +722,38 @@ if [ "$WITH_CELL_PAYLOAD" = "1" ] &&
     fi
 elif [ "$WITH_CELL_PAYLOAD" != "1" ]; then
     say "skipped the cellular payload (--without-cellular-payload)"
+fi
+
+# ------------------------------------------------------------ NNA (KI) ---
+#
+# Der Inferenzhelfer und ein mitgeliefertes Modell. Nur auf ausdruecklichen
+# Wunsch (--with-nna-payload): mehrere MB auf einem fast vollen Overlay.
+# Modelle landen unter /etc/machino/models und UEBERLEBEN ein Deinstallieren
+# -- dieselbe Regel wie bei der USB-Nutzlast: Nutzdaten des Betreibers
+# verschwinden nicht, weil eine Software geht. Der Helfer selbst wird beim
+# Deinstallieren entfernt.
+if [ "$WITH_NNA_PAYLOAD" = "1" ]; then
+    if [ -r "$HERE/nna/machino-nna" ]; then
+        put 0755 "$HERE/nna/machino-nna" "$ROOT/usr/sbin/machino-nna" ||
+            die "cannot install machino-nna"
+        say "installed the NNA inference helper"
+    else
+        warn "--with-nna-payload, but the bundle carries no nna/machino-nna."
+        warn "the AI page will say the helper is missing; see build-nna-t40"
+    fi
+    _nmods=0
+    for _nbin in "$HERE"/nna/*.bin; do
+        [ -r "$_nbin" ] || continue
+        mkdir -p "$ROOT/etc/machino/models"
+        put 0644 "$_nbin" "$ROOT/etc/machino/models/$(basename "$_nbin")" ||
+            die "cannot install model $(basename "$_nbin")"
+        _nmods=$((_nmods + 1))
+    done
+    [ "$_nmods" -gt 0 ] && say "installed $_nmods detection model(s) into /etc/machino/models"
+    # Der Kerneltreiber (soc-nna.ko) ist bewusst NICHT im Bundle: seine Quelle
+    # ist oeffentlich noch nicht gefunden (OpenIPC #2031), und Binaermodule
+    # gehoeren erst nach der Hardware-Abnahme hinein. Die KI-Seite zeigt den
+    # Zustand ehrlich an.
 fi
 
 # ---------------------------------------------------------- USB-Auswahl ---

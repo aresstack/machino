@@ -69,6 +69,11 @@ FAKE
     # Machinos eigene WebUI-Seiten -- echte OpenIPC-Seiten, siehe install.sh.
     mkdir -p "$B/www"
     cp "$PKG"/www/machino-*.cgi "$B/www/"
+    # Die NNA-Nutzlast (Helfer + Modell), wie das Release-Artefakt sie traegt.
+    # Sie wird NUR mit --with-nna-payload installiert.
+    mkdir -p "$B/nna"
+    printf 'fake-machino-nna\n' > "$B/nna/machino-nna"
+    printf 'fake-magik-model\n' > "$B/nna/yolov5s_t40_magik.bin"
     # Die WLAN-Nutzlast so, wie das Release-Artefakt sie traegt: Treiber,
     # Firmware und hostapd unter wifi/. Sie wird per Default installiert und
     # ist ohne usb.wifi.enabled=true wirkungslos.
@@ -776,6 +781,22 @@ hasnt "no hostapd when the payload is declined" "$WORK/root/usr/sbin/hostapd"
 # entscheidet zwischen ihnen. Ohne ihn waere usb.mode ein Wert, den niemand
 # liest -- auch nicht der, der auf Mobilfunk stellt.
 has "boot script stays when only the wifi payload is declined" "$WORK/root/etc/init.d/S42usb"
+
+# NNA (KI): andersherum gepolt als WLAN/Modem -- AUS, bis jemand
+# --with-nna-payload sagt. Mehrere MB auf einem fast vollen Overlay sind
+# eine Entscheidung, kein Default. Die Modelle sind Nutzdaten des
+# Betreibers und ueberleben ein Deinstallieren; der Helfer geht mit.
+make_bundle; make_camera auto
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
+hasnt "no NNA helper by default"        "$WORK/root/usr/sbin/machino-nna"
+hasnt "no model dir by default"         "$WORK/root/etc/machino/models/yolov5s_t40_magik.bin"
+make_bundle; make_camera auto
+run_install --with-nna-payload || bad "--with-nna-payload was refused: $(cat "$WORK/out")"
+has "NNA helper installed on request"   "$WORK/root/usr/sbin/machino-nna"
+has "model installed on request"        "$WORK/root/etc/machino/models/yolov5s_t40_magik.bin"
+run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
+hasnt "NNA helper removed again"        "$WORK/root/usr/sbin/machino-nna"
+has "models survive the uninstall"      "$WORK/root/etc/machino/models/yolov5s_t40_magik.bin"
 
 # Switching the radio on while refusing its driver is not a configuration,
 # it is a boot that fails. It has to be refused up front.
