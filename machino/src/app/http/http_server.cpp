@@ -493,6 +493,11 @@ bool HttpServer::handle_request(Client& c) {
     else if (path == "/api/v1/state")        { r = (m == "GET") ? api_.state() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/telemetry")    { r = (m == "GET") ? api_.telemetry() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/ai/detectors") { r = (m == "GET") ? api_.ai_detectors() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+    else if (path == "/api/v1/ipsec")            { r = (m == "GET") ? api_.ipsec_get() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+    else if (path == "/api/v1/ipsec/config")     { r = (m == "PUT") ? api_.ipsec_put_config(req.body) : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+    else if (path == "/api/v1/ipsec/connect")    { r = (m == "POST") ? api_.ipsec_connect() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+    else if (path == "/api/v1/ipsec/disconnect") { r = (m == "POST") ? api_.ipsec_disconnect() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+    else if (path == "/api/v1/ipsec/status")     { r = (m == "GET") ? api_.ipsec_status() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/config.schema.json") {
         r = (m == "GET") ? api::Response{200, compat::majestic_schema(api_.capabilities().body)}
                          : api::ApiService::fail(405, "unknown_field", path, "method not allowed");

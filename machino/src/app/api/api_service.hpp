@@ -17,6 +17,7 @@
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "ports/rtsp_control.hpp"
 #include "core/media/tuning_service.hpp"
+#include "core/net/ipsec_service.hpp"
 #include "core/power/performance_service.hpp"
 #include <cstdint>
 #include <mutex>
@@ -50,6 +51,17 @@ public:
         std::function<std::vector<detection::DetectorStatus>(const std::string&)> f)
     { det_status_ = std::move(f); }
     Response ai_detectors();
+
+    // AP3 (Feature 2): IPsec/VPN. Der Service kommt aus main (null = das
+    // Feature ist auf dieser Plattform nicht verdrahtet -> 404, ehrlich).
+    // Der PSK ist write-only: PUT nimmt ihn an, KEINE Route gibt ihn zurueck,
+    // er erscheint in keiner Fehlermeldung.
+    void set_ipsec_service(ipsec::IpsecService* s) { ipsec_ = s; }
+    Response ipsec_get();                              // GET  /api/v1/ipsec
+    Response ipsec_put_config(const std::string& body);// PUT  /api/v1/ipsec/config
+    Response ipsec_connect();                          // POST /api/v1/ipsec/connect
+    Response ipsec_disconnect();                       // POST /api/v1/ipsec/disconnect
+    Response ipsec_status();                           // GET  /api/v1/ipsec/status
     // Partial update. `if_match` = expected revision ("" = none). Serialised.
     Response patch_config(const std::string& body, const std::string& if_match);
 
@@ -104,6 +116,7 @@ private:
     detection::DetectionService* detection_ = nullptr;   // M9: optional, null when no AI subsystem
     IRtspControl* rtsp_ = nullptr;                 // AP2: live rtsp.enabled/rtsp.port; null = not wired
     std::function<std::vector<detection::DetectorStatus>(const std::string&)> det_status_;
+    ipsec::IpsecService*        ipsec_ = nullptr;  // AP3: optional, null = nicht verdrahtet
     std::mutex                  patch_m_;          // PATCHes are serialised
 };
 

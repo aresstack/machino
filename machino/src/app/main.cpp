@@ -16,6 +16,7 @@
 #include "adapters/linux/linux_ecm_backend.hpp"
 #include "adapters/linux/linux_ppp_backend.hpp"
 #include "adapters/linux/linux_ethernet_uplink.hpp"
+#include "adapters/linux/linux_ipsec_backend.hpp"
 #include "adapters/linux/linux_route_backend.hpp"
 #include "adapters/linux/linux_serial_scan.hpp"
 #include "adapters/linux/linux_usb_host.hpp"
@@ -442,6 +443,15 @@ int main(int argc, char** argv) {
             api.set_detector_status_provider(
                 [ing](const std::string& mp) { return ing->detector_status(mp); });
         }
+
+        // AP3 (Feature 2): IPsec/VPN ueber die Prozessgrenze -- machinod
+        // linkt KEIN WeirdIKE; Lifecycle laeuft ueber S99weirdike, Status
+        // ueber den ctl-Socket. Fehler hier beruehren das Video nie.
+        ipsec::LinuxIpsecBackend ipsec_backend;
+        ipsec::IpsecService ipsec_service(ipsec_backend,
+                                          "/etc/machino/ipsec.conf",
+                                          "/etc/weirdike/weirdike.conf");
+        api.set_ipsec_service(&ipsec_service);
 
         // AP35/AP36: the USB host and the connectivity layer.
         //

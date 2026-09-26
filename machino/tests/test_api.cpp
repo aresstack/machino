@@ -896,7 +896,88 @@ void test_ai_detectors_route_and_person_config() {
     ACHECK(p2.status == 422);
 }
 
+// AP3 (Feature 2): die IPsec-Routen an einem Fake-Backend. Der Kern wohnt in
+// test_ipsec.cpp; hier zaehlt der API-Vertrag: unbekannte Felder -> 400 MIT
+// NAMEN, der PSK geht rein und kommt aus KEINER Antwort zurueck, ohne
+// verdrahteten Service antworten alle Routen 404.
+namespace {
+struct ApiFakeIpsecBackend : machino::ipsec::IIpsecBackend {
+    bool running = false;
+    std::string status_text;
+    bool daemon_running() override { return running; }
+    bool start_daemon(std::string&) override { running = true; return true; }
+    bool stop_daemon(std::string&) override { running = false; return true; }
+    bool ctl_status(std::string& out) override { out = status_text; return running; }
+};
+} // namespace
+
+void test_ap3_ipsec_api() {
+    Rig r;
+
+    // Nicht verdrahtet: ehrlich 404, keine Fantasie-Antwort.
+    ACHECK(r.api.ipsec_get().status == 404);
+    ACHECK(r.api.ipsec_status().status == 404);
+
+    const char* MC = "test_api_ipsec_m.conf";
+    const char* DC = "test_api_ipsec_d.conf";
+    remove(MC); remove(DC);
+    ApiFakeIpsecBackend be;
+    machino::ipsec::IpsecService svc(be, MC, DC);
+    r.api.set_ipsec_service(&svc);
+
+    api::Response g0 = r.api.ipsec_get();
+    ACHECK(g0.status == 200 && !g0.body.get("enabled")->as_bool());
+    ACHECK(!g0.body.get("pskSet")->as_bool());
+    ACHECK(!g0.body.has("psk"));                    // write-only, schon im Schema
+
+    // Tippfehler wird MIT NAMEN abgelehnt.
+    api::Response bad = r.api.ipsec_put_config("{\"gateay\":\"x\"}");
+    ACHECK(bad.status == 400);
+    ACHECK(bad.body.dump().find("gateay") != std::string::npos);
+
+    // Fremder Algorithmus: 400, der Name steht in der Meldung.
+    api::Response badalg = r.api.ipsec_put_config(
+        "{\"ikeEnc\":[\"chacha20\"],\"gateway\":\"vpn.example.org\",\"enabled\":true,"
+        "\"remoteSubnet\":\"10.66.0.0/24\",\"psk\":\"api-psk-geheim\"}");
+    ACHECK(badalg.status == 400);
+    ACHECK(badalg.body.dump().find("chacha20") != std::string::npos);
+    ACHECK(badalg.body.dump().find("api-psk-geheim") == std::string::npos);   // Secret nie im Fehler
+
+    api::Response ok = r.api.ipsec_put_config(
+        "{\"enabled\":true,\"gateway\":\"vpn.example.org\",\"localId\":\"cam.test\","
+        "\"remoteId\":\"vpn.test\",\"localSubnet\":\"10.77.0.2/32\","
+        "\"remoteSubnet\":\"10.66.0.0/24\",\"psk\":\"api-psk-geheim\"}");
+    ACHECK(ok.status == 200 && ok.body.get("pskSet")->as_bool());
+    ACHECK(ok.body.dump().find("api-psk-geheim") == std::string::npos);
+
+    api::Response g1 = r.api.ipsec_get();
+    ACHECK(g1.status == 200 && g1.body.get("enabled")->as_bool());
+    ACHECK(g1.body.get("pskSet")->as_bool());
+    ACHECK(g1.body.dump().find("api-psk-geheim") == std::string::npos);       // NIE zurueck
+
+    // connect/disconnect + Status-Spiegel.
+    ACHECK(r.api.ipsec_connect().status == 200 && be.running);
+    be.status_text = "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\nlast_notify=0\n";
+    api::Response st = r.api.ipsec_status();
+    ACHECK(st.status == 200);
+    ACHECK(st.body.get("state")->as_string() == "childEstablished");
+    ACHECK(!st.body.has("failure"));
+    ACHECK(st.body.get("interface")->as_string() == "ipsec0");
+
+    be.status_text = "state=FAILED\nlast_notify=24\n";
+    st = r.api.ipsec_status();
+    ACHECK(st.body.get("state")->as_string() == "failed");
+    ACHECK(st.body.get("failure")->get("code")->as_string() == "authenticationFailed");
+
+    ACHECK(r.api.ipsec_disconnect().status == 200 && !be.running);
+    st = r.api.ipsec_status();
+    ACHECK(st.body.get("state")->as_string() == "disconnected");   // enabled, Daemon aus
+
+    remove(MC); remove(DC);
+}
+
 void run_api_tests() {
+    test_ap3_ipsec_api();
     test_get_documents();
     test_ai_detectors_route_and_person_config();
     test_patch_cold_and_partial();
