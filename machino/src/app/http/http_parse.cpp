@@ -274,7 +274,12 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-usb.cgi\">USB</a></li>"
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-cellular.cgi\">Cellular</a></li>"
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-uplinks.cgi\">Uplinks</a></li>"
-        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-devices.cgi\">Device Manager</a></li>";
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-devices.cgi\">Device Manager</a></li>"
+        // AI: die Plattform-Seite (NNA-Voraussetzungen, Modelle, Speicher).
+        // Detector/Rate wohnen in den Kamera-Einstellungen; diese Seite
+        // besitzt den Unterbau -- und den Backup-Purge, der den Platz fuer
+        // Modelle freimacht.
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-ai.cgi\">AI</a></li>";
 
     std::string out;
     out.reserve(html.size() + add.size());

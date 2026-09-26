@@ -659,6 +659,7 @@ has "cgi shim installed by default"         "$WORK/root/var/www/cgi-bin/machino-
 has "dyndns updater installed by default"   "$WORK/root/usr/sbin/machino-dyndns"
 has "dyndns boot script installed"          "$WORK/root/etc/init.d/S49dyndns"
 has "dyndns page installed"                 "$WORK/root/var/www/cgi-bin/machino-dyndns.cgi"
+has "ai page installed"                     "$WORK/root/var/www/cgi-bin/machino-ai.cgi"
 has "hostapd installed by default"          "$WORK/root/usr/sbin/hostapd"
 # Unter /lib/modules, nicht mehr unter /etc/machino/modules: nur dort sucht
 # network.cgi (adapter_scan), und nur von dort loest modprobe die Namen auf, die
@@ -825,6 +826,7 @@ hasnt "cgi shim removed again"      "$WORK/root/var/www/cgi-bin/machino-cgi-run.
 hasnt "dyndns updater removed again" "$WORK/root/usr/sbin/machino-dyndns"
 hasnt "dyndns boot script removed"  "$WORK/root/etc/init.d/S49dyndns"
 hasnt "dyndns page removed again"   "$WORK/root/var/www/cgi-bin/machino-dyndns.cgi"
+hasnt "ai page removed again"       "$WORK/root/var/www/cgi-bin/machino-ai.cgi"
 hasnt "hostapd removed again"       "$WORK/root/usr/sbin/hostapd"
 hasnt "driver removed again"        "$WORK/root/etc/machino/modules/aic8800.ko"
 hasnt "loader removed again"        "$WORK/root/etc/machino/modules/aic_load_fw.ko"

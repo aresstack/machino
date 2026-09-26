@@ -356,7 +356,8 @@ void run_relay_head_end_tests() {
         // NO machino-wifi.cgi: station Wi-Fi is configured on OpenIPC's own
         // network page (two-owners finding, 2026-09-25).
         for (const char* p : {"machino-usb.cgi", "machino-cellular.cgi",
-                              "machino-uplinks.cgi", "machino-devices.cgi"}) {
+                              "machino-uplinks.cgi", "machino-devices.cgi",
+                              "machino-ai.cgi"}) {
             HCHECK(out.find(std::string("href=\"") + p + "\"") != std::string::npos);
             HCHECK(out.find(p) == out.rfind(p));
         }
@@ -364,6 +365,7 @@ void run_relay_head_end_tests() {
         // Inserted AFTER the Network item (inside Setup), before Time.
         HCHECK(out.find("machino-usb.cgi") > out.find("network.cgi"));
         HCHECK(out.find("machino-devices.cgi") < out.find("time.cgi"));
+        HCHECK(out.find("machino-ai.cgi") < out.find("time.cgi"));
         // The stock entries are untouched and still there.
         HCHECK(out.find("href=\"network.cgi\"") != std::string::npos);
         HCHECK(out.find("href=\"time.cgi\"") != std::string::npos);

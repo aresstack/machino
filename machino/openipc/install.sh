@@ -457,7 +457,7 @@ fi
 # Uninstall entfernt sie restlos. Vorher gab es zwei Anlaeufe ohne eigene
 # Dateien (nachgebaute Leiste, clientseitig uebernommene Leiste); beide sind
 # im Browser gescheitert und dokumentiert in docs/openipc-webui-assets.md.
-for _pg in machino-uplinks.cgi machino-cellular.cgi machino-usb.cgi machino-devices.cgi machino-dyndns.cgi; do
+for _pg in machino-uplinks.cgi machino-cellular.cgi machino-usb.cgi machino-devices.cgi machino-dyndns.cgi machino-ai.cgi; do
     if [ -r "$HERE/www/$_pg" ]; then
         put 0755 "$HERE/www/$_pg" "$CGI/$_pg" || die "cannot install $CGI/$_pg"
         say "installed $CGI/$_pg"
