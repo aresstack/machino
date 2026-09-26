@@ -40,6 +40,7 @@ void run_api_tests();
 void run_tuning_tests();
 void run_multistream_tests();
 void run_detection_tests();
+void run_nna_detector_tests();
 void run_compat_tests();
 void run_substream_schema_tests();
 void run_snapshot_gate_tests();
@@ -381,6 +382,7 @@ int main() {
     run_tuning_tests();
     run_multistream_tests();
     run_detection_tests();
+    run_nna_detector_tests();
     run_compat_tests();
     run_substream_schema_tests();
     run_snapshot_gate_tests();
