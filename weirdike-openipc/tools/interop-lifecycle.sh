@@ -119,13 +119,16 @@ ip netns exec wl ping -c2 -W2 10.66.0.1 >/dev/null || fail "Ping nach Rekey"
 kill $PINGPID 2>/dev/null || true; wait $PINGPID 2>/dev/null || true
 say "Rekey ohne Tunnel-Neuaufbau, Traffic laeuft weiter"
 
-say "Peer verschwindet STILL (veth down) -> DPD -> Tunnel weg -> Datenpfad closed"
-# SILENT: das Interface der Gegenseite runterfahren, KEIN 'ipsec stop' -- das
-# wuerde charon ein graceful IKE-DELETE senden lassen (Ergebnis CLOSED statt
-# DPD-Timeout). So bekommt weirdiked keine Antwort mehr und die DPD
-# (dpd_interval_s=3) laeuft in FAILED. Beides -- FAILED (DPD) ODER CLOSED
-# (falls doch ein DELETE durchkam) -- muss den Datenpfad fail-closed abbauen.
-ip netns exec wr ip link set veth-wr down 2>/dev/null || true
+say "Peer-Antworten verschwinden (iptables DROP) -> DPD -> Tunnel weg -> Datenpfad closed"
+# Der KANONISCHE DPD-Ausloeser: die Gegenseite bleibt auf IP-Ebene erreichbar
+# (weirdikeds Probes gehen RAUS), aber ihre Antworten werden verworfen. So
+# laeuft die DPD (dpd_interval_s=3, Default-Retries) sauber in FAILED. Kein
+# 'ipsec stop' (das schickte ein graceful DELETE -> CLOSED statt DPD),
+# und kein veth-down (dann scheitert schon das Senden, mehrdeutig). Beides,
+# FAILED (DPD) ODER CLOSED (falls doch ein DELETE durchkam), muss den
+# Datenpfad fail-closed abbauen.
+ip netns exec wl iptables -A INPUT -p udp --dport 4500 -j DROP 2>/dev/null || true
+ip netns exec wl iptables -A INPUT -p udp --dport 500 -j DROP 2>/dev/null || true
 i=0; while [ $i -lt 45 ]; do
     st=$(ip netns exec wl "$CTL" status 2>/dev/null || true)
     case "$st" in *state=FAILED*|*state=CLOSED*) break ;; esac
