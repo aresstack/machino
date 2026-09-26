@@ -183,20 +183,28 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
         } else if (!strcmp(k, "remote_subnet")) {
             /* AP6: comma-separated list, up to WD_MAX_REMOTE_TS. Each entry
              * becomes its own TSr selector; remote_ts mirrors the first. */
+            /* Manual comma split -- no strtok_r, so `make test` needs no
+             * feature-test macro (Linux gcc without _GNU_SOURCE hid it as an
+             * implicit declaration; roter Lauf bf6a962). */
             out->n_remote_ts = 0;
-            char *save = NULL;
-            for (char *tok = strtok_r(v, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
-                char *e = tok; while (*e == ' ' || *e == '\t') e++;
+            char *p = v;
+            while (*p) {
+                char *comma = strchr(p, ',');
+                if (comma) *comma = 0;
+                char *e = p; while (*e == ' ' || *e == '\t') e++;
                 char *end = e + strlen(e);
                 while (end > e && (end[-1] == ' ' || end[-1] == '\t')) *--end = 0;
-                if (!*e) continue;
-                if (out->n_remote_ts >= WD_MAX_REMOTE_TS) {
-                    seterr(err, errcap, "too many remote_subnet entries (max 4)", NULL); return -1;
+                if (*e) {
+                    if (out->n_remote_ts >= WD_MAX_REMOTE_TS) {
+                        seterr(err, errcap, "too many remote_subnet entries (max 4)", NULL); return -1;
+                    }
+                    if (wd_parse_cidr(e, &out->remote_ts_list[out->n_remote_ts])) {
+                        seterr(err, errcap, "bad remote_subnet", NULL); return -1;
+                    }
+                    out->n_remote_ts++;
                 }
-                if (wd_parse_cidr(e, &out->remote_ts_list[out->n_remote_ts])) {
-                    seterr(err, errcap, "bad remote_subnet", NULL); return -1;
-                }
-                out->n_remote_ts++;
+                if (!comma) break;
+                p = comma + 1;
             }
             if (out->n_remote_ts == 0) { seterr(err, errcap, "empty remote_subnet", NULL); return -1; }
             out->remote_ts = out->remote_ts_list[0];
