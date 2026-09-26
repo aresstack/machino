@@ -502,11 +502,16 @@ void IpsecService::tick(uint32_t now_ms)
 }
 
 // Plant den naechsten Reconnect, sofern sinnvoll. Terminale Ursachen
-// (manualStop, ungueltige Config, fehlender PSK) planen NICHTS.
+// (manualStop, ungueltige Config, fehlendes Credential) planen NICHTS.
 void IpsecService::schedule_reconnect_(uint32_t now_ms, const IpsecConfig& c)
 {
     if (manual_stop_ || !c.enabled) { reconnect_scheduled_ = false; return; }
-    if (!validate(c).empty() || c.gateway.empty() || !psk_set()) {
+    // AP9: das noetige Credential haengt am Auth-Modus -- ein EAP-Tunnel darf
+    // NICHT an einem fehlenden PSK scheitern (und umgekehrt).
+    const bool cred_ok = c.auth == Auth::EapMschapv2
+                           ? (!c.eap_user.empty() && eap_password_set())
+                           : psk_set();
+    if (!validate(c).empty() || c.gateway.empty() || !cred_ok) {
         reconnect_scheduled_ = false; return;
     }
     reconnect_attempt_++;

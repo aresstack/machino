@@ -605,6 +605,16 @@ void test_ap9_eap_mschapv2()
     // connect: EAP-Pfad. (Kein PSK noetig.)
     ICHECK(svc.connect().empty());
     ICHECK(be.running);
+
+    // AP7xAP9-Regression: ein EAP-Tunnel MUSS auch reconnecten. Frueher
+    // gatete schedule_reconnect_ nur auf psk_set() -> ein EAP-Tunnel (psk
+    // leer) haette nach Underlay-Verlust NIE einen Reconnect geplant.
+    be.status_text = "state=CHILD_SA_ESTABLISHED\n";
+    up.cell.usable = false;
+    svc.tick(1000);
+    ICHECK(!be.running);
+    ICHECK(svc.status().reconnect_attempt == 1);   // EAP plant den Reconnect
+    up.cell.usable = true;
     ICHECK(svc.disconnect().empty());
 
     // Ein EAP-Config OHNE gesetztes Passwort (frische Dateien) -> connect
