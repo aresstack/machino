@@ -31,7 +31,7 @@ int main(void)
 
     weirdike_mem_req_t req;
     memset(&req, 0, sizeof req);
-    CHECK(weirdike_mem_req(NULL, &req) == 0 && req.ctx_len > 0 && req.ws_len > 0,
+    CHECK(weirdike_mem_req(NULL, &req) == 0 && req.context_bytes > 0 && req.workspace_bytes > 0,
           "weirdike_mem_req(NULL) liefert die Maxima");
 
     weirdike_mbedtls_ctx mc;

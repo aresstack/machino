@@ -65,6 +65,29 @@ jobs:
           path: /tmp/lifecycle.log
           if-no-files-found: ignore
 
+      - name: "AP2: IKEv2-Interop gegen strongSwan (netns, PSK, bis CHILD_SA)"
+        # Der Daemon wird fuer den HOST gebaut (dieselben Quellen wie das
+        # MIPS-Binary) und handelt gegen einen echten charon: positiv bis
+        # CHILD_SA_ESTABLISHED, negativ getrennt nach Auth (24), Proposal (14)
+        # und Transport-Timeout. Kein Nutzverkehr, keine Routen -- AP4-Grenze.
+        run: |
+          set -o pipefail
+          sudo apt-get update -q && sudo apt-get install -y -q strongswan >/dev/null
+          make -C weirdike-openipc MBEDTLS="$PWD/3p/mbedtls-3.6.7" 2>&1 | tail -3
+          sudo env WLD="$PWD/weirdike-openipc/build/weirdiked" \
+                   CTL="$PWD/weirdike-openipc/build/weirdikectl" \
+              sh weirdike-openipc/tools/interop-strongswan.sh 2>&1 | tee /tmp/interop.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: weirdike-interop-log
+          path: |
+            /tmp/interop.log
+            /tmp/weirdiked-interop.log
+            /tmp/status-*.txt
+          if-no-files-found: ignore
+
       - name: "Fetch the toolchain (T40 musl, same one machino uses)"
         run: |
           chmod +x build.sh
