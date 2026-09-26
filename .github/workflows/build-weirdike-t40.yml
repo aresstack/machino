@@ -53,8 +53,17 @@ jobs:
         # udp_bsd an konkreter Source-IP, weirdike_new/free. Kein IKE-Verkehr
         # (das ist AP2 gegen strongSwan).
         run: |
-          sh machino/tools/fetch-mbedtls.sh "$PWD/3p" gcc ar
-          make -C weirdike-openipc test-lifecycle MBEDTLS="$PWD/3p/mbedtls-3.6.7"
+          set -o pipefail
+          sh machino/tools/fetch-mbedtls.sh "$PWD/3p" gcc ar 2>&1 | tail -3
+          make -C weirdike-openipc test-lifecycle MBEDTLS="$PWD/3p/mbedtls-3.6.7" \
+            2>&1 | tee /tmp/lifecycle.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: weirdike-lifecycle-log
+          path: /tmp/lifecycle.log
+          if-no-files-found: ignore
 
       - name: "Fetch the toolchain (T40 musl, same one machino uses)"
         run: |
