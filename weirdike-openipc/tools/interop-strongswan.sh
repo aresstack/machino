@@ -28,6 +28,7 @@ fail() { echo "FAIL: $*" >&2; cat "$LOG" 2>/dev/null | tail -30 >&2; exit 1; }
 
 cleanup() {
     ip netns exec wl pkill -x weirdiked 2>/dev/null || true
+    ipsec stop 2>/dev/null || true
     ip netns exec wr ipsec stop 2>/dev/null || true
     ip netns del wl 2>/dev/null || true
     ip netns del wr 2>/dev/null || true
@@ -87,7 +88,21 @@ EOF
     chmod 600 /etc/weirdike/weirdike.conf
 }
 
+swan_stop_everywhere() {
+    # apt startet einen HOST-charon, und /var/run ist zwischen den netns
+    # geteilt (kein Mount-Namespace): dessen PID-Files liessen "ipsec start"
+    # im wr-ns still NICHT starten -- weirdiked retransmittierte ins Leere
+    # (roter Lauf 1, exakt so im starter-Log). Es darf immer nur EINEN
+    # charon geben, und zwar unseren im wr-ns.
+    systemctl stop strongswan-starter 2>/dev/null || true
+    ipsec stop 2>/dev/null || true
+    ip netns exec wr ipsec stop 2>/dev/null || true
+    sleep 1
+    rm -f /var/run/charon.pid /var/run/starter.charon.pid /var/run/charon.ctl
+}
+
 start_swan() {
+    swan_stop_everywhere
     ip netns exec wr ipsec start
     # charon braucht einen Moment, bis 500/4500 lauschen
     i=0; while [ $i -lt 20 ]; do
@@ -144,7 +159,6 @@ wl_conf "voellig-falscher-psk" "10.99.0.3"
 run_case badpsk FAILED 24
 
 say "Fall badprop: Responder erlaubt nur AES128/SHA1 -> NO_PROPOSAL_CHOSEN (14)"
-ip netns exec wr ipsec stop || true
 swan_conf "aes128-sha1-modp1024"
 wl_conf "$PSK" "10.99.0.3"
 start_swan
