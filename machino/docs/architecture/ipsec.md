@@ -191,3 +191,39 @@ verschwinden. machinods Peer-`/32` ist die einzige persistente Eigenroute;
 - **Kein MOBIKE:** eine bestehende IKE-SA wird nicht auf ein anderes
   Interface umgehaengt; Underlay-Wechsel = sauberer Abbau + kompletter
   Neuaufbau.
+
+## AP8: Native OpenIPC-WebUI-Integration
+
+IPsec erscheint als native Seite in der bestehenden OpenIPC-WebUI, nicht als
+zweite Webapp. Der etablierte serverseitige Weg (kein Client-Chrome-Hack,
+keine OpenIPC-Datei angefasst):
+
+- **Seite** `openipc/www/machino-ipsec.cgi` — ein haserl-CGI wie
+  `machino-ai.cgi`/`machino-cellular.cgi`: `common/header/footer`-Includes
+  (Head, Navbar, Theme, main.js kommen daraus), `#mch`-gescoptes CSS, IIFE-
+  Script, Bootstrap/`mj-*`-Klassen. Sie spricht ausschliesslich die
+  vorhandenen `/api/v1/ipsec*`-Routen (absolute Pfade). Installiert von
+  `install.sh` nach `/var/www/cgi-bin/`, entfernt von `uninstall.sh`
+  (`weirdike.conf` bleibt).
+- **Menuepunkt** via `inject_machino_nav()` in die Services-Dropdown, direkt
+  nach dem `wireguard.cgi`-Anker — dieselbe Anker-/Fail-closed-Logik wie
+  DynDNS: fehlt der Anker (andere OpenIPC-Variante), gibt es eben keinen
+  Menuepunkt (die Seite bleibt unter `/cgi-bin/` erreichbar), nie ein
+  Abbruch; Duplikat-Guard `machino-ipsec.cgi`.
+- **WireGuard bleibt unangetastet** — eigener Menuepunkt, eigene Seite,
+  eigene API, keine gemeinsamen IDs/Config-Keys.
+
+Karten: Status+Aktionen (Connect/Disconnect/Reconnect), Basis-Config
+(Gateway/Port/Underlay/PSK), Identitaeten+Remote-Netze, Algorithmen (die
+feste AP2-Suite, sichtbar als „kein stiller Downgrade"), Diagnose. Der PSK
+ist ein `type=password`-Feld, das nur bei Eingabe sendet; die Anzeige ist
+`stored`/`not set`, nie der Wert. **Configured / Negotiated / Installed**
+werden in der Diagnose getrennt gezeigt (angeforderte remoteSubnet vs.
+`remoteTs` aus dem Status vs. `routes[]`). Ein API-Fehler wird WORTWOERTLICH
+gezeigt (AUTHENTICATION_FAILED, unsupported algorithm, cellular unavailable,
+route conflict), nicht als generisches „Error". Bei `underlay=cellular` nur
+ein Link auf die Cellular-Seite, keine zweite Modemconfig. 401 → zurueck auf
+`/login.html?next=/cgi-bin/machino-ipsec.cgi`.
+
+Hardware-Abnahme (Kamera + EC200A, Connect per UI, echter Remote-Ping/TCP,
+sauberer Disconnect): PENDING_PHYSICAL.

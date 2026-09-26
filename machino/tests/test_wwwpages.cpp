@@ -126,6 +126,9 @@ void run_wwwpages_tests()
                "/cgi-bin/machino-uplinks.cgi");
     check_page("openipc/www/machino-devices.cgi", "Device Manager",
                "/cgi-bin/machino-devices.cgi");
+    // AP8: die native IPsec-Seite -- gleiche OpenIPC-Vertraege wie die anderen.
+    check_page("openipc/www/machino-ipsec.cgi", "IPsec",
+               "/cgi-bin/machino-ipsec.cgi");
 
     // Die Funktionsflaeche ist vollstaendig auf die Seiten verteilt -- die
     // Zerlegung war UI-Architektur, kein Funktionsabbau.
@@ -140,6 +143,20 @@ void run_wwwpages_tests()
     TCHECK(has(up,   "/api/v1/network/policy"));
     const std::string dev = slurp("openipc/www/machino-devices.cgi");
     TCHECK(has(dev, "/api/v1/devices"));
+
+    // AP8: die IPsec-Seite spricht genau die vorhandenen /api/v1/ipsec*-Routen,
+    // der PSK ist write-only (Passwortfeld, "stored"-Anzeige, nie Rueckgabe),
+    // und Configured/Negotiated/Installed werden getrennt gezeigt.
+    const std::string ips = slurp("openipc/www/machino-ipsec.cgi");
+    TCHECK(has(ips, "/api/v1/ipsec"));
+    TCHECK(has(ips, "/api/v1/ipsec/config"));
+    TCHECK(has(ips, "/api/v1/ipsec/connect"));
+    TCHECK(has(ips, "/api/v1/ipsec/disconnect"));
+    TCHECK(has(ips, "/api/v1/ipsec/status"));
+    TCHECK(has(ips, "type=\"password\""));          // PSK-Feld maskiert
+    TCHECK(has(ips, "Negotiated TSr"));             // negotiated != configured
+    TCHECK(has(ips, "Installed route"));            // installed getrennt
+    TCHECK(has(ips, "machino-cellular.cgi"));       // Cellular-Link, keine 2. Modemconfig
 
     // Cellular haengt am usb.mode; seit der Zerlegung LIEST die Seite ihn
     // selbst, statt eine Variable einer anderen Seite zu erwarten.

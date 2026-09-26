@@ -402,17 +402,23 @@ void run_relay_head_end_tests() {
             // after WireGuard, before Proxy (i.e. inside Services)
             HCHECK(so.find("machino-dyndns.cgi") > so.find("wireguard.cgi"));
             HCHECK(so.find("machino-dyndns.cgi") < so.find("proxy.cgi"));
-            // idempotent
+            // AP8: IPsec is injected into Services too, next to WireGuard, once.
+            HCHECK(so.find("machino-ipsec.cgi") != std::string::npos);
+            HCHECK(so.find("machino-ipsec.cgi") == so.rfind("machino-ipsec.cgi"));
+            HCHECK(so.find("machino-ipsec.cgi") > so.find("wireguard.cgi"));
+            // idempotent (both DynDNS and IPsec)
             bool sc2 = false;
             HCHECK(inject_machino_nav(so, sc2) == so);
         }
-        // No WireGuard anchor -> DynDNS is simply not added (System block still is).
+        // No WireGuard anchor -> DynDNS AND IPsec are simply not added (the
+        // System block still is; the pages stay reachable under /cgi-bin/).
         {
             bool wc = false;
             const std::string now = inject_machino_nav(
                 "<li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li>", wc);
             HCHECK(wc);
             HCHECK(now.find("machino-dyndns.cgi") == std::string::npos);
+            HCHECK(now.find("machino-ipsec.cgi") == std::string::npos);
             HCHECK(now.find("machino-usb.cgi") != std::string::npos);   // System block present
         }
 

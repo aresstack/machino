@@ -304,6 +304,25 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
             }
         }
     }
+
+    // AP8: IPsec/IKEv2 gehoert fachlich neben WireGuard in die Services-
+    // Dropdown -- nicht als eigene Top-Level-Seite. Gleiche Anker-/Fail-
+    // closed-Logik wie DynDNS; eigener Guard (machino-ipsec.cgi noch nicht
+    // drin). Fehlt der wireguard.cgi-Anker, bleibt IPsec eben ohne Menuepunkt
+    // (die Seite ist trotzdem unter /cgi-bin/ erreichbar) -- kein Abbruch.
+    if (out.find("machino-ipsec.cgi") == std::string::npos) {
+        size_t sa = out.find("href=\"wireguard.cgi\"");
+        if (sa == std::string::npos) sa = out.find("href='wireguard.cgi'");
+        if (sa != std::string::npos) {
+            const size_t sli = out.find("</li>", sa);
+            if (sli != std::string::npos) {
+                const std::string sadd =
+                    "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-ipsec.cgi\">IPsec / IKEv2</a></li>";
+                out.insert(sli + 5, sadd);
+                changed = true;
+            }
+        }
+    }
     return out;
 }
 
