@@ -5,6 +5,7 @@
 #pragma once
 #include "ports/inna_process.hpp"
 #include <string>
+#include <sys/types.h>   // pid_t
 
 namespace machino { namespace linuxsys {
 

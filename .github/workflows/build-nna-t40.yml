@@ -49,7 +49,9 @@ jobs:
           set -e
           make -C machino/tools/nna \
             CROSS_COMPILE="$TCBIN/mips-linux-gnu-" \
-            INFERENCEKIT=/tmp/magik-toolkit/InferenceKit/nna1/mips720-glibc229
+            INFERENCEKIT=/tmp/magik-toolkit/InferenceKit/nna1/mips720-glibc229 \
+            2>&1 | tee /tmp/nna-build.log
+          test "${PIPESTATUS[0]}" = 0
           file machino/tools/nna/machino-nna | tee /tmp/filecheck
           grep -q 'MIPS' /tmp/filecheck
           grep -q 'statically linked' /tmp/filecheck || { echo 'NICHT statisch - liefe auf dem musl-Rootfs nie'; exit 1; }
@@ -59,6 +61,15 @@ jobs:
         with:
           name: machino-nna-t40
           path: machino/tools/nna/machino-nna
+
+      # Der Build-Log als Artefakt, GERADE im Fehlerfall: die Job-Logs sind
+      # ohne Token nicht lesbar, Artefakte ueber nightly.link schon -- ohne
+      # das hier ist ein roter Lauf ein Ratespiel.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: machino-nna-build-log
+          path: /tmp/nna-build.log
 
   model:
     runs-on: ubuntu-22.04

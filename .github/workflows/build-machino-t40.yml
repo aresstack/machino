@@ -61,6 +61,8 @@ jobs:
           TC=$(ls -d toolchain/xburst2-musl/*/bin | head -1)
           echo "toolchain bin: $TC"
           sh machino/tools/fetch-mbedtls.sh "$PWD/3p" "$PWD/$TC/mipsel-linux-gcc" "$PWD/$TC/mipsel-linux-ar"
+          set -o pipefail
+          exec > >(tee /tmp/machino-build.log) 2>&1
           make -C machino -j"$(nproc)" WERROR=1 \
             MBEDTLS="$PWD/3p/mbedtls-3.6.7" \
             CROSS_COMPILE="$PWD/$TC/mipsel-linux-" \
@@ -69,6 +71,15 @@ jobs:
             IMP_LIB="$PWD/3rdparty/install/lib" \
             IMPLIBS="-Wl,--start-group -l:libimp.a -l:libalog.a -l:libsysutils.a -Wl,--end-group -l:libmuslshim.a"
           make -C machino MBEDTLS="$PWD/3p/mbedtls-3.6.7" CROSS_COMPILE="$PWD/$TC/mipsel-linux-" strip
+      # Der Build-Log als Artefakt, GERADE im Fehlerfall: Job-Logs sind ohne
+      # Token nicht lesbar, Artefakte ueber nightly.link schon. Ein roter
+      # -Werror-Lauf ohne Log war ein Ratespiel (8c30c25).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: machino-build-log
+          path: /tmp/machino-build.log
+          if-no-files-found: ignore
       - name: "Hardware test bundle (machino-m2-t40: machino, machino.conf, required-libs, SHA256SUMS, BUILDINFO)"
         run: |
           TC=$(ls -d toolchain/xburst2-musl/*/bin | head -1)
