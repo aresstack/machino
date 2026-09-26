@@ -199,11 +199,50 @@ void test_a_modem_already_in_ecm_mode_comes_up_without_a_reboot()
 
     TCHECK(run(l, healthy_status(), c) == DataLinkState::Up);
     TCHECK(l.interface_name() == "usb0");
-    // NIC-Modus: die Adresse kommt vom Modem, NICHT per DHCP.
-    TCHECK(l.address().ipv4 == "37.81.97.187");
-    TCHECK(l.address().gateway == "37.81.97.185");
-    TCHECK(be.dhcp_starts == 0);
+    // ECM wird jetzt IMMER per DHCP adressiert -- auch im NIC-Modus. Die reale
+    // EC200A-Firmware beantwortet DHCP in beiden NAT-Modi und liefert das
+    // richtige Gateway; AT+CGCONTRDP gab bei ihr einen DNS im Gateway-Feld
+    // (gemessen 2026-09-26). Also DHCP, nicht die CGCONTRDP-Statik.
+    TCHECK(l.address().ipv4 == "192.168.43.100");
+    TCHECK(l.address().gateway == "192.168.43.1");
+    TCHECK(be.dhcp_starts == 1);
     TCHECK(t.count_sent("AT+CFUN") == 0);      // kein Neustart noetig
+}
+
+void test_dhcp_failure_falls_back_to_cgcontrdp_but_never_to_a_dns_gateway()
+{
+    // DHCP liefert nichts, CGCONTRDP hat aber eine brauchbare Adresse + Gateway
+    // -> statischer Fallback bringt den Link hoch (fuer Modems, die im
+    // NIC-Modus wirklich kein DHCP koennen).
+    {
+        ScriptedAtTransport t; arm_ecm_ready(t);
+        FakeEcmBackend be; be.iface_present = true; be.dhcp_gives_address = false;
+        Clock c;
+        EcmLink l(t, be);
+        l.set_clock([&c] { return c.t; });
+        l.set_config(telekom_config());
+        l.connect();
+        TCHECK(run(l, healthy_status(), c, 80, 500) == DataLinkState::Up);
+        TCHECK(l.address().ipv4 == "37.81.97.187");
+        TCHECK(l.address().gateway == "37.81.97.185");
+        TCHECK(be.dhcp_starts == 1);          // DHCP wurde ZUERST versucht
+    }
+    // Ist das CGCONTRDP-Gateway aber gleich einem DNS-Server (der reale
+    // EC200A-Bug), wird der Fallback verweigert -- lieber scheitern als eine
+    // Route ins Leere setzen.
+    {
+        ScriptedAtTransport t; arm_ecm_ready(t);
+        t.reply("AT+CGCONTRDP=1",
+                "+CGCONTRDP: 1,5,\"internet.t-d1.de\",\"37.81.97.187.255.255.255.240\","
+                "\"10.74.210.210\",\"10.74.210.210\",\"10.74.210.211\"\r\nOK\r\n");
+        FakeEcmBackend be; be.iface_present = true; be.dhcp_gives_address = false;
+        Clock c;
+        EcmLink l(t, be);
+        l.set_clock([&c] { return c.t; });
+        l.set_config(telekom_config());
+        l.connect();
+        TCHECK(run(l, healthy_status(), c, 80, 500) == DataLinkState::Failed);
+    }
 }
 
 void test_the_verified_qnetdevctl_variant_is_used()
@@ -368,6 +407,10 @@ void test_dhcp_timeout_fails_and_stops_its_own_client()
 {
     ScriptedAtTransport t; arm_ecm_ready(t);
     t.reply("AT+QCFG=\"nat\"", "+QCFG: \"nat\",0\r\nOK\r\n");
+    // Kein statischer Fallback moeglich: CGCONTRDP meldet keinen Kontext. So
+    // testet dieser Fall den ECHTEN Fehlschlag (DHCP tot UND nichts aus
+    // CGCONTRDP), nicht den neuen Fallback.
+    t.reply("AT+CGCONTRDP=1", "OK\r\n");
     FakeEcmBackend be; be.iface_present = true; be.dhcp_gives_address = false;
     Clock c;
     EcmLink l(t, be);
@@ -604,6 +647,7 @@ void run_ecm_link_tests()
     test_dhcp_in_routing_mode_and_only_on_our_interface();
     test_dhcp_is_not_started_twice();
     test_dhcp_timeout_fails_and_stops_its_own_client();
+    test_dhcp_failure_falls_back_to_cgcontrdp_but_never_to_a_dns_gateway();
     test_a_late_interface_is_waited_for_a_missing_one_is_not_forever();
     test_an_interface_that_never_appears_gives_a_reason();
     test_link_loss_after_up_returns_to_addressing_not_to_zero();

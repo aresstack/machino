@@ -25,6 +25,7 @@ class FakeEcmBackend : public IEcmBackend {
 public:
     bool        iface_present = false;
     std::string iface_name = "usb0";
+    bool        dhcp_gives_address = true;
     int         teardowns = 0;
     LinkAddress assigned;
 
@@ -40,7 +41,7 @@ public:
     bool read_address(const std::string&, LinkAddress& out) override
     {
         if (assigned.has_address()) { out = assigned; return true; }
-        if (!running_) return false;
+        if (!running_ || !dhcp_gives_address) return false;
         out.ipv4 = "192.168.43.100"; out.gateway = "192.168.43.1"; out.dns1 = "192.168.43.1";
         return true;
     }
@@ -253,10 +254,13 @@ void test_an_interface_without_an_address_is_not_connected()
     // verbietet AP-M5 ausdruecklich.
     Rig r;
     r.be.iface_present = true;
+    r.be.dhcp_gives_address = false;   // DHCP liefert nichts ...
     r.configure(on_config());
     arm_healthy_modem(r.at);
+    // ... und CGCONTRDP meldet keinen aktiven Kontext -> kein statischer
+    // Fallback moeglich. "Es gibt ein usb0" ist dann keine Verbindung.
     r.at.set_reply("AT+CGCONTRDP=1", "+CGCONTRDP: 1,5,\"apn\",\"0.0.0.0\"\r\nOK\r\n");
-    r.run(6);
+    r.run(80);
 
     TCHECK(r.uplink.state() != LinkState::Connected);
     TCHECK(r.uplink.info().ipv4.empty());
@@ -273,12 +277,12 @@ void test_an_addressed_link_is_connected_and_reports_its_address()
 
     TCHECK(r.uplink.state() == LinkState::Connected);
     const NetworkInfo n = r.uplink.info();
-    TCHECK(n.ipv4 == "37.81.97.187");
-    TCHECK(n.netmask == "255.255.255.240");
-    TCHECK(n.gateway == "37.81.97.185");
-    TCHECK(n.dns == "10.74.210.210 10.74.210.211");
-    // NIC-Modus: die Adresse kam aus CGCONTRDP, nicht von einem DHCP-Server.
-    TCHECK(!n.dhcp);
+    // ECM wird jetzt IMMER per DHCP adressiert (auch im NIC-Modus) -- die reale
+    // EC200A-Firmware serviert DHCP und liefert das richtige Gateway, waehrend
+    // AT+CGCONTRDP einen DNS im Gateway-Feld zurueckgab (gemessen 2026-09-26).
+    TCHECK(n.ipv4 == "192.168.43.100");
+    TCHECK(n.gateway == "192.168.43.1");
+    TCHECK(n.dhcp);
     TCHECK(r.uplink.has_internet());
 }
 

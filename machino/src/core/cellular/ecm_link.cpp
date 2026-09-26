@@ -290,32 +290,15 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
         const PdpContextParams rdp = parse_cgcontrdp(at_.command("AT+CGCONTRDP=1").raw);
         st_.modem_pdp_address = rdp.ipv4;
 
-        if (st_.nic_mode) {
-            // KEIN DHCP. Das Modem beantwortet es im NIC-Modus nicht -- hier zu
-            // warten hiesse, auf eine Antwort zu warten, die nie kommt.
-            if (rdp.ipv4.empty()) {
-                if (now() > dhcp_deadline_ms_) {
-                    fail("Modem meldet keine Adresse (CGCONTRDP leer) im NIC-Modus");
-                    return st_;
-                }
-                return st_;
-            }
-            LinkAddress a;
-            a.ipv4 = rdp.ipv4;
-            a.netmask = rdp.netmask;
-            a.gateway = rdp.gateway;
-            a.dns1 = rdp.dns1;
-            a.dns2 = rdp.dns2;
-            if (!be_.set_address(st_.interface_name, a)) {
-                fail("Adresse liess sich nicht setzen");
-                return st_;
-            }
-            st_.address = a;
-            st_.attempts = 0;
-            enter(DataLinkState::Up, "verbunden (NIC-Modus, Adresse vom Modem)");
-            return st_;
-        }
-
+        // DHCP fuer BEIDE Betriebsarten. Die urspruengliche Annahme "im
+        // NIC-Modus beantwortet das Modem kein DHCP" ist bei realer
+        // EC200A-Firmware falsch (gemessen 2026-09-26): das Modem serviert DHCP
+        // in NAT=1 (oeffentliche IP, 37.82.x) UND in NAT=0 (private 192.168.43.x)
+        // und liefert dabei jeweils das RICHTIGE Gateway. AT+CGCONTRDP dagegen
+        // gibt bei dieser Firmware einen DNS-Server im Gateway-Feld zurueck --
+        // eine daraus gesetzte statische Route ist eine Route ins Leere.
+        // CGCONTRDP bleibt nur als Fallback, falls DHCP nichts liefert (ein
+        // Modem, das im NIC-Modus wirklich kein DHCP kann).
         if (!dhcp_running_) {
             if (!be_.dhcp_start(st_.interface_name)) {
                 fail("DHCP liess sich nicht starten");
@@ -332,8 +315,26 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
             return st_;
         }
         if (now() > dhcp_deadline_ms_) {
+            // DHCP lieferte nichts. Letzter Versuch: die statische Adresse aus
+            // CGCONTRDP. Nur mit einem Gateway, das nicht offensichtlich ein
+            // DNS-Server ist (gleich einem der DNS-Felder) -- sonst lieber
+            // scheitern als eine Route ins Leere setzen.
             be_.dhcp_stop(st_.interface_name);
             dhcp_running_ = false;
+            const bool gw_is_dns = !rdp.gateway.empty() &&
+                (rdp.gateway == rdp.dns1 || rdp.gateway == rdp.dns2);
+            const bool ipv4_usable = !rdp.ipv4.empty() && rdp.ipv4 != "0.0.0.0";
+            if (ipv4_usable && !rdp.gateway.empty() && !gw_is_dns) {
+                LinkAddress s;
+                s.ipv4 = rdp.ipv4; s.netmask = rdp.netmask; s.gateway = rdp.gateway;
+                s.dns1 = rdp.dns1; s.dns2 = rdp.dns2;
+                if (be_.set_address(st_.interface_name, s)) {
+                    st_.address = s;
+                    st_.attempts = 0;
+                    enter(DataLinkState::Up, "verbunden (statisch aus CGCONTRDP, DHCP-Fallback)");
+                    return st_;
+                }
+            }
             fail("DHCP lieferte keine Adresse");
         }
         return st_;

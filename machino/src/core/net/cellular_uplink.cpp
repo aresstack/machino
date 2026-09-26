@@ -206,7 +206,10 @@ NetworkInfo CellularUplink::info() const
     // Eine erste Fassung fragte nur nach nic_mode -- und weil PppLink das Feld
     // nie setzt, meldete jeder PPP-Anruf dhcp=true. Wer dann sucht, warum
     // "kein Lease" kommt, sucht nach einem DHCP-Server, den es nie gab.
-    n.dhcp    = (ls_.kind == cellular::DataLinkKind::Ecm) && !ls_.nic_mode;
+    // ECM wird jetzt IMMER per DHCP adressiert (das Modem serviert es in beiden
+    // NAT-Modi, siehe ecm_link.cpp). nic_mode entscheidet nur noch oeffentliche
+    // vs. private IP am Host, nicht die Adressierungsmethode.
+    n.dhcp    = (ls_.kind == cellular::DataLinkKind::Ecm);
     // Diese Server kommen aus CGCONTRDP bzw. aus dem eigenen DHCP-Lease des
     // Modems. Der Uplink WEISS sie, er liest sie nicht aus resolv.conf zurueck
     // -- und nur deshalb darf er die Datei besitzen.
