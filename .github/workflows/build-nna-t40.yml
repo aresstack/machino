@@ -1,0 +1,86 @@
+# machino-nna: der Venus/NNA-Inferenzhelfer fuer den T40 (nna1) + das Modell.
+#
+# Ein EIGENER Workflow, best effort wie die Modem-Module: der Haupt-Build
+# (build-machino-t40) darf nie rot werden, weil eine Toolchain-Quelle oder
+# das magik-toolkit gerade klemmt. Der Helfer ist eine OPTIONALE Payload.
+#
+# Zwei Artefakte:
+#   machino-nna-t40      das statische uClibc-Binary (Ingenic-Toolchain)
+#   machino-nna-model    yolov5s als T40-Magik-Modell (TransformKit, x86-Tool)
+#
+# Warum Ingenics gcc720-Toolchain und nicht die musl von machinod: die
+# libvenus.a ist uClibc/gcc7-C++, und die Grenze dazwischen ist die ganze
+# Architekturentscheidung (machino/docs/architecture/nna.md).
+name: build-nna-t40
+
+on:
+  push:
+    paths:
+      - 'machino/tools/nna/**'
+      - '.github/workflows/build-nna-t40.yml'
+  workflow_dispatch:
+
+jobs:
+  helper:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Fetch Ingenic toolchain (mips-gcc720-glibc229, multilib incl. -muclibc)"
+        run: |
+          set -e
+          curl -fsSL -o /tmp/tc.tar.gz \
+            https://github.com/ballaswag/k1-discovery/releases/download/1.0.0/mips-gcc720-glibc229.tar.gz
+          mkdir -p /opt/ingenic
+          tar xzf /tmp/tc.tar.gz -C /opt/ingenic
+          ls /opt/ingenic
+          TC=$(find /opt/ingenic -maxdepth 2 -name 'mips-linux-gnu-g++' -path '*/bin/*' | head -1)
+          [ -n "$TC" ] || { echo 'toolchain layout unexpected'; find /opt/ingenic -maxdepth 3 -type d | head; exit 1; }
+          echo "TCBIN=$(dirname "$TC")" >> "$GITHUB_ENV"
+
+      - name: "Fetch magik-toolkit (InferenceKit nna1 = T40: venus.h + static libvenus)"
+        run: |
+          git clone --depth 1 https://github.com/wispytrace/magik-toolkit /tmp/magik-toolkit
+
+      - name: "Build machino-nna (static uClibc, libvenus.a)"
+        run: |
+          set -e
+          make -C machino/tools/nna \
+            CROSS_COMPILE="$TCBIN/mips-linux-gnu-" \
+            INFERENCEKIT=/tmp/magik-toolkit/InferenceKit/nna1/mips720-glibc229
+          file machino/tools/nna/machino-nna | tee /tmp/filecheck
+          grep -q 'MIPS' /tmp/filecheck
+          grep -q 'statically linked' /tmp/filecheck || { echo 'NICHT statisch - liefe auf dem musl-Rootfs nie'; exit 1; }
+          ls -la machino/tools/nna/machino-nna
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: machino-nna-t40
+          path: machino/tools/nna/machino-nna
+
+  model:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: "Fetch magik-toolkit (TransformKit x86 + yolov5s.onnx + T40-Config + Quant-Datensatz)"
+        run: |
+          git clone --depth 1 https://github.com/wispytrace/magik-toolkit /tmp/magik-toolkit
+
+      - name: "Convert yolov5s.onnx -> T40 Magik model (quantized)"
+        run: |
+          set -e
+          cd /tmp/magik-toolkit/Models/post/yolov5s
+          chmod +x ../../../TransformKit/magik-transform-tools
+          ../../../TransformKit/magik-transform-tools \
+            --inputpath  yolov5s.onnx \
+            --outputpath ./yolov5s_t40_magik.mk.h \
+            --config cfg/magik_t40.cfg \
+            --save_quantize_model true
+          ls -la yolov5s_t40_magik* venus_sample_yolov5s/yolov5s_t40_magik* 2>/dev/null || true
+          BIN=$(find . -name 'yolov5s_t40_magik.bin' | head -1)
+          [ -n "$BIN" ] || { echo 'kein .bin erzeugt - Ausgabeform ansehen'; find . -name 'yolov5s_t40*' | head; exit 1; }
+          cp "$BIN" /tmp/yolov5s_t40_magik.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: machino-nna-model
+          path: /tmp/yolov5s_t40_magik.bin
