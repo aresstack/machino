@@ -21,7 +21,11 @@ struct NnaManifestCheck {
 
 // manifest_json: Dateiinhalt; model_basename: Dateiname des Modells, auf das
 // ai.model_path zeigt (Manifest.modelFile muss dazu passen, wenn gesetzt).
+// soc: der LAUFENDE SoC (hw.platform.model, z.B. "t40nn") -- ein Manifest
+// mit gesetztem soc muss exakt dazu passen. Ein Literal im Checker waere auf
+// T40N/T40XP eine stille Fehlpassung gewesen (AP4-Review).
 NnaManifestCheck nna_manifest_check(const std::string& manifest_json,
-                                    const std::string& model_basename);
+                                    const std::string& model_basename,
+                                    const std::string& soc);
 
 }} // namespace machino::detection

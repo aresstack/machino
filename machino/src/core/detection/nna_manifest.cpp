@@ -22,7 +22,8 @@ NnaManifestCheck fail(const char* code, std::string detail)
 } // namespace
 
 NnaManifestCheck nna_manifest_check(const std::string& manifest_json,
-                                    const std::string& model_basename)
+                                    const std::string& model_basename,
+                                    const std::string& soc)
 {
     Json m;
     std::string err;
@@ -45,10 +46,10 @@ NnaManifestCheck nna_manifest_check(const std::string& manifest_json,
         return fail("AI_MODEL_INCOMPATIBLE_NNA",
                     "Manifest nennt NNA-Generation '" + gen + "', der T40 ist nna1");
     // SoC ist optional (leer = jede); wenn gesetzt, muss es dieser sein.
-    const std::string soc = str_field(m, "soc");
-    if (!soc.empty() && soc != "t40nn")
+    const std::string msoc = str_field(m, "soc");
+    if (!msoc.empty() && msoc != soc)
         return fail("AI_MODEL_INCOMPATIBLE_SOC",
-                    "Manifest ist fuer SoC '" + soc + "' gebaut");
+                    "Manifest ist fuer SoC '" + msoc + "' gebaut, diese Kamera ist '" + soc + "'");
     // modelFile bindet Manifest und Datei aneinander: ein manifest.json neben
     // einer FREMDEN .bin (Datei getauscht, Manifest vergessen) faellt hier auf.
     const std::string mf = str_field(m, "modelFile");

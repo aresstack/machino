@@ -74,6 +74,8 @@ FAKE
     mkdir -p "$B/nna"
     printf 'fake-machino-nna\n' > "$B/nna/machino-nna"
     printf 'fake-magik-model\n' > "$B/nna/yolov5s_t40_magik.bin"
+    printf '{"schemaVersion":1}\n' > "$B/nna/manifest.json"
+    printf 'fake-provenance\n'   > "$B/nna/provenance.txt"
     # WeirdIKE (IPsec), NUR mit --with-weirdike.
     mkdir -p "$B/weirdike"
     printf 'fake-weirdiked\n'    > "$B/weirdike/weirdiked"
@@ -801,6 +803,8 @@ make_bundle; make_camera auto
 run_install --with-nna-payload || bad "--with-nna-payload was refused: $(cat "$WORK/out")"
 has "NNA helper installed on request"   "$WORK/root/usr/sbin/machino-nna"
 has "model installed on request"        "$WORK/root/etc/machino/models/yolov5s_t40_magik.bin"
+has "manifest travels with the model"   "$WORK/root/etc/machino/models/manifest.json"
+has "provenance travels with the model" "$WORK/root/etc/machino/models/provenance.txt"
 run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
 hasnt "NNA helper removed again"        "$WORK/root/usr/sbin/machino-nna"
 has "models survive the uninstall"      "$WORK/root/etc/machino/models/yolov5s_t40_magik.bin"

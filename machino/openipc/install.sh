@@ -760,6 +760,16 @@ if [ "$WITH_NNA_PAYLOAD" = "1" ]; then
             die "cannot install model $(basename "$_nbin")"
         _nmods=$((_nmods + 1))
     done
+    # Manifest + Provenienz gehoeren NEBEN das Modell: das Manifest ist das
+    # Kompatibilitaets-Gate von machinod, die Provenienz beantwortet spaeter
+    # "woher stammt dieses Binaermodell" direkt auf der Kamera.
+    for _naux in manifest.json provenance.txt; do
+        if [ -r "$HERE/nna/$_naux" ]; then
+            mkdir -p "$ROOT/etc/machino/models"
+            put 0644 "$HERE/nna/$_naux" "$ROOT/etc/machino/models/$_naux" ||
+                die "cannot install $_naux"
+        fi
+    done
     [ "$_nmods" -gt 0 ] && say "installed $_nmods detection model(s) into /etc/machino/models"
     # Der Kerneltreiber (soc-nna.ko) ist bewusst NICHT im Bundle: seine Quelle
     # ist oeffentlich noch nicht gefunden (OpenIPC #2031), und Binaermodule

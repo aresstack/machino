@@ -238,6 +238,13 @@ jobs:
           [ -n "$_nna" ] && cp -f "$_nna" "$O/nna/machino-nna" && echo "nna helper bundled"
           _nmodel=$(find wifi-payload/build-nna-t40.yml -type f -name '*_magik.bin' 2>/dev/null | head -1)
           [ -n "$_nmodel" ] && cp -f "$_nmodel" "$O/nna/$(basename "$_nmodel")" && echo "nna model bundled: $(basename "$_nmodel")"
+          # Manifest + Provenienz REISEN MIT dem Modell: ohne sie liefe das
+          # Kompatibilitaets-Gate auf der Kamera immer im Entwicklungsmodus
+          # (AP4-Review) und die Herkunft waere nur im CI-Artefakt bekannt.
+          for _nx in manifest.json provenance.txt; do
+            _nf=$(find wifi-payload/build-nna-t40.yml -type f -name "$_nx" 2>/dev/null | head -1)
+            [ -n "$_nf" ] && cp -f "$_nf" "$O/nna/$_nx"
+          done
 
           mkdir -p "$O/cellular/modules"
           # pppd und chat, best effort wie die uebrigen Nutzlasten: ein

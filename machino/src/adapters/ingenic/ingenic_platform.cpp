@@ -197,7 +197,7 @@ std::unique_ptr<IDetector> IngenicPlatform::create_detector(int chn, const Detec
                     text.append(buf, n);
                 ::fclose(mf);
                 const detection::NnaManifestCheck chk =
-                    detection::nna_manifest_check(text, base);
+                    detection::nna_manifest_check(text, base, hw_.platform.model);
                 if (!chk.ok) {
                     LOGW(MOD, "person: %s - %s (%s)", chk.reason_code.c_str(),
                          chk.detail.c_str(), mpath.c_str());

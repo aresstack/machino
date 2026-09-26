@@ -281,26 +281,29 @@ void test_model_manifest_gate() {
     const std::string good =
         "{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\","
         "\"soc\":\"t40nn\",\"modelFile\":\"yolov5s_t40_magik.bin\"}";
-    NnaManifestCheck c = nna_manifest_check(good, "yolov5s_t40_magik.bin");
+    NnaManifestCheck c = nna_manifest_check(good, "yolov5s_t40_magik.bin", "t40nn");
     NCHECK(c.ok);
 
     // Jede Ablehnung traegt ihren STABILEN Code -- "incompatible" ohne Warum
     // war der ausdruecklich verbotene Zustand.
-    c = nna_manifest_check("{nicht json", "m.bin");
+    c = nna_manifest_check("{nicht json", "m.bin", "t40nn");
     NCHECK(!c.ok && c.reason_code == "AI_MANIFEST_INVALID");
-    c = nna_manifest_check("{\"schemaVersion\":2,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\"}", "m.bin");
+    c = nna_manifest_check("{\"schemaVersion\":2,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\"}", "m.bin", "t40nn");
     NCHECK(!c.ok && c.reason_code == "AI_MANIFEST_INVALID");
-    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"tflite\",\"nnaGeneration\":\"nna1\"}", "m.bin");
+    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"tflite\",\"nnaGeneration\":\"nna1\"}", "m.bin", "t40nn");
     NCHECK(!c.ok && c.reason_code == "AI_MODEL_INCOMPATIBLE_BACKEND");
-    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna2\"}", "m.bin");
+    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna2\"}", "m.bin", "t40nn");
     NCHECK(!c.ok && c.reason_code == "AI_MODEL_INCOMPATIBLE_NNA");
-    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\",\"soc\":\"t41\"}", "m.bin");
+    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\",\"soc\":\"t41\"}", "m.bin", "t40nn");
     NCHECK(!c.ok && c.reason_code == "AI_MODEL_INCOMPATIBLE_SOC");
-    c = nna_manifest_check(good, "andere.bin");
+    c = nna_manifest_check(good, "andere.bin", "t40nn");
     NCHECK(!c.ok && c.reason_code == "AI_MODEL_FILE_MISMATCH");
     // soc leer = jede Plattform dieser Generation.
-    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\"}", "m.bin");
+    c = nna_manifest_check("{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\"}", "m.bin", "t40n");
     NCHECK(c.ok);
+    // Und der Review-Fall: t40nn-Manifest auf einem ANDEREN SoC -> abgelehnt.
+    c = nna_manifest_check(good, "yolov5s_t40_magik.bin", "t40n");
+    NCHECK(!c.ok && c.reason_code == "AI_MODEL_INCOMPATIBLE_SOC");
 }
 
 } // namespace
