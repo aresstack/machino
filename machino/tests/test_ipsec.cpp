@@ -230,10 +230,43 @@ void test_status_mapping()
     ICHECK(std::string(vpn_failure_name(VpnFailure::AuthenticationFailed)) == "authenticationFailed");
 }
 
+void test_review_findings()
+{
+    // Review-Fund 1: PSK-Regeln. Ein \n waere eine Config-Zeilen-Injection
+    // in die Daemon-Datei, Randleerzeichen wuerden vom Daemon-Parser still
+    // wegtrimmt, >128 lehnte erst der Daemon-START ab.
+    ICHECK(psk_check("").empty());
+    ICHECK(psk_check("ganz-normal-42").empty());
+    ICHECK(psk_check("mit innen raum").empty());
+    ICHECK(!psk_check("boese\ngateway = evil.host").empty());
+    ICHECK(!psk_check("rand ").empty());
+    ICHECK(!psk_check(" rand").empty());
+    ICHECK(!psk_check(std::string(129, 'x')).empty());
+    ICHECK(psk_check(std::string(128, 'x')).empty());
+    // ... und die Meldung traegt NIE den Wert.
+    ICHECK(psk_check("boese\nzeile").find("boese") == std::string::npos);
+
+    // set_config setzt das durch, BEVOR etwas geschrieben wird.
+    remove(MCONF); remove(DCONF);
+    FakeBackend be;
+    IpsecService svc(be, MCONF, DCONF);
+    ICHECK(!svc.set_config(sample(), "x\npsk-injection").empty());
+    ICHECK(slurp(DCONF).empty());
+
+    // Review-Fund 3: stirbt der Daemon zwischen zwei Aufrufen (ctl liefert
+    // running=true, aber leeren Text), wird daraus KEIN failed fantasiert.
+    ICHECK(svc.set_config(sample(), "s3cret-psk").empty());
+    be.running = true; be.status_text = "";
+    ICHECK(svc.status().state == VpnState::Disconnected);
+
+    remove(MCONF); remove(DCONF);
+}
+
 } // namespace
 
 void run_ipsec_tests()
 {
+    test_review_findings();
     test_config_roundtrip();
     test_validate_names_the_problem();
     test_psk_write_only_carry();

@@ -44,7 +44,7 @@ struct VpnStatus {
     std::string interface_name;
     std::string local_ts, remote_ts;
     bool        nat_t = false, nat_detected = false;
-    std::string child;            // Daemon-Diag (down / Suite-Kurzform)
+    std::string child;            // Daemon-Datenpfad: "up" | "down" (ctl_status)
     uint32_t    child_generation = 0, ike_generation = 0;
     uint32_t    last_notify = 0;
     uint32_t    uptime_s = 0;

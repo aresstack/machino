@@ -6,6 +6,7 @@
 #include <cstring>
 
 #ifndef _WIN32
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -80,6 +81,28 @@ bool underlay_from_name(const std::string& s, Underlay& out)
     else if (s == "cellular") out = Underlay::Cellular;
     else return false;
     return true;
+}
+
+// Der PSK landet als "psk = <wert>"-Zeile in der Daemon-Datei und der
+// Daemon-Parser TRIMMT den Wert. Beides erzwingt Regeln, die hier MIT
+// BEGRUENDUNG durchgesetzt werden (die Meldung nennt NIE den Wert):
+//  - kein \n/\r: waere eine Config-Zeilen-Injection in die Daemon-Datei;
+//  - keine Leerzeichen am Rand: der Daemon saehe ein ANDERES Secret als
+//    eingegeben -- ein unerklaerbarer Auth-Fail spaeter;
+//  - 1..128 Bytes druckbares ASCII: WD_MAX_PSK; sonst lehnte erst der
+//    Daemon-START ab, lange nach dem "gespeichert".
+std::string psk_check(const std::string& psk)
+{
+    if (psk.empty()) return {};                     // leer = keinen neuen setzen
+    if (psk.size() > 128) return "psk: laenger als 128 Bytes (Daemon-Limit)";
+    for (char ch : psk) {
+        if (ch == ' ') continue;                    // innen erlaubt, Rand unten
+        if ((unsigned char)ch < 0x21 || (unsigned char)ch > 0x7e)
+            return "psk: nur druckbares ASCII (keine Zeilenumbrueche/Steuerzeichen)";
+    }
+    if (psk.front() == ' ' || psk.back() == ' ')
+        return "psk: fuehrende/abschliessende Leerzeichen wuerden vom Daemon entfernt -- abgelehnt statt still veraendert";
+    return {};
 }
 
 std::string validate(const IpsecConfig& c)
@@ -208,16 +231,25 @@ std::string to_weirdike_conf(const IpsecConfig& c, const std::string& psk,
 bool write_atomic_0600(const std::string& path, const std::string& content, std::string& err)
 {
     const std::string tmp = path + ".machino-new";
+#ifndef _WIN32
+    // Die Datei traegt ein Secret: von der ERSTEN Millisekunde an 0600.
+    // fopen+chmod-danach liesse ein umask-Fenster (typisch 0644), in dem
+    // jeder lokale Leser den PSK saehe. O_EXCL raeumt zugleich einen
+    // liegengebliebenen tmp-Rest eines abgebrochenen Laufs beiseite.
+    ::remove(tmp.c_str());
+    const int fdo = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fdo < 0) { err = "kann " + tmp + " nicht anlegen"; return false; }
+    FILE* f = ::fdopen(fdo, "wb");
+    if (!f) { ::close(fdo); ::remove(tmp.c_str()); err = "fdopen fehlgeschlagen"; return false; }
+#else
     FILE* f = ::fopen(tmp.c_str(), "wb");
     if (!f) { err = "kann " + tmp + " nicht schreiben"; return false; }
+#endif
     const bool wrote = ::fwrite(content.data(), 1, content.size(), f) == content.size();
 #ifndef _WIN32
     if (wrote) ::fflush(f), ::fsync(::fileno(f));
 #endif
     if (::fclose(f) != 0 || !wrote) { ::remove(tmp.c_str()); err = "Schreiben unvollstaendig"; return false; }
-#ifndef _WIN32
-    ::chmod(tmp.c_str(), 0600);
-#endif
 #ifdef _WIN32
     // NUR Windows: rename ersetzt dort kein Ziel. Auf POSIX bliebe nach einem
     // remove ein Fenster ganz OHNE Konfigurationsdatei -- exakt die halbe

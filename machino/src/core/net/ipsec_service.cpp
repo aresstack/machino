@@ -171,6 +171,8 @@ std::string IpsecService::set_config(const IpsecConfig& c, const std::string& ps
 {
     const std::string ve = validate(c);
     if (!ve.empty()) return ve;
+    const std::string pe = psk_check(psk_or_empty);
+    if (!pe.empty()) return pe;
 
     bool existed = false;
     const std::string old_daemon = read_file(daemon_path_, existed);
@@ -214,9 +216,12 @@ std::string IpsecService::disconnect()
 
 VpnStatus IpsecService::status()
 {
-    const bool running = backend_.daemon_running();
+    // EINE ctl-Verbindung ist die Wahrheit fuer beides: "laeuft" UND der
+    // Text. Zwei getrennte Roundtrips (daemon_running + ctl_status) hatten
+    // ein Race -- Daemon stirbt dazwischen, und ein leerer Text mit
+    // running=true wuerde zu failed/transportTimeout fantasiert.
     std::string text;
-    if (running) backend_.ctl_status(text);
+    const bool running = backend_.ctl_status(text) && !text.empty();
     return parse_status(text, running, config().enabled);
 }
 

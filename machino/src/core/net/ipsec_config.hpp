@@ -51,6 +51,11 @@ struct IpsecConfig {
 // hier NICHT geprueft (pskSet kennt nur der Service).
 std::string validate(const IpsecConfig& c);
 
+// PSK-Regeln (leer = ok, "keinen neuen setzen"): 1..128 Bytes druckbares
+// ASCII, keine Zeilenumbrueche (Config-Injection!), keine Randleerzeichen
+// (der Daemon-Parser trimmt). Die Meldung nennt nie den Wert.
+std::string psk_check(const std::string& psk);
+
 // machino-Datei (ohne Secret): serialisieren/parsen, key=value-Zeilen.
 std::string to_machino_conf(const IpsecConfig& c);
 bool from_machino_conf(const std::string& text, IpsecConfig& out, std::string& err);
