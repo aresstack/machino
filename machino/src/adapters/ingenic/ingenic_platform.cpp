@@ -138,7 +138,11 @@ detection::NnaFacts gather_nna_facts(const std::string& soc, const std::string& 
         const size_t n = ::fread(buf, 1, sizeof buf - 1, c);
         ::fclose(c);
         buf[n] = 0;
-        f.cmdline_has_nmem = ::strstr(buf, "nmem=") != nullptr;
+        if (const char* t = ::strstr(buf, "nmem=")) {
+            const char* e = t;
+            while (*e && *e != ' ' && *e != '\t' && *e != '\n') ++e;
+            f.cmdline_nmem_token.assign(t, (size_t)(e - t));
+        }
     }
     f.device_node = ::access("/dev/soc-nna", F_OK) == 0;
     f.helper_exec = ::access(kNnaHelperPath, X_OK) == 0;

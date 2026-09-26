@@ -312,7 +312,7 @@ void test_availability_matrix() {
     auto all = []() {
         NnaFacts f;
         f.soc = "t40nn";
-        f.cmdline_has_nmem = true;
+        f.cmdline_nmem_token = "nmem=8M@0x7800000";
         f.device_node = true;
         f.helper_exec = true;
         f.model_path = "/etc/machino/models/m.bin";
@@ -324,8 +324,12 @@ void test_availability_matrix() {
     NCHECK(s.available && s.selectable && s.reason_codes.empty());
 
     // Jedes fehlende Glied benennt seinen Code.
-    { NnaFacts f = all(); f.cmdline_has_nmem = false; s = evaluate_person(f);
+    { NnaFacts f = all(); f.cmdline_nmem_token.clear(); s = evaluate_person(f);
       NCHECK(!s.available && s.reason_codes.size() == 1 && s.reason_codes[0] == "NNA_BOOT_MEMORY_MISSING"); }
+    // AP5-Review: ein FALSCHES Fenster ist kein erfuelltes -- Konflikt, nicht ok.
+    { NnaFacts f = all(); f.cmdline_nmem_token = "nmem=4M@0x7000000"; s = evaluate_person(f);
+      NCHECK(!s.available && s.reason_codes.size() == 1 && s.reason_codes[0] == "NNA_BOOT_MEMORY_CONFLICT");
+      NCHECK(s.reason_details[0].find("nmem=4M@0x7000000") != std::string::npos); }
     { NnaFacts f = all(); f.device_node = false; s = evaluate_person(f);
       NCHECK(!s.available && s.reason_codes[0] == "NNA_DEVICE_MISSING"); }
     { NnaFacts f = all(); f.helper_exec = false; s = evaluate_person(f);

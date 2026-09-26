@@ -34,10 +34,15 @@ DetectorStatus evaluate_person(const NnaFacts& f)
     if (f.soc != "t40nn")
         add("NNA_PLATFORM_UNSUPPORTED",
             "SoC '" + f.soc + "': das NNA-Fenster ist nur fuer den T40NN vermessen.");
-    if (!f.cmdline_has_nmem)
+    static const char* kRequiredNmem = "nmem=8M@0x7800000";
+    if (f.cmdline_nmem_token.empty())
         add("NNA_BOOT_MEMORY_MISSING",
             "Kein nmem in der gebooteten Cmdline - Reservierung ueber den "
             "Cam-Tool-NNA-Dialog setzen, dann neu starten.");
+    else if (f.cmdline_nmem_token != kRequiredNmem)
+        add("NNA_BOOT_MEMORY_CONFLICT",
+            "Gebootet ist '" + f.cmdline_nmem_token + "', erwartet wird '"
+                + kRequiredNmem + "' - wer hat das gesetzt, und warum?");
     if (!f.device_node)
         add("NNA_DEVICE_MISSING",
             "/dev/soc-nna fehlt - soc-nna.ko nicht geladen.");

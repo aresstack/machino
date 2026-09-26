@@ -27,7 +27,11 @@ struct DetectorStatus {
 // wer sie fuellt, macht I/O; wer sie bewertet, nicht.
 struct NnaFacts {
     std::string soc;              // hw.platform.model, z.B. "t40nn"
-    bool cmdline_has_nmem = false;   // /proc/cmdline traegt nmem= (dieser Boot!)
+    // Das nmem-TOKEN aus /proc/cmdline (dieser Boot!), z.B. "nmem=8M@0x7800000";
+    // leer = keins. Ein blosses bool war der AP5-Review-Fund: ein FALSCHES
+    // Fenster haette als erfuellt gegolten -- fuer die Verfuegbarkeit UND
+    // fuer das Fabrik-Gate.
+    std::string cmdline_nmem_token;
     bool device_node = false;        // /dev/soc-nna existiert
     bool helper_exec = false;        // /usr/sbin/machino-nna ausfuehrbar
     std::string model_path;          // ai.model_path (roh, fuer Meldungen)
