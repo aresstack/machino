@@ -437,7 +437,19 @@ case "${1:-}" in
 	# `ifup wlan0` fort und OpenIPCs wpa_supplicant besitzt die Station. Frueher
 	# stand hier start_wifi mitsamt Rollen-Supervisor: das waren zwei
 	# Supplicants auf demselben Interface (Befund 2026-09-25).
-	wifi-attach) wifi_hw || { say "WLAN-Hardware kam nicht hoch"; exit 1; } ;;
+	wifi-attach)
+		# Zweite Absicherung zum usb.mode-Guard im /etc/wireless/usb-Profil:
+		# selbst wenn dieses Profil (ueber ein stehengebliebenes wlandev)
+		# aufgerufen wird, waehrend der Port auf Cellular/off steht, wird KEIN
+		# WLAN-Treiber geladen und KEIN Portstrom geschaltet. Ein Port, ein
+		# Besitzer -- und usb.mode entscheidet ihn.
+		_m=$(read_mode)
+		if [ "$_m" != "wifi" ]; then
+			say "wifi-attach uebersprungen (usb.mode=$_m, der Port gehoert nicht WLAN)"
+			exit 0
+		fi
+		wifi_hw || { say "WLAN-Hardware kam nicht hoch"; exit 1; }
+		;;
 	mode) read_mode ;;
 	status)
 		echo "configured: $(read_mode)"

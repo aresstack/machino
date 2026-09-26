@@ -971,8 +971,9 @@ did   "wifi (ap) starts the supervisor" "started machino-wifi-role"
 # --- wifi-attach (der OpenIPC-Profilpfad): Hardware und sonst NICHTS.
 # Nach der Rueckkehr faehrt S40network mit `ifup wlan0` fort; ein Supervisor
 # von hier waere der zweite Besitzer. Auch mit gesetzter AP-Rolle nicht --
-# wlandev gehoert der Station.
+# wlandev gehoert der Station. usb.mode=wifi ist Voraussetzung (Guard unten).
 usb_tree
+printf 'usb.mode = wifi\n' > "$U/etc/machino/machino.conf"
 echo ap > "$U/etc/machino/wifi-role"
 USB_ACTIONS="$WORK/actions.log"; : > "$USB_ACTIONS"; export USB_ACTIONS
 PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" wifi-attach \
@@ -981,6 +982,21 @@ did   "wifi-attach loads the driver"  "aic8800.ko"
 did   "wifi-attach brings wlan0 up"   "ip link set wlan0 up"
 didnt "wifi-attach starts no supervisor" "started machino-wifi-role"
 is "wifi-attach raised the port power" "$(cat "$U/sys/class/gpio/gpio50/value")" "1"
+
+# --- wifi-attach bei usb.mode=cellular: der Port gehoert dem Modem, also NICHTS.
+# Das ist der Kern des Ein-Port-Konflikts: S40network ruft dieses Profil ueber
+# ein stehengebliebenes wlandev auf, bevor S42usb Cellular startet. Der Guard
+# muss verhindern, dass hier Treiber geladen oder Portstrom geschaltet wird.
+usb_tree
+printf 'usb.mode = cellular\n' > "$U/etc/machino/machino.conf"
+USB_ACTIONS="$WORK/actions.log"; : > "$USB_ACTIONS"; export USB_ACTIONS
+PATH="$BIN:$PATH" MACHINO_ROOT="$U" sh "$PKG/sbin/machino-usb-helper" wifi-attach \
+    > "$WORK/usbout" 2>&1
+didnt "wifi-attach (cellular) loads no driver"    "aic8800.ko"
+didnt "wifi-attach (cellular) loads no cfg80211"  "cfg80211"
+didnt "wifi-attach (cellular) brings up no wlan0" "ip link set wlan0 up"
+if [ ! -s "$U/sys/class/gpio/gpio50/value" ]; then ok
+else bad "wifi-attach raised the port power while usb.mode=cellular"; fi
 
 # --- cellular: der Mobilfunkstack und NUR der.
 usb_tree
@@ -1415,6 +1431,19 @@ else bad "the real adapter_scan does not offer our profile: [$scan]"; fi
 # c) Es wird als Treiber aic8800 gefuehrt, nicht als reines Stack-Modul.
 if printf '%s\n' "$scan" | grep -q "^usb	aic8800	aic8800-t40-machino"; then ok
 else bad "our profile is not reported with driver aic8800: [$scan]"; fi
+
+# c2) Der Ein-Port-Guard steht im Profilblock und VOR den modprobe-Zeilen:
+#     S40network ruft das Profil auch bei usb.mode=cellular (stehengebliebenes
+#     wlandev); ohne diesen Guard kaeme der WLAN-Treiber vor dem Modem an den
+#     einen Port. Die Guard-Zeile muss vor dem ersten modprobe stehen.
+blk=$(sed -n '/>>> machino aic8800-t40-machino/,/<<< machino aic8800-t40-machino/p' \
+    "$WORK/root/etc/wireless/usb")
+if printf '%s\n' "$blk" | grep -q 'machino-usb-helper mode.*= wifi'; then ok
+else bad "the profile block has no usb.mode guard: [$blk]"; fi
+gline=$(printf '%s\n' "$blk" | grep -n 'machino-usb-helper mode' | head -1 | cut -d: -f1)
+mline=$(printf '%s\n' "$blk" | grep -n 'modprobe' | head -1 | cut -d: -f1)
+if [ -n "$gline" ] && [ -n "$mline" ] && [ "$gline" -lt "$mline" ]; then ok
+else bad "the usb.mode guard is not before the first modprobe (guard=$gline modprobe=$mline)"; fi
 
 # d) Der SoC-Filter bleibt scharf: das ssc337de-Profil von upstream darf auf
 #    einem T40 NICHT erscheinen, und unseres nicht auf einer Sigmastar.

@@ -205,6 +205,17 @@ profile_remove() {
 # nach dem Profil faehrt S40network mit `ifup wlan0` fort, und OpenIPCs
 # wpa_supplicant besitzt die Station. Vorher startete der Block zusaetzlich den
 # Rollen-Supervisor, und zwei Supplicants scannten sich gegenseitig vom Netz.
+#
+# DER usb.mode-GUARD (2026-09-26): es gibt EINEN USB-Port. S40network laeuft VOR
+# S42usb und ruft dieses Profil, wenn wlandev darauf zeigt -- auch dann noch,
+# wenn der Betreiber inzwischen auf Cellular umgestellt hat (wlandev bleibt
+# absichtlich stehen, der Treiber gilt weiter als installiert). Ohne Guard
+# schaltete der WLAN-Pfad Portstrom und Treiber ein, bevor der Mobilfunk-Stack
+# den Port bekommt -- zwei Treiber auf einem Stecker. Erste Zeile im Block
+# prueft deshalb usb.mode: ist er nicht "wifi", steht das Profil ab (exit 1),
+# S40network ueberspringt wlan0 und bringt eth0 hoch, und S42usb bekommt den
+# Port exklusiv fuer Cellular. Der Treiber bleibt installiert; nur seine
+# Aktivierung ist blockiert, solange der Port jemand anderem gehoert.
 profile_install() {
     _prof=$1; _mods=$2
     [ -f "$WIRELESS_USB" ] || {
@@ -217,6 +228,7 @@ profile_install() {
         function emit(   i, n, m) {
             print b
             print "if [ \"$1\" = \"" id "\" ]; then"
+            print "\t[ \"$(/usr/sbin/machino-usb-helper mode 2>/dev/null)\" = wifi ] || exit 1"
             n = split(mods, m, " ")
             for (i = 1; i <= n; i++) if (m[i] != "") print "\tmodprobe " m[i]
             print "\t/usr/sbin/machino-usb-helper wifi-attach"
