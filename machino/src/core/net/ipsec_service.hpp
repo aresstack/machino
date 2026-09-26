@@ -31,6 +31,7 @@ enum class VpnFailure {
     NoProposalChosen,       // Notify 14
     TsUnacceptable,         // Notify 38 — Child-SA/Selektoren abgelehnt
     TransportTimeout,       // FAILED ohne Auth-Notify
+    UnderlayLost,           // AP5: das gewaehlte Underlay ist weggefallen
     Other,
 };
 const char* vpn_failure_name(VpnFailure f);
@@ -49,6 +50,30 @@ struct VpnStatus {
     uint32_t    last_notify = 0;
     uint32_t    uptime_s = 0;
     uint64_t    tx_packets = 0, tx_bytes = 0, rx_packets = 0, rx_bytes = 0;
+
+    // AP5: Underlay-/Transport-Fakten. requested aus der Config, actual/
+    // interface/ipv4/peer aus der SESSION (was connect() wirklich gewaehlt
+    // und aufgeloest hat), ike/esp_transport GEMESSEN vom Daemon.
+    std::string requested_underlay;   // underlay_name(cfg.underlay)
+    std::string actual_underlay;      // "" solange keine Session
+    std::string underlay_interface, underlay_ipv4;
+    std::string peer_ipv4;
+    std::string ike_transport;        // "udp500" | "udp4500" (Daemon)
+    std::string esp_transport;        // "udp4500" (Daemon; NAT-T-only)
+};
+
+// AP5: die Sicht des IPsec-Service auf die Uplinks — ein Auszug, keine
+// zweite Policy. select(Auto) liefert, was die bestehende Machino-Policy
+// JETZT als Uplink fahren wuerde; select(Cellular) genau den einen.
+struct UnderlayView {
+    bool        usable = false;
+    std::string kind;                 // "ethernet" | "wifi" | "cellular"
+    std::string ifname, ipv4, gateway;
+};
+class IIpsecUplinks {
+public:
+    virtual ~IIpsecUplinks() = default;
+    virtual bool select(Underlay wanted, UnderlayView& out, std::string& err) = 0;
 };
 
 // Parse der weirdikectl-Statuszeilen (key=value). enabled steuert nur das
@@ -65,13 +90,27 @@ public:
     virtual bool start_daemon(std::string& err) = 0;   // S99weirdike start
     virtual bool stop_daemon(std::string& err) = 0;    // ctl down + S99 stop
     virtual bool ctl_status(std::string& out) = 0;     // weirdikectl status
+
+    // AP5: DNS EINMAL vor dem Tunnel (nie spaeter ueber ipsec0) und die
+    // Peer-Hostroute, die der Service besitzt: der IKE/ESP-Verkehr zum
+    // Gateway bleibt IMMER auf dem Underlay, egal was spaeter an Tunnel-
+    // routen verhandelt wird. gateway_ip "" = Device-Route.
+    virtual bool resolve4(const std::string& host, std::string& ip_out) = 0;
+    virtual bool add_peer_route(const std::string& peer_ip, const std::string& ifname,
+                                const std::string& gateway_ip, std::string& err) = 0;
+    virtual bool del_peer_route(const std::string& peer_ip, const std::string& ifname,
+                                const std::string& gateway_ip, std::string& err) = 0;
 };
 
 class IpsecService {
 public:
+    // uplinks darf null sein (Hosttests ohne Netz, alte Verdrahtung):
+    // connect() bindet dann nicht an ein Underlay (pre-AP5-Verhalten),
+    // underlay=cellular wird ohne Provider ehrlich verweigert.
     IpsecService(IIpsecBackend& backend,
                  std::string machino_conf_path,
-                 std::string daemon_conf_path);
+                 std::string daemon_conf_path,
+                 IIpsecUplinks* uplinks = nullptr);
 
     // Lesen: Config OHNE Secret, plus pskSet (Daemon-Datei traegt eine
     // psk-Zeile). Fehlende Datei = Defaults.
@@ -82,13 +121,30 @@ public:
     // write-only weiterreichen. Leerer Rueckgabestring = ok.
     std::string set_config(const IpsecConfig& c, const std::string& psk_or_empty);
 
-    std::string connect();      // Voraussetzungen pruefen, Daemon starten
-    std::string disconnect();   // Daemon stoppen (ctl down + stop)
+    std::string connect();      // Underlay waehlen, aufloesen, Peer-Route, Daemon starten
+    std::string disconnect();   // Daemon stoppen, Peer-Route entfernen
     VpnStatus   status();
 
+    // AP5 §9: regelmaessig aus dem Hauptthread. Faellt das SESSION-Underlay
+    // weg (Interface/Adresse anders oder unbrauchbar), wird abgebaut und
+    // Failed/UnderlayLost gemeldet. KEIN stiller Wechsel auf einen anderen
+    // Uplink — bei underlay=cellular nie, bei auto erst ein neuer Connect.
+    void tick();
+
 private:
-    IIpsecBackend& backend_;
-    std::string machino_path_, daemon_path_;
+    struct Session {
+        bool        active = false;
+        bool        lost = false;         // Underlay weggefallen -> Failed
+        std::string underlay_kind, ifname, ipv4, gateway_ip;
+        std::string peer_ip;
+        bool        peer_route = false;
+    };
+    void teardown_session_(bool lost);
+
+    IIpsecBackend&  backend_;
+    std::string     machino_path_, daemon_path_;
+    IIpsecUplinks*  uplinks_ = nullptr;
+    Session         session_;
 };
 
 }} // namespace machino::ipsec

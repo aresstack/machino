@@ -198,6 +198,16 @@ Response ApiService::ipsec_status()
     if (!st.remote_ts.empty()) j.set("remoteTs", Json::string(st.remote_ts));
     j.set("natT", Json::boolean(st.nat_t));
     j.set("natDetected", Json::boolean(st.nat_detected));
+    // AP5: Underlay-Fakten. requested aus der Config, actual/interface/ipv4/
+    // peer aus der Session, ike/espTransport GEMESSEN vom Daemon. Keine
+    // Cellular-Secrets (APN, PIN) -- die gehoeren dieser Route nicht.
+    j.set("requestedUnderlay", Json::string(st.requested_underlay));
+    if (!st.actual_underlay.empty())    j.set("actualUnderlay", Json::string(st.actual_underlay));
+    if (!st.underlay_interface.empty()) j.set("underlayInterface", Json::string(st.underlay_interface));
+    if (!st.underlay_ipv4.empty())      j.set("underlayIpv4", Json::string(st.underlay_ipv4));
+    if (!st.peer_ipv4.empty())          j.set("peerIpv4", Json::string(st.peer_ipv4));
+    if (!st.ike_transport.empty())      j.set("ikeTransport", Json::string(st.ike_transport));
+    if (!st.esp_transport.empty())      j.set("espTransport", Json::string(st.esp_transport));
     if (!st.child.empty()) j.set("child", Json::string(st.child));
     j.set("childGeneration", Json::integer((long long)st.child_generation));
     j.set("ikeGeneration", Json::integer((long long)st.ike_generation));

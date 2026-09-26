@@ -24,6 +24,13 @@ struct FakeBackend : IIpsecBackend {
     bool start_ok = true, stop_ok = true;
     int  starts = 0, stops = 0;
     std::string status_text;
+    // AP5:
+    bool resolve_ok = true;
+    std::string resolved = "203.0.113.5";
+    struct Route { std::string ip, dev, gw; };
+    std::vector<Route> routes;                 // die aktuell installierten
+    int route_adds = 0, route_dels = 0;
+
     bool daemon_running() override { return running; }
     bool start_daemon(std::string& err) override {
         ++starts;
@@ -36,6 +43,42 @@ struct FakeBackend : IIpsecBackend {
         running = false; return true;
     }
     bool ctl_status(std::string& out) override { out = status_text; return running; }
+    bool resolve4(const std::string&, std::string& out) override {
+        if (!resolve_ok) return false;
+        out = resolved; return true;
+    }
+    bool add_peer_route(const std::string& ip, const std::string& dev,
+                        const std::string& gw, std::string&) override {
+        ++route_adds; routes.push_back({ip, dev, gw}); return true;
+    }
+    bool del_peer_route(const std::string& ip, const std::string& dev,
+                        const std::string& gw, std::string&) override {
+        ++route_dels;
+        for (size_t i = 0; i < routes.size(); ++i)
+            if (routes[i].ip == ip && routes[i].dev == dev && routes[i].gw == gw) {
+                routes.erase(routes.begin() + i);
+                return true;
+            }
+        return true;                           // idempotent, wie das echte Backend
+    }
+};
+
+// AP5 §11: zwei Uplinks mit verschiedenen Adressen -- der Test sieht, WOHIN
+// gebunden wurde.
+struct FakeUplinks : IIpsecUplinks {
+    UnderlayView eth, cell;
+    FakeUplinks() {
+        eth.usable = true;  eth.kind = "ethernet"; eth.ifname = "eth0";
+        eth.ipv4 = "10.0.0.5"; eth.gateway = "10.0.0.1";
+        cell.usable = true; cell.kind = "cellular"; cell.ifname = "usb0";
+        cell.ipv4 = "100.71.3.9"; cell.gateway = "100.71.3.1";
+    }
+    bool select(Underlay w, UnderlayView& out, std::string& err) override {
+        if (w == Underlay::Cellular) { out = cell; if (!cell.usable) err = "cellular nicht verbunden"; return cell.usable; }
+        if (w == Underlay::Ethernet) { out = eth;  if (!eth.usable)  err = "ethernet nicht verbunden"; return eth.usable; }
+        if (w == Underlay::Auto)     { out = eth.usable ? eth : cell; return out.usable; }
+        err = "kein solcher Uplink"; return false;
+    }
 };
 
 IpsecConfig sample()
@@ -262,11 +305,112 @@ void test_review_findings()
     remove(MCONF); remove(DCONF);
 }
 
+void test_ap5_underlay_binding()
+{
+    remove(MCONF); remove(DCONF);
+    FakeBackend be;
+    FakeUplinks up;
+    IpsecService svc(be, MCONF, DCONF, &up);
+
+    IpsecConfig c = sample();
+    c.underlay = Underlay::Cellular;
+    ICHECK(svc.set_config(c, "s3cret-psk").empty());
+
+    // cellular unbrauchbar: Connect VERWEIGERT, nichts gestartet, keine Route.
+    up.cell.usable = false;
+    ICHECK(!svc.connect().empty());
+    ICHECK(be.starts == 0 && be.routes.empty());
+
+    // cellular da: Daemon-Datei traegt die KONKRETE Cellular-Bindung und das
+    // VORAB aufgeloeste Gateway-Literal; die Peer-Route liegt auf usb0.
+    up.cell.usable = true;
+    ICHECK(svc.connect().empty());
+    std::string d = slurp(DCONF);
+    ICHECK(d.find("bind_ip = 100.71.3.9\n") != std::string::npos);
+    ICHECK(d.find("bind_dev = usb0\n") != std::string::npos);
+    ICHECK(d.find("gateway = 203.0.113.5\n") != std::string::npos);
+    ICHECK(d.find("psk = s3cret-psk\n") != std::string::npos);   // write-only weitergetragen
+    ICHECK(be.routes.size() == 1 && be.routes[0].ip == "203.0.113.5"
+           && be.routes[0].dev == "usb0" && be.routes[0].gw == "100.71.3.1");
+
+    VpnStatus st = svc.status();
+    ICHECK(st.requested_underlay == "cellular");
+    ICHECK(st.actual_underlay == "cellular");
+    ICHECK(st.underlay_interface == "usb0" && st.underlay_ipv4 == "100.71.3.9");
+    ICHECK(st.peer_ipv4 == "203.0.113.5");
+
+    // Disconnect raeumt die Peer-Route restlos.
+    ICHECK(svc.disconnect().empty());
+    ICHECK(be.routes.empty());
+    ICHECK(svc.status().actual_underlay.empty());
+
+    // ethernet gewuenscht: Socket an A, nicht B.
+    c.underlay = Underlay::Ethernet;
+    ICHECK(svc.set_config(c, "").empty());
+    ICHECK(svc.connect().empty());
+    d = slurp(DCONF);
+    ICHECK(d.find("bind_ip = 10.0.0.5\n") != std::string::npos);
+    ICHECK(d.find("bind_dev = eth0\n") != std::string::npos);
+    ICHECK(be.routes.size() == 1 && be.routes[0].dev == "eth0");
+    ICHECK(svc.disconnect().empty() && be.routes.empty());
+
+    // DNS-Fehlschlag: verweigert, BEVOR eine Route existiert.
+    be.resolve_ok = false;
+    ICHECK(!svc.connect().empty());
+    ICHECK(be.routes.empty());
+    be.resolve_ok = true;
+
+    remove(MCONF); remove(DCONF);
+}
+
+void test_ap5_underlay_loss()
+{
+    remove(MCONF); remove(DCONF);
+    FakeBackend be;
+    FakeUplinks up;
+    IpsecService svc(be, MCONF, DCONF, &up);
+
+    IpsecConfig c = sample();
+    c.underlay = Underlay::Cellular;
+    ICHECK(svc.set_config(c, "s3cret-psk").empty());
+    ICHECK(svc.connect().empty());
+    be.status_text = "state=CHILD_SA_ESTABLISHED\n";
+
+    // Solange das Underlay unveraendert ist, tut tick() nichts.
+    svc.tick();
+    ICHECK(be.running && be.routes.size() == 1);
+
+    // Cellular faellt weg: Abbau (Daemon stop, Route weg) und Failed/
+    // underlayLost -- KEIN stiller Wechsel auf ethernet.
+    up.cell.usable = false;
+    svc.tick();
+    ICHECK(!be.running);
+    ICHECK(be.routes.empty());
+    be.status_text.clear();
+    VpnStatus st = svc.status();
+    ICHECK(st.state == VpnState::Failed);
+    ICHECK(st.failure == VpnFailure::UnderlayLost);
+    ICHECK(std::string(vpn_failure_name(st.failure)) == "underlayLost");
+
+    // Neue Adresse nach Reconnect des Modems = neues Underlay: erst ein
+    // NEUER connect nimmt es (kein MOBIKE-Vortaeuschen).
+    up.cell.usable = true;
+    up.cell.ipv4 = "100.71.9.1";
+    ICHECK(svc.connect().empty());
+    ICHECK(slurp(DCONF).find("bind_ip = 100.71.9.1\n") != std::string::npos);
+    ICHECK(svc.status().state != VpnState::Failed);   // lost ist geloescht
+    ICHECK(svc.disconnect().empty());
+
+    remove(MCONF); remove(DCONF);
+}
+
 } // namespace
 
 void run_ipsec_tests()
 {
     test_review_findings();
+    test_ap5_underlay_binding();
+    test_ap5_underlay_loss();
     test_config_roundtrip();
     test_validate_names_the_problem();
     test_psk_write_only_carry();

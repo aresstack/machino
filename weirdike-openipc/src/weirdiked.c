@@ -483,7 +483,13 @@ static void ctl_status(wd_daemon *d, char *buf, size_t cap)
              "rx_packets=%llu\n"
              "rx_bytes=%llu\n"
              "tx_drop_selector=%llu\n"
-             "rx_drop_selector=%llu\n",
+             "rx_drop_selector=%llu\n"
+             /* AP5: transport facts, MEASURED not assumed. ike follows the
+              * port the core actually floated to; ESP is always ESP-in-UDP
+              * on this daemon (NAT-T-only, PLATFORM.md) -- saying so here
+              * keeps the status honest instead of implying raw ESP. */
+             "ike_transport=%s\n"
+             "esp_transport=udp4500\n",
              state_name(d),
              d->cfg.gateway, (unsigned)d->cfg.port,
              d->cfg.ifname,
@@ -500,7 +506,8 @@ static void ctl_status(wd_daemon *d, char *buf, size_t cap)
              (unsigned long long)d->rx_packets,
              (unsigned long long)d->rx_bytes,
              (unsigned long long)d->tx_drop_sel,
-             (unsigned long long)d->rx_drop_sel);
+             (unsigned long long)d->rx_drop_sel,
+             d->tr.active_port == 4500 ? "udp4500" : "udp500");
 }
 
 static void ctl_serve(wd_daemon *d)
@@ -647,10 +654,19 @@ int main(int argc, char **argv)
     weirdike_crypto_mbedtls_bind(&d.mbed, &d.crypto);
 
     /* ---- sockets ---- */
-    d.tr.fd500  = wd_udp_open(500, err, sizeof(err));
-    if (d.tr.fd500 < 0) { wd_log(LOG_ERR, "udp/500: %s", err); goto fail; }
-    d.tr.fd4500 = wd_udp_open(4500, err, sizeof(err));
-    if (d.tr.fd4500 < 0) { wd_log(LOG_ERR, "udp/4500: %s", err); goto fail; }
+    /* AP5: when the config pins an underlay, both sockets bind to that
+     * concrete IP (and device). The transport then KNOWS its source without
+     * the routing-table guess -- exactly what NAT-D needs, and a routing
+     * flip can no longer move the tunnel. */
+    {
+        const uint8_t *bip = d.cfg.have_bind_ip ? d.cfg.bind_ip : NULL;
+        const char    *bdv = d.cfg.bind_dev[0]  ? d.cfg.bind_dev : NULL;
+        d.tr.fd500  = wd_udp_open(500, bip, bdv, err, sizeof(err));
+        if (d.tr.fd500 < 0) { wd_log(LOG_ERR, "udp/500: %s", err); goto fail; }
+        d.tr.fd4500 = wd_udp_open(4500, bip, bdv, err, sizeof(err));
+        if (d.tr.fd4500 < 0) { wd_log(LOG_ERR, "udp/4500: %s", err); goto fail; }
+        if (bip) { memcpy(d.tr.src_ip, bip, 4); d.tr.have_src = 1; }
+    }
     d.tr.active_port = 500;
 
     /* ---- TUN ---- */

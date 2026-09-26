@@ -60,11 +60,22 @@ std::string psk_check(const std::string& psk);
 std::string to_machino_conf(const IpsecConfig& c);
 bool from_machino_conf(const std::string& text, IpsecConfig& out, std::string& err);
 
+// AP5: Session-Werte, die connect() fuer GENAU diese Sitzung in die
+// Daemon-Datei schreibt: das VOR dem Tunnel aufgeloeste Gateway (nie DNS
+// ueber ipsec0; Rekey nutzt dieselbe Adresse) und die konkrete Underlay-
+// Bindung. Alles leer = keine Session-Pinnung (pre-AP5-Verhalten).
+struct SessionNet {
+    std::string gateway_ip;   // aufgeloestes IPv4-Literal
+    std::string bind_ip;      // konkrete Underlay-IPv4
+    std::string bind_dev;     // Underlay-Interface (SO_BINDTODEVICE)
+};
+
 // Daemon-Datei generieren. psk leer = vorhandenen psk-Wert aus old_daemon_conf
 // uebernehmen (write-only-Semantik). Liefert false, wenn am Ende KEIN PSK da
 // waere (Speichern ok, aber der Aufrufer soll pskSet=false wissen).
 std::string to_weirdike_conf(const IpsecConfig& c, const std::string& psk,
-                             const std::string& old_daemon_conf, bool* psk_present);
+                             const std::string& old_daemon_conf, bool* psk_present,
+                             const SessionNet* net = nullptr);
 
 // Atomar (tmp + rename), Modus 0600. Plattformneutral genug fuer Hosttests.
 bool write_atomic_0600(const std::string& path, const std::string& content,

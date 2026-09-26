@@ -192,7 +192,8 @@ bool from_machino_conf(const std::string& text, IpsecConfig& out, std::string& e
 }
 
 std::string to_weirdike_conf(const IpsecConfig& c, const std::string& psk,
-                             const std::string& old_daemon_conf, bool* psk_present)
+                             const std::string& old_daemon_conf, bool* psk_present,
+                             const SessionNet* net)
 {
     // PSK write-only: neuer Wert gewinnt; sonst den alten Zeilenwert
     // unveraendert weitertragen (nur der Daemon liest ihn je wieder).
@@ -216,9 +217,14 @@ std::string to_weirdike_conf(const IpsecConfig& c, const std::string& psk,
     if (psk_present) *psk_present = !psk_line.empty();
 
     std::string s;
-    s += "gateway = " + c.gateway + "\n";
+    // Session-Pinnung: das VORAB aufgeloeste Gateway als Literal (der Daemon
+    // loest dann nichts mehr auf -- kein DNS nach Tunnelstart, und die
+    // Peer-Hostroute des Service zeigt garantiert auf DIESELBE Adresse).
+    s += "gateway = " + (net && !net->gateway_ip.empty() ? net->gateway_ip : c.gateway) + "\n";
     s += "port = " + std::to_string(c.port) + "\n";
     s += psk_line;
+    if (net && !net->bind_ip.empty())  s += "bind_ip = " + net->bind_ip + "\n";
+    if (net && !net->bind_dev.empty()) s += "bind_dev = " + net->bind_dev + "\n";
     if (!c.local_id.empty())  s += "local_id = " + c.local_id + "\n";
     if (!c.remote_id.empty()) s += "remote_id = " + c.remote_id + "\n";
     if (!c.local_subnet.empty())  s += "local_subnet = " + c.local_subnet + "\n";

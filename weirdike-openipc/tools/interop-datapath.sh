@@ -78,7 +78,7 @@ EOF
     chmod 600 /etc/ipsec.secrets
 }
 
-wl_conf() { # $1 = gateway
+wl_conf() { # $1 = gateway  $2 = bind_ip (optional)  $3 = bind_dev (optional)
     mkdir -p /etc/weirdike
     cat > /etc/weirdike/weirdike.conf <<EOF
 gateway = $1
@@ -90,6 +90,10 @@ remote_subnet = 10.66.0.0/24
 nat_t = true
 dpd_interval_s = 30
 EOF
+    # AP5: die konkrete Underlay-Bindung, wie machinod sie fuer eine Session
+    # schreibt (bind an IP + SO_BINDTODEVICE).
+    if [ -n "${2:-}" ]; then echo "bind_ip = $2" >> /etc/weirdike/weirdike.conf; fi
+    if [ -n "${3:-}" ]; then echo "bind_dev = $3" >> /etc/weirdike/weirdike.conf; fi
     chmod 600 /etc/weirdike/weirdike.conf
 }
 
@@ -244,12 +248,18 @@ ip netns exec wr ip addr add 10.66.0.1/32 dev lo
 ip netns exec wr sh -c "cd /tmp/wwwroot && python3 -m http.server 8066 --bind 10.66.0.1 >/dev/null 2>&1 &"
 
 swan_conf ""
-wl_conf 10.99.0.3
+# AP5: an die konkrete Underlay-IP + Device gebunden, wie machinod es fuer
+# eine Session schreibt -- der Handshake muss trotzdem durch das NAT gehen.
+wl_conf 10.99.0.3 10.98.0.2 veth-a
 start_swan
 start_wld
 st=$(status)
 case "$st" in *nat_detected=yes*) say "nat: nat_detected=yes" ;;
     *) fail "nat: nat_detected fehlt: $st" ;; esac
+case "$st" in *ike_transport=udp4500*) say "nat: IKE floated auf UDP/4500" ;;
+    *) fail "nat: ike_transport=udp4500 fehlt: $st" ;; esac
+case "$st" in *esp_transport=udp4500*) say "nat: ESP-in-UDP bestaetigt" ;;
+    *) fail "nat: esp_transport fehlt: $st" ;; esac
 check_datapath nat
 if grep -q "$PSK" "$LOG"; then fail "PSK steht im Daemon-Log (nat)"; fi
 

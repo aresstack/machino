@@ -144,9 +144,29 @@ static void t_long_line(void)
     CHECK(parse(text, &c, err, sizeof(err)) != 0, "over-long line refused, not truncated");
 }
 
+static void t_bind_underlay(void)
+{
+    /* AP5: bind_ip pins the socket source, bind_dev the device. Literals
+     * only -- a NAME here could resolve over the wrong interface. */
+    wd_config c; char err[256];
+    CHECK(parse("gateway=a.b\npsk=x\nbind_ip = 10.98.0.2\nbind_dev = usb0\n",
+                &c, err, sizeof(err)) == 0, "bind keys accepted");
+    CHECK(c.have_bind_ip && c.bind_ip[0] == 10 && c.bind_ip[3] == 2, "bind_ip parsed");
+    CHECK(strcmp(c.bind_dev, "usb0") == 0, "bind_dev parsed");
+
+    CHECK(parse("gateway=a.b\npsk=x\n", &c, err, sizeof(err)) == 0, "bind keys optional");
+    CHECK(!c.have_bind_ip && !c.bind_dev[0], "unset = bind any (pre-AP5 behaviour)");
+
+    CHECK(parse("gateway=a.b\npsk=x\nbind_ip = vpn.example.org\n",
+                &c, err, sizeof(err)) != 0, "bind_ip name rejected");
+    CHECK(parse("gateway=a.b\npsk=x\nbind_dev = not/valid\n",
+                &c, err, sizeof(err)) != 0, "bad bind_dev rejected");
+}
+
 int main(void)
 {
     t_minimal();
+    t_bind_underlay();
     t_required();
     t_unknown_key_is_an_error();
     t_hostname_validation();

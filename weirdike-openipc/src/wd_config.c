@@ -194,6 +194,21 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
         } else if (!strcmp(k, "mtu")) {
             uint32_t x; if (as_uint(v, 9000, &x) || x < 576) { seterr(err, errcap, "bad mtu", NULL); return -1; }
             out->mtu = (int)x;
+        } else if (!strcmp(k, "bind_ip")) {
+            /* AP5: the concrete underlay IPv4 (a literal, never a name --
+             * resolving here could pick a DIFFERENT interface's answer). */
+            wd_cidr c;
+            if (wd_parse_cidr(v, &c) || c.prefix != 32) {
+                /* accept plain a.b.c.d too */
+                char withp[24];
+                snprintf(withp, sizeof(withp), "%s/32", v);
+                if (wd_parse_cidr(withp, &c)) { seterr(err, errcap, "bad bind_ip", NULL); return -1; }
+            }
+            memcpy(out->bind_ip, c.ip, 4);
+            out->have_bind_ip = 1;
+        } else if (!strcmp(k, "bind_dev")) {
+            if (!wd_valid_ifname(v)) { seterr(err, errcap, "bad bind_dev", NULL); return -1; }
+            snprintf(out->bind_dev, sizeof(out->bind_dev), "%s", v);
         } else {
             seterr(err, errcap, "unknown key: %s", k);
             return -1;

@@ -139,7 +139,8 @@ int wd_tun_down(const char *ifname, char *err, size_t errcap)
     return 0;
 }
 
-int wd_udp_open(uint16_t port, char *err, size_t errcap)
+int wd_udp_open(uint16_t port, const uint8_t *bind_ip, const char *bind_dev,
+                char *err, size_t errcap)
 {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) { seterr(err, errcap, "socket"); return -1; }
@@ -147,10 +148,25 @@ int wd_udp_open(uint16_t port, char *err, size_t errcap)
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
+    /* AP5: pin the socket to the chosen underlay. The concrete source IP is
+     * the primary mechanism (it is what NAT-D hashes); SO_BINDTODEVICE on
+     * top makes sure a later routing flip cannot move the tunnel to another
+     * interface behind our back. Device pinning failing is an ERROR, not a
+     * shrug -- the caller asked for exactly this underlay. */
+    if (bind_dev && bind_dev[0]) {
+        if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, bind_dev,
+                       (socklen_t)(strlen(bind_dev) + 1)) < 0) {
+            seterr(err, errcap, "SO_BINDTODEVICE");
+            close(fd);
+            return -1;
+        }
+    }
+
     struct sockaddr_in a;
     memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind_ip) memcpy(&a.sin_addr, bind_ip, 4);
     a.sin_port = htons(port);
     if (bind(fd, (struct sockaddr *)&a, sizeof(a)) < 0) {
         seterr(err, errcap, "bind");

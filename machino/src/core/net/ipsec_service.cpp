@@ -66,6 +66,7 @@ const char* vpn_failure_name(VpnFailure f)
         case VpnFailure::NoProposalChosen:     return "noProposalChosen";
         case VpnFailure::TsUnacceptable:       return "tsUnacceptable";
         case VpnFailure::TransportTimeout:     return "transportTimeout";
+        case VpnFailure::UnderlayLost:         return "underlayLost";
         case VpnFailure::Other:                return "other";
     }
     return "other";
@@ -106,6 +107,8 @@ VpnStatus parse_status(const std::string& text, bool daemon_running, bool enable
         else if (k == "tx_bytes")         st.tx_bytes = strtoull(v.c_str(), nullptr, 10);
         else if (k == "rx_packets")       st.rx_packets = strtoull(v.c_str(), nullptr, 10);
         else if (k == "rx_bytes")         st.rx_bytes = strtoull(v.c_str(), nullptr, 10);
+        else if (k == "ike_transport")    st.ike_transport = v;
+        else if (k == "esp_transport")    st.esp_transport = v;
         // unbekannte Keys: ignorieren -- der Daemon darf wachsen
     }
 
@@ -127,10 +130,12 @@ VpnStatus parse_status(const std::string& text, bool daemon_running, bool enable
 
 IpsecService::IpsecService(IIpsecBackend& backend,
                            std::string machino_conf_path,
-                           std::string daemon_conf_path)
+                           std::string daemon_conf_path,
+                           IIpsecUplinks* uplinks)
     : backend_(backend),
       machino_path_(std::move(machino_conf_path)),
-      daemon_path_(std::move(daemon_conf_path))
+      daemon_path_(std::move(daemon_conf_path)),
+      uplinks_(uplinks)
 {
 }
 
@@ -201,17 +206,113 @@ std::string IpsecService::connect()
     if (c.gateway.empty()) return "kein Gateway konfiguriert";
     if (!psk_set()) return "kein PSK gesetzt";
     if (backend_.daemon_running()) return {};   // idempotent
+
+    session_ = Session{};
+
+    // AP5 §3: Underlay waehlen. Fuer cellular/ethernet/wifi genau den einen
+    // (unbrauchbar -> VERWEIGERN, kein stiller Wechsel); fuer auto das, was
+    // die bestehende Machino-Uplink-Policy jetzt faehrt — hier wird KEINE
+    // zweite Failover-Policy gebaut.
+    UnderlayView uv;
+    if (uplinks_) {
+        std::string uerr;
+        if (!uplinks_->select(c.underlay, uv, uerr))
+            return uerr.empty() ? "kein nutzbares Underlay" : uerr;
+        if (!uv.usable || uv.ipv4.empty() || uv.ifname.empty())
+            return std::string("underlay '") + underlay_name(c.underlay)
+                   + "': nicht nutzbar (keine Adresse)";
+    } else if (c.underlay != Underlay::Auto) {
+        return std::string("underlay '") + underlay_name(c.underlay)
+               + "': kein Uplink-Provider verdrahtet";
+    }
+
+    // AP5 §6: DNS EINMAL, vor dem Tunnel. Die Session merkt sich die Adresse;
+    // Rekey laeuft im Daemon gegen dieselbe (er bekommt das Literal).
+    std::string peer_ip;
+    if (!backend_.resolve4(c.gateway, peer_ip) || peer_ip.empty())
+        return "gateway '" + c.gateway + "': DNS-Aufloesung fehlgeschlagen";
+
+    // AP5 §5/§8: Peer-Hostroute ZUERST, auf dem gewaehlten Underlay. Sie
+    // gehoert dem Service und ueberlebt jede spaeter verhandelte Tunnelroute.
     std::string err;
-    if (!backend_.start_daemon(err)) return err.empty() ? "Daemon-Start fehlgeschlagen" : err;
+    if (uplinks_) {
+        if (!backend_.add_peer_route(peer_ip, uv.ifname, uv.gateway, err))
+            return "Peer-Route: " + (err.empty() ? std::string("fehlgeschlagen") : err);
+        session_.peer_route = true;
+    }
+
+    // Daemon-Datei mit den SESSION-Werten neu erzeugen (PSK wird write-only
+    // weitergetragen): aufgeloestes Gateway-Literal + konkrete Bindung.
+    bool existed = false;
+    const std::string old_daemon = read_file(daemon_path_, existed);
+    SessionNet net;
+    net.gateway_ip = peer_ip;
+    net.bind_ip = uv.ipv4;
+    net.bind_dev = uv.ifname;
+    bool psk_present = false;
+    const std::string dconf = to_weirdike_conf(c, "", old_daemon, &psk_present, &net);
+    if (!psk_present) { teardown_session_(false); return "kein PSK gesetzt"; }
+    if (!write_atomic_0600(daemon_path_, dconf, err)) {
+        teardown_session_(false);
+        return "weirdike.conf: " + err;
+    }
+
+    if (!backend_.start_daemon(err)) {
+        teardown_session_(false);
+        return err.empty() ? "Daemon-Start fehlgeschlagen" : err;
+    }
+
+    session_.active = true;
+    session_.underlay_kind = uplinks_ ? uv.kind : "";
+    session_.ifname = uv.ifname;
+    session_.ipv4 = uv.ipv4;
+    session_.gateway_ip = uv.gateway;
+    session_.peer_ip = peer_ip;
     return {};
+}
+
+void IpsecService::teardown_session_(bool lost)
+{
+    if (session_.peer_route) {
+        std::string err;
+        backend_.del_peer_route(session_.peer_ip, session_.ifname, session_.gateway_ip, err);
+    }
+    const std::string kind = session_.underlay_kind;
+    session_ = Session{};
+    session_.lost = lost;
+    if (lost) session_.underlay_kind = kind;   // fuer die Fehlermeldung im Status
 }
 
 std::string IpsecService::disconnect()
 {
-    if (!backend_.daemon_running()) return {};  // idempotent
+    std::string err, out;
+    if (backend_.daemon_running()) {
+        if (!backend_.stop_daemon(err))
+            out = err.empty() ? "Daemon-Stopp fehlgeschlagen" : err;
+    }
+    // Die Peer-Route verschwindet auch dann, wenn der Stopp scheiterte —
+    // eine Route zu einem toten Tunnel ist nur ein Blackhole mit Namen.
+    teardown_session_(false);
+    return out;
+}
+
+void IpsecService::tick()
+{
+    if (!session_.active || !uplinks_) return;
+
+    UnderlayView uv;
+    std::string uerr;
+    IpsecConfig c = config();
+    const bool ok = uplinks_->select(c.underlay, uv, uerr) && uv.usable;
+
+    // Session ist an das KONKRETE Interface + Adresse gebunden. Anderes
+    // Interface oder andere Adresse = das alte Underlay ist weg; die SA
+    // einfach umzuziehen waere vorgetaeuschtes MOBIKE.
+    if (ok && uv.ifname == session_.ifname && uv.ipv4 == session_.ipv4) return;
+
     std::string err;
-    if (!backend_.stop_daemon(err)) return err.empty() ? "Daemon-Stopp fehlgeschlagen" : err;
-    return {};
+    backend_.stop_daemon(err);
+    teardown_session_(true);
 }
 
 VpnStatus IpsecService::status()
@@ -222,7 +323,23 @@ VpnStatus IpsecService::status()
     // running=true wuerde zu failed/transportTimeout fantasiert.
     std::string text;
     const bool running = backend_.ctl_status(text) && !text.empty();
-    return parse_status(text, running, config().enabled);
+    const IpsecConfig c = config();
+    VpnStatus st = parse_status(text, running, c.enabled);
+
+    // AP5: Underlay-Fakten der Session dazu. requested aus der Config,
+    // actual nur solange die Session lebt — keine Fantasie nach dem Ende.
+    st.requested_underlay = underlay_name(c.underlay);
+    if (session_.active) {
+        st.actual_underlay = session_.underlay_kind;
+        st.underlay_interface = session_.ifname;
+        st.underlay_ipv4 = session_.ipv4;
+        st.peer_ipv4 = session_.peer_ip;
+    }
+    if (session_.lost && !running) {
+        st.state = VpnState::Failed;
+        st.failure = VpnFailure::UnderlayLost;
+    }
+    return st;
 }
 
 }} // namespace machino::ipsec

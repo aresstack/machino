@@ -35,8 +35,13 @@ int wd_route_dev(const char *ifname, const uint8_t net[4], uint8_t prefix, int a
  * withdraws the routes). Returns 0 or -1. */
 int wd_tun_down(const char *ifname, char *err, size_t errcap);
 
-/* A UDP socket bound to `port` on all addresses, non-blocking. -1 on failure. */
-int wd_udp_open(uint16_t port, char *err, size_t errcap);
+/* A UDP socket bound to `port`, non-blocking. bind_ip (4 bytes, may be NULL
+ * = all addresses) pins the concrete source address, bind_dev (may be NULL/
+ * empty) additionally pins the device via SO_BINDTODEVICE -- the AP5
+ * underlay contract. A requested device that cannot be pinned is an error.
+ * -1 on failure. */
+int wd_udp_open(uint16_t port, const uint8_t *bind_ip, const char *bind_dev,
+                char *err, size_t errcap);
 
 /* Which local address the kernel would use to reach `ip` -- a connected UDP
  * socket asked for its own name, no traffic sent. NAT-D needs the concrete

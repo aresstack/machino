@@ -908,6 +908,9 @@ struct ApiFakeIpsecBackend : machino::ipsec::IIpsecBackend {
     bool start_daemon(std::string&) override { running = true; return true; }
     bool stop_daemon(std::string&) override { running = false; return true; }
     bool ctl_status(std::string& out) override { out = status_text; return running; }
+    bool resolve4(const std::string&, std::string& out) override { out = "192.0.2.7"; return true; }
+    bool add_peer_route(const std::string&, const std::string&, const std::string&, std::string&) override { return true; }
+    bool del_peer_route(const std::string&, const std::string&, const std::string&, std::string&) override { return true; }
 };
 } // namespace
 

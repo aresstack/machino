@@ -95,3 +95,45 @@ Service-Anteil ist stattdessen exakt an der Prozessgrenze bewiesen:
 Was zwischen diesen Vertraegen liegt (der Daemon selbst), deckt der
 Namespace-CI ab. Der erste Ende-zu-Ende-Lauf machinod→weirdiked auf echter
 Hardware ist Teil der AP5-Abnahme (Cellular-Underlay, mit Modem).
+
+## AP5: Cellular/Underlay-Bindung
+
+Der IPsec-Service waehlt das Underlay aus der BESTEHENDEN Uplink-Wahrheit
+(`ConnectivityManager` via `ConnectivityIpsecUplinks`) — keine zweite
+Failover-Policy, kein Modemwissen. WeirdIKE selbst kennt weiterhin nur
+konkrete IP, UDP-Transport, Peer-Endpunkt (kein EC200A/ttyUSB/PPP/ECM/APN).
+
+Ablauf von `connect()`:
+1. **Underlay waehlen** (`underlay = auto|ethernet|wifi|cellular`): `auto` =
+   der aktive Uplink der Machino-Policy; ein konkreter Wunsch = genau dieser
+   Uplink, sonst **VERWEIGERT** (kein stiller Wechsel).
+2. **DNS einmal** vor dem Tunnel (`resolve4`) — die aufgeloeste Peer-IP wird
+   als Literal in die Daemon-Datei geschrieben, nie loest der Daemon nach
+   Tunnelstart ueber `ipsec0` auf; Rekey nutzt dieselbe Adresse.
+3. **Peer-Hostroute zuerst** (`/32` auf dem gewaehlten Underlay, `SIOCADDRT`).
+   Sie gehoert dem Service und ueberlebt jede spaeter verhandelte Tunnelroute
+   (§8-Invariante: IKE/ESP-Verkehr bleibt IMMER auf dem Underlay).
+4. **Session-Bindung**: `bind_ip` (konkrete Underlay-IPv4) + `bind_dev`
+   (`SO_BINDTODEVICE`) in die Daemon-Datei; die Sockets binden daran, ein
+   Routing-Flip kann den Tunnel nicht mehr verschieben.
+5. Daemon starten.
+
+`tick()` (Hauptthread, nach der Uplink-Neubewertung): faellt das
+SESSION-Interface/-Adresse weg, wird abgebaut und `failed/underlayLost`
+gemeldet — **kein** MOBIKE-Vortaeuschen, kein Umhaengen der SA. Ein
+Reconnect mit neuer Adresse ist ein NEUER `connect()`.
+
+`disconnect()` entfernt die Peer-Route auch dann, wenn der Daemon-Stopp
+scheiterte (eine Route zu einem toten Tunnel ist nur ein benanntes
+Blackhole).
+
+Status (`GET /api/v1/ipsec/status`) traegt zusaetzlich `requestedUnderlay`
+(Config), `actualUnderlay`/`underlayInterface`/`underlayIpv4`/`peerIpv4`
+(Session) und `ikeTransport`/`espTransport` (GEMESSEN vom Daemon:
+`natT`/`natDetected` sind das Messergebnis der NAT-D, die Config-`natT`
+erlaubt/verbietet die Funktion, ersetzt aber nie die Messung). Keine
+Cellular-Secrets (APN, SIM-PIN) in diesem Status.
+
+**Hardware-Gate (AP5 §12):** PENDING_PHYSICAL — Kamera + EC200A, `actualUnderlay=cellular`,
+CHILD established, `natDetected` korrekt, echter Ping/TCP durchs VPN,
+Ethernet bleibt parallel als Management. Keine Aenderung an APN-/Modemlogik.

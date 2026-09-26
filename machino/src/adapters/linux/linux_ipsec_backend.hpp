@@ -20,7 +20,17 @@ public:
     bool stop_daemon(std::string& err) override;
     bool ctl_status(std::string& out) override;
 
+    // AP5: getaddrinfo (einmal, VOR dem Tunnel) und die Peer-Hostroute
+    // (SIOCADDRT/SIOCDELRT, /32 via Gateway oder Device -- kein Shell).
+    bool resolve4(const std::string& host, std::string& ip_out) override;
+    bool add_peer_route(const std::string& peer_ip, const std::string& ifname,
+                        const std::string& gateway_ip, std::string& err) override;
+    bool del_peer_route(const std::string& peer_ip, const std::string& ifname,
+                        const std::string& gateway_ip, std::string& err) override;
+
 private:
+    bool peer_route(const std::string& peer_ip, const std::string& ifname,
+                    const std::string& gateway_ip, bool add, std::string& err);
     bool run_init(const char* verb, std::string& err);
     bool ctl_command(const char* cmd, std::string& out);
 

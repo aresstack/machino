@@ -44,6 +44,16 @@ typedef struct {
     uint32_t ike_lifetime_s;          /* 0 = never self-initiated */
     uint32_t dpd_interval_s;          /* 0 = library default */
     int      mtu;                     /* TUN MTU, default 1400 */
+
+    /* AP5: pin IKE/ESP to ONE underlay. bind_ip is the concrete local IPv4
+     * the sockets bind to (machinod picks it from the selected uplink);
+     * bind_dev additionally pins the device (SO_BINDTODEVICE), so a later
+     * routing change cannot silently move the tunnel to another interface.
+     * Both empty = bind to any (the pre-AP5 behaviour). The daemon has no
+     * idea WHAT the underlay is -- no modem words in here. */
+    uint8_t  bind_ip[4];
+    int      have_bind_ip;
+    char     bind_dev[WD_MAX_IFNAME];
 } wd_config;
 
 /* Parse `key = value` text. Unknown keys are an error, not a shrug: a typo in a

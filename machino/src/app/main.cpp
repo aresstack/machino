@@ -17,6 +17,7 @@
 #include "adapters/linux/linux_ppp_backend.hpp"
 #include "adapters/linux/linux_ethernet_uplink.hpp"
 #include "adapters/linux/linux_ipsec_backend.hpp"
+#include "core/net/ipsec_uplinks.hpp"
 #include "adapters/linux/linux_route_backend.hpp"
 #include "adapters/linux/linux_serial_scan.hpp"
 #include "adapters/linux/linux_usb_host.hpp"
@@ -444,15 +445,6 @@ int main(int argc, char** argv) {
                 [ing](const std::string& mp) { return ing->detector_status(mp); });
         }
 
-        // AP3 (Feature 2): IPsec/VPN ueber die Prozessgrenze -- machinod
-        // linkt KEIN WeirdIKE; Lifecycle laeuft ueber S99weirdike, Status
-        // ueber den ctl-Socket. Fehler hier beruehren das Video nie.
-        ipsec::LinuxIpsecBackend ipsec_backend;
-        ipsec::IpsecService ipsec_service(ipsec_backend,
-                                          "/etc/machino/ipsec.conf",
-                                          "/etc/weirdike/weirdike.conf");
-        api.set_ipsec_service(&ipsec_service);
-
         // AP35/AP36: the USB host and the connectivity layer.
         //
         // Constructed HERE, before the HTTP server, so they outlive it: the
@@ -846,6 +838,19 @@ int main(int argc, char** argv) {
         conn.evaluate();
         apply_routes();
 
+        // AP3/AP5 (Feature 2): IPsec/VPN ueber die Prozessgrenze -- machinod
+        // linkt KEIN WeirdIKE; Lifecycle via S99weirdike, Status via ctl-
+        // Socket, Underlay-Auswahl aus der BESTEHENDEN Uplink-Wahrheit
+        // (ConnectivityManager), keine zweite Policy. Fehler hier beruehren
+        // das Video nie.
+        ipsec::LinuxIpsecBackend ipsec_backend;
+        ipsec::ConnectivityIpsecUplinks ipsec_uplinks(conn);
+        ipsec::IpsecService ipsec_service(ipsec_backend,
+                                          "/etc/machino/ipsec.conf",
+                                          "/etc/weirdike/weirdike.conf",
+                                          &ipsec_uplinks);
+        api.set_ipsec_service(&ipsec_service);
+
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
         // Front-door: the Majestic drop-in login gates :80 exactly like
@@ -1120,6 +1125,10 @@ int main(int argc, char** argv) {
                         // changing at all, and that new gateway still has to
                         // reach the kernel.
                         apply_routes();
+                        // AP5 §9: NACH der Uplink-Neubewertung. Faellt das
+                        // Session-Underlay weg, baut der Service ab und
+                        // meldet underlayLost -- kein stiller Wechsel.
+                        ipsec_service.tick();
                     }
                 }
             }

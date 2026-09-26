@@ -3,6 +3,11 @@
 #include <cerrno>
 #include <cstring>
 
+#include <arpa/inet.h>
+#include <net/route.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -96,6 +101,69 @@ bool LinuxIpsecBackend::stop_daemon(std::string& err)
 bool LinuxIpsecBackend::ctl_status(std::string& out)
 {
     return ctl_command("status", out);
+}
+
+bool LinuxIpsecBackend::resolve4(const std::string& host, std::string& ip_out)
+{
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    addrinfo* res = nullptr;
+    if (::getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) return false;
+    char buf[INET_ADDRSTRLEN] = {0};
+    const sockaddr_in* sin = reinterpret_cast<const sockaddr_in*>(res->ai_addr);
+    const char* p = ::inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
+    ::freeaddrinfo(res);
+    if (!p) return false;
+    ip_out = buf;
+    return true;
+}
+
+bool LinuxIpsecBackend::peer_route(const std::string& peer_ip, const std::string& ifname,
+                                   const std::string& gateway_ip, bool add, std::string& err)
+{
+    const int s = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) { err = "socket fehlgeschlagen"; return false; }
+
+    rtentry rt{};
+    auto* dst = reinterpret_cast<sockaddr_in*>(&rt.rt_dst);
+    dst->sin_family = AF_INET;
+    if (::inet_pton(AF_INET, peer_ip.c_str(), &dst->sin_addr) != 1) {
+        ::close(s); err = "peer_ip kein IPv4-Literal"; return false;
+    }
+    auto* msk = reinterpret_cast<sockaddr_in*>(&rt.rt_genmask);
+    msk->sin_family = AF_INET;
+    msk->sin_addr.s_addr = 0xffffffffu;                 // /32: die Hostroute
+    auto* gw = reinterpret_cast<sockaddr_in*>(&rt.rt_gateway);
+    gw->sin_family = AF_INET;
+    rt.rt_flags = RTF_UP | RTF_HOST;
+    if (!gateway_ip.empty()) {
+        if (::inet_pton(AF_INET, gateway_ip.c_str(), &gw->sin_addr) != 1) {
+            ::close(s); err = "gateway kein IPv4-Literal"; return false;
+        }
+        rt.rt_flags |= RTF_GATEWAY;
+    }
+    std::string dev = ifname;                           // ioctl will char*
+    rt.rt_dev = dev.empty() ? nullptr : &dev[0];
+
+    int rc = ::ioctl(s, add ? SIOCADDRT : SIOCDELRT, &rt);
+    if (rc < 0 && add && errno == EEXIST) rc = 0;       // idempotent
+    if (rc < 0 && !add && errno == ESRCH) rc = 0;       // schon weg: ok
+    if (rc < 0) err = std::string(add ? "SIOCADDRT: " : "SIOCDELRT: ") + strerror(errno);
+    ::close(s);
+    return rc == 0;
+}
+
+bool LinuxIpsecBackend::add_peer_route(const std::string& peer_ip, const std::string& ifname,
+                                       const std::string& gateway_ip, std::string& err)
+{
+    return peer_route(peer_ip, ifname, gateway_ip, true, err);
+}
+
+bool LinuxIpsecBackend::del_peer_route(const std::string& peer_ip, const std::string& ifname,
+                                       const std::string& gateway_ip, std::string& err)
+{
+    return peer_route(peer_ip, ifname, gateway_ip, false, err);
 }
 
 }} // namespace machino::ipsec
