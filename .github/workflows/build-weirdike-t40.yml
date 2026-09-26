@@ -48,6 +48,14 @@ jobs:
           done
           echo "core objects: $(ls build/obj/*.o | wc -l)"
 
+      - name: "AP1: host lifecycle -- core + mbedTLS-Crypto + upstream udp_bsd"
+        # Beweist die Integrationsnaht auf dem Host: mem_req, Crypto-Adapter,
+        # udp_bsd an konkreter Source-IP, weirdike_new/free. Kein IKE-Verkehr
+        # (das ist AP2 gegen strongSwan).
+        run: |
+          sh machino/tools/fetch-mbedtls.sh "$PWD/3p" gcc ar
+          make -C weirdike-openipc test-lifecycle MBEDTLS="$PWD/3p/mbedtls-3.6.7"
+
       - name: "Fetch the toolchain (T40 musl, same one machino uses)"
         run: |
           chmod +x build.sh

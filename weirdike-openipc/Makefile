@@ -70,6 +70,16 @@ test: | $(OUT)
 	      tests/test_config.c $(SRC)/wd_config.c
 	$(OUT)/test_config
 
+# Der AP1-Lifecycle-Test braucht mbedTLS (Crypto-Adapter) und ist deshalb ein
+# eigenes Ziel: `make test` bleibt ohne jede Abhaengigkeit lauffaehig.
+test-lifecycle: | $(OUT)
+	$(CC) -std=c99 -Wall -Wextra -Wno-unused-parameter -Wno-format-truncation -g \
+	      -D_GNU_SOURCE -I$(SRC) -I$(VENDOR) $(if $(MBEDTLS),-I$(MBEDTLS)/include) \
+	      -o $(OUT)/test_lifecycle \
+	      tests/test_lifecycle.c $(CORE_SRC) \
+	      $(if $(MBEDTLS),$(MBEDTLS)/libmbedall-$(notdir $(CC)).a) -lpthread -lm
+	$(OUT)/test_lifecycle
+
 install: all
 	install -d $(DESTDIR)/usr/sbin $(DESTDIR)/etc/weirdike $(DESTDIR)/etc/init.d
 	install -m 0755 $(OUT)/weirdiked   $(DESTDIR)/usr/sbin/weirdiked

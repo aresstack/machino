@@ -6,18 +6,16 @@ include path (-Ivendor/weirdike) resolves every bare #include.
 
 Contents = upstream include/ + src/core/ + src/esp/ + src/crypto/.
 
-NOT vendored, on purpose:
-
-  src/transport/udp_bsd.*   The daemon brings its own transport. udp_bsd owns
-                            its socket and offers a blocking recv(); weirdiked
-                            needs the opposite: it polls the sockets itself
-                            together with the TUN fd and the control socket,
-                            demultiplexes UDP-4500 with natt_classify() and
-                            feeds only the IKE datagrams to
-                            weirdike_input_datagram(). Its transport vtable
-                            therefore has a send() and a recv() that always
-                            reports "nothing" -- the same split the ESP32
-                            integration uses.
+ALSO vendored (AP1, 2026-09-26): src/transport/udp_bsd.* -- upstream's POSIX
+transport, byte-identical from the pinned commit. The DAEMON still does not
+use it, on purpose: udp_bsd owns its socket and offers a blocking recv();
+weirdiked needs the opposite -- it polls the sockets itself together with
+the TUN fd and the control socket, demultiplexes UDP-4500 with
+natt_classify() and feeds only the IKE datagrams to
+weirdike_input_datagram(). Its transport vtable therefore has a send() and
+a recv() that always reports "nothing" -- the same split the ESP32
+integration uses. udp_bsd is here for the host lifecycle test and for any
+future consumer that wants the blocking upstream shape.
 
   examples/, tests/         Host-only.
 
