@@ -10,6 +10,7 @@
 #include "core/config.hpp"
 #include "core/config_store.hpp"
 #include "core/detection/detection_service.hpp"
+#include "core/detection/detector_availability.hpp"
 #include "core/events.hpp"
 #include "core/hw/resolve.hpp"
 #include "core/json.hpp"
@@ -42,6 +43,13 @@ public:
     Response state();
     Response config();
     Response telemetry();
+    // AP-NNA5: der Availability-Vertrag als API. Provider kommt aus main
+    // (die Plattform kennt die Fakten); ohne Provider antwortet die Route
+    // ehrlich mit dem, was die Capabilities hergeben (nur motion).
+    void set_detector_status_provider(
+        std::function<std::vector<detection::DetectorStatus>(const std::string&)> f)
+    { det_status_ = std::move(f); }
+    Response ai_detectors();
     // Partial update. `if_match` = expected revision ("" = none). Serialised.
     Response patch_config(const std::string& body, const std::string& if_match);
 
@@ -94,7 +102,8 @@ private:
     hw::ResolvedHardware        hw_;
     AppConfig                   cfg_;              // startup snapshot (for non-runtime keys)
     detection::DetectionService* detection_ = nullptr;   // M9: optional, null when no AI subsystem
-    IRtspControl* rtsp_ = nullptr;                       // AP2: live rtsp.enabled/rtsp.port; null = not wired
+    IRtspControl* rtsp_ = nullptr;                 // AP2: live rtsp.enabled/rtsp.port; null = not wired
+    std::function<std::vector<detection::DetectorStatus>(const std::string&)> det_status_;
     std::mutex                  patch_m_;          // PATCHes are serialised
 };
 

@@ -432,6 +432,16 @@ int main(int argc, char** argv) {
                         cfg.system.unsafe);
         IStreamServer& server = rtsp;
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection, &rtsp);
+        // AP-NNA5: der Availability-Vertrag aus der Plattform in die API --
+        // dieselbe Bewertung, die auch die Detector-Fabrik gated.
+        // static_cast, nicht dynamic_cast: das Binary baut mit -fno-rtti, und
+        // der Vendor-Check ist exakt die Bedingung, unter der make_platform
+        // den Ingenic-Typ erzeugt hat.
+        if (hwr.platform.vendor == "ingenic") {
+            auto* ing = static_cast<ingenic::IngenicPlatform*>(platform.get());
+            api.set_detector_status_provider(
+                [ing](const std::string& mp) { return ing->detector_status(mp); });
+        }
 
         // AP35/AP36: the USB host and the connectivity layer.
         //

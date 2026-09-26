@@ -65,7 +65,7 @@ Result DetectionService::start_locked() {
         LOGW(MOD, "detector '%s' start failed", cfg_.detector.c_str());
         return sr;
     }
-    { std::lock_guard<std::mutex> lk(tel_m_); completed_ = failed_ = detections_ = 0; win_start_ms_ = now_ms(); win_completed_ = 0; eff_fps_ = 0; motion_now_ = false; last_inference_ms_ = last_detection_ms_ = -1; last_dur_ms_ = -1; dur_sum_ms_ = 0; dur_n_ = 0; }
+    { std::lock_guard<std::mutex> lk(tel_m_); completed_ = failed_ = detections_ = 0; win_start_ms_ = now_ms(); win_completed_ = 0; eff_fps_ = 0; motion_now_ = false; last_inference_ms_ = last_detection_ms_ = -1; last_dur_ms_ = -1; dur_sum_ms_ = 0; dur_n_ = 0; max_dur_ms_ = -1; }
     quit_ = false;
     thread_ = std::thread([this] { run(); });
     state_ = AiState::Active;
@@ -109,6 +109,7 @@ void DetectionService::run() {
                 last_dur_ms_ = r.infer_duration_ms;
                 dur_sum_ms_ += (double)r.infer_duration_ms;
                 ++dur_n_;
+                if (r.infer_duration_ms > max_dur_ms_) max_dur_ms_ = r.infer_duration_ms;
             }
             motion_now_ = r.motion;
         }
@@ -190,6 +191,7 @@ AiTelemetry DetectionService::telemetry() const {
     t.effective_fps = eff_fps_; t.last_inference_ms = last_inference_ms_; t.last_detection_ms = last_detection_ms_;
     t.last_infer_duration_ms = last_dur_ms_;
     t.avg_infer_duration_ms = dur_n_ > 0 ? dur_sum_ms_ / (double)dur_n_ : 0.0;
+    t.max_infer_duration_ms = max_dur_ms_;
     t.motion_now = motion_now_;
     return t;
 }

@@ -848,8 +848,57 @@ void test_ap10_live_image() {
         ACHECK(e.body.get("count")->as_int() == 0);
     }
 }
+// ---- AP-NNA5: der Availability-Vertrag in der API ---------------------------
+void test_ai_detectors_route_and_person_config() {
+    Rig r;
+    // Ohne Provider: ehrlich nur, was die Capabilities tragen (motion).
+    api::Response d0 = r.api.ai_detectors();
+    ACHECK(d0.status == 200 && path(d0.body, "detectors")->size() == 1);
+    ACHECK(path(d0.body, "detectors")->at(0).get("id")->as_string() == "motion");
+
+    // Mit Provider: person erscheint MIT vollstaendiger Reason-Liste.
+    r.api.set_detector_status_provider([](const std::string& mp) {
+        std::vector<detection::DetectorStatus> v;
+        v.push_back(detection::evaluate_motion(true));
+        detection::NnaFacts f;                      // nackte Kamera
+        f.soc = "t40nn";
+        f.model_path = mp;
+        v.push_back(detection::evaluate_person(f));
+        return v;
+    });
+    api::Response d1 = r.api.ai_detectors();
+    ACHECK(d1.status == 200 && path(d1.body, "detectors")->size() == 2);
+    const Json& person = path(d1.body, "detectors")->at(1);
+    ACHECK(person.get("id")->as_string() == "person");
+    ACHECK(person.get("label")->as_string() == "Person (NNA)");
+    ACHECK(!person.get("available")->as_bool() && !person.get("selectable")->as_bool());
+    ACHECK(person.get("reasons")->size() == 4);     // nmem, device, runtime, model
+    ACHECK(person.get("reasons")->at(0).get("code")->as_string() == "NNA_BOOT_MEMORY_MISSING");
+    ACHECK(!person.get("reasons")->at(0).get("message")->as_string().empty());
+
+    // §16: person ist KONFIGURIERBAR, auch wenn unavailable -- kein stiller
+    // Rueckfall auf motion. Aktivierung endet in state=error, Video-Demand
+    // des Detectors ist freigegeben, der Rest des Daemons unberuehrt.
+    r.platform.detector_supported = false;   // die Attrappe kennt sonst jeden Namen
+    api::Response p1 = r.api.patch_config("{\"ai\":{\"detector\":\"person\",\"enabled\":true}}", "");
+    ACHECK(p1.status == 200);
+    // ... und die Wahl IST persistiert (Phase 3 schreibt nur ok-Keys --
+    // genau deshalb ist unavailable hier 'stored', keine Ablehnung).
+    ACHECK(r.store.get("ai.detector") == "person");
+    ACHECK(r.detection.state() == detection::AiState::Error);
+    api::Response t = r.api.telemetry();
+    ACHECK(path(t.body, "ai.state")->as_string() == "error");
+    ACHECK(path(t.body, "ai.detector")->as_string() == "person");
+    // §6: maschinenlesbarer Fehlercode aus dem Availability-Vertrag.
+    ACHECK(path(t.body, "ai.error.code")->as_string() == "NNA_BOOT_MEMORY_MISSING");
+    // Unbekannte Detectoren bleiben abgelehnt.
+    api::Response p2 = r.api.patch_config("{\"ai\":{\"detector\":\"unicorn\"}}", "");
+    ACHECK(p2.status == 422);
+}
+
 void run_api_tests() {
     test_get_documents();
+    test_ai_detectors_route_and_person_config();
     test_patch_cold_and_partial();
     test_patch_errors();
     test_patch_active_live_and_restart();

@@ -198,6 +198,50 @@ Json ApiService::capabilities_json() const {
 }
 Response ApiService::capabilities() const { return Response{200, capabilities_json()}; }
 
+// Der Availability-Vertrag als eigene Route: id/label/available/selectable
+// plus die VOLLSTAENDIGE Reason-Liste (Codes stabil, Details fuer Menschen).
+// Ohne Provider (Hosttests ohne Plattform, fremde Ports) ehrlich nur das,
+// was die Capabilities tragen.
+Response ApiService::ai_detectors()
+{
+    Json arr = Json::array();
+    std::vector<detection::DetectorStatus> list;
+    // LIVE-Werte aus dem Store, nicht der Startup-Schnappschuss: ai.model_path
+    // und ai.detector sind zur Laufzeit patchbar.
+    std::string model_path = store_.get("ai.model_path");
+    if (model_path.empty()) model_path = cfg_.ai.model_path;
+    std::string selected = store_.get("ai.detector");
+    if (selected.empty()) selected = cfg_.ai.detector;
+    if (det_status_) {
+        list = det_status_(model_path);
+    } else {
+        list.push_back(detection::evaluate_motion(perf_.capabilities().ai.motion == Cap::Supported));
+    }
+    for (const auto& d : list) {
+        Json o = Json::object();
+        o.set("id", Json::string(d.id));
+        o.set("label", Json::string(d.label));
+        o.set("available", Json::boolean(d.available));
+        o.set("selectable", Json::boolean(d.selectable));
+        if (!d.reason_codes.empty()) {
+            Json rs = Json::array();
+            for (size_t i = 0; i < d.reason_codes.size(); ++i) {
+                Json r = Json::object();
+                r.set("code", Json::string(d.reason_codes[i]));
+                r.set("message", Json::string(i < d.reason_details.size() ? d.reason_details[i]
+                                                                          : std::string()));
+                rs.push(r);
+            }
+            o.set("reasons", rs);
+        }
+        arr.push(o);
+    }
+    Json j = Json::object();
+    j.set("detectors", arr);
+    j.set("selected", Json::string(selected));
+    return Response{200, j};
+}
+
 Result ApiService::snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms) {
     return pipeline_.snapshot(out, err, timeout_ms);
 }
@@ -476,11 +520,29 @@ Json ApiService::telemetry_json() {
         a.set("avg_infer_duration_ms", ai.avg_infer_duration_ms > 0.0
                                            ? Json::number(ai.avg_infer_duration_ms)
                                            : Json::null());
+        a.set("max_infer_duration_ms", ai.max_infer_duration_ms >= 0
+                                           ? Json::integer(ai.max_infer_duration_ms)
+                                           : Json::null());
         a.set("detections_total", Json::integer((long long)ai.detections_total));
-        a.set("skipped", Json::integer((long long)ai.skipped));
         a.set("motion", Json::boolean(ai.motion_now));
         a.set("last_inference_ms", ai.last_inference_ms >= 0 ? Json::integer(ai.last_inference_ms) : Json::null());
         a.set("last_detection_ms", ai.last_detection_ms >= 0 ? Json::integer(ai.last_detection_ms) : Json::null());
+        // AP-NNA5 §6: der Fehlerzustand maschinenlesbar. Im Error-Fall traegt
+        // ai.error den ERSTEN Reason-Code des gewaehlten Detectors aus dem
+        // Availability-Vertrag -- die API-Seite muss keine Logtexte parsen.
+        if (ai.state == detection::AiState::Error && det_status_) {
+            std::string mp = store_.get("ai.model_path");
+            if (mp.empty()) mp = cfg_.ai.model_path;
+            for (const auto& d : det_status_(mp)) {
+                if (d.id != ai.detector || d.reason_codes.empty()) continue;
+                Json e = Json::object();
+                e.set("code", Json::string(d.reason_codes.front()));
+                e.set("message", Json::string(d.reason_details.empty() ? std::string()
+                                                                       : d.reason_details.front()));
+                a.set("error", e);
+                break;
+            }
+        }
         j.set("ai", a);
     }
     return j;
@@ -805,7 +867,12 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     c.key = "ai.enabled"; c.value = val.as_bool() ? "true" : "false";
                 } else if (kv.first == "detector") {
                     if (!val.is_string()) return bad(422, "invalid_value", path, "detector must be a string");
-                    if (val.as_string() != "motion") return bad(422, "invalid_value", path, "unknown detector (motion)");
+                    // person ist KONFIGURIERBAR, auch wenn es gerade unavailable
+                    // ist (AP-NNA5 §16): die Wahl faellt nicht still auf motion
+                    // zurueck; die Aktivierung endet dann sauber in state=error,
+                    // das Video laeuft weiter. Unbekannte Namen bleiben 422.
+                    if (val.as_string() != "motion" && val.as_string() != "person")
+                        return bad(422, "invalid_value", path, "unknown detector (motion|person)");
                     c.key = "ai.detector"; c.value = val.as_string();
                 } else if (kv.first == "inference_fps") {
                     long long n; if (!get_int(val, n) || n < 1 || n > 60) return bad(422, "invalid_value", path, "inference_fps must be an integer in 1..60");
@@ -836,9 +903,18 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
     // ApplyResult the rest of the pipeline speaks. Live-applied.
     auto ai_apply = [&](Result r, int eff) -> ApplyResult {
         if (r) return ApplyResult::applied(ApplyMode::Live, eff, eff);
+        // AP-NNA5 §16: ein Backend, das JETZT nicht verfuegbar ist, lehnt
+        // nicht die KONFIGURATION ab. Die Wahl wird gespeichert (Phase 3
+        // persistiert nur ok-Keys!), der Dienst steht ehrlich auf
+        // state=error, das Video laeuft -- und nichts faellt still auf
+        // motion zurueck. Der Fehlergrund steht maschinenlesbar in
+        // telemetry.ai.error (Availability-Vertrag).
         std::string msg = detection_ ? detection_->telemetry().last_error : std::string("detector error");
-        ApplyMode m = (r.status == Status::Unsupported) ? ApplyMode::Unsupported : ApplyMode::Live;
-        return ApplyResult::rejected(m, eff, msg.empty() ? "detector could not be applied" : msg);
+        return ApplyResult::stored(ApplyMode::Live, eff,
+                                   (msg.empty() ? std::string("detector could not be applied")
+                                                : msg)
+                                       .append(" - gespeichert; ai.state=error, Video unberuehrt")
+                                       .c_str());
     };
     for (auto& c : changes) {
         long long n = 0; if (c.requested.is_number()) n = c.requested.as_int();

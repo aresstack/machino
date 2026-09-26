@@ -3,6 +3,7 @@
 // "ready" gates inference, one frame line yields one parsed result, a dead or
 // silent helper degrades to timeouts/errors and a respawn after backoff --
 // and none of it ever blocks start() on a model load.
+#include "core/detection/detector_availability.hpp"
 #include "core/detection/nna_detector.hpp"
 #include "core/detection/nna_manifest.hpp"
 
@@ -306,9 +307,63 @@ void test_model_manifest_gate() {
     NCHECK(!c.ok && c.reason_code == "AI_MODEL_INCOMPATIBLE_SOC");
 }
 
+// ---- AP-NNA5: die Availability-Matrix (eine Bewertung, deterministisch) ----
+void test_availability_matrix() {
+    auto all = []() {
+        NnaFacts f;
+        f.soc = "t40nn";
+        f.cmdline_has_nmem = true;
+        f.device_node = true;
+        f.helper_exec = true;
+        f.model_path = "/etc/machino/models/m.bin";
+        f.model_readable = true;
+        return f;
+    };
+    // Alles da -> verfuegbar, KEINE Gruende.
+    DetectorStatus s = evaluate_person(all());
+    NCHECK(s.available && s.selectable && s.reason_codes.empty());
+
+    // Jedes fehlende Glied benennt seinen Code.
+    { NnaFacts f = all(); f.cmdline_has_nmem = false; s = evaluate_person(f);
+      NCHECK(!s.available && s.reason_codes.size() == 1 && s.reason_codes[0] == "NNA_BOOT_MEMORY_MISSING"); }
+    { NnaFacts f = all(); f.device_node = false; s = evaluate_person(f);
+      NCHECK(!s.available && s.reason_codes[0] == "NNA_DEVICE_MISSING"); }
+    { NnaFacts f = all(); f.helper_exec = false; s = evaluate_person(f);
+      NCHECK(!s.available && s.reason_codes[0] == "NNA_RUNTIME_MISSING"); }
+    { NnaFacts f = all(); f.model_readable = false; s = evaluate_person(f);
+      NCHECK(!s.available && s.reason_codes[0] == "AI_MODEL_MISSING"); }
+    { NnaFacts f = all(); f.soc = "t31"; s = evaluate_person(f);
+      NCHECK(!s.available && s.reason_codes[0] == "NNA_PLATFORM_UNSUPPORTED"); }
+
+    // Mehrere Fehler: VOLLSTAENDIGE Liste in Abhaengigkeitsreihenfolge.
+    { NnaFacts f; f.soc = "t40nn"; f.model_path = "x.bin"; s = evaluate_person(f);
+      NCHECK(s.reason_codes.size() == 4);
+      NCHECK(s.reason_codes[0] == "NNA_BOOT_MEMORY_MISSING");
+      NCHECK(s.reason_codes[1] == "NNA_DEVICE_MISSING");
+      NCHECK(s.reason_codes[2] == "NNA_RUNTIME_MISSING");
+      NCHECK(s.reason_codes[3] == "AI_MODEL_MISSING");
+      NCHECK(s.reason_details.size() == s.reason_codes.size()); }
+
+    // Manifest: fehlend = KEIN Grund (Entwicklungsmodus); vorhanden und
+    // unpassend = dessen Code.
+    { NnaFacts f = all(); f.manifest_present = true;
+      f.manifest_json = "{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna2\"}";
+      s = evaluate_person(f);
+      NCHECK(!s.available && s.reason_codes[0] == "AI_MODEL_INCOMPATIBLE_NNA"); }
+    { NnaFacts f = all(); f.manifest_present = true;
+      f.manifest_json = "{\"schemaVersion\":1,\"backend\":\"venus-nna\",\"nnaGeneration\":\"nna1\",\"modelFile\":\"m.bin\"}";
+      s = evaluate_person(f);
+      NCHECK(s.available); }
+
+    // motion auf getragener Plattform: schlicht verfuegbar.
+    s = evaluate_motion(true);
+    NCHECK(s.available && s.id == "motion");
+}
+
 } // namespace
 
 void run_nna_detector_tests() {
+    test_availability_matrix();
     test_spawn_ready_and_one_detection();
     test_pacing_holds_the_inference_rate();
     test_dead_helper_respawns_after_backoff_video_never_involved();

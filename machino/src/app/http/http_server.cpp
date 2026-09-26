@@ -492,6 +492,7 @@ bool HttpServer::handle_request(Client& c) {
     else if (path == "/api/v1/capabilities") { r = (m == "GET") ? api_.capabilities() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/state")        { r = (m == "GET") ? api_.state() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/telemetry")    { r = (m == "GET") ? api_.telemetry() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+    else if (path == "/api/v1/ai/detectors") { r = (m == "GET") ? api_.ai_detectors() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/config.schema.json") {
         r = (m == "GET") ? api::Response{200, compat::majestic_schema(api_.capabilities().body)}
                          : api::ApiService::fail(405, "unknown_field", path, "method not allowed");

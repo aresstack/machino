@@ -126,6 +126,40 @@ std::unique_ptr<IJpegEncoder> IngenicPlatform::create_jpeg(int chn, const JpegPa
 
 namespace {
 
+// Die FAKTEN fuer den Availability-Vertrag: hier passiert das I/O, die
+// Bewertung (evaluate_person) ist eine reine Core-Funktion. Fabrik und
+// detector_status() nutzen BEIDE genau diesen Sammler -- eine Wahrheit.
+detection::NnaFacts gather_nna_facts(const std::string& soc, const std::string& model_path)
+{
+    detection::NnaFacts f;
+    f.soc = soc;
+    if (FILE* c = ::fopen("/proc/cmdline", "rb")) {
+        char buf[1024] = {0};
+        const size_t n = ::fread(buf, 1, sizeof buf - 1, c);
+        ::fclose(c);
+        buf[n] = 0;
+        f.cmdline_has_nmem = ::strstr(buf, "nmem=") != nullptr;
+    }
+    f.device_node = ::access("/dev/soc-nna", F_OK) == 0;
+    f.helper_exec = ::access(kNnaHelperPath, X_OK) == 0;
+    f.model_path = model_path;
+    f.model_readable = !model_path.empty() && ::access(model_path.c_str(), R_OK) == 0;
+    if (f.model_readable) {
+        const size_t slash = model_path.find_last_of('/');
+        const std::string dir =
+            slash == std::string::npos ? std::string(".") : model_path.substr(0, slash);
+        if (FILE* mf = ::fopen((dir + "/manifest.json").c_str(), "rb")) {
+            char buf[512];
+            size_t n;
+            while ((n = ::fread(buf, 1, sizeof buf, mf)) > 0 && f.manifest_json.size() < 65536)
+                f.manifest_json.append(buf, n);
+            ::fclose(mf);
+            f.manifest_present = true;
+        }
+    }
+    return f;
+}
+
 // NnaDetector nimmt seine Ports als Referenzen (die Hosttests halten die
 // Attrappen auf dem Stack); hier draussen muss jemand Prozess und Quelle
 // BESITZEN, solange der Detector lebt. Genau das tut dieser Umschlag --
@@ -164,49 +198,19 @@ std::unique_ptr<IDetector> IngenicPlatform::create_detector(int chn, const Detec
         // ohne Warum war beim WLAN der Zeitfresser. Der Geraeteknoten zuerst --
         // ohne nmem-Bootarg und soc-nna.ko gibt es ihn nicht, und ein Helfer,
         // der dann im Backoff gegen ENODEV anrennt, waere nur Laerm.
-        // Stabile Reason-Codes (AP-NNA4 §20): "unavailable" ohne Warum war der
-        // verbotene Zustand. Die KI-Seite und der Log sprechen dieselben Codes.
-        if (::access("/dev/soc-nna", F_OK) != 0) {
-            LOGW(MOD, "person: NNA_DEVICE_MISSING - /dev/soc-nna fehlt (nmem-Bootarg gesetzt und soc-nna.ko geladen? Cam-Tool: NNA-Dialog)");
+        // DIE EINE Bewertung (AP-NNA5): dieselbe Fakten+Regel-Kette, die auch
+        // die API meldet. Abgelehnt wird mit ALLEN Codes im Log, der erste
+        // ist die Ueberschrift.
+        const detection::NnaFacts facts = gather_nna_facts(hw_.platform.model, p.model_path);
+        const detection::DetectorStatus st = detection::evaluate_person(facts);
+        if (!st.available) {
+            for (size_t i = 0; i < st.reason_codes.size(); ++i)
+                LOGW(MOD, "person: %s - %s", st.reason_codes[i].c_str(),
+                     st.reason_details[i].c_str());
             return nullptr;
         }
-        if (::access(kNnaHelperPath, X_OK) != 0) {
-            LOGW(MOD, "person: NNA_RUNTIME_MISSING - %s fehlt (NNA-Payload nicht installiert)", kNnaHelperPath);
-            return nullptr;
-        }
-        if (p.model_path.empty() || ::access(p.model_path.c_str(), R_OK) != 0) {
-            LOGW(MOD, "person: AI_MODEL_MISSING - Modell '%s' nicht lesbar (ai.model_path pruefen, Seite AI)",
-                 p.model_path.c_str());
-            return nullptr;
-        }
-        // Manifest-Gate: liegt neben dem Modell ein manifest.json, MUSS es zu
-        // Backend/NNA-Generation/SoC/Dateiname passen. Fehlt es, bleibt die
-        // nackte .bin nutzbar (Entwicklungsmodus) -- gesagt wird es.
-        {
-            const size_t slash = p.model_path.find_last_of('/');
-            const std::string dir =
-                slash == std::string::npos ? std::string(".") : p.model_path.substr(0, slash);
-            const std::string base =
-                slash == std::string::npos ? p.model_path : p.model_path.substr(slash + 1);
-            const std::string mpath = dir + "/manifest.json";
-            if (FILE* mf = ::fopen(mpath.c_str(), "rb")) {
-                std::string text;
-                char buf[512];
-                size_t n;
-                while ((n = ::fread(buf, 1, sizeof buf, mf)) > 0 && text.size() < 65536)
-                    text.append(buf, n);
-                ::fclose(mf);
-                const detection::NnaManifestCheck chk =
-                    detection::nna_manifest_check(text, base, hw_.platform.model);
-                if (!chk.ok) {
-                    LOGW(MOD, "person: %s - %s (%s)", chk.reason_code.c_str(),
-                         chk.detail.c_str(), mpath.c_str());
-                    return nullptr;
-                }
-            } else {
-                LOGI(MOD, "person: kein manifest.json neben dem Modell - Entwicklungsmodus, keine Kompatibilitaetspruefung");
-            }
-        }
+        if (!facts.manifest_present)
+            LOGI(MOD, "person: kein manifest.json neben dem Modell - Entwicklungsmodus, keine Kompatibilitaetspruefung");
         // Analysegeometrie wie beim Motion-Backend: ~640 breit, Seitenverhaeltnis
         // vom Sensor; das Letterboxing auf die Modellgeometrie macht der Helfer.
         int aw = p.source_width  > 0 ? p.source_width  : 640;
@@ -227,6 +231,15 @@ std::unique_ptr<IDetector> IngenicPlatform::create_detector(int chn, const Detec
 
     LOGW(MOD, "detector backend '%s' not implemented on this platform", p.detector.c_str());
     return nullptr;
+}
+
+std::vector<detection::DetectorStatus>
+IngenicPlatform::detector_status(const std::string& model_path) const
+{
+    std::vector<detection::DetectorStatus> out;
+    out.push_back(detection::evaluate_motion(true));   // IMP-IVS: hardwareverifiziert
+    out.push_back(detection::evaluate_person(gather_nna_facts(hw_.platform.model, model_path)));
+    return out;
 }
 
 Result IngenicPlatform::bind(IFrameSource& fs, IEncoder& enc) {

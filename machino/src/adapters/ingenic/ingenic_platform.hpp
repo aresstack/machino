@@ -9,6 +9,7 @@
 #include "adapters/ingenic/ingenic_image_control.hpp"
 #include "adapters/ingenic/ingenic_power_control.hpp"
 #include "adapters/ingenic/sensor_params.hpp"
+#include "core/detection/detector_availability.hpp"
 #include "ports/iplatform.hpp"
 #include <map>
 #include <memory>
@@ -29,6 +30,9 @@ public:
     std::unique_ptr<IEncoder>     create_encoder(int chn, const EffectiveStream& sc) override;
     std::unique_ptr<IJpegEncoder> create_jpeg(int chn, const JpegParams& p) override;
     std::unique_ptr<IDetector>    create_detector(int chn, const DetectorParams& p) override;
+    // Der Availability-Vertrag (AP-NNA5): dieselbe Bewertung, die auch die
+    // Fabrik gated -- fuer die API/UI, mit vollstaendigen Reason-Codes.
+    std::vector<detection::DetectorStatus> detector_status(const std::string& model_path) const;
     Result bind(IFrameSource& fs, IEncoder& enc) override;
     Result unbind(IFrameSource& fs, IEncoder& enc) override;
     int64_t timestamp_us() override;
