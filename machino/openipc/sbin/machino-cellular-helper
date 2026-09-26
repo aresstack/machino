@@ -70,6 +70,11 @@ write_state() {
 		[ -n "$4" ] && echo "gateway=$4"
 		[ -n "$5" ] && echo "dns1=$5"
 		[ -n "$6" ] && echo "dns2=$6"
+		# MUSS die letzte Anweisung sein: sonst traegt die Gruppe den
+		# Exit-Status des letzten bedingten echo. Fehlt dns2 (haeufig), gaebe
+		# "[ -n "" ]" eine 1, "&& mv" entfiele, "|| rm -f" loeschte die fertige
+		# Datei -- derselbe Fehler wie im DHCPSCRIPT (Hardware 2026-09-26).
+		:
 	} > "$tmp" && mv -f "$tmp" "$STATE" || rm -f "$tmp"
 }
 
@@ -160,6 +165,7 @@ write_ppp_status() {
 		echo "running=$1"
 		[ -n "${2:-}" ] && echo "exit=$2"
 		[ -n "${3:-}" ] && echo "detail=$3"
+		:  # Gruppen-Exit-Status stabil halten (siehe write_state)
 	} > "$tmp" 2>/dev/null && mv -f "$tmp" "$PPP_STATUS" 2>/dev/null || rm -f "$tmp"
 }
 

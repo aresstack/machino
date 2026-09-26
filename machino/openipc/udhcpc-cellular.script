@@ -45,6 +45,14 @@ write_state() {
 		[ -n "${1:-}" ] && echo "dns1=$1"
 		[ -n "${2:-}" ] && echo "dns2=$2"
 		[ -n "$mtu" ]    && echo "mtu=$mtu"
+		# ':' MUSS die letzte Anweisung der Gruppe sein. Sonst ist der
+		# Exit-Status der Gruppe der des letzten bedingten echo -- und bei
+		# leerem $mtu (busybox-udhcpc liefert es meist nicht) ist das die 1 von
+		# "[ -n "" ]". Dann greift nicht "&& mv", sondern "|| rm -f": die frisch
+		# und vollstaendig geschriebene Datei wird sofort wieder geloescht, und
+		# machino sieht NIE eine Adresse mit Gateway/DNS. Genau das war der
+		# Teardown-Churn und das leere resolv.conf (Hardware gemessen 2026-09-26).
+		:
 	} > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp"
 	# KEIN chmod: der Helfer laeuft mit umask 077 und schreibt dieselbe Datei
 	# mit 0600. Zwei Schreiber mit verschiedenen Rechten waeren ein Zustand,

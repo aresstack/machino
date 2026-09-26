@@ -30,6 +30,8 @@ tmp="$STATE.new"
 	[ -n "$5" ] && echo "gateway=$5"
 	[ -n "${DNS1:-}" ] && echo "dns1=$DNS1"
 	[ -n "${DNS2:-}" ] && echo "dns2=$DNS2"
+	:  # letzte Anweisung: sonst kippt ein leeres dns2 den Gruppen-Exit-Status
+	   # auf 1, "&& mv" entfaellt, "|| rm -f" loescht die Datei (Bug 2026-09-26)
 } > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATE" 2>/dev/null || rm -f "$tmp"
 
 # KEIN Eintrag in /etc/resolv.conf und KEINE Default-Route.
