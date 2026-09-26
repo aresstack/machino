@@ -359,6 +359,10 @@ $("cellpreset").onchange = () => {
   $("cellapn").value = p.apn || "";
   if (p.pdpType)  $("cellpdp").value = p.pdpType;
   if (p.authMode) $("cellauth").value = p.authMode;
+  $("celluser").value = p.username || "";
+  // Passwort nur setzen, wenn das Preset eins mitbringt (Telekom: tm); sonst
+  // das Feld leer lassen -- leer heisst beim Speichern "unveraendert".
+  $("cellpw").value = p.password || "";
 };
 
 $("cellsave").onclick = async () => {

@@ -92,6 +92,8 @@ struct ApnPreset {
     const char* apn;
     PdpType     pdp;
     AuthMode    auth;
+    const char* user;   // leer, ausser der Anbieter verlangt Zugangsdaten (Telekom: t-mobile)
+    const char* pass;   // dito (Telekom: tm) -- oeffentlich bekannt, kein Geheimnis
     const char* note;
 };
 

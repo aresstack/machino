@@ -558,19 +558,36 @@ void test_config_values_round_trip_by_name()
 void test_presets_are_suggestions_with_the_reason_attached()
 {
     const auto& ps = apn_presets();
-    TCHECK(ps.size() >= 2);
-    bool telekom = false, o2 = false;
+    TCHECK(ps.size() >= 5);   // volle WeirdOS-Liste: o2, o2-public, Telekom, Telekom-public, Vodafone
+    bool telekomPub = false, o2Pub = false, o2Std = false, telekomStd = false, vodafone = false;
     for (const ApnPreset& p : ps) {
         if (std::string(p.apn) == "internet.t-d1.de") {
-            telekom = true;
+            telekomPub = true;
             // PDP IP, nicht IPV4V6 -- das ist der Punkt an dieser Konfiguration.
             TCHECK(p.pdp == PdpType::Ipv4);
             TCHECK(p.auth == AuthMode::None);
             TCHECK(std::string(p.note).find("CGNAT") != std::string::npos);
         }
-        if (std::string(p.apn) == "netpublic") o2 = true;
+        if (std::string(p.apn) == "netpublic") o2Pub = true;
+        if (std::string(p.apn) == "internet") {
+            o2Std = true;
+            TCHECK(p.pdp == PdpType::Ipv4v6);
+        }
+        if (std::string(p.apn) == "internet.telekom") {
+            telekomStd = true;
+            // Der einzige Grund, warum das Preset user/pass tragen MUSS: Telekom
+            // Standard verlangt PAP mit t-mobile/tm.
+            TCHECK(p.auth == AuthMode::Pap);
+            TCHECK(std::string(p.user) == "t-mobile");
+            TCHECK(std::string(p.pass) == "tm");
+        }
+        if (std::string(p.apn) == "web.vodafone.de") vodafone = true;
     }
-    TCHECK(telekom && o2);
+    TCHECK(telekomPub && o2Pub && o2Std && telekomStd && vodafone);
+    // Die Public-IPv4-Profile tragen KEINE Zugangsdaten.
+    for (const ApnPreset& p : ps)
+        if (std::string(p.apn) == "netpublic" || std::string(p.apn) == "internet.t-d1.de")
+            TCHECK(std::string(p.user).empty() && std::string(p.pass).empty());
 
     // Nichts davon ist Default: machino weiss nicht, welche SIM steckt.
     const CellularConfig fresh;

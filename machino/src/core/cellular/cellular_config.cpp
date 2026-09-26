@@ -34,15 +34,35 @@ bool auth_mode_parse(const std::string& s, AuthMode& out)
 
 const std::vector<ApnPreset>& apn_presets()
 {
+    // Die vollstaendige Liste aus dem WeirdOS-ESP32-WebUI
+    // (quectel-ec200a-eu/esp32-modem-host, web_ui_assets.cpp): die Standard-
+    // APNs UND die beiden auf oeffentliche IPv4 getesteten Sonderprofile. Der
+    // ESP-Dropdown liess telekompublic versehentlich weg -- hier ist es dabei.
+    // Vorschlaege, keine Automatik: welcher Anbieter steckt, weiss machino nicht.
     static const std::vector<ApnPreset> kPresets = {
-        { "telekom-public", "Telekom (öffentliche IPv4)", "internet.t-d1.de",
-          PdpType::Ipv4, AuthMode::None,
-          "Die Standard-APNs der Telekom geben nur eine CGNAT-Adresse (10.x/100.64.x). "
-          "Dieser APN liefert eine öffentliche IPv4; PDP muss IP sein, nicht IPV4V6." },
+        { "o2", "o2 / Telefónica", "internet",
+          PdpType::Ipv4v6, AuthMode::None, "", "",
+          "o2/Telefónica Standard (Vertrag & Prepaid): APN internet, keine "
+          "Zugangsdaten. Meist CGNAT (private 10.x) -- fuer Erreichbarkeit von "
+          "aussen \"o2 (öffentliche IPv4)\" nehmen." },
         { "o2-netpublic", "o2 (öffentliche IPv4)", "netpublic",
-          PdpType::Ipv4, AuthMode::None,
-          "Der APN \"internet\" gibt bei o2 nur 10.x. netpublic liefert eine "
-          "öffentliche IPv4." },
+          PdpType::Ipv4, AuthMode::None, "", "",
+          "o2 netpublic = oeffentliche dynamische IPv4. PDP muss IP sein "
+          "(IPv4-only); mit IPV4V6 scheitert die Einwahl auf manchen SIMs." },
+        { "telekom", "Telekom", "internet.telekom",
+          PdpType::Ipv4v6, AuthMode::Pap, "t-mobile", "tm",
+          "Telekom Standard: APN internet.telekom, Benutzer t-mobile / Passwort "
+          "tm (PAP). Liefert meist nur CGNAT -- fuer Erreichbarkeit "
+          "\"Telekom (öffentliche IPv4)\" nehmen." },
+        { "telekom-public", "Telekom (öffentliche IPv4)", "internet.t-d1.de",
+          PdpType::Ipv4, AuthMode::None, "", "",
+          "internet.telekom gibt nur eine CGNAT-Adresse (10.x/100.64.x); dieser "
+          "APN liefert eine oeffentliche dynamische IPv4 (Pendant zu o2 "
+          "netpublic). PDP muss IP sein, nicht IPV4V6. Genau das fuer Kamera/VPN "
+          "nehmen, NICHT internet.telekom." },
+        { "vodafone", "Vodafone", "web.vodafone.de",
+          PdpType::Ipv4v6, AuthMode::None, "", "",
+          "Vodafone: APN web.vodafone.de, keine Zugangsdaten." },
     };
     return kPresets;
 }

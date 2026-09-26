@@ -684,6 +684,11 @@ void test_presets_reach_the_api_with_their_reason()
     TCHECK(txt.find("internet.t-d1.de") != std::string::npos);
     TCHECK(txt.find("netpublic") != std::string::npos);
     TCHECK(txt.find("CGNAT") != std::string::npos);
+    // Die volle Liste, und die Telekom-PAP-Zugangsdaten erreichen die API.
+    TCHECK(txt.find("internet.telekom") != std::string::npos);
+    TCHECK(txt.find("web.vodafone.de") != std::string::npos);
+    TCHECK(txt.find("\"username\"") != std::string::npos && txt.find("t-mobile") != std::string::npos);
+    TCHECK(txt.find("\"password\"") != std::string::npos);
 }
 } // namespace
 

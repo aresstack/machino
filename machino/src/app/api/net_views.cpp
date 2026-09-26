@@ -828,6 +828,8 @@ Json cellular_presets_json()
         o.set("apn", Json::string(p.apn));
         o.set("pdpType", Json::string(cellular::pdp_type_name(p.pdp)));
         o.set("authMode", Json::string(cellular::auth_mode_name(p.auth)));
+        o.set("username", Json::string(p.user));
+        o.set("password", Json::string(p.pass));
         o.set("note", Json::string(p.note));
         a.push(o);
     }
