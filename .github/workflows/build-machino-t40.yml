@@ -26,7 +26,17 @@ jobs:
       - name: "Fetch and build mbedTLS (pinned; WebRTC DTLS handshake)"
         run: sh machino/tools/fetch-mbedtls.sh "$PWD/3p" gcc ar
       - name: "Host unit tests (board profiles, precedence, capabilities, Ingenic conversion)"
-        run: make -C machino test MBEDTLS="$PWD/3p/mbedtls-3.6.7"
+        run: |
+          set -o pipefail
+          make -C machino test MBEDTLS="$PWD/3p/mbedtls-3.6.7" 2>&1 | tee /tmp/host-test.log
+      # Auch dieser Log als Artefakt: der Step fiel am 2026-09-26 rot, und ohne
+      # Token sind Job-Logs unlesbar -- Artefakte via nightly.link schon.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: machino-host-test-log
+          path: /tmp/host-test.log
+          if-no-files-found: ignore
       - name: "The make-free host runner must stay equivalent to `make test`"
         run: |
           # tools/host-test.sh exists for environments with a compiler but no

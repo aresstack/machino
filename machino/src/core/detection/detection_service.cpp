@@ -1,6 +1,7 @@
 #include "core/detection/detection_service.hpp"
 #include "core/json.hpp"
 #include "core/log.hpp"
+#include <cmath>
 #include <ctime>
 
 namespace machino { namespace detection {
@@ -127,11 +128,15 @@ void DetectionService::run() {
                 // sie echt ist -- Motion liefert Ganzbild ({}), und eine
                 // erfundene 0/0/0/0-Box waere eine Aussage.
                 if (d.box.w > 0.f && d.box.h > 0.f) {
+                    // Auf 4 Nachkommastellen gerundet: float->double macht aus
+                    // 0.31f sonst 0.31000000238..., und das Ereignis ist ein
+                    // Draht zu fremden Abonnenten, kein Debug-Dump.
+                    auto r4 = [](float v) { return std::round((double)v * 10000.0) / 10000.0; };
                     Json b = Json::object();
-                    b.set("x", Json::number(d.box.x));
-                    b.set("y", Json::number(d.box.y));
-                    b.set("w", Json::number(d.box.w));
-                    b.set("h", Json::number(d.box.h));
+                    b.set("x", Json::number(r4(d.box.x)));
+                    b.set("y", Json::number(r4(d.box.y)));
+                    b.set("w", Json::number(r4(d.box.w)));
+                    b.set("h", Json::number(r4(d.box.h)));
                     o.set("box", b);
                 }
                 arr.push(o);

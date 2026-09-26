@@ -236,6 +236,29 @@ void test_malformed_lines_never_crash() {
     NCHECK(dd.label == "whole frame label");
 }
 
+void test_start_stop_start_cycles_cleanly() {
+    Rig r;
+    NnaDetector d = r.make();
+    DetectionResult out;
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        NCHECK(d.start());
+        r.proc.lines.push_back("ready\n");
+        d.poll(out, 10);                                  // ready konsumieren
+        r.clock += 1000;
+        r.proc.lines.push_back("result 1 0\n");
+        NCHECK(d.poll(out, 10));
+        NCHECK(d.stop());
+        NCHECK(!r.proc.is_alive);
+        NCHECK(d.poll(out, 10).status == Status::Busy);   // gestoppt = busy, kein Crash
+        r.clock += 6000;                                  // Backoff des naechsten start()
+    }
+    NCHECK(r.src.started == 3 && r.src.stopped == 3);
+    NCHECK(r.proc.spawns == 3);
+    // Der 1000-ms-Sprung JEDES Zyklus sind 5 verpasste Perioden. Genau 5 (und
+    // nicht 15) beweist beides: gezaehlt wird, und start() setzt zurueck.
+    NCHECK(d.skipped() == 5);
+}
+
 void test_missing_helper_is_not_installed_not_a_crash() {
     Rig r;
     r.proc.spawn_ok = false;
@@ -260,5 +283,6 @@ void run_nna_detector_tests() {
     test_dead_helper_respawns_after_backoff_video_never_involved();
     test_load_error_and_ready_timeout_fail_closed();
     test_malformed_lines_never_crash();
+    test_start_stop_start_cycles_cleanly();
     test_missing_helper_is_not_installed_not_a_crash();
 }

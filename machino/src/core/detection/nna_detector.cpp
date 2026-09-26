@@ -49,6 +49,7 @@ Result NnaDetector::start() {
     if (!sr) return sr;
     running_ = true;
     next_due_ms_ = now_();
+    skipped_.store(0, std::memory_order_relaxed);   // Vertrag: monoton SEIT start()
     // Spawning is cheap; WAITING for "ready" is not (a model load is seconds).
     // start() returns immediately and poll() advances the loading -- the
     // service's start path stays fast and the video pipeline untouched.
@@ -115,6 +116,10 @@ Result NnaDetector::infer_one(detection::DetectionResult& out) {
     Result gr = src_.get(f, 200);
     if (gr.status == Status::Timeout) return Result::timeout();
     if (!gr) return gr;
+    // Dauer ab HIER: get() blockiert bis zum naechsten Bild (auf Hardware bis
+    // zu einer Analyse-Periode) -- eine Messung, die das Warten mitzaehlt,
+    // saehe wie eine langsame NNA aus und waere keine (AP3-Review).
+    const int64_t t0 = now_();
 
     const bool sent = write_frame_file(f) &&
         proc_.write_line("frame " + std::to_string(f.pts_us) + " " +
@@ -153,6 +158,7 @@ Result NnaDetector::infer_one(detection::DetectionResult& out) {
         if (parse_det_line(line, d)) out.detections.push_back(d);
         // A malformed det line is skipped, not fatal: the count kept us in sync.
     }
+    out.infer_duration_ms = now_() - t0;
     return Result::ok();
 }
 
@@ -178,14 +184,12 @@ Result NnaDetector::poll(detection::DetectionResult& out, int timeout_ms) {
         // Hinter dem Takt: die verpassten Perioden sind Frames, die die Quelle
         // produziert hat und die BEWUSST nicht mehr analysiert werden --
         // newest wins, kein Aufholen im Burst. Genau das ist "skipped".
-        skipped_ += (unsigned)((t - next_due_ms_) / period + 1);
+        skipped_.fetch_add((unsigned)((t - next_due_ms_) / period + 1),
+                           std::memory_order_relaxed);
         next_due_ms_ = t + period;
     }
 
-    const int64_t t0 = now_();
-    Result r = infer_one(out);
-    if (r) out.infer_duration_ms = now_() - t0;
-    return r;
+    return infer_one(out);
 }
 
 bool parse_det_line(const std::string& line, Detection& out) {
