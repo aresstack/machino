@@ -110,7 +110,10 @@ nmem setzen (NNA-Dialog) + Neustart + verifyAfterReboot
 soc-nna.ko laden (GPL-v2-Stock-Modul, vermagic 4.4.94) -> /dev/soc-nna
 MESSPUNKT 1: akzeptiert die oeffentliche Runtime die Treiberversion
              20190724a? (ihr "Don't match"-Gate, nna-evidence.md)
-Payload installieren (vorher KI-Seite: majestic-Backup purgen, ~2,9 MB)
+Payload: Helfer installieren (--with-nna-payload; vorher KI-Seite:
+majestic-Backup purgen). AUDIT-BEFUND: das dev-Modell (7,6 MB) passt
+NICHT aufs Overlay — fuer den Test nach /tmp kopieren, Manifest daneben,
+ai.model_path=/tmp/... setzen
 erste Inferenz: ready -> result; Person vor der Kamera
 Venus-Heap in mem=48M (Stock hatte 80M) — DAS Restrisiko
 CPU/Latenz unter WebRTC-Last; Langlauf

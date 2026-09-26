@@ -111,6 +111,12 @@ ohne neuen Beweis.
 
 ## PENDING / offen
 
+- **Größenbefund (Audit 2026-09-26):** das konvertierte yolov5s wiegt
+  7,6 MB (7,2M Gewichte in INT8 — Parameterzahl, nicht Auflösung) und ist
+  damit größer als das GESAMTE Overlay. Für den Hardware-Test gehört es
+  nach /tmp (tmpfs, ai.model_path dorthin, Manifest daneben); produktreif
+  wird erst ein kleines Netz (persondet, 1–2M Parameter) — derselbe
+  Schritt, der auch die AGPL-Frage löst.
 - PENDING_PHYSICAL: erste echte Inferenz, Genauigkeits-Sichtprüfung,
   RAM-/CPU-Realität (keine erfundenen Zahlen — nirgends steht eine
   fps- oder ms-Behauptung).

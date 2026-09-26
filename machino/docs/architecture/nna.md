@@ -88,9 +88,13 @@ defekt (ABI-Mismatch, RC 5461/1310758), und der echte Rückweg ist ein
 OpenIPC-Reflash (U-Boot bleibt unangetastet). Das Backup ist löschbar;
 die UI bietet das an (KI-Seite), nichts löscht still.
 
-Nach Purge: ~6,1 MB frei. NNA-Payload (Helfer statisch, jffs2-komprimiert
-~2–3 MB + Modell ~3,3 MB unkomprimierbar) passt damit knapp; ein kleineres
-eigenes persondet-Modell entspannt die Rechnung deutlich.
+Nach Purge: ~6,1 MB frei. **Audit-Korrektur 2026-09-26:** das KONVERTIERTE
+yolov5s ist 7,6 MB (Parameterzahl, nicht Aufloesung: 7,2M Gewichte in INT8)
+— die 3,3 MB galten dem Stock-Modell. Helfer (2,1 MB statisch) passt aufs
+Overlay, das dev-Modell NICHT. Konsequenz: fuer AP-NNA6 liegt das Modell im
+tmpfs (/tmp, 19,6 MB frei; ai.model_path darf dorthin zeigen), und der
+Produktweg braucht ein KLEINES Netz — das persondet-Training des Toolkits
+(1–2M Parameter) loest Groesse UND Lizenz in einem.
 
 RAM: `nmem=8M@0x7800000` als U-Boot-Bootarg (Cam-Tool-Hardwarepatch,
 reversibel). Offenes Risiko für AP-NNA6: Stock gab dem Userland 80 MB,
