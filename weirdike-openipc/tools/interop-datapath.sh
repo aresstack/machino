@@ -178,7 +178,9 @@ esac
 ip netns exec wl ip route del 10.55.0.0/24 dev ipsec0
 
 say "Garbage-ESP: Muell auf 4500 darf den Daemon nicht toeten"
-ip netns exec wr sh -c 'printf "\xde\xad\xbe\xef0123456789012345678901234567890123456789" | timeout 2 nc -u -w1 -p 4500 10.99.0.2 4500' 2>/dev/null || true
+# KEIN -p 4500: den Quellport 4500 haelt in wr charon -- ncs bind schluege
+# fehl und der Test waere still leer (Garbage, das nie gesendet wurde).
+ip netns exec wr sh -c 'printf "\xde\xad\xbe\xef0123456789012345678901234567890123456789" | timeout 2 nc -u -w1 10.99.0.2 4500' 2>/dev/null || true
 sleep 1
 st=$(status)
 case "$st" in *state=CHILD_SA_ESTABLISHED*) say "garbage: Daemon lebt, SA steht" ;;
@@ -206,9 +208,11 @@ i=0; while [ $i -lt 10 ]; do
     kill -0 "$WPID" 2>/dev/null || break
     i=$((i+1)); sleep 1
 done
-kill -0 "$WPID" 2>/dev/null && fail "down: Daemon lebt noch"
-ip netns exec wl ip route show | grep -q "dev ipsec0" && fail "down: Route ueberlebte"
-ip netns exec wl ip link show ipsec0 2>/dev/null | grep -q "UP" && fail "down: ipsec0 noch UP"
+# if-Form, nicht `cmd && fail`: unter set -e beendet eine falsche &&-Liste
+# das Skript GENAU im Gutfall (vierte Instanz dieser Fallenfamilie).
+if kill -0 "$WPID" 2>/dev/null; then fail "down: Daemon lebt noch"; fi
+if ip netns exec wl ip route show | grep -q "dev ipsec0"; then fail "down: Route ueberlebte"; fi
+if ip netns exec wl ip link show ipsec0 2>/dev/null | grep -q "UP"; then fail "down: ipsec0 noch UP"; fi
 say "down: Route weg, ipsec0 down"
 
 if grep -q "$PSK" "$LOG"; then fail "PSK steht im Daemon-Log"; fi
@@ -216,7 +220,8 @@ if grep -q "$PSK" "$LOG"; then fail "PSK steht im Daemon-Log"; fi
 # ---------------------------------------------------------------- NAT
 say "Topologie nat: wl hinter MASQUERADE (nat_detected=yes + Traffic)"
 ip netns exec wr ipsec stop 2>/dev/null || true
-ip netns del wl; ip netns del wr 2>/dev/null || true
+ip netns del wl 2>/dev/null || true
+ip netns del wr 2>/dev/null || true
 ip netns add wl
 ip netns add wn
 ip netns add wr
