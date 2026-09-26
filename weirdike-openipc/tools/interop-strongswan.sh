@@ -115,7 +115,7 @@ start_swan() {
     ip netns exec wr ipsec status >/dev/null 2>&1 || fail "charon-ctl im wr-ns nicht ansprechbar"
 }
 
-run_case() { # $1 name  $2 erwartetes state-Muster  $3 erwartetes last_notify ('' = egal)
+run_case() { # $1 name  $2 state-Muster  $3 last_notify (''=egal)  $4 Gegenprobe (''=keine)
     rm -f /var/run/weirdike.sock "$LOG"
     ip netns exec wl "$WLD" -f > "$LOG" 2>&1 &
     WPID=$!
@@ -142,6 +142,12 @@ run_case() { # $1 name  $2 erwartetes state-Muster  $3 erwartetes last_notify ('
     if grep -q "$PSK" "$LOG" || echo "$st" | grep -q "$PSK"; then
         fail "$1: PSK ist in Log/Status sichtbar"
     fi
+    # Gegenprobe VOR dem Kill: SIGTERM laesst weirdiked ein graceful IKE-SA-
+    # DELETE senden, danach hat auch die Gegenseite die SA abgeraeumt -- eine
+    # Pruefung nach dem Kill zerstoerte ihren eigenen Gegenstand (Lauf 3).
+    if [ -n "${4:-}" ]; then
+        eval "$4" || fail "$1: Gegenprobe fehlgeschlagen: $4"
+    fi
     kill "$WPID" 2>/dev/null || true
     wait "$WPID" 2>/dev/null || true
 }
@@ -150,13 +156,11 @@ say "Fall ok: PSK korrekt, AES-CBC-256/SHA-256/DH14"
 swan_conf "aes256-sha256-modp2048"
 wl_conf "$PSK" "10.99.0.3"
 start_swan
-run_case ok CHILD_SA_ESTABLISHED ""
+run_case ok CHILD_SA_ESTABLISHED "" "ip netns exec wr ipsec status | grep -q ESTABLISHED"
+say "strongSwan bestaetigt die SA (Gegenprobe vor dem Kill)"
 st=$(cat /tmp/status-ok.txt)
 case "$st" in *child=*) say "ok: Child-Diag vorhanden" ;; *) fail "ok: kein child= im Status" ;; esac
 case "$st" in *natt=*) say "ok: NAT-T-Diag vorhanden" ;; *) fail "ok: kein natt= im Status" ;; esac
-# strongSwan-Seite als Gegenprobe:
-ip netns exec wr ipsec status | grep -q "ESTABLISHED" || fail "strongSwan sieht keine SA"
-say "strongSwan bestaetigt die SA"
 
 say "Fall badpsk: AUTHENTICATION_FAILED (24), sauber getrennt vom Timeout"
 wl_conf "voellig-falscher-psk" "10.99.0.3"
