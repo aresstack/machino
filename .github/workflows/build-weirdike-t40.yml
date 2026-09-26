@@ -88,6 +88,28 @@ jobs:
             /tmp/status-*.txt
           if-no-files-found: ignore
 
+      - name: "AP4: ESP-Datenpfad ueber ipsec0 (netns, direkt + NAT)"
+        # Ping+TCP durch den Tunnel, Selector-Drops gezaehlt, Garbage-ESP
+        # ueberlebt, Rekey unter Traffic (Generation 2), down raeumt restlos;
+        # dieselbe Uebung nochmal hinter einem MASQUERADE-Namespace mit
+        # nat_detected=yes. ipsec0/Route baut der DAEMON, nicht der Test.
+        run: |
+          set -o pipefail
+          sudo apt-get install -y -q netcat-openbsd >/dev/null
+          sudo env WLD="$PWD/weirdike-openipc/build/weirdiked" \
+                   CTL="$PWD/weirdike-openipc/build/weirdikectl" \
+              sh weirdike-openipc/tools/interop-datapath.sh 2>&1 | tee /tmp/datapath.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: weirdike-datapath-log
+          path: |
+            /tmp/datapath.log
+            /tmp/weirdiked-datapath.log
+            /tmp/ping-rekey.txt
+          if-no-files-found: ignore
+
       - name: "Fetch the toolchain (T40 musl, same one machino uses)"
         run: |
           chmod +x build.sh
@@ -102,6 +124,10 @@ jobs:
         run: |
           TC=$(ls -d toolchain/xburst2-musl/*/bin | head -1)
           set -o pipefail
+          # Der Interop-Step hat build/ mit x86-Binaries gefuellt; ohne clean
+          # sagt make "Nothing to be done" und mipsel-strip wuergt an x86-ELF
+          # (erst sichtbar, seit die Interop gruen durchlaeuft).
+          make -C weirdike-openipc clean
           make -C weirdike-openipc -j"$(nproc)" \
             MBEDTLS="$PWD/3p/mbedtls-3.6.7" \
             CROSS_COMPILE="$PWD/$TC/mipsel-linux-" 2>&1 | tee /tmp/weirdike-build.log

@@ -24,6 +24,17 @@ int wd_tun_open(const char *ifname, char *err, size_t errcap);
 int wd_tun_configure(const char *ifname, const uint8_t ip[4], uint8_t prefix, int mtu,
                      char *err, size_t errcap);
 
+/* AP4: split route "net/prefix -> dev ifname" via SIOCADDRT/SIOCDELRT --
+ * never by shelling out. add!=0 installs, add==0 removes. Removing a route
+ * that is already gone is NOT an error (cleanup must be idempotent).
+ * Returns 0 or -1. */
+int wd_route_dev(const char *ifname, const uint8_t net[4], uint8_t prefix, int add,
+                 char *err, size_t errcap);
+
+/* AP4: clear IFF_UP (disconnect cleanup; the address survives, the kernel
+ * withdraws the routes). Returns 0 or -1. */
+int wd_tun_down(const char *ifname, char *err, size_t errcap);
+
 /* A UDP socket bound to `port` on all addresses, non-blocking. -1 on failure. */
 int wd_udp_open(uint16_t port, char *err, size_t errcap);
 

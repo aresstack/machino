@@ -241,8 +241,8 @@ void test_review_findings()
     ICHECK(!psk_check("boese\ngateway = evil.host").empty());
     ICHECK(!psk_check("rand ").empty());
     ICHECK(!psk_check(" rand").empty());
-    ICHECK(!psk_check(std::string(129, 'x')).empty());
-    ICHECK(psk_check(std::string(128, 'x')).empty());
+    ICHECK(!psk_check(std::string(65, 'x')).empty());
+    ICHECK(psk_check(std::string(64, 'x')).empty());
     // ... und die Meldung traegt NIE den Wert.
     ICHECK(psk_check("boese\nzeile").find("boese") == std::string::npos);
 

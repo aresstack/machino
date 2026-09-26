@@ -89,12 +89,14 @@ bool underlay_from_name(const std::string& s, Underlay& out)
 //  - kein \n/\r: waere eine Config-Zeilen-Injection in die Daemon-Datei;
 //  - keine Leerzeichen am Rand: der Daemon saehe ein ANDERES Secret als
 //    eingegeben -- ein unerklaerbarer Auth-Fail spaeter;
-//  - 1..128 Bytes druckbares ASCII: WD_MAX_PSK; sonst lehnte erst der
-//    Daemon-START ab, lange nach dem "gespeichert".
+//  - 1..64 Bytes druckbares ASCII: die ENGSTE Grenze ist der WeirdIKE-Core
+//    (WEIRDIKE_MAX_PSK=64, "reject oversized, no trunc") -- wd_config nimmt
+//    zwar 128, aber weirdike_new() wiese den Wert dann beim START zurueck,
+//    lange nach dem "gespeichert".
 std::string psk_check(const std::string& psk)
 {
     if (psk.empty()) return {};                     // leer = keinen neuen setzen
-    if (psk.size() > 128) return "psk: laenger als 128 Bytes (Daemon-Limit)";
+    if (psk.size() > 64) return "psk: laenger als 64 Bytes (WeirdIKE-Core-Limit)";
     for (char ch : psk) {
         if (ch == ' ') continue;                    // innen erlaubt, Rand unten
         if ((unsigned char)ch < 0x21 || (unsigned char)ch > 0x7e)

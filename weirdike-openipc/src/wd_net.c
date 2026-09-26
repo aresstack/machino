@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <linux/if_tun.h>
+#include <net/route.h>
 
 static void seterr(char *err, size_t cap, const char *what)
 {
@@ -85,6 +86,55 @@ int wd_tun_configure(const char *ifname, const uint8_t ip[4], uint8_t prefix, in
     ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
     if (ioctl(s, SIOCSIFFLAGS, &ifr) < 0) { seterr(err, errcap, "SIOCSIFFLAGS"); close(s); return -1; }
 
+    close(s);
+    return 0;
+}
+
+int wd_route_dev(const char *ifname, const uint8_t net[4], uint8_t prefix, int add,
+                 char *err, size_t errcap)
+{
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) { seterr(err, errcap, "socket"); return -1; }
+
+    struct rtentry rt;
+    memset(&rt, 0, sizeof(rt));
+
+    uint32_t mask = (prefix == 0) ? 0 : htonl(0xffffffffu << (32 - prefix));
+
+    struct sockaddr_in *dst = (struct sockaddr_in *)&rt.rt_dst;
+    dst->sin_family = AF_INET;
+    memcpy(&dst->sin_addr, net, 4);
+    dst->sin_addr.s_addr &= mask;           /* the kernel insists on a clean network address */
+
+    struct sockaddr_in *gen = (struct sockaddr_in *)&rt.rt_genmask;
+    gen->sin_family = AF_INET;
+    memcpy(&gen->sin_addr, &mask, 4);
+
+    ((struct sockaddr_in *)&rt.rt_gateway)->sin_family = AF_INET;
+
+    char dev[16];
+    snprintf(dev, sizeof(dev), "%s", ifname);
+    rt.rt_dev   = dev;
+    rt.rt_flags = RTF_UP;                   /* device route: no RTF_GATEWAY */
+
+    int rc = ioctl(s, add ? SIOCADDRT : SIOCDELRT, &rt);
+    if (rc < 0 && !add && errno == ESRCH) rc = 0;   /* already gone: cleanup is idempotent */
+    if (rc < 0) seterr(err, errcap, add ? "SIOCADDRT" : "SIOCDELRT");
+    close(s);
+    return rc < 0 ? -1 : 0;
+}
+
+int wd_tun_down(const char *ifname, char *err, size_t errcap)
+{
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) { seterr(err, errcap, "socket"); return -1; }
+
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, IFNAMSIZ, "%s", ifname);
+    if (ioctl(s, SIOCGIFFLAGS, &ifr) < 0) { seterr(err, errcap, "SIOCGIFFLAGS"); close(s); return -1; }
+    ifr.ifr_flags &= ~(IFF_UP | IFF_RUNNING);
+    if (ioctl(s, SIOCSIFFLAGS, &ifr) < 0) { seterr(err, errcap, "SIOCSIFFLAGS"); close(s); return -1; }
     close(s);
     return 0;
 }

@@ -97,3 +97,34 @@ nirgends her.
 - [x] Offenes ehrlich PENDING_PHYSICAL: erster modprobe tun am Geraet;
       Interop/AP2 folgt in CI, nicht am Geraet
 - [x] keine UI-Aenderung, kein VPN-Connect in AP1
+
+## AP4: Der ESP-Datenpfad (ipsec0, Route, Selektoren)
+
+Der Daemon baut den Datenpfad SELBST, sobald die erste Child SA steht
+(`esp_refresh` → `data_path_install`), und raeumt ihn beim Beenden restlos
+ab (Route del, ipsec0 down — beides idempotent):
+
+- **ipsec0**: Adresse = die vom Peer BESTAETIGTE local_ts (narrowed
+  Selektoren, nicht die Wunsch-Config), MTU 1400. Herleitung: 1500 minus
+  ESP-in-UDP-Worst-Case der AP2-Suite (aussen IP 20 + UDP 8 + SPI/Seq 8 +
+  CBC-IV 16 + Padding ≤17 + ICV 16 = 85 → 1415 nutzbar), abgerundet, damit
+  auch ein Underlay mit eigenem Overhead (PPPoE) das Aussenpaket nie
+  fragmentiert.
+- **Split-Route**: genau das narrowed TSr als `dev ipsec0`-Route via
+  SIOCADDRT — kein Shell-Aufruf, kein Full Tunnel. Ein narrowed TSr, das
+  kein sauberer CIDR-Block ist, wird gemeldet statt geraten.
+- **Gateway-Schutz** (zweistufig): beim Start wird eine remote_subnet, die
+  das aufgeloeste Gateway enthaelt, mit Begruendung verweigert
+  (Encapsulation-Loop); dieselbe Pruefung laeuft nochmal gegen die
+  narrowed Selektoren, bevor die Route installiert wird.
+- **Selector-Enforcement** beidseitig aus `weirdike_get_child_sa`:
+  TX nur src∈local_ts ∧ dst∈TSr-Set, RX nur src∈TSr-Set ∧ dst∈local_ts;
+  alles andere wird GEZAEHLT verworfen (`tx/rx_drop_selector` im ctl-Status).
+
+**NAT-T-only im Harness:** weirdiked sendet ESP immer als ESP-in-UDP/4500
+(Produktionsannahme: beide Underlays hinter NAT, gemessen). Im direkten
+veth-Fall ohne NAT wuerde charon plain ESP (Proto 50) fahren — deshalb
+faehrt der Direktfall des Datenpfad-Harness `forceencaps=yes` auf der
+strongSwan-Seite; der echte NAT-Fall (MASQUERADE-Namespace dazwischen,
+nat_detected=yes) ist als zweite Topologie im selben CI-Lauf abgenommen
+(tools/interop-datapath.sh).
