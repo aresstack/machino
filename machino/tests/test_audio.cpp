@@ -325,9 +325,25 @@ void test_majestic_audio_mapping() {
     ACHECK(parse_config_text(conf, c, err) && c.audio.enabled && c.audio.volume == 45 && c.audio.srate == 16000);
 }
 
+// The majestic URLs without a path in this build get a named 501, and the
+// ones that ARE served natively never land on that list.
+void test_majestic_unbuilt_urls() {
+    using compat::majestic_unbuilt;
+    for (const char* u : {"/video.mp4", "/hls", "/hls/index.m3u8", "/image.heif", "/image.yuv420", "/play_audio"}) {
+        const char* why = majestic_unbuilt(u);
+        ACHECK(why != nullptr && std::string(why).size() > 20);
+    }
+    for (const char* u : {"/mjpeg", "/mjpeg.html", "/image.jpg", "/audio.pcm", "/audio.alaw", "/audio.ulaw",
+                          "/audio.g711a", "/night/on", "/metrics", "/api/v1/config.json", "/hlsx", "/"}) {
+        ACHECK(majestic_unbuilt(u) == nullptr);
+    }
+    ACHECK(std::string(majestic_unbuilt("/play_audio")).find("audio-test") != std::string::npos);
+}
+
 } // namespace
 
 void run_audio_tests() {
+    test_majestic_unbuilt_urls();
     test_http_audio_stream();
     test_audio_test_helpers();
     test_majestic_audio_mapping();

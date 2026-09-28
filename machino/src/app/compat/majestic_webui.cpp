@@ -1009,4 +1009,21 @@ UpgradePlan upgrade_plan(const std::string& params_json) {
     return p;
 }
 
+const char* majestic_unbuilt(const std::string& path) {
+    if (path == "/video.mp4")
+        return "progressive MP4 is not built; the same H.264 as fMP4 is served on /ws/video, "
+               "and RTSP on /stream=0";
+    if (path == "/hls" || path.rfind("/hls/", 0) == 0)
+        return "HLS is not built: it needs seconds of segments held in RAM on a 42 MB camera; "
+               "use RTSP (/stream=0) or /ws/video";
+    if (path == "/image.heif")
+        return "HEIF stills are not built; JPEG is /image.jpg";
+    if (path == "/image.yuv420")
+        return "raw YUV stills are not built; JPEG is /image.jpg";
+    if (path == "/play_audio")
+        return "the speaker path is not built yet: the audio connector's output is being "
+               "confirmed with `machino --audio-test tone` first";
+    return nullptr;
+}
+
 }} // namespace machino::compat

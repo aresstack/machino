@@ -244,6 +244,7 @@ struct HttpServer::Client {
 
 static const char* MJPEG_BOUNDARY = "machinoframe";
 
+
 HttpServer::HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& bus,
                        StreamHub* hub, lifecycle::PipelineManager* pipeline, StreamHub* sub_hub)
     : cfg_(cfg), api_(api), bus_(bus), hub_(hub), sub_hub_(sub_hub), pipeline_(pipeline) {
@@ -758,7 +759,25 @@ bool HttpServer::handle_request(Client& c) {
             LOGI(MOD, "%s: /ws/logs subscribed", c.peer.c_str());
             return true;
         }
-    } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream") {
+    } else if (path == "/mjpeg.html") {
+        // majestic's viewer page for the MJPEG stream. One <img>; when JPEG is
+        // off, the image itself answers 501 and the browser shows it broken,
+        // which is the truth.
+        static const char kPage[] =
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>MJPEG</title>"
+            "<style>html,body{margin:0;background:#000;height:100%}"
+            "img{display:block;margin:auto;max-width:100%;max-height:100%}</style></head>"
+            "<body><img src=\"/mjpeg\" alt=\"MJPEG stream\"></body></html>\n";
+        bool ok = queue(c, response(m == "GET" ? 200 : 405, "text/html; charset=utf-8",
+                                    m == "GET" ? kPage : "", req.keep_alive));
+        if (!req.keep_alive) c.close_after_flush = true;
+        return ok;
+    } else if (const char* why = compat::majestic_unbuilt(path)) {
+        // A majestic URL this build does not serve. Named, not relayed: a 404
+        // from the busybox side reads as "no such camera feature", which is
+        // not what is missing.
+        r = api::ApiService::fail(501, "unavailable", path, why);
+    } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream" || path == "/mjpeg") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         // AP24: refuse the same way /snapshot does when there is no JPEG unit.
         // This used to answer 200 and open a multipart stream that could never
