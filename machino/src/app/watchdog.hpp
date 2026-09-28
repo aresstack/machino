@@ -24,6 +24,7 @@
 #include "core/result.hpp"
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -80,6 +81,19 @@ public:
     // has moved since the last feed. Returns true when it fed.
     bool   tick(int64_t now_ms);
 
+    // Stall marker: fired ONCE per hang from the feeder thread, when the main
+    // loop has not advanced for `stall_after_ms` (default: two feed intervals,
+    // so ~one interval of headroom is left before the hardware fires). The
+    // handler runs OUTSIDE the watchdog lock and must only read lock-free state
+    // (see core/diag.hpp) and do one small write -- anything that takes a lock
+    // the wedged loop holds would wedge the feeder too. Re-arms on the next
+    // legitimate feed, so a camera that recovers can report a later stall.
+    void   set_stall_handler(std::function<void()> handler, int stall_after_ms = 0) {
+        std::lock_guard<std::mutex> lk(m_);
+        on_stall_ = std::move(handler);
+        if (stall_after_ms > 0) stall_after_ms_ = stall_after_ms;
+    }
+
     // Milliseconds until the next tick is due, for a bounded sleep.
     int    feed_interval_ms() const { return feed_ms_; }
 
@@ -101,6 +115,10 @@ private:
     bool              ever_opened_ = false;   // the device DID open at least once
     int               effective_timeout_s_ = 0;
     bool              warned_feed_ = false;    // one error line, never a spam loop
+    // Stall marker (hardlock diagnosis). One marker per hang.
+    std::function<void()> on_stall_;
+    int64_t           stall_after_ms_ = 0;     // set in the ctor to 2 * feed_ms_
+    bool              stall_reported_ = false;
 };
 
 } // namespace machino

@@ -12,6 +12,10 @@ WatchdogService::WatchdogService(IWatchdogDevice& dev, int timeout_s, int feed_i
     // hardware fires, so one slow iteration is not a reset.
     feed_ms_ = feed_interval_ms > 0 ? feed_interval_ms : (timeout_s_ * 1000) / 3;
     if (feed_ms_ < 100) feed_ms_ = 100;
+    // Report a stall after two missed feeds -- the loop has been still for two
+    // intervals, and one interval of headroom is left before the reset, enough
+    // to write a small marker file.
+    stall_after_ms_ = (int64_t)feed_ms_ * 2;
 }
 
 Result WatchdogService::start(int64_t now_ms) {
@@ -57,29 +61,47 @@ void WatchdogService::stop() {
 }
 
 bool WatchdogService::tick(int64_t now_ms) {
-    std::lock_guard<std::mutex> lk(m_);
-    if (!open_) return false;
-    if (now_ms < next_due_ms_) return false;
-    next_due_ms_ = now_ms + feed_ms_;
+    bool fire_stall = false;
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        if (!open_) return false;
+        if (now_ms < next_due_ms_) return false;
+        next_due_ms_ = now_ms + feed_ms_;
 
-    // THE check. A feeder that skips this is a feeder that guarantees the
-    // camera will not recover from a wedged main loop.
-    if (epoch_ == fed_at_epoch_) {
-        ++skipped_;
-        // Deliberately not logged per tick: if the loop really is wedged the
-        // log is not being written either, and if it is a one-off the line is
-        // noise. The counter carries it into telemetry instead.
-        return false;
+        // THE check. A feeder that skips this is a feeder that guarantees the
+        // camera will not recover from a wedged main loop.
+        if (epoch_ == fed_at_epoch_) {
+            ++skipped_;
+            // Deliberately not logged per tick: if the loop really is wedged the
+            // log is not being written either, and if it is a one-off the line is
+            // noise. The counter carries it into telemetry instead.
+            //
+            // But once the loop has been still for two intervals, drop ONE
+            // marker naming where it stopped -- the last thing we can capture
+            // before the hardware resets the SoC.
+            const int64_t age = last_feed_ms_ < 0 ? -1 : now_ms - last_feed_ms_;
+            if (on_stall_ && !stall_reported_ && age >= stall_after_ms_) {
+                stall_reported_ = true;   // one marker per hang
+                fire_stall = true;
+            }
+        } else {
+            fed_at_epoch_ = epoch_;
+            if (!dev_.feed()) {
+                ++feed_errors_;
+                if (!warned_feed_) { warned_feed_ = true; LOGE(MOD, "feed failed - the hardware will fire unless this recovers"); }
+                return false;
+            }
+            ++feeds_;
+            last_feed_ms_ = now_ms;
+            stall_reported_ = false;   // the loop moved again: re-arm the marker
+            return true;
+        }
     }
-    fed_at_epoch_ = epoch_;
-    if (!dev_.feed()) {
-        ++feed_errors_;
-        if (!warned_feed_) { warned_feed_ = true; LOGE(MOD, "feed failed - the hardware will fire unless this recovers"); }
-        return false;
-    }
-    ++feeds_;
-    last_feed_ms_ = now_ms;
-    return true;
+    // Outside the lock on purpose: the handler reads only lock-free diag state
+    // and writes one small file, but even so it must not run under m_ -- the
+    // whole point is to survive a loop wedged elsewhere.
+    if (fire_stall) on_stall_();
+    return false;
 }
 
 WatchdogStats WatchdogService::stats(int64_t now_ms) const {

@@ -1,4 +1,5 @@
 #include "core/lifecycle/pipeline_manager.hpp"
+#include "core/diag.hpp"
 #include "core/log.hpp"
 #include <ctime>
 
@@ -67,6 +68,9 @@ void PipelineManager::transition(State to, const char* why) {
     LOGI(MOD, "%s -> %s%s%s", state_name(state_), state_name(to), why ? " " : "", why ? why : "");
     State from = state_;
     state_ = to;
+    // Lock-free mirror for the watchdog stall marker: the feeder reads this
+    // without taking m_, which the wedged main loop may be holding.
+    diag::phases().pipeline_state.store((int)to, std::memory_order_relaxed);
     if (listener_) listener_(from, to);
 }
 

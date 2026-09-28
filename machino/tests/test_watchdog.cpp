@@ -89,6 +89,33 @@ void run_watchdog_tests() {
         WDCHECK(w.stats(2000).skipped == 1);
     }
 
+    // --- the stall marker fires ONCE per hang, after two missed feeds -------
+    // The hardlock diagnosis: when the loop wedges but the feeder still runs,
+    // drop exactly one marker (so /etc/machino/state/last-stall names the last
+    // stall, not the first tick of it), and re-arm once the loop recovers.
+    {
+        FakeWatchdog d;
+        WatchdogService w(d, 15, 1000);              // stall_after = 2 * 1000
+        int stalls = 0;
+        w.set_stall_handler([&] { ++stalls; });
+        w.start(0);                                  // fed at 0
+        WDCHECK(!w.tick(1000)); WDCHECK(stalls == 0); // skip #1, age 1000 < 2000
+        WDCHECK(!w.tick(2000)); WDCHECK(stalls == 1); // skip #2, age 2000 -> fire
+        WDCHECK(!w.tick(3000)); WDCHECK(stalls == 1); // still wedged, not re-fired
+        w.heartbeat();
+        WDCHECK(w.tick(4000));                        // recovered: feeds, re-arms
+        WDCHECK(!w.tick(5000)); WDCHECK(stalls == 1); // skip, age 1000 < 2000
+        WDCHECK(!w.tick(6000)); WDCHECK(stalls == 2); // a new hang fires again
+    }
+
+    // --- no stall handler set: a wedged loop must not crash ----------------
+    {
+        FakeWatchdog d;
+        WatchdogService w(d, 15, 1000);
+        w.start(0);
+        for (int t = 1000; t <= 10000; t += 1000) WDCHECK(!w.tick(t));   // no handler, no fault
+    }
+
     // --- many heartbeats between ticks still feed exactly once -------------
     {
         FakeWatchdog d;

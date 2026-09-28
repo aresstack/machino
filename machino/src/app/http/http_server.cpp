@@ -5,6 +5,7 @@
 #include "app/http/http_parse.hpp"
 #include "app/http/websocket.hpp"
 #include "app/rtsp/h264_nal.hpp"
+#include "core/diag.hpp"
 #include "core/log.hpp"
 #include "core/runtime_stats.hpp"
 
@@ -354,6 +355,7 @@ bool HttpServer::handle_request(Client& c) {
     if (p == Parse::TooLarge) { queue(c, response(413, "application/json", api::ApiService::error("invalid_value", "", "request too large").dump(), false)); c.close_after_flush = true; return true; }
     if (p == Parse::Bad)      { queue(c, response(400, "application/json", api::ApiService::error("invalid_json", "", "malformed HTTP request").dump(), false)); c.close_after_flush = true; return true; }
     c.in.erase(0, consumed); ++c.requests; c.last_activity_ms = now_ms();
+    diag::set_http("dispatch");   // stall marker: inside request handling
 
     const std::string& path = req.path; const std::string& m = req.method;
     api::Response r;
@@ -654,6 +656,7 @@ bool HttpServer::handle_request(Client& c) {
             return ok;
         }
     } else if (path == "/api/v1/config") {
+        diag::set_http("api_config");   // stall marker: the route the hardlock reproduced on
         if (m == "GET") r = api_.config();
         else if (m == "POST") {
             compat::MajesticTranslation t = compat::majestic_post_to_native(req.body);
@@ -662,6 +665,7 @@ bool HttpServer::handle_request(Client& c) {
         } else if (m == "PATCH" || m == "PUT") r = api_.patch_config(req.body, req.header("if-match"));
         else r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
     } else if (path == "/ws/video") {
+        diag::set_http("media:ws_video");   // stall marker: acquire/IMP path
         // The stock webui's Live player (upstream preview.js): WebSocket, one
         // JSON init + fMP4 init segment, then one moof+mdat per frame.
         const std::string wskey = req.header("sec-websocket-key");
@@ -691,6 +695,7 @@ bool HttpServer::handle_request(Client& c) {
             }
         }
     } else if (path == "/ws/webrtc") {
+        diag::set_http("media:ws_webrtc");   // stall marker: acquire/IMP path
         // The stock webui's preferred Live transport (preview-webrtc.js):
         // this socket only signals; media runs over the session's UDP port.
         const std::string wskey = req.header("sec-websocket-key");
@@ -771,6 +776,7 @@ bool HttpServer::handle_request(Client& c) {
         }
     } else if (path == "/snapshot" || path == "/snapshot.jpg" || path == "/api/v1/snapshot" ||
                path == "/image.jpg") {
+        diag::set_http("media:snapshot");   // stall marker: JPEG/IMP path
         // W3: /image.jpg ist majestics Name fuer dasselbe Standbild (Dashboard
         // pollt es, die Kameraseite holt Stills mit ?t=/?session= -- die Query
         // ist Cache-Busting und wird ignoriert). Mit jpeg.enabled=false
@@ -829,6 +835,7 @@ bool HttpServer::relay_upstream(Client& c, const Request& req) {
     c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
     c.relay_abs_deadline_ms  = now + cfg_.relay_max_ms;
     c.relay_what = req.method + " " + req.path;
+    diag::set_http("relay");   // stall marker: forwarding to busybox on :85
     // Every in-flight relay is a forked CGI on the busybox side; a browser
     // dashboard fires a dozen fetches at once and the camera has ~43 MiB of
     // userspace. Excess relays wait here until a slot frees (the old blocking
@@ -1603,6 +1610,7 @@ void HttpServer::loop() {
         for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
         const size_t logs_idx = (logs_fd() >= 0) ? pfds.size() : (size_t)-1;
         if (logs_fd() >= 0) pfds.push_back({logs_fd(), POLLIN, 0});
+        diag::set_http("poll");   // stall marker: HTTP thread waiting for I/O
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)

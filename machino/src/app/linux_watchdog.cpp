@@ -34,6 +34,19 @@ bool LinuxWatchdog::open() {
     } else {
         LOGW(MOD, "WDIOC_GETSUPPORT: %s", strerror(errno));
     }
+    // Boot status: did the LAST reset come from this watchdog? On a driver that
+    // supports it, WDIOF_CARDRESET turns "up 0 min" from a guess into a fact and
+    // separates a watchdog reset from a power loss or an unrelated reboot. On a
+    // driver that does not, the log says so and we lose nothing.
+    int boot = 0;
+    if (ioctl(fd_, WDIOC_GETBOOTSTATUS, &boot) == 0) {
+        if (boot & WDIOF_CARDRESET)
+            LOGW(MOD, "boot status: the LAST reset was this watchdog (WDIOF_CARDRESET)");
+        else
+            LOGI(MOD, "boot status: last reset was not the watchdog (0x%x)", (unsigned)boot);
+    } else {
+        LOGI(MOD, "WDIOC_GETBOOTSTATUS unsupported (%s) - cannot confirm the reset cause", strerror(errno));
+    }
     return true;
 }
 
