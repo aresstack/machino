@@ -415,7 +415,16 @@ void test_majestic_webui_compat() {
     ACHECK(path(schema, "properties.video0.properties.fps") != nullptr);
     ACHECK(path(schema, "properties.video0.properties.bitrate_kbps") != nullptr);
     ACHECK(path(schema, "properties.sensor.properties.fps") != nullptr);
-    ACHECK(path(schema, "properties.image.properties.brightness") != nullptr);
+    // W1: das Schema spricht majestic -- luminance statt brightness (die
+    // Stock-UI haengt Strip/Stock-Knopf an DIESEM Namen), mirror/flip als
+    // Boolean (daran haengt das Orientation-Pad), und die vier Tone-Knoepfe
+    // tragen den IMP-Neutral-Default 128 (sonst ist Stock ein toter Knopf).
+    ACHECK(path(schema, "properties.image.properties.brightness") == nullptr);
+    ACHECK(path(schema, "properties.image.properties.luminance") != nullptr);
+    ACHECK(path(schema, "properties.image.properties.luminance.default")->as_int() == 128);
+    ACHECK(path(schema, "properties.image.properties.contrast.default")->as_int() == 128);
+    if (path(schema, "properties.image.properties.mirror"))
+        ACHECK(path(schema, "properties.image.properties.mirror.type")->as_string() == "boolean");
     ACHECK(path(schema, "properties.image.properties.wdr") == nullptr); // unsupported is never advertised
     ACHECK(path(schema, "properties.video0.properties.fps.minimum")->as_int() == 10);
     ACHECK(path(schema, "properties.video0.properties.fps.maximum")->as_int() == 20);
@@ -758,6 +767,30 @@ void test_ap10_live_image() {
         ACHECK(resp.body.get("persisted") && !resp.body.get("persisted")->as_bool());
         ACHECK(resp.body.get("count") && resp.body.get("count")->as_int() == 1);
     }
+    // W1: die Stock-Seite schickt die SCHEMA-Namen, und die sprechen
+    // majestic -- luminance/mirror/flip mit true/false muessen auf
+    // brightness/hflip/vflip landen.
+    {
+        // (Die Fake-Plattform kann kein hflip/vflip -- entscheidend ist, dass
+        // die ALIASSE aufgeloest werden: luminance landet als brightness,
+        // mirror=true wird NICHT als unknown_field abgelehnt, sondern als
+        // hflip=1 verstanden und mangels Support uebersprungen.)
+        api::Response resp = r.api.live_image("luminance=110&mirror=true&flip=false");
+        ACHECK(resp.status == 200);
+        ACHECK(resp.body.get("applied")->get("brightness") != nullptr);
+        ACHECK(resp.body.get("applied")->get("brightness")->as_int() == 110);
+        ACHECK(resp.body.get("count")->as_int() >= 1);
+    }
+    // ... und der Stock/Reihen-Reset dazu: image.luminance hat den
+    // IMP-Neutral-Default und uebersetzt auf den nativen Leaf.
+    {
+        compat::MajesticTranslation t = compat::majestic_reset("image.luminance");
+        ACHECK(t.ok);
+        ACHECK(path(t.patch, "image.brightness")->as_int() == 128);
+        // mirror ohne Default -> Unset-Pfad auf den NATIVEN conf-Key.
+        compat::MajesticTranslation u = compat::majestic_reset("image.mirror");
+        ACHECK(u.ok && !u.unset.empty() && u.unset[0] == "image.hflip");
+    }
     // several at once - "mirror and flip need each other", so they arrive
     // together and must all be applied from one request
     {
@@ -979,7 +1012,89 @@ void test_ap3_ipsec_api() {
     remove(MC); remove(DC);
 }
 
+// W2 (Day/Night): /night/*-Vertrag der Stock-Seite an Fake-GPIO + Rig.
+namespace {
+struct FakeNightGpio : IGpioController {
+    struct W { std::string pin; bool level; };
+    std::vector<W> writes;
+    bool avail = true;
+    bool available() const override { return avail; }
+    bool resolve(const std::string&, int& n) const override { n = 1; return true; }
+    bool holder_of(const std::string&, GpioPinInfo&) const override { return false; }
+    Result configure_output(const std::string&, bool) override { return Result::ok(); }
+    Result write(const std::string& p, bool l) override { writes.push_back({p, l}); return Result::ok(); }
+    Result read(const std::string&, bool& l) const override { l = false; return Result::ok(); }
+    void release(const std::string&) override {}
+};
+} // namespace
+
+void test_w2_night() {
+    Rig r;
+
+    // Nicht verdrahtet: ehrlich 404 (kein toter Erfolg).
+    ACHECK(r.api.night_action("toggle").status == 404);
+
+    FakeNightGpio gpio;
+    night::NightService ns(r.tuning, &gpio, r.store);
+    r.api.set_night_service(&ns);
+
+    // Capabilities melden die Faehigkeit; das Schema bekommt die Sektion.
+    ACHECK(path(r.api.capabilities().body, "night.available")->as_bool());
+    Json schema = compat::majestic_schema(r.api.capabilities().body);
+    ACHECK(path(schema, "properties.nightMode.properties.irCut.type")->as_string() == "boolean");
+    ACHECK(path(schema, "properties.nightMode.properties.irCutPin1") != nullptr);
+    // Auto-Tag/Nacht ist NICHT implementiert -> kein Feld dafuer (ehrlich).
+    ACHECK(path(schema, "properties.nightMode.properties.minThreshold") == nullptr);
+
+    // Nachtmodus: RunningMode 0/1, Antwort = nacktes Boolean.
+    api::Response t = r.api.night_action("toggle");
+    ACHECK(t.status == 200 && t.body.is_bool() && t.body.as_bool());
+    std::string val;
+    ACHECK(r.api.night_metric("night_enabled", val) && val == "1");
+    ACHECK(r.api.night_action("off").status == 200);
+    ACHECK(r.api.night_metric("night_enabled", val) && val == "0");
+
+    // IR-Cut ohne Freigabe: der Tooltip-Grund, wortgleich nutzbar.
+    api::Response ic = r.api.night_action("ircut");
+    ACHECK(ic.status == 409);
+    ACHECK(ic.body.dump().find("Day / Night settings") != std::string::npos);
+
+    // Day/Night-Settings speichern (majestic nightMode.* -> nativ night.*)...
+    compat::MajesticTranslation tr = compat::majestic_post_to_native(
+        "{\"nightMode\":{\"irCut\":true,\"irCutPin1\":\"PB18\",\"irCutPin2\":\"PB19\"}}");
+    ACHECK(tr.ok);
+    ACHECK(path(tr.patch, "night.ircut")->as_bool());
+    ACHECK(path(tr.patch, "night.ircut_pin1")->as_string() == "PB18");
+    api::Response p = r.api.patch_config(tr.patch.dump(), "");
+    ACHECK(p.status == 200);
+    ACHECK(r.store.get("night.ircut_pin1") == "PB18");
+
+    // ...und jetzt schaltet der Filter: Zwei-Pin-Puls (hi an, hi aus).
+    gpio.writes.clear();
+    ic = r.api.night_action("ircut");
+    ACHECK(ic.status == 200 && ic.body.is_bool());
+    bool saw_hi_on = false, saw_hi_off = false;
+    for (const auto& w : gpio.writes) {
+        if (w.pin == "PB19" && w.level)  saw_hi_on = true;    // disengage: pin2 pulst
+        if (w.pin == "PB19" && !w.level && saw_hi_on) saw_hi_off = true;
+    }
+    ACHECK(saw_hi_on && saw_hi_off);
+
+    // config.json-View zeigt die Sektion im majestic-Vokabular.
+    Json web = compat::majestic_config(r.api.config().body, r.api.state().body);
+    ACHECK(path(web, "nightMode.irCut")->as_bool());
+    ACHECK(path(web, "nightMode.irCutPin1")->as_string() == "PB18");
+
+    // Nacht an zieht den freigegebenen Filter mit (Nacht = Filter raus).
+    gpio.writes.clear();
+    ACHECK(r.api.night_action("on").status == 200);
+    ACHECK(r.api.night_metric("ircut_enabled", val) && val == "0");
+
+    r.api.set_night_service(nullptr);
+}
+
 void run_api_tests() {
+    test_w2_night();
     test_ap3_ipsec_api();
     test_get_documents();
     test_ai_detectors_route_and_person_config();

@@ -47,6 +47,17 @@ struct MajesticTranslation {
 // Only controls Machino reports as supported are advertised.
 Json majestic_schema(const Json& capabilities);
 
+// W1: das majestic-Vokabular fuer drei Image-Keys. Die Stock-UI haengt ganze
+// Features an diese NAMEN (Tone-Strip/Stock-Button an "luminance", das
+// Orientation-Pad an boolschen "mirror"/"flip") -- die Compat-Flaeche spricht
+// deshalb majestic, intern bleibt brightness/hflip/vflip. EINE Tabelle;
+// majestic_migrate nutzt dieselbe Zuordnung.
+//   majestic_image_native("luminance") == "brightness"; unbekannt -> nullptr.
+//   majestic_image_alias("brightness") == "luminance";  unbekannt -> nullptr.
+// is_bool sagt, ob der majestic-Key boolsch dargestellt wird (mirror/flip).
+const char* majestic_image_native(const std::string& majestic_key, bool* is_bool = nullptr);
+const char* majestic_image_alias(const std::string& native_key, bool* is_bool = nullptr);
+
 // Flatten Machino's native config into the one-section-deep shape the current
 // majestic-webui renderer expects (notably video.0 -> video0). Effective state
 // fills optional image controls that have no explicit requested value yet.

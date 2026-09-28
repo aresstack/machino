@@ -1,4 +1,5 @@
 #include "app/api/api_service.hpp"
+#include "app/compat/majestic_webui.hpp"   // W1: majestic-Image-Aliasse (live push)
 #include "core/log.hpp"
 #include "core/runtime_stats.hpp"
 #include <algorithm>
@@ -146,6 +147,12 @@ Json ApiService::capabilities_json() const {
     aifps.set("min", Json::integer(1)); aifps.set("max", Json::integer(60));
     ai.set("inference_fps", aifps);
     j.set("ai", ai);
+    // W2: Day/Night ist eine Faehigkeit dieses Builds (Service verdrahtet);
+    // die Compat-Schicht haengt die nightMode-Schemasektion daran, damit
+    // eine Plattform ohne den Dienst keine tote Seite bekommt.
+    Json nightcap = Json::object();
+    nightcap.set("available", Json::boolean(night_ != nullptr));
+    j.set("night", nightcap);
     Json ctl = Json::object();
     ctl.set("sensor_fps", range_control(c.sensor.fps));
     ctl.set("stream_fps", range_control(c.video.fps));
@@ -330,6 +337,19 @@ Json ApiService::config_json() {
     Json j = Json::object();
     j.set("revision", Json::integer(store_.revision()));
     Json perf = Json::object(); perf.set("profile", Json::string(power::profile_name(e.profile))); j.set("performance", perf);
+    // W2: die Day/Night-Konfiguration (nativ; die WebUI sieht sie als
+    // nightMode via Compat-Mapping). Nur wenn der Dienst verdrahtet ist.
+    if (night_) {
+        const night::NightPins np = night_->pins();
+        Json n = Json::object();
+        n.set("ircut", Json::boolean(np.ircut));
+        n.set("ircut_pin1", Json::string(np.ircut_pin1));
+        n.set("ircut_pin2", Json::string(np.ircut_pin2));
+        n.set("ircut_single_invert", Json::boolean(np.ircut_single_invert));
+        n.set("backlight", Json::boolean(np.backlight));
+        n.set("backlight_pin", Json::string(np.backlight_pin));
+        j.set("night", n);
+    }
     Json sen = Json::object(); sen.set("fps", Json::integer(e.sensor_fps_requested)); j.set("sensor", sen);
     Json v0 = Json::object(); v0.set("fps", Json::integer(s.fps)); v0.set("bitrate_kbps", Json::integer(s.bitrate_kbps));
     v0.set("width", Json::integer(s.width)); v0.set("height", Json::integer(s.height)); v0.set("gop", Json::integer(s.gop));
@@ -626,8 +646,14 @@ Response ApiService::live_image(const std::string& query) {
         const size_t eq = pair.find('=');
         if (eq == std::string::npos)
             return fail(400, "invalid_value", "/api/v1/image", "each parameter needs a value");
-        const std::string name = url_decode_one(pair.substr(0, eq));
-        const std::string val  = url_decode_one(pair.substr(eq + 1));
+        std::string name = url_decode_one(pair.substr(0, eq));
+        std::string val  = url_decode_one(pair.substr(eq + 1));
+
+        // W1: die Stock-Seite schickt die SCHEMA-Namen, und das Schema
+        // spricht majestic (compat-Tabelle kImageAlias): luminance ->
+        // brightness, mirror/flip (true/false) -> hflip/vflip (1/0).
+        if (const char* nat = compat::majestic_image_native(name)) name = nat;
+        if (val == "true") val = "1"; else if (val == "false") val = "0";
 
         ImageControl c;
         if (!image_control_from_name(name, c))
@@ -664,6 +690,38 @@ Response ApiService::live_image(const std::string& query) {
     // Said explicitly because it is the whole difference from PATCH.
     r.body.set("persisted", Json::boolean(false));
     return r;
+}
+
+// W2 (Day/Night): majestics /night/*-Vertrag. Die Stock-Seite macht
+// r.json() und setzt den Schalter auf die Antwort -- also ist der Body das
+// NACKTE Boolean des neuen Zustands. Fehler (kein Pin konfiguriert, GPIO
+// belegt) kommen als 409 mit dem konkreten Grund; die Seite laesst den
+// Schalter dann stehen.
+Response ApiService::night_action(const std::string& cmd) {
+    const std::string path = "/night/" + cmd;
+    if (!night_) return fail(404, "not_found", path, "day/night is not wired on this platform");
+
+    std::string err;
+    bool state = false;
+    if      (cmd == "on")     { err = night_->set_night(true);  state = night_->night(); }
+    else if (cmd == "off")    { err = night_->set_night(false); state = night_->night(); }
+    else if (cmd == "toggle") { err = night_->toggle_night(state); }
+    else if (cmd == "ircut")  { err = night_->toggle_ircut();   state = night_->ircut(); }
+    else if (cmd == "light")  { err = night_->toggle_light();   state = night_->light(); }
+    else return fail(404, "not_found", path, "no such night action");
+
+    if (!err.empty()) return fail(409, "conflict", path, err);
+    Response r; r.status = 200; r.body = Json::boolean(state);
+    return r;
+}
+
+bool ApiService::night_metric(const std::string& value_name, std::string& out) {
+    if (!night_) return false;
+    if      (value_name == "night_enabled") out = night_->night() ? "1" : "0";
+    else if (value_name == "ircut_enabled") out = night_->ircut() ? "1" : "0";
+    else if (value_name == "light_enabled") out = night_->light() ? "1" : "0";
+    else return false;
+    return true;
 }
 
 Response ApiService::unset_config(const std::vector<std::string>& conf_keys) {
@@ -878,6 +936,23 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     long long n; if (!get_int(val, n) || n < 1 || n > 60) return bad(422, "invalid_value", path, "inference_fps must be an integer in 1..60");
                     c.key = "ai.inference_fps"; c.value = std::to_string(n);
                 } else return bad(400, "unknown_field", path, "unknown field");
+            } else if (s == "night") {
+                // W2: die Day/Night-Sektion (WebUI: nightMode). Pins sind
+                // NAMEN ("PB18") oder Nummern -- aufgeloest wird beim
+                // Schalten (IGpioController::resolve), hier nur die Form.
+                if (!night_) return bad(422, "unsupported_control", path, "day/night is not wired on this platform");
+                if (kv.first == "ircut" || kv.first == "ircut_single_invert" || kv.first == "backlight") {
+                    if (!val.is_bool()) return bad(422, "invalid_value", path, kv.first + " must be a boolean");
+                    c.key = "night." + kv.first; c.value = val.as_bool() ? "true" : "false";
+                } else if (kv.first == "ircut_pin1" || kv.first == "ircut_pin2" || kv.first == "backlight_pin") {
+                    if (!val.is_string()) return bad(422, "invalid_value", path, kv.first + " must be a string pin name (e.g. PB18) or empty");
+                    const std::string& pv = val.as_string();
+                    if (pv.size() > 15) return bad(422, "invalid_value", path, "pin name too long");
+                    for (char ch : pv)
+                        if (!(isalnum((unsigned char)ch) || ch == '_'))
+                            return bad(422, "invalid_value", path, "pin name may hold letters, digits and _ only");
+                    c.key = "night." + kv.first; c.value = pv;
+                } else return bad(400, "unknown_field", path, "unknown field");
             } else if (s == "jpeg") {
                 // AP14: reported by /api/v1/config, deliberately NOT writable.
                 // Enabling the JPEG encoder on this platform wedges the whole
@@ -941,6 +1016,10 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
             c.r = ApplyResult::stored(ApplyMode::DaemonRestart, atoi(c.value.c_str()), "persisted; applies to sockets after daemon restart");
         else if (c.key == "rtsp.max_clients")
             c.r = ApplyResult::stored(ApplyMode::DaemonRestart, atoi(c.value.c_str()), "persisted; the accept loop picks it up after daemon restart");
+        else if (c.key.rfind("night.", 0) == 0)
+            // W2: reine Konfiguration (Pins/Freigaben) -- es gibt jetzt nichts
+            // zu schalten, die Aktionen (/night/*) lesen sie live aus dem Store.
+            c.r = ApplyResult::applied(ApplyMode::Live, 0, 0, "stored; used on the next day/night action");
         else if (c.key.rfind("image.", 0) == 0) {
             ImageControl control; image_control_from_name(c.key.substr(6), control);
             int iv = control == ImageControl::AntiFlicker ? (c.value == "off" ? 0 : c.value == "50hz" ? 50 : 60) : atoi(c.value.c_str());

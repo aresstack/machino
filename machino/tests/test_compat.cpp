@@ -342,16 +342,14 @@ void test_unoffered_subsystems() {
         CCHECK(r.path == s);
     }
 
-    // nightMode IS published (one key), so "unknown section" would read as a
-    // typo on the caller's side when the cause is the camera's hardware.
+    // W2: nightMode ist seit dem NightService eine ECHTE Sektion -- der POST
+    // uebersetzt majestic-Namen auf native night.*-Keys (ob der Ziel-Build
+    // sie traegt, entscheidet die native Validierung, nicht diese Schicht).
     {
-        MajesticTranslation r = majestic_post_to_native("{\"nightMode\":{\"irCutPin1\":\"11\"}}");
-        CCHECK(!r.ok);
-        CCHECK(r.status == 403);
-        CCHECK(r.code == "unsupported_control");
-        CCHECK(r.path == "nightMode");
-        CCHECK(r.message.find("IR-cut") != std::string::npos);
-        CCHECK(r.message.find("t40") != std::string::npos);
+        MajesticTranslation r = majestic_post_to_native("{\"nightMode\":{\"irCutPin1\":\"PB18\"}}");
+        CCHECK(r.ok);
+        CCHECK(r.patch.get("night") != nullptr);
+        CCHECK(r.patch.get("night")->get("ircut_pin1")->as_string() == "PB18");
     }
 
     // AP20: audio is reported too (two switches), so it gets a reason as well.
@@ -379,8 +377,9 @@ void test_unoffered_subsystems() {
     }
 
     // And none of them leaks into a patch: a refusal that still translated
-    // something would be worse than either answer.
-    for (const char* s : { "records", "analytics", "peers", "nightMode", "audio" }) {
+    // something would be worse than either answer. (nightMode ist seit W2
+    // eine echte Sektion und gehoert nicht mehr in diese Liste.)
+    for (const char* s : { "records", "analytics", "peers", "audio" }) {
         const std::string body = std::string("{\"") + s + "\":{\"enabled\":\"true\"}}";
         MajesticTranslation r = majestic_post_to_native(body);
         CCHECK(r.patch.members().empty());

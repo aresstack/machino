@@ -851,6 +851,13 @@ int main(int argc, char** argv) {
                                           &ipsec_uplinks);
         api.set_ipsec_service(&ipsec_service);
 
+        // W2 (Day/Night): majestics /night/*-Flaeche. Nachtmodus ueber den
+        // ISP (RunningMode), IR-Cut/Licht ueber GPIO -- derselbe Controller
+        // wie der USB-Port (ein sysfs, nie stehlen). Pins kommen aus der
+        // Day / Night-Sektion der WebUI (night.* im Store).
+        night::NightService night_service(tuning, &usb_gpio, store);
+        api.set_night_service(&night_service);
+
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
         // Front-door: the Majestic drop-in login gates :80 exactly like

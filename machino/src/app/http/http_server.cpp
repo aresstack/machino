@@ -493,6 +493,23 @@ bool HttpServer::handle_request(Client& c) {
     else if (path == "/api/v1/state")        { r = (m == "GET") ? api_.state() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/telemetry")    { r = (m == "GET") ? api_.telemetry() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/ai/detectors") { r = (m == "GET") ? api_.ai_detectors() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+    else if (path.rfind("/night/", 0) == 0) {
+        // W2: majestics Day/Night-Flaeche (Stream-URLs-Seite dokumentiert
+        // sie woertlich). GET, Antwort = nacktes JSON-Boolean.
+        r = (m == "GET") ? api_.night_action(path.substr(7))
+                         : api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    }
+    else if (path == "/metrics/night") {
+        // majestic-Vertrag: value=<name>_enabled -> "0"/"1" als text/plain.
+        const std::string v = SessionGate::form_value(req.query, "value");
+        std::string val;
+        if (m == "GET" && api_.night_metric(v, val)) {
+            bool ok = queue(c, response(200, "text/plain", val, req.keep_alive));
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
+        }
+        r = api::ApiService::fail(404, "not_found", path, "no such gauge");
+    }
     else if (path == "/api/v1/ipsec")            { r = (m == "GET") ? api_.ipsec_get() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/ipsec/config")     { r = (m == "PUT") ? api_.ipsec_put_config(req.body) : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/ipsec/connect")    { r = (m == "POST") ? api_.ipsec_connect() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }

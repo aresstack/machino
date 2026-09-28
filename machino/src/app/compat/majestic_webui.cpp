@@ -104,6 +104,33 @@ void copy_if(const Json& src, Json& dst, const char* key) {
 
 bool compiled_default(const std::string& key, Json& out);   // defined with majestic_reset below
 
+// W1: majestic <-> nativ fuer die drei umbenannten Image-Keys (eine Tabelle).
+static const struct { const char* maj; const char* nat; bool boolean; } kImageAlias[] = {
+    {"luminance", "brightness", false},
+    {"mirror",    "hflip",      true},
+    {"flip",      "vflip",      true},
+};
+const char* majestic_image_native(const std::string& majestic_key, bool* is_bool) {
+    for (const auto& a : kImageAlias)
+        if (majestic_key == a.maj) { if (is_bool) *is_bool = a.boolean; return a.nat; }
+    return nullptr;
+}
+const char* majestic_image_alias(const std::string& native_key, bool* is_bool) {
+    for (const auto& a : kImageAlias)
+        if (native_key == a.nat) { if (is_bool) *is_bool = a.boolean; return a.maj; }
+    return nullptr;
+}
+
+// W2: majestic nightMode.* <-> nativ night.* (Day / Night-Sektion).
+static const struct { const char* maj; const char* nat; bool boolean; } kNightAlias[] = {
+    {"irCut",             "ircut",               true},
+    {"irCutPin1",         "ircut_pin1",          false},
+    {"irCutPin2",         "ircut_pin2",          false},
+    {"irCutSingleInvert", "ircut_single_invert", true},
+    {"backlight",         "backlight",           true},
+    {"backlightPin",      "backlight_pin",       false},
+};
+
 // Attach the shared compiled-in default to an already-built schema field, so
 // the stock UI enables its reset button exactly where /api/v1/reset works.
 static void set_default(Json& section, const char* section_name, const char* leaf) {
@@ -169,9 +196,25 @@ Json majestic_schema(const Json& capabilities) {
                 if (!supported(&cap)) continue;
                 const char* xr = xreload_for(&cap);
                 if (!xr) continue;
+                // W1: die Stock-UI haengt Features an majestic-NAMEN und
+                // -TYPEN: der Tone-Strip und der Stock-Knopf kennen
+                // "luminance" (nicht brightness), das Orientation-Pad
+                // erscheint nur fuer BOOLSCHE mirror/flip. Also spricht das
+                // Schema majestic; die native Flaeche bleibt unveraendert.
+                bool as_bool = false;
+                const char* alias = majestic_image_alias(kv.first, &as_bool);
+                const std::string key = alias ? alias : kv.first;
                 const Json* values = cap.get("values");
-                Json f = (values && values->is_array()) ? enum_field(title_for(kv.first), *values)
-                                                        : integer_field(title_for(kv.first), &cap);
+                Json f;
+                if (as_bool) {
+                    f = Json::object();
+                    f.set("type", Json::string("boolean"));
+                    f.set("title", Json::string(title_for(key)));
+                } else if (values && values->is_array()) {
+                    f = enum_field(title_for(key), *values);
+                } else {
+                    f = integer_field(title_for(key), &cap);
+                }
                 f.set("x-reload", Json::string(xr));
                 // AP10: x-live is what makes the settings page push this knob
                 // to POST /api/v1/image as it is dragged, instead of only on
@@ -179,11 +222,50 @@ Json majestic_schema(const Json& capabilities) {
                 // which is the gap the acceptance recorded as the one visible
                 // drop-in deviation.
                 f.set("x-live", Json::boolean(true));
-                image_fields.set(kv.first, f);
+                image_fields.set(key, f);
             }
         }
     }
+    // W1: Defaults fuer die vier Tone-Knoepfe -- 128 ist der dokumentierte
+    // IMP-Neutralwert (0..255, Mitte = keine Verschiebung), also derselbe
+    // Bildzustand wie "unset auf Tuning-Bin-Default". Erst damit tun der
+    // Stock-Knopf und die Reihen-Resets der Stock-UI etwas.
+    for (const char* k : {"luminance", "contrast", "saturation", "hue"})
+        set_default(image_fields, "image", k);
     add_section(properties, "image", image_fields);
+
+    // W2: die Day / Night-Sektion (Stock-Label "nightMode"). Nur wenn dieser
+    // Build den Dienst hat -- eine Plattform ohne ihn bekaeme sonst eine
+    // Seite voller toter Felder. Der IR-Cut/Licht-Schalter der Live-Seite
+    // liest seine Freigabe (und der Tooltip seinen Text) aus genau irCut/
+    // backlight. Die Auto-Tag/Nacht-Keys (Thresholds, Delays) fehlen
+    // ABSICHTLICH: die Automatik ist nicht implementiert, und ein Feld, das
+    // nichts tut, ist eine Fake-Capability.
+    if (const Json* night = capabilities.get("night")) {
+        const Json* av = night->get("available");
+        if (av && av->is_bool() && av->as_bool()) {
+            auto boolf = [](const char* title) {
+                Json f = Json::object();
+                f.set("type", Json::string("boolean"));
+                f.set("title", Json::string(title));
+                return f;
+            };
+            auto strf = [](const char* title) {
+                Json f = Json::object();
+                f.set("type", Json::string("string"));
+                f.set("title", Json::string(title));
+                return f;
+            };
+            Json nf = Json::object();
+            nf.set("irCut", boolf("IR-cut filter"));
+            nf.set("irCutPin1", strf("IR-cut pin 1 (e.g. PB18)"));
+            nf.set("irCutPin2", strf("IR-cut pin 2 (empty = single-pin filter)"));
+            nf.set("irCutSingleInvert", boolf("Invert single-pin level"));
+            nf.set("backlight", boolf("Camera light"));
+            nf.set("backlightPin", strf("Light pin"));
+            add_section(properties, "nightMode", nf);
+        }
+    }
 
     Json latency_fields = Json::object();
     if (const Json* latency = capabilities.get("latency")) {
@@ -248,10 +330,10 @@ Json majestic_schema(const Json& capabilities) {
 
     Json groups = Json::array();
     const char* media_sections[] = {"video0", "video1", "sensor", "latency"};
-    const char* image_sections[] = {"image"};
+    const char* image_sections[] = {"image", "nightMode"};   // W2: Day / Night neben Image
     const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai"};
     Json media = group("media", "Media", properties, media_sections, 4);
-    Json image = group("image", "Image", properties, image_sections, 1);
+    Json image = group("image", "Image", properties, image_sections, 2);
     Json runtime = group("runtime", "Runtime", properties, runtime_sections, 4);
     if (media.get("sections")->size()) groups.push(media);
     if (image.get("sections")->size()) groups.push(image);
@@ -323,14 +405,34 @@ Json majestic_config(const Json& native_config, const Json& state) {
     const Json* effective_image = state.get("image");
     if (requested_image && requested_image->is_object()) {
         for (const auto& kv : requested_image->members()) {
-            if (!kv.second.is_null()) image.set(kv.first, kv.second);
+            // W1: die View spricht majestic -- luminance statt brightness,
+            // mirror/flip als Boolean statt hflip/vflip 0/1 (dasselbe
+            // Vokabular wie das Schema, sonst findet die Seite ihre Werte
+            // nicht wieder).
+            bool as_bool = false;
+            const char* alias = majestic_image_alias(kv.first, &as_bool);
+            const std::string key = alias ? alias : kv.first;
+            const Json* v = nullptr;
+            if (!kv.second.is_null()) v = &kv.second;
             else if (effective_image) {
-                if (const Json* effective = effective_image->get(kv.first); effective && !effective->is_null())
-                    image.set(kv.first, *effective);
+                if (const Json* eff = effective_image->get(kv.first); eff && !eff->is_null()) v = eff;
             }
+            if (!v) continue;
+            if (as_bool && v->is_number()) image.set(key, Json::boolean(v->as_int() != 0));
+            else                           image.set(key, *v);
         }
     }
     if (!image.members().empty()) out.set("image", image);
+
+    // W2: night.* (nativ) -> nightMode.* (majestic-View, dieselben Namen wie
+    // das Schema, sonst findet die Seite ihre Werte nicht).
+    if (const Json* native_night = native_config.get("night");
+        native_night && native_night->is_object()) {
+        Json nm = Json::object();
+        for (const auto& a : kNightAlias)
+            if (const Json* v = native_night->get(a.nat)) nm.set(a.maj, *v);
+        if (!nm.members().empty()) out.set("nightMode", nm);
+    }
 
     if (const Json* native_latency = native_config.get("latency")) {
         Json latency = Json::object();
@@ -354,14 +456,13 @@ Json majestic_config(const Json& native_config, const Json& state) {
         if (!lifecycle.members().empty()) out.set("lifecycle", lifecycle);
     }
 
-    // Machino does not drive the IR-cut filter yet. To the stock WebUI an
-    // ABSENT nightMode.irCutPin1 means "Majestic cannot move the IR-cut
-    // filter" - a red hardware fault. Upstream ircut-check.js treats
-    // irCut=="off" as "a decision, not a defect" (parked: with no pins
-    // configured it raises NO finding at all), which is the truthful state
-    // here. No GPIO pins are invented; real nightMode support comes from the
-    // board profile later.
-    {
+    // W2: der NightService faehrt den Filter jetzt wirklich; die echte
+    // Sektion (oben, aus night.*) hat Vorrang. NUR wenn dieser Build keinen
+    // Night-Dienst hat (kein native "night"-Abschnitt), bleibt der geparkte
+    // Ehrlichkeitszustand von frueher: irCut=="off" heisst fuer upstreams
+    // ircut-check.js "eine Entscheidung, kein Defekt" -- ein ABSENTES
+    // nightMode.irCutPin1 wuerde dagegen als roter Hardwarefehler gelesen.
+    if (!out.get("nightMode")) {
         Json nm = Json::object();
         nm.set("irCut", Json::string("off"));
         out.set("nightMode", nm);
@@ -467,26 +568,47 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
             patch.set("video", video);
             continue;
         }
+        if (name == "image" && value.is_object()) {
+            // W1: majestic-Vokabular zurueckuebersetzen -- luminance ->
+            // brightness, mirror/flip (Boolean) -> hflip/vflip (0/1). Die
+            // native Validierung bleibt strikt, uebersetzt wird NUR hier.
+            Json native_img = Json::object();
+            for (const auto& kv : value.members()) {
+                bool as_bool = false;
+                const char* nat = majestic_image_native(kv.first, &as_bool);
+                const std::string key = nat ? nat : kv.first;
+                if (as_bool && kv.second.is_bool())
+                    native_img.set(key, Json::integer(kv.second.as_bool() ? 1 : 0));
+                else
+                    native_img.set(key, kv.second);
+            }
+            patch.set("image", native_img);
+            continue;
+        }
+        if (name == "nightMode" && value.is_object()) {
+            // W2: majestic nightMode.* -> nativ night.* (eine Tabelle).
+            // Unbekannte Leafs laufen unveraendert weiter und scheitern in
+            // der nativen Validierung MIT NAMEN.
+            Json native_night = Json::object();
+            for (const auto& kv : value.members()) {
+                const char* nat = nullptr;
+                for (const auto& a : kNightAlias)
+                    if (kv.first == a.maj) { nat = a.nat; break; }
+                native_night.set(nat ? nat : kv.first.c_str(), kv.second);
+            }
+            patch.set("night", native_night);
+            continue;
+        }
         if (name == "performance" || name == "sensor" || name == "image" ||
             name == "latency" || name == "rtsp" || name == "lifecycle" || name == "power" || name == "ai") {
             patch.set(name, value);
             continue;
         }
-        // AP18/AP19: nightMode is a section this layer REPORTS (one key,
-        // irCut "off"), so answering a write to it with "unknown section"
-        // would be the AP14 defect again - it reads as a typo on the caller's
-        // side when the cause is a property of the camera. Say which.
-        if (name == "nightMode") {
-            r.code = "unsupported_control";
-            r.status = 403;
-            r.path = name;
-            r.message = "this camera has no IR-cut hardware this build can drive: no ircut, "
-                        "led or infrared node in the device tree, no /sys/class/leds, no PWM, "
-                        "no ADC, and upstream's wiki-harvested pin table has no entry for t40. "
-                        "Pins are not accepted because nothing would act on them.";
-            return r;
-        }
-        // AP20: same rule as nightMode - audio is reported, so a write to it
+        // (AP18/AP19-Ablehnung fuer nightMode entfernt: seit W2 faehrt der
+        // NightService IR-Cut/Licht wirklich -- die Sektion wird oben
+        // uebersetzt; ob der ZIEL-Build sie hat, entscheidet die native
+        // Validierung mit "day/night is not wired on this platform".)
+        // AP20: audio is reported, so a write to it
         // is refused with the reason rather than called unknown.
         if (name == "audio") {
             r.code = "unsupported_control";
@@ -680,6 +802,15 @@ bool compiled_default(const std::string& key, Json& out) {
     if (key == "video0.gop")              { out = Json::integer(def.video.gop); return true; }
     if (key == "ai.enabled")              { out = Json::boolean(def.ai.enabled); return true; }
     if (key == "ai.inference_fps")        { out = Json::integer(def.ai.inference_fps); return true; }
+    // W1: die vier Tone-Knoepfe. 128 = dokumentierter IMP-Neutralwert
+    // (SetBrightness/Contrast/Saturation/Hue, 0..255, Mitte = keine
+    // Verschiebung) -- bildgleich mit dem Tuning-Bin-Default, aber ohne den
+    // Pipeline-Restart des Unset-Pfads. Genau die Menge, die der
+    // Stock-Knopf der Stock-UI zuruecksetzt (TONE_KEYS).
+    if (key == "image.luminance" || key == "image.contrast" ||
+        key == "image.saturation" || key == "image.hue") {
+        out = Json::integer(128); return true;
+    }
     return false;
 }
 
@@ -691,7 +822,12 @@ MajesticTranslation majestic_reset(const std::string& key) {
     Json dv;
     size_t dot = key.find('.');
     if (dot != std::string::npos && compiled_default(key, dv)) {
-        Json leaf = Json::object(); leaf.set(key.substr(dot + 1), dv);
+        // W1: das Schema spricht majestic (image.luminance); der native PATCH
+        // braucht den nativen Leaf (image.brightness).
+        std::string leaf_name = key.substr(dot + 1);
+        if (key.rfind("image.", 0) == 0)
+            if (const char* nat = majestic_image_native(leaf_name)) leaf_name = nat;
+        Json leaf = Json::object(); leaf.set(leaf_name, dv);
         Json top = Json::object();  top.set(key.substr(0, dot), leaf);
         return majestic_post_to_native(top.dump());
     }
@@ -722,7 +858,9 @@ MajesticTranslation majestic_reset(const std::string& key) {
     for (const auto& u : UNSET)
         if (key == u.mkey) { r.ok = true; r.status = 200; r.unset.push_back(u.conf); return r; }
     if (key.rfind("image.", 0) == 0) {
-        const std::string leaf = key.substr(6);
+        std::string leaf = key.substr(6);
+        // W1: majestic-Vokabular auf den nativen conf-Key abbilden.
+        if (const char* nat = majestic_image_native(leaf)) leaf = nat;
         for (const char* k : IMAGE_KEYS)
             if (leaf == k) { r.ok = true; r.status = 200; r.unset.push_back("image." + leaf); return r; }
     }

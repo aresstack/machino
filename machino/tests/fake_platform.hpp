@@ -32,6 +32,8 @@ public:
             c.control[(int)k] = RangeCap{Cap::Supported, 0, 255, ApplyMode::Live};
         c.control[(int)ImageControl::AntiFlicker] = RangeCap{Cap::Supported, 0, 60, ApplyMode::Live};
         c.control[(int)ImageControl::WhiteBalanceMode] = RangeCap{Cap::Supported, 0, 9, ApplyMode::Live};
+        // W2: der Nachtmodus faehrt ueber RunningMode (0 Tag, 1 Nacht).
+        c.control[(int)ImageControl::RunningMode] = RangeCap{Cap::Supported, 0, 1, ApplyMode::Live};
         return c;
     }
     Result set(ImageControl c, int value, int& effective) override {

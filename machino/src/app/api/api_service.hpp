@@ -18,6 +18,7 @@
 #include "ports/rtsp_control.hpp"
 #include "core/media/tuning_service.hpp"
 #include "core/net/ipsec_service.hpp"
+#include "core/night/night_service.hpp"
 #include "core/power/performance_service.hpp"
 #include <cstdint>
 #include <mutex>
@@ -57,6 +58,14 @@ public:
     // Der PSK ist write-only: PUT nimmt ihn an, KEINE Route gibt ihn zurueck,
     // er erscheint in keiner Fehlermeldung.
     void set_ipsec_service(ipsec::IpsecService* s) { ipsec_ = s; }
+
+    // W2 (Day/Night): die majestic-/night/*-Flaeche. cmd = on|off|toggle|
+    // ircut|light; Antwort ist das nackte JSON-Boolean des neuen Zustands
+    // (so liest es die Stock-Seite). night_metric liefert die "0"/"1"-
+    // Textwerte fuer /metrics/night?value=... Ohne verdrahteten Service 404.
+    void set_night_service(night::NightService* s) { night_ = s; }
+    Response night_action(const std::string& cmd);
+    bool night_metric(const std::string& value_name, std::string& out);
     Response ipsec_get();                              // GET  /api/v1/ipsec
     Response ipsec_put_config(const std::string& body);// PUT  /api/v1/ipsec/config
     Response ipsec_connect();                          // POST /api/v1/ipsec/connect
@@ -117,6 +126,7 @@ private:
     IRtspControl* rtsp_ = nullptr;                 // AP2: live rtsp.enabled/rtsp.port; null = not wired
     std::function<std::vector<detection::DetectorStatus>(const std::string&)> det_status_;
     ipsec::IpsecService*        ipsec_ = nullptr;  // AP3: optional, null = nicht verdrahtet
+    night::NightService*        night_ = nullptr;  // W2: optional, null = nicht verdrahtet
     std::mutex                  patch_m_;          // PATCHes are serialised
 };
 
