@@ -88,7 +88,10 @@ this camera.**
 
 | Endpoint | Why |
 |---|---|
-| `/image.jpg`, `/image.dng` | The JPEG path wedges the whole daemon on T40NN and is default-off (`machino-t40nn-jpeg-wedge`). `/snapshot` exists natively; `/image.jpg` is not aliased to it. |
+| `/image.jpg` | **W3 (2026-09-28): aliased to the snapshot path.** Same handler as `/snapshot.jpg`; `?t=`/`?session=` cache-busting is ignored. With `jpeg.enabled=false` (the T40NN default, `machino-t40nn-jpeg-wedge`) it answers an honest 501. `/image.dng` stays absent. |
+| `/night/*`, `/metrics/night`, `nightMode` section | **W2 (2026-09-28): real.** `NightService` drives RunningMode (ISP) + IR-cut/light GPIO; pins configured in the Day / Night settings. Auto day/night (thresholds/delays) deliberately NOT advertised until implemented. |
+| `/image.yuv420?crop=` | Luma histogram source. Needs raw-frame access via its own framesource path; the stock page degrades cleanly without it. Own work package. |
+| `/api/v1/gpio`, `/api/v1/pinmux`, `/api/v1/calibration/*` | The IR-cut pin-hunt diagnostics suite. Own work package; until then pins are entered manually in Day / Night settings. |
 | `/audio.pcm`, `/play_audio` | No audio path. `libaudioProcess` is absent from OpenIPC (AP6) and audio was never in scope. |
 | `/upload`, `/ws/upgrade` | Firmware upload, excluded from AP10 by the assignment. |
 | `/api/v1/live` | OSD placement dragging. Falls back to a legacy query form on 404 **and** the `osd` section is not advertised, so the drag UI never mounts. Becomes relevant the moment OSD is switched on. |

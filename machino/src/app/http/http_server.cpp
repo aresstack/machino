@@ -746,7 +746,12 @@ bool HttpServer::handle_request(Client& c) {
             LOGI(MOD, "%s: MJPEG stream started", c.peer.c_str());
             return true;
         }
-    } else if (path == "/snapshot" || path == "/snapshot.jpg" || path == "/api/v1/snapshot") {
+    } else if (path == "/snapshot" || path == "/snapshot.jpg" || path == "/api/v1/snapshot" ||
+               path == "/image.jpg") {
+        // W3: /image.jpg ist majestics Name fuer dasselbe Standbild (Dashboard
+        // pollt es, die Kameraseite holt Stills mit ?t=/?session= -- die Query
+        // ist Cache-Busting und wird ignoriert). Mit jpeg.enabled=false
+        // antwortet der Pfad ehrlich 501 (T40NN-JPEG-Wedge, Default aus).
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         else {
             std::vector<uint8_t> jpg; std::string serr;
