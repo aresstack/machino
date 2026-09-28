@@ -455,6 +455,7 @@ int main(int argc, char** argv) {
              cfg.audio.output_enabled ? "enabled" : "disabled (audio.output_enabled=false)", cfg.audio.srate);
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection, &rtsp);
         api.set_audio_service(&audio_service);
+        rtsp.set_audio(&audio_service);         // before server.start(): the accept loop reads it
         // AP-NNA5: der Availability-Vertrag aus der Plattform in die API --
         // dieselbe Bewertung, die auch die Detector-Fabrik gated.
         // static_cast, nicht dynamic_cast: das Binary baut mit -fno-rtti, und

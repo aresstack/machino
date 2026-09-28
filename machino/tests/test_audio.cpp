@@ -5,6 +5,7 @@
 #include "app/compat/majestic_migrate.hpp"
 #include "app/compat/majestic_webui.hpp"
 #include "app/http/audio_stream.hpp"
+#include "app/rtsp/rtp_audio.hpp"
 #include "core/audio/audio_service.hpp"
 #include "core/audio/g711.hpp"
 #include "core/json.hpp"
@@ -463,9 +464,39 @@ void test_play_body() {
     ACHECK(http::kMaxPlayBodyBytes / 2 <= (size_t)audio::Speaker::kMaxQueueSeconds * 8000);   // a maximal body fits the queue
 }
 
+void test_rtsp_audio_helpers() {
+    const std::string sdp = rtsp::sdp_audio_section();
+    ACHECK(sdp.rfind("m=audio 0 RTP/AVP 8\r\n", 0) == 0);
+    ACHECK(sdp.find("a=rtpmap:8 PCMA/8000\r\n") != std::string::npos);
+    ACHECK(sdp.find("a=control:trackID=1\r\n") != std::string::npos);
+
+    ACHECK(rtsp::track_from_url("rtsp://cam/ch0/trackID=1") == 1);
+    ACHECK(rtsp::track_from_url("rtsp://cam/stream=0/trackID=0") == 0);
+    ACHECK(rtsp::track_from_url("rtsp://cam/ch0") == 0);                 // single-track clients: the video
+
+    uint8_t h[12];
+    rtsp::rtp_header(h, rtsp::kPayloadPcma, false, 0x1234, 0x01020304, 0xAABBCCDD);
+    ACHECK(h[0] == 0x80 && h[1] == 8 && h[2] == 0x12 && h[3] == 0x34);
+    ACHECK(h[4] == 1 && h[7] == 4 && h[8] == 0xAA && h[11] == 0xDD);
+    rtsp::rtp_header(h, 96, true, 0, 0, 0);
+    ACHECK(h[1] == (0x80 | 96));
+
+    int a = -1, b = -1;
+    ACHECK(rtsp::interleaved_channels("RTP/AVP/TCP;unicast;interleaved=2-3", a, b) && a == 2 && b == 3);
+    ACHECK(rtsp::interleaved_channels("RTP/AVP/TCP;interleaved=4;mode=play", a, b) && a == 4 && b == 5);
+    ACHECK(!rtsp::interleaved_channels("RTP/AVP;unicast;client_port=5000-5001", a, b));
+
+    // One 40 ms frame at 16 kHz becomes one 320-byte PCMA payload (8 kHz).
+    std::vector<int16_t> frame(640, 1000);
+    std::string pcma;
+    http::audio_encode(http::AudioFormat::Alaw, 16000, reinterpret_cast<const uint8_t*>(frame.data()), frame.size() * 2, pcma);
+    ACHECK(pcma.size() == 320 && (uint8_t)pcma[0] == audio::alaw_encode((int16_t)1000));
+}
+
 } // namespace
 
 void run_audio_tests() {
+    test_rtsp_audio_helpers();
     test_speaker();
     test_play_body();
     test_majestic_unbuilt_urls();

@@ -371,6 +371,20 @@ Line-/Kopfhörerausgang ist dafür nicht gebaut.
   `audio_param.json`), im Schema, in der Config und in der Telemetrie
   (`audio.speaker`).
 
+### Audio in RTSP (seit 2026-09-29)
+
+* Solange `audio.enabled` gilt, bietet DESCRIBE eine zweite Spur an:
+  `m=audio 0 RTP/AVP 8`, `a=rtpmap:8 PCMA/8000`, `a=control:trackID=1` — auf
+  `/ch0`, `/ch1` und den majestic-Namen `/stream=0|1`. G.711 A-law ist der
+  Codec, den jeder NVR, VLC und ONVIF-Client dekodiert, und der ohne
+  Encoder-Bibliothek geht (`app/rtsp/rtp_audio.*`, host-getestet).
+* Ein RTP-Paket je 40-ms-Frame (320 Byte bei 8 kHz); 16 kHz Aufnahme wird 2:1
+  dezimiert. TCP-interleaved (Kanal aus dem SETUP, sonst 2-3) und UDP, je
+  Spur eigener Transport.
+* Die Spur ist ein normaler AudioService-Zuhoerer: das Mikrofon oeffnet erst
+  beim PLAY. Laesst es sich nicht oeffnen, laeuft die Sitzung ohne Ton weiter;
+  wird das Mikrofon ausgeschaltet, endet nur die Audiospur.
+
 ### Noch offen
 
 * Talkback (RTSP-Backchannel), Audio in `/ws/video` (`&audio=`), Opus/AAC.
