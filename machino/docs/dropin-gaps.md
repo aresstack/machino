@@ -93,7 +93,8 @@ this camera.**
 | `/image.yuv420?crop=` | Luma histogram source. Needs raw-frame access via its own framesource path; the stock page degrades cleanly without it. Own work package. |
 | `/api/v1/gpio`, `/api/v1/pinmux`, `/api/v1/calibration/*` | The IR-cut pin-hunt diagnostics suite. Own work package; until then pins are entered manually in Day / Night settings. |
 | `/audio.pcm`, `/play_audio` | No audio path. `libaudioProcess` is absent from OpenIPC (AP6) and audio was never in scope. |
-| `/upload`, `/ws/upgrade` | Firmware upload, excluded from AP10 by the assignment. |
+| `/ws/upgrade` | **W5 (2026-09-28): real.** The Update banner/page runs sysupgrade through the UI. machino accepts the JSON start frame `{source,kernel,rootfs,reset,force}`, maps it to a sysupgrade argv (`compat::upgrade_plan`), spawns it and streams stdout+stderr as WS text frames. Two invariants, host-tested: `--web` is ALWAYS passed (else sysupgrade SIGQUITs the daemon streaming the log) and overlay wipe (`reset`/`-n`) is NEVER passed and is refused in the page's vocabulary — machino, its config and the AI model live on the overlay. majestic stays disabled across the update: a normal rootfs flash preserves the overlay whiteout on `S95majestic`. |
+| `/upload` | Local `.tgz` upload for offline flashing. Deferred: buffering a multi-MB body in RAM on a 48 MB camera needs streaming-to-disk, its own work package. The online (banner) path does not use it; `upgrade_plan` already maps `source=/tmp/firmware.tgz` for when it lands. |
 | `/api/v1/live` | OSD placement dragging. Falls back to a legacy query form on 404 **and** the `osd` section is not advertised, so the drag UI never mounts. Becomes relevant the moment OSD is switched on. |
 
 ### D. Advertised-but-inert

@@ -92,16 +92,29 @@ MajesticTranslation majestic_reset(const std::string& key);
 // AP21: what /ws/upgrade says instead of flashing.
 //
 // The FIRST line has to match upstream update.js's refusal vocabulary exactly.
-// That vocabulary is enumerated and anchored on purpose - its own comment
-// explains why a loose "any line beginning ERROR:" would be dangerous: the
-// transcript carries other tools' output (curl, tar, flashcp) and a pattern
-// that caught one of their lines "would end a run while a flash was under
-// way". So the wording is not ours to improvise, and it lives here where a
-// host test can hold it to the regex.
+// The refusals the page understands are enumerated and anchored on purpose -
+// its own comment explains why a loose "any line beginning ERROR:" would be
+// dangerous: the transcript carries other tools' output (curl, tar, flashcp)
+// and a pattern that caught one of their lines "would end a run while a flash
+// was under way". So the wording is not ours to improvise; upgrade_plan below
+// emits only the enumerated markers, and a host test holds it to the regex.
 //
-// Everything after the first line is free text and lands in the page's log
-// pane, under the sentence the marker triggers: "Nothing was written to flash,
-// so the camera is unchanged."
-std::string upgrade_refusal();
+// The /ws/upgrade start contract, decoded and mapped to a sysupgrade argv.
+//
+// update.js sends ONE JSON frame to begin: {source, kernel, rootfs, reset,
+// force}. This turns it into the exact command machino spawns, or a refusal
+// spoken in the page's enumerated vocabulary (the anchored first-line marker
+// rule above). It is a pure function so a host test can pin the two things that must
+// never regress: that "-n"/overlay-wipe can NEVER appear in argv (it would
+// erase machino and the AI model), and that "--web" ALWAYS does (without it
+// sysupgrade SIGQUITs the streaming daemon at line 347 and the log dies).
+//
+// argv empty + refusal set  => refuse (send `refusal`, then close).
+// argv non-empty            => spawn argv[0] with argv (no shell).
+struct UpgradePlan {
+    std::vector<std::string> argv;   // execv vector; empty means "refuse"
+    std::string refusal;             // text frame to send when refusing
+};
+UpgradePlan upgrade_plan(const std::string& params_json);
 
 }} // namespace machino::compat

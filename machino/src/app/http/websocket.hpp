@@ -28,6 +28,11 @@ std::string frame(bool text, const void* payload, size_t len);
 // three lines, but it would be a behaviour change and not a cleanup.
 std::string pong_frame(const std::string& ping_payload);
 
+// A ping the server sends to keep an otherwise-idle socket alive (the browser
+// answers with a pong automatically). Used on /ws/upgrade during sysupgrade's
+// quiet download/time-sync phases so a stateful firewall does not drop the TCP.
+std::string ping_frame(const std::string& payload = "");
+
 enum class Parse { Incomplete, Ok, Bad };
 // Parses ONE client frame from `in`; on Ok, `consumed` bytes were used,
 // `opcode` is the RFC opcode (1 text, 2 binary, 8 close, 9 ping, 10 pong)

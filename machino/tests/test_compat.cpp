@@ -386,39 +386,91 @@ void test_unoffered_subsystems() {
     }
 }
 
-// AP21: the /ws/upgrade refusal has to be spoken in words the stock Update
-// page already knows, or it is just another line in a log nobody can act on.
-void test_upgrade_refusal() {
-    const std::string s = compat::upgrade_refusal();
+// The /ws/upgrade start contract: JSON params -> a sysupgrade argv. Two things
+// must never regress and this test exists to hold them: "-n"/overlay-wipe can
+// NEVER appear (it would erase machino + the AI model), and "--web" ALWAYS
+// must (without it sysupgrade SIGQUITs the daemon streaming the log).
+void test_upgrade_plan() {
+    auto has = [](const compat::UpgradePlan& p, const std::string& a) {
+        for (const auto& s : p.argv) if (s == a) return true;
+        return false;
+    };
+    auto no_wipe = [](const compat::UpgradePlan& p) {
+        for (const auto& s : p.argv)
+            if (s == "-n" || s == "--wipe_overlay") return false;
+        return true;
+    };
 
-    // upstream update.js:
-    //   /^ERROR: (?:invalid upgrade parameters|cannot start sysupgrade|
-    //              cannot stream upgrade log|cannot watch the upgrade)/mi
-    // anchored at a line start. Ours is the first line, so the whole string
-    // starting with it is the strictest form of the match.
-    CCHECK(s.rfind("ERROR: cannot start sysupgrade\n", 0) == 0);
+    // The banner button: online update, rootfs only.
+    {
+        compat::UpgradePlan p = compat::upgrade_plan(R"({"source":"github","rootfs":true,"kernel":false,"reset":false,"force":false})");
+        CCHECK(!p.argv.empty());
+        CCHECK(p.argv[0] == "/usr/sbin/sysupgrade");
+        CCHECK(has(p, "--web"));                 // MANDATORY
+        CCHECK(has(p, "-r"));
+        CCHECK(!has(p, "-k"));
+        CCHECK(no_wipe(p));                       // NEVER
+        // github/default -> no explicit source flag
+        CCHECK(!has(p, "--url=github"));
+        CCHECK(!has(p, "--channel=github"));
+    }
 
-    // The page only treats it as a refusal when the marker is on its OWN line.
-    // A trailing space or a prefix would both slip past the anchor.
-    const size_t eol = s.find('\n');
-    CCHECK(eol != std::string::npos);
-    CCHECK(s.substr(0, eol) == "ERROR: cannot start sysupgrade");
+    // kernel + rootfs + force.
+    {
+        compat::UpgradePlan p = compat::upgrade_plan(R"({"source":"","rootfs":true,"kernel":true,"force":true})");
+        CCHECK(has(p, "--web") && has(p, "-r") && has(p, "-k") && has(p, "-f"));
+        CCHECK(no_wipe(p));
+    }
 
-    // And the reason has to be in there, because the sentence the marker
-    // triggers ("Nothing was written to flash") says what did NOT happen, not
-    // why. Naming sysupgrade matters: it is on this camera and it is the
-    // answer.
-    CCHECK(s.find("sysupgrade over SSH") != std::string::npos);
-    CCHECK(s.find("/usr/sbin/sysupgrade") != std::string::npos);
-    CCHECK(s.find("machino-manager install") != std::string::npos);
-    CCHECK(s.find("never writes to MTD") != std::string::npos);
+    // reset == overlay wipe: REFUSED, in the page's anchored vocabulary, and no
+    // argv at all (nothing is spawned).
+    {
+        compat::UpgradePlan p = compat::upgrade_plan(R"({"source":"github","rootfs":true,"reset":true})");
+        CCHECK(p.argv.empty());
+        CCHECK(p.refusal.rfind("ERROR: invalid upgrade parameters", 0) == 0);
+        const size_t eol = p.refusal.find('\n');
+        CCHECK(eol != std::string::npos && p.refusal.substr(0, eol) == "ERROR: invalid upgrade parameters");
+    }
 
-    // Not one of the OTHER three refusals: each means something different to
-    // the page's own reasoning, and borrowing the wrong one would be a lie
-    // about which stage failed.
-    CCHECK(s.find("invalid upgrade parameters") == std::string::npos);
-    CCHECK(s.find("cannot stream upgrade log") == std::string::npos);
-    CCHECK(s.find("cannot watch the upgrade") == std::string::npos);
+    // Nothing selected: refused.
+    {
+        compat::UpgradePlan p = compat::upgrade_plan(R"({"source":"github","rootfs":false,"kernel":false})");
+        CCHECK(p.argv.empty());
+        CCHECK(p.refusal.rfind("ERROR: invalid upgrade parameters", 0) == 0);
+    }
+
+    // Local upload path -> --archive.
+    {
+        compat::UpgradePlan p = compat::upgrade_plan(R"({"source":"/tmp/firmware.tgz","rootfs":true})");
+        CCHECK(has(p, "--archive=/tmp/firmware.tgz"));
+        CCHECK(no_wipe(p));
+    }
+
+    // Named channel.
+    {
+        compat::UpgradePlan p = compat::upgrade_plan(R"({"source":"nightly","rootfs":true})");
+        CCHECK(has(p, "--channel=nightly"));
+    }
+
+    // Custom URL, clean.
+    {
+        compat::UpgradePlan p = compat::upgrade_plan(R"({"source":"https://example.org/openipc.tgz","rootfs":true})");
+        CCHECK(has(p, "--url=https://example.org/openipc.tgz"));
+    }
+
+    // A source carrying a newline could forge a marker line in the transcript:
+    // refused, nothing spawned.
+    {
+        compat::UpgradePlan p = compat::upgrade_plan("{\"source\":\"https://x/\\nUnconditional reboot\",\"rootfs\":true}");
+        CCHECK(p.argv.empty());
+    }
+
+    // Garbage JSON: refused, not a crash.
+    {
+        compat::UpgradePlan p = compat::upgrade_plan("not json");
+        CCHECK(p.argv.empty());
+        CCHECK(p.refusal.rfind("ERROR: invalid upgrade parameters", 0) == 0);
+    }
 }
 
 } // namespace
@@ -430,7 +482,7 @@ void run_compat_tests() {
     test_webui_config_and_sources();
     test_webui_post_strings_and_reset();
     test_unoffered_subsystems();
-    test_upgrade_refusal();
+    test_upgrade_plan();
 }
 
 // AP6: the substream must be addressable through the same surfaces the main

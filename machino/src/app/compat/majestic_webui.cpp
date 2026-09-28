@@ -869,25 +869,98 @@ MajesticTranslation majestic_reset(const std::string& key) {
     return r;
 }
 
-std::string upgrade_refusal() {
-    // Line 1 is the contract word, character for character. Everything after
-    // it is for the person reading the log pane.
-    std::string s;
-    s += "ERROR: cannot start sysupgrade\n";
-    s += "\n";
-    s += "This build does not flash firmware. Machino replaces the streaming\n";
-    s += "daemon only - it never writes to MTD, so nothing here can brick the\n";
-    s += "camera, and nothing here can update it either.\n";
-    s += "\n";
-    s += "To update the firmware, run sysupgrade over SSH. It is already on\n";
-    s += "this camera at /usr/sbin/sysupgrade, and it does the checking that\n";
-    s += "matters: it refuses an image built for another SoC, refuses one that\n";
-    s += "does not fit its partition, and runs every size check BEFORE the\n";
-    s += "first erase.\n";
-    s += "\n";
-    s += "To update Machino itself, use machino-manager install - that touches\n";
-    s += "one binary and its config, and never the flash layout.\n";
-    return s;
+namespace {
+// A refusal frame: the enumerated marker on its OWN first line (so update.js's
+// anchored /^ERROR: .../mi matches), then free reason text for the log pane.
+UpgradePlan refuse(const char* marker, const std::string& reason) {
+    UpgradePlan p;
+    p.refusal = std::string(marker) + "\n\n" + reason;
+    return p;   // argv stays empty => caller refuses
+}
+// A --url source must be a bare http(s) URL with no whitespace or control
+// bytes: it goes into argv unquoted (no shell), but a newline would still let
+// it forge a marker line in the streamed transcript.
+bool clean_token(const std::string& s, bool allow_slash_colon) {
+    if (s.empty() || s.size() > 512) return false;
+    for (unsigned char ch : s) {
+        if (ch <= 0x20 || ch == 0x7f) return false;             // no ws/control
+        const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                        (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                        ch == '-' ||
+                        (allow_slash_colon && (ch == '/' || ch == ':' ||
+                                               ch == '?' || ch == '=' ||
+                                               ch == '&' || ch == '%'));
+        if (!ok) return false;
+    }
+    return true;
+}
+} // namespace
+
+UpgradePlan upgrade_plan(const std::string& params_json) {
+    Json j; std::string jerr;
+    if (!Json::parse(params_json, j, jerr) || !j.is_object())
+        return refuse("ERROR: invalid upgrade parameters",
+                      "The start message was not the JSON the Update page sends.");
+
+    auto flag = [&](const char* key) {
+        const Json* v = j.get(key);
+        return v && v->is_bool() && v->as_bool();
+    };
+    const bool kernel = flag("kernel");
+    const bool rootfs = flag("rootfs");
+    const bool reset  = flag("reset");
+    const bool force  = flag("force");
+
+    // The one thing this daemon will not do. reset == wipe_overlay == "-n":
+    // machino, its config and the AI model all live on the overlay, so a
+    // wiping update would erase the very daemon streaming this log. Refuse it
+    // in the page's own words rather than quietly dropping the flag - the
+    // person asked for a wipe and has to be told it was declined.
+    if (reset)
+        return refuse("ERROR: invalid upgrade parameters",
+                      "Overlay wipe (\"reset\") is refused: machino, its "
+                      "settings and the AI model all live on the overlay, and "
+                      "wiping it would erase this daemon mid-update. Uncheck "
+                      "the reset/wipe option and update again - the base "
+                      "firmware still updates, and majestic stays disabled.");
+
+    if (!kernel && !rootfs)
+        return refuse("ERROR: invalid upgrade parameters",
+                      "Nothing selected to update: pick kernel and/or rootfs.");
+
+    UpgradePlan p;
+    // --web is mandatory: without it sysupgrade SIGQUITs the web daemon (this
+    // process) before flashing (sysupgrade line ~347), and the log the page is
+    // reading dies with it. With it, machino survives the quiet phases and
+    // streams to the point of no return.
+    p.argv = {"/usr/sbin/sysupgrade", "--web"};
+    if (rootfs) p.argv.push_back("-r");
+    if (kernel) p.argv.push_back("-k");
+    if (force)  p.argv.push_back("-f");
+    // NOTE: "-n"/"--wipe_overlay" is intentionally never added. See reset above.
+
+    const Json* src = j.get("source");
+    const std::string source = (src && src->is_string()) ? src->as_string() : "";
+    if (source.empty() || source == "github") {
+        // Default online update: no source flag -> sysupgrade pulls the latest
+        // build for this SoC from the OpenIPC release channel. This is the
+        // banner button's path.
+    } else if (source.rfind("http://", 0) == 0 || source.rfind("https://", 0) == 0) {
+        if (!clean_token(source, /*allow_slash_colon=*/true))
+            return refuse("ERROR: invalid upgrade parameters",
+                          "The update URL contains characters that are not allowed.");
+        p.argv.push_back("--url=" + source);
+    } else if (source == "/tmp/firmware.tgz") {
+        // Local upload: the page POSTed the .tgz to /upload first.
+        p.argv.push_back("--archive=/tmp/firmware.tgz");
+    } else if (clean_token(source, /*allow_slash_colon=*/false)) {
+        // A named release channel from the manifest (nightly, stable, ...).
+        p.argv.push_back("--channel=" + source);
+    } else {
+        return refuse("ERROR: invalid upgrade parameters",
+                      "The update source was not recognised.");
+    }
+    return p;
 }
 
 }} // namespace machino::compat

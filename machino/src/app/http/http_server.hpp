@@ -131,6 +131,12 @@ private:
     void pump_ws_video(Client& c);  // fMP4-per-frame over WebSocket (majestic /ws/video)
     bool ws_video_input(Client& c); // client frames: {"request":"idr"}, ping, close
     bool rtc_ws_input(Client& c);   // /ws/webrtc signalling: offer -> answer/busy/error
+    // /ws/upgrade: the JSON start frame spawns sysupgrade; pump_upgrade streams
+    // its output. ws_upgrade_input reads the start (and pings/close); false
+    // drops the socket. spawn_upgrade forks the child.
+    bool ws_upgrade_input(Client& c);
+    bool spawn_upgrade(Client& c, const std::vector<std::string>& argv);
+    void pump_upgrade(Client& c, short revents);
     // /ws/logs: ONE shared "logread -f" child feeds every subscriber, its pipe
     // rides the same poll() so nothing blocks the media path. Started with the
     // first subscriber, reaped with the last.

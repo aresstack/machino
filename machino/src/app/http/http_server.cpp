@@ -153,6 +153,16 @@ struct HttpServer::Client {
     std::shared_ptr<Subscription> sub;
     unsigned requests = 0;
     bool ws_logs = false;           // /ws/logs subscriber (shared logread feed)
+    // /ws/upgrade: this connection runs one sysupgrade child and streams its
+    // stdout+stderr to the page as text frames. One start per socket.
+    bool ws_upgrade = false;
+    bool upgrade_started = false;   // a start frame has been consumed
+    int  upgrade_fd = -1;           // read end of the child's merged stdout/stderr
+    pid_t upgrade_pid = -1;
+    bool upgrade_saw_flash = false; // saw the point-of-no-return marker
+    bool upgrade_saw_reboot = false;
+    std::string upgrade_win;        // rolling tail for markers that straddle reads
+    int64_t upgrade_last_ping_ms = 0;
     // /ws/video: one live MSE feed = one StreamHub consumer with its own
     // demand, exactly like an RTSP session (no second encoder, no JPEG).
     bool ws_video = false;
@@ -256,6 +266,10 @@ void HttpServer::stop() {
         if (c->ws_sink) { StreamHub* h = c->ws_hub ? c->ws_hub : hub_; if (h) { c->ws_sink->close(); h->unsubscribe(c->ws_sink); } }
         if (c->rtc_sink) { StreamHub* h = c->rtc_hub ? c->rtc_hub : hub_; if (h) { c->rtc_sink->close(); h->unsubscribe(c->rtc_sink); } }
         if (c->relay_fd >= 0) close(c->relay_fd);
+        // The upgrade child is NEVER killed here: once sysupgrade is flashing it
+        // survives a disconnect on purpose ("Protected: flashing continues").
+        // We only drop our read end; the child finishes and reboots the box.
+        if (c->upgrade_fd >= 0) close(c->upgrade_fd);
         close(c->fd);
     }
     clients_.clear();
@@ -686,27 +700,24 @@ bool HttpServer::handle_request(Client& c) {
             return true;
         }
     } else if (path == "/ws/upgrade") {
-        // AP21: this build does not flash firmware. Answering 404 looked
-        // harmless and was not - the stock Update page reports a failed
-        // handshake as "Could not start the upgrade. Another session may be in
-        // progress, or the camera is unreachable", and BOTH halves of that are
-        // false here. It sends an owner hunting for a phantom session on a
-        // camera that is answering perfectly.
-        //
-        // The contract has a channel for exactly this: upstream's update.js
-        // matches an enumerated, anchored refusal vocabulary on a TEXT frame
-        // and then says "Nothing was written to flash, so the camera is
-        // unchanged" - which is the true sentence. So the socket is accepted,
-        // the refusal is spoken in the words the page knows, and the reason
-        // follows in the log pane underneath it.
+        // The stock Update page's flash channel. update.js opens this socket and
+        // sends ONE JSON start frame {source, kernel, rootfs, reset, force}; the
+        // camera runs sysupgrade and streams its stdout+stderr back verbatim, so
+        // every marker the page watches for (Protected/Kernel updated/RootFS
+        // updated/Unconditional reboot/"<reason> Aborting.") comes straight from
+        // sysupgrade. Two invariants machino adds on top (upgrade_plan + a host
+        // test hold them): --web is ALWAYS passed (else sysupgrade SIGQUITs this
+        // daemon and the log dies), and overlay wipe (reset/-n) is NEVER passed
+        // (it would erase machino and the AI model). majestic stays disabled
+        // across the update because the overlay whiteout on S95majestic is
+        // preserved - a normal rootfs flash keeps the overlay.
         const std::string wskey = req.header("sec-websocket-key");
         if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
         else {
             queue(c, ws::handshake_response(wskey));
-            const std::string why = compat::upgrade_refusal();
-            queue(c, ws::frame(true, why.data(), why.size()));
-            c.close_after_flush = true;
-            LOGI(MOD, "%s: /ws/upgrade refused - this build does not flash firmware", c.peer.c_str());
+            c.ws_upgrade = true;                 // now awaiting the JSON start frame
+            c.upgrade_last_ping_ms = now_ms();
+            LOGI(MOD, "%s: /ws/upgrade open - awaiting start", c.peer.c_str());
             return true;
         }
     } else if (path == "/ws/logs") {
@@ -1261,6 +1272,153 @@ bool HttpServer::ws_video_input(Client& c) {
     }
 }
 
+// Fork sysupgrade with its stdout+stderr merged into one non-blocking pipe we
+// read from the poll loop. No shell: argv is executed directly, so the
+// validated source token can not be a command. Returns false only if the fork
+// machinery itself failed (the caller then speaks "cannot start sysupgrade").
+bool HttpServer::spawn_upgrade(Client& c, const std::vector<std::string>& argv) {
+    int fds[2];
+    if (pipe(fds) != 0) return false;
+    const pid_t pid = fork();
+    if (pid < 0) { close(fds[0]); close(fds[1]); return false; }
+    if (pid == 0) {
+        // Child: stdout+stderr -> pipe write end, detach from our controlling
+        // session so a socket close can not deliver a signal to the flasher.
+        dup2(fds[1], 1);
+        dup2(fds[1], 2);
+        close(fds[0]); close(fds[1]);
+        setsid();
+        std::vector<char*> a;
+        a.reserve(argv.size() + 1);
+        for (const auto& s : argv) a.push_back(const_cast<char*>(s.c_str()));
+        a.push_back(nullptr);
+        execv(a[0], a.data());
+        // execv only returns on failure; say so on the same stream the page reads.
+        const char* msg = "ERROR: cannot start sysupgrade\n";
+        ssize_t wr = write(2, msg, strlen(msg)); (void)wr;
+        _exit(127);
+    }
+    close(fds[1]);
+    fcntl(fds[0], F_SETFL, O_NONBLOCK);
+    c.upgrade_fd = fds[0];
+    c.upgrade_pid = pid;
+    return true;
+}
+
+// Client -> server on a /ws/upgrade socket: ONE JSON start frame, then pings
+// and close. The start frame maps to a sysupgrade argv (compat::upgrade_plan)
+// or a refusal; a second start frame is ignored (one flash per socket).
+bool HttpServer::ws_upgrade_input(Client& c) {
+    for (;;) {
+        size_t used = 0; int op = 0; std::string payload;
+        ws::Parse p = ws::parse_frame(c.in, used, op, payload, 8192);
+        if (p == ws::Parse::Incomplete) return c.in.size() <= MAX_IN;
+        if (p == ws::Parse::Bad) return false;
+        c.in.erase(0, used);
+        if (op == 8) return false;                             // close
+        if (op == 9) { queue(c, ws::pong_frame(payload)); continue; }
+        if (op != 1) continue;
+        if (c.upgrade_started) continue;                       // one start per socket
+        c.upgrade_started = true;
+
+        const compat::UpgradePlan plan = compat::upgrade_plan(payload);
+        if (plan.argv.empty()) {
+            queue(c, ws::frame(true, plan.refusal.data(), plan.refusal.size()));
+            c.close_after_flush = true;
+            LOGI(MOD, "%s: /ws/upgrade refused start", c.peer.c_str());
+            return true;
+        }
+        std::string cmd;
+        for (const auto& s : plan.argv) { cmd += s; cmd += ' '; }
+        if (!spawn_upgrade(c, plan.argv)) {
+            const std::string why = "ERROR: cannot start sysupgrade\n\n"
+                                    "The camera could not launch sysupgrade.";
+            queue(c, ws::frame(true, why.data(), why.size()));
+            c.close_after_flush = true;
+            LOGW(MOD, "%s: /ws/upgrade spawn failed", c.peer.c_str());
+            return true;
+        }
+        c.upgrade_last_ping_ms = now_ms();
+        LOGI(MOD, "%s: /ws/upgrade started: %s(pid %d)", c.peer.c_str(), cmd.c_str(), (int)c.upgrade_pid);
+    }
+}
+
+// Drain the upgrade child's pipe into text frames, keep the socket warm during
+// the quiet download/time-sync phases, and close honestly when the child ends.
+void HttpServer::pump_upgrade(Client& c, short revents) {
+    if (c.upgrade_fd < 0) {
+        // No child yet: ping the idle awaiting/starting socket so a NAT or the
+        // browser does not drop it before the first frame.
+        const int64_t t = now_ms();
+        if (t - c.upgrade_last_ping_ms >= 10000) {
+            c.upgrade_last_ping_ms = t;
+            queue(c, ws::ping_frame());
+        }
+        return;
+    }
+    bool eof = false;
+    if (revents & (POLLIN | POLLHUP | POLLERR)) {
+        char buf[4096];
+        for (;;) {
+            ssize_t n = read(c.upgrade_fd, buf, sizeof buf);
+            if (n > 0) {
+                queue(c, ws::frame(true, buf, (size_t)n), cfg_.max_out_buffer);
+                // Track the point of no return and the reboot announcement over a
+                // rolling window so a marker split across two reads still counts.
+                c.upgrade_win.append(buf, (size_t)n);
+                if (c.upgrade_win.size() > 512) c.upgrade_win.erase(0, c.upgrade_win.size() - 512);
+                if (!c.upgrade_saw_flash &&
+                    (c.upgrade_win.find("Protected: flashing") != std::string::npos ||
+                     c.upgrade_win.find("Flashing from RAM") != std::string::npos ||
+                     c.upgrade_win.find("Stopping web server before flashing") != std::string::npos))
+                    c.upgrade_saw_flash = true;
+                if (!c.upgrade_saw_reboot &&
+                    (c.upgrade_win.find("Unconditional reboot") != std::string::npos ||
+                     c.upgrade_win.find("Rebooting now") != std::string::npos))
+                    c.upgrade_saw_reboot = true;
+                continue;
+            }
+            if (n == 0) { eof = true; break; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            if (errno == EINTR) continue;
+            eof = true; break;   // EIO etc.: the pipe is gone
+        }
+    }
+    if (!eof) {
+        const int64_t t = now_ms();
+        if (t - c.upgrade_last_ping_ms >= 10000) {
+            c.upgrade_last_ping_ms = t;
+            queue(c, ws::ping_frame());  // keep the quiet phases alive
+        }
+        return;
+    }
+    // The child closed its stdout. Reap it and decide the epilogue.
+    int status = 0;
+    const pid_t r = (c.upgrade_pid > 0) ? waitpid(c.upgrade_pid, &status, WNOHANG) : 0;
+    close(c.upgrade_fd); c.upgrade_fd = -1;
+    if (c.upgrade_saw_reboot || c.upgrade_saw_flash) {
+        // The flash reached the point of no return; the box is rebooting (or
+        // sysupgrade said "flashing continues" and detached). Say nothing more -
+        // the page already saw the markers and now polls for the camera to
+        // return. Emitting "Upgrade did not complete" here would be a lie.
+        LOGI(MOD, "%s: /ws/upgrade child ended after flash; awaiting reboot", c.peer.c_str());
+    } else {
+        // No flash markers were seen, so nothing was written. Only add the
+        // "did not complete" ending on a GENUINE failure exit: a clean exit
+        // (Same version / --no_reboot success) already said its piece, and the
+        // die() path printed "<reason> Aborting." which the page keys on. A
+        // WNOHANG that has not reaped yet (r == 0) is treated as "unknown, say
+        // nothing" rather than a false failure.
+        const bool failed = (r > 0) && (!WIFEXITED(status) || WEXITSTATUS(status) != 0);
+        if (failed) {
+            const std::string why = "\nUpgrade did not complete: sysupgrade exited without flashing.\n";
+            queue(c, ws::frame(true, why.data(), why.size()));
+        }
+    }
+    c.upgrade_pid = -1;
+    c.close_after_flush = true;
+}
+
 // /ws/webrtc signalling: {"req":"offer","data":<sdp>} -> answer/error/busy.
 // Trickled candidates are ignored - ICE-lite learns the peer address from its
 // authenticated STUN checks. One session per socket, two per camera.
@@ -1429,6 +1587,10 @@ void HttpServer::loop() {
                 pfds.push_back({c->rtc->fd(), POLLIN, 0});
                 refs.push_back({c, 2});
             }
+            if (c->upgrade_fd >= 0) {                   // sysupgrade child stdout: stream it out
+                pfds.push_back({c->upgrade_fd, POLLIN, 0});
+                refs.push_back({c, 3});
+            }
         }
         for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
         const size_t logs_idx = (logs_fd() >= 0) ? pfds.size() : (size_t)-1;
@@ -1438,11 +1600,12 @@ void HttpServer::loop() {
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)
         for (size_t i = 0; i < clients_.size(); ++i) {
             Client& c = *clients_[i];
-            short re = 0, rre = 0, ure = 0;
+            short re = 0, rre = 0, ure = 0, uge = 0;
             for (size_t k = 0; k < refs.size(); ++k)
                 if (refs[k].c == &c) {
                     if (refs[k].kind == 1) rre = pfds[k + 1].revents;
                     else if (refs[k].kind == 2) ure = pfds[k + 1].revents;
+                    else if (refs[k].kind == 3) uge = pfds[k + 1].revents;
                     else re = pfds[k + 1].revents;
                 }
             bool ok = true;
@@ -1453,6 +1616,7 @@ void HttpServer::loop() {
                 else if (r < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) ok = false; }
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.rtc_ws)   { c.in.append(buf, (size_t)r); ok = rtc_ws_input(c); }
+                else if (c.ws_upgrade) { c.in.append(buf, (size_t)r); ok = ws_upgrade_input(c); }
                 else if (c.sse || c.mjpeg || c.ws_logs) { /* ignore input on streaming connections */ }
                 else { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; else ok = pump_requests(c); }
             }
@@ -1479,9 +1643,15 @@ void HttpServer::loop() {
                 if (ure & POLLIN) c.rtc->on_readable();
                 pump_rtc(c);
             }
+            if (ok && c.ws_upgrade && !c.close_after_flush) pump_upgrade(c, uge);
             if (ok) ok = flush(c);
             if (ok && c.close_after_flush && c.out.empty()) ok = false;
-            if (ok && !c.sse && !c.mjpeg && !c.ws_video && !c.rtc_ws && !c.ws_logs && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
+            // A running upgrade is exempt from the idle timeout: sysupgrade's
+            // download and time-sync phases are silent for minutes and no recv
+            // refreshes last_activity_ms. A socket still only AWAITING its start
+            // frame is not exempt, so an abandoned handshake is still reaped.
+            const bool upgrade_running = c.ws_upgrade && c.upgrade_started;
+            if (ok && !c.sse && !c.mjpeg && !c.ws_video && !c.rtc_ws && !c.ws_logs && !upgrade_running && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
             if (!ok) {
                 // Close now, erase after the iteration: refs holds pointers
                 // into clients_, so the vector must not shift under it.
@@ -1499,6 +1669,12 @@ void HttpServer::loop() {
                 // main() and therefore destroyed before it - release() calls
                 // back into the manager.
                 if (c.relay_fd >= 0) { close(c.relay_fd); c.relay_fd = -1; }
+                // Drop our read end of the upgrade child, but never kill it:
+                // sysupgrade past the flash point is meant to outlive us.
+                if (c.upgrade_fd >= 0) {
+                    close(c.upgrade_fd); c.upgrade_fd = -1;
+                    if (c.upgrade_pid > 0) waitpid(c.upgrade_pid, nullptr, WNOHANG);
+                }
                 close(c.fd); c.fd = -1;
             }
         }
