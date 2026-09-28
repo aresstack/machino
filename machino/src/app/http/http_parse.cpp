@@ -279,7 +279,13 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
         // Detector/Rate wohnen in den Kamera-Einstellungen; diese Seite
         // besitzt den Unterbau -- und den Backup-Purge, der den Platz fuer
         // Modelle freimacht.
-        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-ai.cgi\">AI</a></li>";
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-ai.cgi\">AI</a></li>"
+        // Storage: das Aufraeum-Menue. Findet die Overlay-Platzfresser
+        // (Backups, Staging-Binaries, alte Payloads, KI-Modelle), macht jede
+        // Datei vor dem Loeschen herunterladbar, und zeigt majestic ehrlich als
+        // "im read-only /rom, 0 KB beschreibbar" statt einen Loeschknopf, der
+        // keinen Platz freigeben koennte.
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-cleanup.cgi\">Storage</a></li>";
 
     std::string out;
     out.reserve(html.size() + add.size());

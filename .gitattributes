@@ -2,6 +2,8 @@
 # "#!/bin/sh\r" shebang does not start on Linux, and a Windows checkout would
 # otherwise produce a bundle that fails on the camera with "bad interpreter".
 *.sh            text eol=lf
+*.cgi           text eol=lf
 machino/openipc/sbin/*      text eol=lf
 machino/openipc/init/*      text eol=lf
 machino/openipc/webui/*.cgi text eol=lf
+machino/openipc/www/*.cgi   text eol=lf

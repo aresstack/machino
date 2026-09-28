@@ -184,4 +184,52 @@ void run_wwwpages_tests()
     TCHECK(has(usb, "3.3"));
     TCHECK(has(usb, "transistor"));
     TCHECK(has(usb, "Power the port"));
+
+    // W5b: die Storage-/Aufraeum-Seite. Form-basiert wie machino-ai.cgi (kein
+    // fetch/main.js), also NICHT in check_page -- aber die sicherheitskritische
+    // Allowlist und die majestic-Haltung werden hier festgenagelt.
+    const std::string cl = slurp("openipc/www/machino-cleanup.cgi");
+    const std::string dl = slurp("openipc/www/machino-cleanup-dl.cgi");
+    TCHECK(!cl.empty());
+    TCHECK(!dl.empty());
+    // Das haserl-Seitenmuster (wie ai.cgi): Includes + Titel, kein eigenes Doc.
+    TCHECK(cl.compare(0, 18, "#!/usr/bin/haserl\n") == 0);
+    TCHECK(has(cl, "<%in p/common.cgi %>"));
+    TCHECK(has(cl, "<%in p/header.cgi %>"));
+    TCHECK(has(cl, "<%in p/footer.cgi %>"));
+    TCHECK(has(cl, "page_title=\"Storage\""));
+    TCHECK(!has(cl, "<html"));
+    TCHECK(!has(cl, "<!DOCTYPE"));
+    TCHECK(has(cl, "mj-card-note"));
+    TCHECK(has(cl, "row g-4"));
+    // Sichtbarer Text englisch (Umlaute nur in Kommentaren).
+    TCHECK(!has(cl, "&auml;"));
+    TCHECK(!has(cl, "&uuml;"));
+
+    // Sicherheitskern: BEIDE Skripte prueften jeden Pfad mit is_reclaimable,
+    // lehnen ".." ab und lassen nur die bekannten Fundstellen zu. Das ist der
+    // Riegel, der einen Pfad aus dem Netz von /etc/shadow o.ae. fernhaelt.
+    for (const std::string* s : {&cl, &dl}) {
+        TCHECK(has(*s, "is_reclaimable"));
+        TCHECK(has(*s, "*..*"));                              // Traversal-Riegel
+        TCHECK(has(*s, "[ -f \"$_p\" ] || return 1"));       // nur regulaere Dateien
+        TCHECK(has(*s, "/etc/machino/backup/*"));
+        TCHECK(has(*s, "/usr/bin/machino.old.*"));
+        TCHECK(has(*s, "/etc/machino/models/*"));
+    }
+    // Der Download-Helfer schreibt seine EIGENE HTTP-Antwort (wie cgi-run) und
+    // liefert als attachment aus -- sonst kann eine HTML-Seite keine Binaerdatei.
+    TCHECK(dl.compare(0, 9, "#!/bin/sh") == 0);              // plain sh, kein haserl
+    TCHECK(has(dl, "#!/bin/sh"));
+    TCHECK(has(dl, "Content-Disposition: attachment"));
+    TCHECK(has(dl, "HTTP/1.1 200 OK"));
+
+    // majestic bekommt KEINEN Loeschknopf (read-only /rom, 0 KB) -- nur einen
+    // Knopf, der die Deaktivierung (Whiteout) sicherstellt.
+    TCHECK(has(cl, "ensure-majestic-off"));
+    TCHECK(!has(cl, "del-majestic"));
+    TCHECK(has(cl, "read-only"));
+    // Die eigentlichen Aktionen der Seite.
+    TCHECK(has(cl, "del-file"));
+    TCHECK(has(cl, "machino-cleanup-dl.cgi?path="));
 }

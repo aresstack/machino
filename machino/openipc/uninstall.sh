@@ -108,6 +108,7 @@ rm -f "$WWW/cgi-bin/machino-cellular.cgi" "$WWW/cgi-bin/machino-usb.cgi"
 rm -f "$WWW/cgi-bin/machino-devices.cgi" "$WWW/cgi-bin/machino-network.cgi"
 rm -f "$WWW/cgi-bin/machino-cgi-run.cgi" "$WWW/cgi-bin/machino-dyndns.cgi"
 rm -f "$WWW/cgi-bin/machino-ai.cgi" "$WWW/cgi-bin/machino-ipsec.cgi"
+rm -f "$WWW/cgi-bin/machino-cleanup.cgi" "$WWW/cgi-bin/machino-cleanup-dl.cgi"
 # WebUI-Overlay: erst aushaengen (Stock-Assets kommen byte-identisch zurueck),
 # dann Skript und Tarball entfernen.
 [ -x "$INITD/S96machino-webui" ] && "$INITD/S96machino-webui" stop 2>/dev/null

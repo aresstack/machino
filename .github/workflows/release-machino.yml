@@ -131,6 +131,8 @@ jobs:
           cp -f machino/openipc/www/machino-dyndns.cgi  "$O/www/machino-dyndns.cgi"
           cp -f machino/openipc/www/machino-ai.cgi      "$O/www/machino-ai.cgi"
           cp -f machino/openipc/www/machino-ipsec.cgi   "$O/www/machino-ipsec.cgi"
+          cp -f machino/openipc/www/machino-cleanup.cgi    "$O/www/machino-cleanup.cgi"
+          cp -f machino/openipc/www/machino-cleanup-dl.cgi "$O/www/machino-cleanup-dl.cgi"
           # Upstream WebUI overlay (see build-machino-t40.yml): pin the
           # majestic-webui the backend was built against so an older flashed
           # WebUI still renders machino's schema right. Bind-mounted at boot,
