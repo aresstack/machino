@@ -40,6 +40,7 @@ public:
     bool   resolve(const std::string& name, int& number_out) const override;
     bool   holder_of(const std::string& name, GpioPinInfo& info) const override;
     Result configure_output(const std::string& name, bool initial_level) override;
+    Result configure_input(const std::string& name) override;
     Result write(const std::string& name, bool level) override;
     Result read(const std::string& name, bool& level_out) const override;
     void   release(const std::string& name) override;

@@ -159,6 +159,28 @@ Result SysfsGpio::configure_output(const std::string& name, bool initial_level)
     return Result::ok();
 }
 
+Result SysfsGpio::configure_input(const std::string& name)
+{
+    int n = -1;
+    if (!resolve(name, n)) return Result::unsupported();
+    if (!available()) return Result::unsupported();
+    GpioPinInfo info;
+    if (holder_of(name, info) && info.holder != "sysfs") return Result::busy();   // never steal, see configure_output
+
+    std::lock_guard<std::mutex> g(m_);
+    const std::string d = dir_for(n);
+    if (!exists(d)) {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%d", n);
+        if (!write_file(root_ + "/export", buf)) {
+            return errno == EBUSY ? Result::busy() : Result::error(errno);
+        }
+    }
+    exported_.insert(n);
+    if (!write_file(d + "/direction", "in")) return Result::error(errno);
+    return Result::ok();
+}
+
 Result SysfsGpio::write(const std::string& name, bool level)
 {
     int n = -1;

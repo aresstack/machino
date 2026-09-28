@@ -1162,6 +1162,10 @@ int main(int argc, char** argv) {
                         // Fehler -> Reconnect mit Backoff (kein stiller
                         // Uplink-Wechsel, kein Reconnect nach manuellem Stopp).
                         ipsec_service.tick((uint32_t)now_ms());
+                        // Automatic day/night (nightMode.lightMonitor): one
+                        // sysfs read of the photocell per tick; switches only
+                        // after the configured delay of a stable change.
+                        night_service.tick(now_ms());
                     }
                 }
             }

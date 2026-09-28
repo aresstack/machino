@@ -359,6 +359,10 @@ Json ApiService::config_json() {
         n.set("backlight_pin", Json::string(np.backlight_pin));
         n.set("light_sensor_pin", Json::string(np.light_sensor_pin));
         n.set("light_sensor_invert", Json::boolean(np.light_sensor_invert));
+        n.set("light_monitor", Json::boolean(np.light_monitor));
+        n.set("color_to_gray", Json::boolean(np.color_to_gray));
+        n.set("auto_night_delay", Json::integer(np.auto_night_delay_s));
+        n.set("auto_day_delay", Json::integer(np.auto_day_delay_s));
         j.set("night", n);
     }
     Json sen = Json::object(); sen.set("fps", Json::integer(e.sensor_fps_requested)); j.set("sensor", sen);
@@ -586,6 +590,21 @@ Json ApiService::telemetry_json() {
             }
         }
         j.set("ai", a);
+    }
+    if (night_) {
+        const night::AutoState a = night_->auto_state();
+        Json n = Json::object();
+        n.set("night", Json::boolean(night_->night()));
+        n.set("ircut", Json::boolean(night_->ircut()));
+        n.set("light", Json::boolean(night_->light()));
+        Json au = Json::object();
+        au.set("enabled", Json::boolean(a.enabled));
+        au.set("sensing", Json::boolean(a.sensing));
+        au.set("dark", a.dark < 0 ? Json::null() : Json::boolean(a.dark == 1));
+        au.set("switch_in_s", a.pending_s < 0 ? Json::null() : Json::integer(a.pending_s));
+        au.set("error", a.error.empty() ? Json::null() : Json::string(a.error));
+        n.set("auto", au);
+        j.set("night", n);
     }
     if (audio_) {
         const audio::AudioStats as = audio_->stats();
@@ -1011,9 +1030,12 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                 // Schalten (IGpioController::resolve), hier nur die Form.
                 if (!night_) return bad(422, "unsupported_control", path, "day/night is not wired on this platform");
                 if (kv.first == "ircut" || kv.first == "ircut_single_invert" || kv.first == "backlight"
-                    || kv.first == "light_sensor_invert") {
+                    || kv.first == "light_sensor_invert" || kv.first == "light_monitor" || kv.first == "color_to_gray") {
                     if (!val.is_bool()) return bad(422, "invalid_value", path, kv.first + " must be a boolean");
                     c.key = "night." + kv.first; c.value = val.as_bool() ? "true" : "false";
+                } else if (kv.first == "auto_night_delay" || kv.first == "auto_day_delay") {
+                    long long n; if (!get_int(val, n) || n < 0 || n > 3600) return bad(422, "invalid_value", path, kv.first + " must be seconds in 0..3600");
+                    c.key = "night." + kv.first; c.value = std::to_string(n);
                 } else if (kv.first == "ircut_pin1" || kv.first == "ircut_pin2" || kv.first == "backlight_pin"
                            || kv.first == "light_sensor_pin") {
                     if (!val.is_string()) return bad(422, "invalid_value", path, kv.first + " must be a string pin name (e.g. PB18) or empty");
@@ -1172,6 +1194,12 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
             Json ch = Json::array(); for (const auto& c : changes) ch.push(change_json(c)); r.body.set("changes", ch);
             return r;
         }
+        // colorToGray decides what the CURRENT night looks like, so a change
+        // to it is applied now - after the commit, because the service reads
+        // its settings from the store.
+        if (night_)
+            for (const auto& c : changes)
+                if (c.r.ok && c.key == "night.color_to_gray") { if (night_->night()) night_->set_night(true); break; }
         Json ev = Json::object(); ev.set("revision", Json::integer(store_.revision()));
         Json paths = Json::array(); for (const auto& c : changes) if (c.r.ok) paths.push(Json::string(c.path)); ev.set("paths", paths);
         bus_.publish("config_changed", ev.dump());

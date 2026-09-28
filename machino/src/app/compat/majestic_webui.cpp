@@ -131,6 +131,10 @@ static const struct { const char* maj; const char* nat; bool boolean; } kNightAl
     {"backlightPin",      "backlight_pin",       false},
     {"lightSensorPin",    "light_sensor_pin",    false},
     {"lightSensorInvert", "light_sensor_invert", true},
+    {"lightMonitor",      "light_monitor",       true},
+    {"colorToGray",       "color_to_gray",       true},
+    {"autoNightDelay",    "auto_night_delay",    false},
+    {"autoDayDelay",      "auto_day_delay",      false},
 };
 
 // Attach the shared compiled-in default to an already-built schema field, so
@@ -240,8 +244,10 @@ Json majestic_schema(const Json& capabilities) {
     // Build den Dienst hat -- eine Plattform ohne ihn bekaeme sonst eine
     // Seite voller toter Felder. Der IR-Cut/Licht-Schalter der Live-Seite
     // liest seine Freigabe (und der Tooltip seinen Text) aus genau irCut/
-    // backlight. Die Auto-Tag/Nacht-Keys (Thresholds, Delays) fehlen
-    // ABSICHTLICH: die Automatik ist nicht implementiert, und ein Feld, das
+    // backlight. Die Automatik ist die des Fotosensors (lightMonitor +
+    // lightSensorPin + autoNight/DayDelay); die Schwellen fuer eine Automatik
+    // aus der Sensorverstaerkung (minThreshold/maxThreshold, autoNight/DayGain)
+    // fehlen ABSICHTLICH: die ist nicht implementiert, und ein Feld, das
     // nichts tut, ist eine Fake-Capability.
     if (const Json* night = capabilities.get("night")) {
         const Json* av = night->get("available");
@@ -267,6 +273,18 @@ Json majestic_schema(const Json& capabilities) {
             nf.set("backlightPin", strf("Light pin"));
             nf.set("lightSensorPin", strf("Daylight sensor pin (photocell)"));
             nf.set("lightSensorInvert", boolf("Invert daylight sensor level"));
+            nf.set("lightMonitor", boolf("Automatic day/night (daylight sensor)"));
+            nf.set("colorToGray", boolf("Colorless night mode"));
+            auto secf = [](const char* title) {
+                Json f = Json::object();
+                f.set("type", Json::string("integer"));
+                f.set("title", Json::string(title));
+                f.set("minimum", Json::integer(0));
+                f.set("maximum", Json::integer(3600));
+                return f;
+            };
+            nf.set("autoNightDelay", secf("Seconds of darkness before night"));
+            nf.set("autoDayDelay", secf("Seconds of daylight before day"));
             add_section(properties, "nightMode", nf);
         }
     }
