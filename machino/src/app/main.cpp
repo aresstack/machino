@@ -858,9 +858,9 @@ int main(int argc, char** argv) {
         night::NightService night_service(tuning, &usb_gpio, store);
         // W2b: Stock-belegte Pins als Board-Profil-Vorgabe (PD22/PD23 auf
         // board-a, aus ovfs_boardsystem disassembliert); die UI ueberschreibt.
-        profiles::NightDefaults nd;
-        if (profiles::night_defaults_for_board(hwr.board_id, nd))
-            night_service.set_default_pins(nd.ircut_pin1, nd.ircut_pin2);
+        profiles::NightDefaults night_def;
+        if (profiles::night_defaults_for_board(hwr.board_id, night_def))
+            night_service.set_default_pins(night_def.ircut_pin1, night_def.ircut_pin2);
         api.set_night_service(&night_service);
 
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
