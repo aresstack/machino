@@ -357,6 +357,8 @@ Json ApiService::config_json() {
         n.set("ircut_single_invert", Json::boolean(np.ircut_single_invert));
         n.set("backlight", Json::boolean(np.backlight));
         n.set("backlight_pin", Json::string(np.backlight_pin));
+        n.set("light_sensor_pin", Json::string(np.light_sensor_pin));
+        n.set("light_sensor_invert", Json::boolean(np.light_sensor_invert));
         j.set("night", n);
     }
     Json sen = Json::object(); sen.set("fps", Json::integer(e.sensor_fps_requested)); j.set("sensor", sen);
@@ -1008,10 +1010,12 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                 // NAMEN ("PB18") oder Nummern -- aufgeloest wird beim
                 // Schalten (IGpioController::resolve), hier nur die Form.
                 if (!night_) return bad(422, "unsupported_control", path, "day/night is not wired on this platform");
-                if (kv.first == "ircut" || kv.first == "ircut_single_invert" || kv.first == "backlight") {
+                if (kv.first == "ircut" || kv.first == "ircut_single_invert" || kv.first == "backlight"
+                    || kv.first == "light_sensor_invert") {
                     if (!val.is_bool()) return bad(422, "invalid_value", path, kv.first + " must be a boolean");
                     c.key = "night." + kv.first; c.value = val.as_bool() ? "true" : "false";
-                } else if (kv.first == "ircut_pin1" || kv.first == "ircut_pin2" || kv.first == "backlight_pin") {
+                } else if (kv.first == "ircut_pin1" || kv.first == "ircut_pin2" || kv.first == "backlight_pin"
+                           || kv.first == "light_sensor_pin") {
                     if (!val.is_string()) return bad(422, "invalid_value", path, kv.first + " must be a string pin name (e.g. PB18) or empty");
                     const std::string& pv = val.as_string();
                     if (pv.size() > 15) return bad(422, "invalid_value", path, "pin name too long");

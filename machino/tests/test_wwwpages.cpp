@@ -232,4 +232,32 @@ void run_wwwpages_tests()
     // Die eigentlichen Aktionen der Seite.
     TCHECK(has(cl, "del-file"));
     TCHECK(has(cl, "machino-cleanup-dl.cgi?path="));
+
+    // W5c: der Modell-Upload auf der KI-Seite. Die KI-Seite bekommt einen
+    // Upload-Knopf (fetch), das Upload-CGL (plain sh) prueft das Bundle streng,
+    // BEVOR etwas nach /etc/machino/models geht.
+    const std::string ai   = slurp("openipc/www/machino-ai.cgi");
+    const std::string aiup = slurp("openipc/www/machino-ai-upload.cgi");
+    TCHECK(!ai.empty());
+    TCHECK(!aiup.empty());
+    // KI-Seite: Upload-Feld + fetch auf das Upload-CGI.
+    TCHECK(has(ai, "machino-ai-upload.cgi"));
+    TCHECK(has(ai, "type=\"file\""));
+    TCHECK(has(ai, "fetch("));
+    // Upload-CGI: plain sh, eigene HTTP-Antwort, und die Sicherheits-Gates.
+    TCHECK(aiup.compare(0, 9, "#!/bin/sh") == 0);
+    TCHECK(has(aiup, "HTTP/1.1"));
+    TCHECK(has(aiup, "REQUEST_METHOD"));
+    // Traversal-Riegel vor dem Extrahieren (tar-Ausbruch verhindern).
+    TCHECK(has(aiup, "\\.\\."));
+    TCHECK(has(aiup, "tar t"));
+    // Symlink-Riegel: nur regulaere Dateien (kein cp eines Symlink-Ziels).
+    TCHECK(has(aiup, "-type f -name"));
+    // Manifest-Kompatibilitaet: nur venus-nna / nna1 wird installiert.
+    TCHECK(has(aiup, "venus-nna"));
+    TCHECK(has(aiup, "nna1"));
+    // Zielort + Groessen-/Platz-Grenzen.
+    TCHECK(has(aiup, "/etc/machino/models"));
+    TCHECK(has(aiup, "CONTENT_LENGTH"));
+    TCHECK(has(aiup, "Insufficient Storage"));
 }

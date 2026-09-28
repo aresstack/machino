@@ -16,9 +16,12 @@ bool night_defaults_for_board(const std::string& board_id, NightDefaults& out)
     // 32+17 -> PB17 als Eingang = Lichtsensor). Andere T40-Boards erben
     // das NICHT durch den SoC -- nur durch eigene Messung/Analyse.
     if (board_id == "t40nn-imx307-board-a") {
-        out.ircut_pin1 = "PD22";
-        out.ircut_pin2 = "PD23";
-        out.light_sensor_pin = "PB17";
+        // Als NUMMERN, nicht als Namen: die Config speichert Nummern und die
+        // WebUI-Pin-Karte zeigt einen Default nur an, wenn er numerisch ist
+        // (currentAssign() -> isNumish). "PD22" waere fuer die Seite "not set".
+        out.ircut_pin1      = "118";   // PD22 (Port D idx 22): 3*32+22
+        out.ircut_pin2      = "119";   // PD23: 3*32+23
+        out.light_sensor_pin = "49";   // PB17 (Port B idx 17): 1*32+17
         return true;
     }
     return false;

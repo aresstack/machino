@@ -108,9 +108,40 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 <div class="col-12"><div class="card"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap">Models</h3><span class="mj-live-rule"></span></div>
 	<p class="mj-card-note">Model files live in <code>/etc/machino/models</code>. They are
-	  quantized Magik models (TransformKit output for the T40). Copy them onto the camera
-	  with the Cam-Tool or scp; the AI settings' <code>model path</code> then points at one
-	  of them<% [ -n "$model_cfg" ] && echo " (currently: <code>$model_cfg</code>)" %>.</p>
+	  quantized Magik models (TransformKit output for the T40). Upload a model bundle below,
+	  or copy one on with the Cam-Tool or scp; the AI settings' <code>model path</code> then
+	  points at one<% [ -n "$model_cfg" ] && echo " (currently: <code>$model_cfg</code>)" %>.</p>
+
+	<p class="mj-card-note">Upload a <b>.tgz</b> bundle containing the model <code>.bin</code>
+	  and its <code>manifest.json</code> (backend <code>venus-nna</code>, NNA generation
+	  <code>nna1</code>). Incompatible bundles are refused, and it needs free overlay space
+	  (see <a href="machino-cleanup.cgi">Storage</a>).</p>
+	<div class="mb-3">
+		<input type="file" id="mdlfile" accept=".tgz,.gz,.tar" style="max-width:22rem">
+		<button class="btn btn-sm btn-outline-primary" type="button" id="mdlup">Upload model bundle</button>
+		<span id="mdlmsg" class="mj-card-note" style="display:inline-block;margin-left:.5rem"></span>
+	</div>
+	<script>
+	(function () {
+		var b = document.getElementById('mdlup');
+		if (!b) return;
+		b.addEventListener('click', function () {
+			var fi = document.getElementById('mdlfile');
+			var msg = document.getElementById('mdlmsg');
+			var f = fi.files && fi.files[0];
+			if (!f) { msg.textContent = 'Choose a .tgz bundle first.'; return; }
+			b.disabled = true; msg.textContent = 'Uploading ' + f.name + ' ...';
+			fetch('machino-ai-upload.cgi', { method: 'POST', body: f })
+				.then(function (r) { return r.text().then(function (t) { return { ok: r.ok, t: t }; }); })
+				.then(function (res) {
+					msg.textContent = res.t;
+					if (res.ok) setTimeout(function () { location.reload(); }, 900);
+					else b.disabled = false;
+				})
+				.catch(function (e) { msg.textContent = 'Upload failed: ' + e; b.disabled = false; });
+		});
+	})();
+	</script>
 	<% if [ "$model_count" -gt 0 ]; then %>
 	<table class="table table-sm mb-0"><thead><tr><th>File</th><th>Size</th><th></th></tr></thead><tbody>
 	<% for f in "$MODELDIR"/*; do [ -f "$f" ] || continue; _b=$(basename "$f"); _s=$(du -k "$f" 2>/dev/null | cut -f1) %>

@@ -32,6 +32,10 @@ struct NightPins {
     bool        ircut_single_invert = false;
     bool        backlight = false;        // nightMode.backlight: Licht-Steuerung erlaubt
     std::string backlight_pin;
+    // Tag/Nacht-Fotosensor (Eingang). Nur Anzeige/Vorbelegung bis eine
+    // Automatik ihn abfragt -- eine gesetzte Pin schaltet nichts von selbst.
+    std::string light_sensor_pin;
+    bool        light_sensor_invert = false;
 };
 
 class NightService {
@@ -80,8 +84,10 @@ public:
     // Stock-Belegung, der Store (UI) ueberschreibt. Nur die PINS werden
     // vorbelegt -- die irCut/backlight-FREIGABE bleibt eine bewusste
     // Nutzerentscheidung (kein ueberraschendes Klicken ab Werk).
-    void set_default_pins(const std::string& ircut_pin1, const std::string& ircut_pin2)
-    { def_ircut_pin1_ = ircut_pin1; def_ircut_pin2_ = ircut_pin2; }
+    void set_default_pins(const std::string& ircut_pin1, const std::string& ircut_pin2,
+                          const std::string& light_sensor_pin = "")
+    { def_ircut_pin1_ = ircut_pin1; def_ircut_pin2_ = ircut_pin2;
+      def_light_sensor_pin_ = light_sensor_pin; }
 
 private:
     std::string drive_ircut_(bool engaged);
@@ -99,6 +105,7 @@ private:
     bool ircut_ = true;                   // Tag = Filter drin
     bool light_ = false;
     std::string def_ircut_pin1_, def_ircut_pin2_;   // Board-Profil-Vorgaben
+    std::string def_light_sensor_pin_;              // dto., Lichtsensor
 };
 
 }} // namespace machino::night

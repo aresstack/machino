@@ -878,7 +878,8 @@ int main(int argc, char** argv) {
         // board-a, aus ovfs_boardsystem disassembliert); die UI ueberschreibt.
         profiles::NightDefaults night_def;
         if (profiles::night_defaults_for_board(hwr.board_id, night_def))
-            night_service.set_default_pins(night_def.ircut_pin1, night_def.ircut_pin2);
+            night_service.set_default_pins(night_def.ircut_pin1, night_def.ircut_pin2,
+                                           night_def.light_sensor_pin);
         api.set_night_service(&night_service);
 
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
