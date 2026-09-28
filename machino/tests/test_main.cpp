@@ -30,6 +30,7 @@ void run_fmp4_timeline_tests();
 void run_sps_tests();
 void run_webrtc_tests();
 void run_webrtc_ap16_tests();
+void run_webrtc_audio_tests();
 void run_sdp_refusal_tests();
 void run_dtls_tests();
 void run_rtsp_auth_tests();
@@ -374,6 +375,7 @@ int main() {
     run_sps_tests();
     run_webrtc_tests();
     run_webrtc_ap16_tests();
+    run_webrtc_audio_tests();
     run_sdp_refusal_tests();
     run_dtls_tests();
     run_rtsp_auth_tests();

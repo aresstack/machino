@@ -61,25 +61,100 @@ SrtpSession::Dir::Dir(const SrtpKey& mk, bool rtcp)
 }
 
 SrtpSession::SrtpSession(const SrtpKey& out, const SrtpKey& in)
-    : rtp_out_(out, false), rtcp_out_(out, true), rtcp_in_(in, true) {}
+    : rtp_out_(out, false), rtcp_out_(out, true), rtcp_in_(in, true), rtp_in_(in, false) {}
+
+namespace {
+uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+
+// The stream's slot: its own, else a free one, else the first (a session that
+// churns through more SSRCs than slots loses the oldest's state, not safety -
+// the tag check still guards every packet).
+template <class T, size_t N> T& slot(T (&a)[N], uint32_t ssrc) {
+    for (auto& e : a) if (e.seen && e.ssrc == ssrc) return e;
+    for (auto& e : a) if (!e.seen) { e.ssrc = ssrc; return e; }
+    a[0] = T(); a[0].ssrc = ssrc;
+    return a[0];
+}
+} // namespace
 
 bool SrtpSession::protect_rtp(std::vector<uint8_t>& pkt) {
     if (pkt.size() < 12) return false;
-    const uint32_t ssrc = ((uint32_t)pkt[8] << 24) | ((uint32_t)pkt[9] << 16) | ((uint32_t)pkt[10] << 8) | pkt[11];
+    const uint32_t ssrc = be32(&pkt[8]);
     const uint16_t seq = (uint16_t)((pkt[2] << 8) | pkt[3]);
-    if (seq_seen_ && seq < last_seq_ && (uint16_t)(last_seq_ - seq) > 0x8000) ++roc_;   // our own wrap
-    last_seq_ = seq; seq_seen_ = true;
-    const uint64_t index = ((uint64_t)roc_ << 16) | seq;
+    OutSeq& st = slot(out_, ssrc);
+    if (st.seen && seq < st.last && (uint16_t)(st.last - seq) > 0x8000) ++st.roc;   // our own wrap
+    st.last = seq; st.seen = true;
+    const uint32_t roc = st.roc;
+    const uint64_t index = ((uint64_t)roc << 16) | seq;
     uint8_t iv[16];
     make_iv(rtp_out_.salt, ssrc, index, iv);
     cm_xor(rtp_out_.cipher, iv, pkt.data() + 12, pkt.size() - 12);
     // tag: HMAC(auth, packet || ROC), truncated to 80 bits
     std::vector<uint8_t> m(pkt);
-    m.push_back((uint8_t)(roc_ >> 24)); m.push_back((uint8_t)(roc_ >> 16));
-    m.push_back((uint8_t)(roc_ >> 8));  m.push_back((uint8_t)roc_);
+    m.push_back((uint8_t)(roc >> 24)); m.push_back((uint8_t)(roc >> 16));
+    m.push_back((uint8_t)(roc >> 8));  m.push_back((uint8_t)roc);
     uint8_t mac[20];
     hmac_sha1(rtp_out_.auth, 20, m.data(), m.size(), mac);
     pkt.insert(pkt.end(), mac, mac + 10);
+    return true;
+}
+
+bool SrtpSession::unprotect_rtp(std::vector<uint8_t>& pkt, size_t& payload_at) {
+    if (pkt.size() < 12 + 10 || (pkt[0] >> 6) != 2) return false;
+    const size_t tag_at = pkt.size() - 10;
+    // Header length: CSRCs, then an optional extension (browsers send one:
+    // audio level, abs-send-time). Only the payload is encrypted.
+    size_t hdr = 12 + 4 * (size_t)(pkt[0] & 0x0f);
+    if (pkt[0] & 0x10) {
+        if (hdr + 4 > tag_at) return false;
+        hdr += 4 + 4 * (size_t)((pkt[hdr + 2] << 8) | pkt[hdr + 3]);
+    }
+    if (hdr > tag_at) return false;
+    const uint32_t ssrc = be32(&pkt[8]);
+    const uint16_t seq = (uint16_t)((pkt[2] << 8) | pkt[3]);
+    InSeq& st = slot(in_, ssrc);
+    // RFC 3711 Appendix A: which rollover this seq most likely belongs to.
+    uint32_t v = st.roc;
+    if (st.seen) {
+        if (st.high < 32768) { if ((int)seq - (int)st.high > 32768 && st.roc > 0) v = st.roc - 1; }
+        else if ((int)st.high - 32768 > (int)seq) v = st.roc + 1;
+    }
+    const uint64_t index = ((uint64_t)v << 16) | seq;
+    if (st.seen) {                                              // replay window, checked before the MAC is trusted
+        if (index <= st.win_high) {
+            const uint64_t back = st.win_high - index;
+            if (back >= 64 || (st.win_mask & (1ull << back))) return false;
+        }
+    }
+    std::vector<uint8_t> m(pkt.begin(), pkt.begin() + (long)tag_at);
+    m.push_back((uint8_t)(v >> 24)); m.push_back((uint8_t)(v >> 16));
+    m.push_back((uint8_t)(v >> 8));  m.push_back((uint8_t)v);
+    uint8_t mac[20];
+    hmac_sha1(rtp_in_.auth, 20, m.data(), m.size(), mac);
+    if (memcmp(mac, pkt.data() + tag_at, 10) != 0) return false;
+    // Authentic: advance the state.
+    if (!st.seen) { st.seen = true; st.roc = v; st.high = seq; st.win_high = index; st.win_mask = 1; }
+    else {
+        if (v == st.roc + 1) { st.roc = v; st.high = seq; }
+        else if (v == st.roc && seq > st.high) st.high = seq;
+        if (index > st.win_high) {
+            const uint64_t shift = index - st.win_high;
+            st.win_mask = shift >= 64 ? 1 : (st.win_mask << shift) | 1;
+            st.win_high = index;
+        } else {
+            st.win_mask |= 1ull << (st.win_high - index);
+        }
+    }
+    uint8_t iv[16];
+    make_iv(rtp_in_.salt, ssrc, index, iv);
+    cm_xor(rtp_in_.cipher, iv, pkt.data() + hdr, tag_at - hdr);
+    pkt.resize(tag_at);
+    if ((pkt[0] & 0x20) && pkt.size() > hdr) {                  // padding: the last byte counts it
+        const size_t pad = pkt.back();
+        if (pad == 0 || pad > pkt.size() - hdr) return false;
+        pkt.resize(pkt.size() - pad);
+    }
+    payload_at = hdr;
     return true;
 }
 

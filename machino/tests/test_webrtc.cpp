@@ -334,6 +334,163 @@ void run_webrtc_tests() {
     }
 }
 
+// WebRTC audio: G.711 both ways, each direction only where it is switched on
+// and where the browser's own direction allows it.
+namespace {
+std::string audio_offer(const char* dir, bool with_g711) {
+    std::string o(CHROME_OFFER);
+    const std::string m = "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n";
+    o.replace(o.find(m), m.size(), with_g711 ? "m=audio 9 UDP/TLS/RTP/SAVPF 111 0 8\r\n" : m.c_str());
+    const std::string r = "a=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\n";
+    std::string repl = std::string("a=") + dir + "\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\n";
+    if (with_g711) repl += "a=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\n";
+    o.replace(o.find(r), r.size(), repl);
+    return o;
+}
+webrtc::AnswerParams answer_params(const webrtc::AudioPlan& a) {
+    webrtc::AnswerParams p;
+    p.ice_ufrag = "u"; p.ice_pwd = "pwpwpwpwpwpwpwpwpwpwpwpw"; p.fingerprint = "AA:BB"; p.host_ip = "10.0.0.2"; p.port = 5000; p.ssrc = 1;
+    p.audio_pt = a.pt; p.audio_send = a.send; p.audio_recv = a.recv; p.audio_ssrc = 77;
+    return p;
+}
+} // namespace
+
+void run_webrtc_audio_tests() {
+    // Parsing: G.711 payloads and the browser's direction.
+    webrtc::Offer o = webrtc::parse_offer(audio_offer("sendrecv", true));
+    WCHECK(o.ok && o.audio_index == 0 && o.media[0].pcma_pt == 8 && o.media[0].pcmu_pt == 0);
+    WCHECK(o.media[0].direction == "sendrecv" && o.media[1].direction == "recvonly");
+    // Opus only: no G.711, no audio index - the m-line is declined as before.
+    WCHECK(webrtc::parse_offer(audio_offer("recvonly", false)).audio_index == -1);
+
+    // Planning: camera side AND browser side must both allow a direction.
+    auto plan = [](const char* dir, bool send, bool recv) {
+        return webrtc::plan_audio(webrtc::parse_offer(audio_offer(dir, true)), send, recv);
+    };
+    webrtc::AudioPlan a = plan("sendrecv", true, true);
+    WCHECK(a.pt == 8 && a.send && a.recv);                        // PCMA preferred
+    a = plan("sendrecv", true, false);                             // speaker off
+    WCHECK(a.pt == 8 && a.send && !a.recv);
+    a = plan("sendrecv", false, true);                             // microphone off
+    WCHECK(a.pt == 8 && !a.send && a.recv);
+    a = plan("recvonly", true, true);                              // browser only listens
+    WCHECK(a.send && !a.recv);
+    a = plan("sendonly", true, false);                             // browser only talks, speaker off
+    WCHECK(a.pt == -1 && !a.send && !a.recv);
+    a = plan("recvonly", false, true);
+    WCHECK(a.pt == -1);
+    WCHECK(webrtc::plan_audio(webrtc::parse_offer(audio_offer("sendrecv", false)), true, true).pt == -1);
+
+    // The answer: audio accepted on the same port, in BUNDLE, with the
+    // direction the stock player reads.
+    {
+        const webrtc::Offer off = webrtc::parse_offer(audio_offer("sendrecv", true));
+        const std::string ans = webrtc::build_answer(off, answer_params(webrtc::plan_audio(off, true, true)));
+        WCHECK(has_line(ans, "a=group:BUNDLE 0 1"));
+        WCHECK(has_line(ans, "m=audio 5000 UDP/TLS/RTP/SAVPF 8"));
+        WCHECK(has_line(ans, "a=rtpmap:8 PCMA/8000"));
+        WCHECK(has_line(ans, "a=sendrecv") && has_line(ans, "a=ssrc:77 cname:machino"));
+        WCHECK(ans.find("m=audio") < ans.find("m=video"));            // offer order mirrored
+        const std::string only_out = webrtc::build_answer(off, answer_params(webrtc::plan_audio(off, true, false)));
+        WCHECK(has_line(only_out, "a=sendonly") && only_out.find("a=recvonly") == std::string::npos);
+        const std::string only_in = webrtc::build_answer(off, answer_params(webrtc::plan_audio(off, false, true)));
+        WCHECK(has_line(only_in, "a=recvonly") && only_in.find("a=ssrc:77") == std::string::npos);
+        const std::string none = webrtc::build_answer(off, answer_params(webrtc::plan_audio(off, false, false)));
+        WCHECK(has_line(none, "m=audio 0 UDP/TLS/RTP/SAVPF 0") && has_line(none, "a=group:BUNDLE 1"));
+    }
+    // A PCMU-only offer is answered with PCMU.
+    {
+        std::string pcmu = audio_offer("sendrecv", true);
+        pcmu.replace(pcmu.find("a=rtpmap:8 PCMA/8000\r\n"), strlen("a=rtpmap:8 PCMA/8000\r\n"), "");
+        const webrtc::Offer off = webrtc::parse_offer(pcmu);
+        const webrtc::AudioPlan pa = webrtc::plan_audio(off, true, true);
+        WCHECK(pa.pt == 0 && has_line(webrtc::build_answer(off, answer_params(pa)), "a=rtpmap:0 PCMU/8000"));
+    }
+
+    // SRTP both ways: the browser protects, the camera unprotects (talkback).
+    webrtc::SrtpKey k1{}, k2{};
+    for (int i = 0; i < 16; ++i) { k1.master_key[i] = (uint8_t)(3 * i); k2.master_key[i] = (uint8_t)(0x70 + i); }
+    for (int i = 0; i < 14; ++i) { k1.master_salt[i] = (uint8_t)(0x11 + i); k2.master_salt[i] = (uint8_t)(0x90 + i); }
+    webrtc::SrtpSession cam(k1, k2), browser(k2, k1);
+    auto pkt = [](uint16_t seq, uint32_t ssrc, uint8_t fill) {
+        std::vector<uint8_t> p = {0x80, 8, (uint8_t)(seq >> 8), (uint8_t)seq, 0, 0, 0, 0,
+                                  (uint8_t)(ssrc >> 24), (uint8_t)(ssrc >> 16), (uint8_t)(ssrc >> 8), (uint8_t)ssrc};
+        for (int i = 0; i < 160; ++i) p.push_back((uint8_t)(fill + i));
+        return p;
+    };
+    std::vector<uint8_t> plain = pkt(100, 0xB0B0, 7), wire = plain;
+    WCHECK(browser.protect_rtp(wire));
+    std::vector<uint8_t> rx = wire; size_t at = 0;
+    WCHECK(cam.unprotect_rtp(rx, at) && at == 12 && rx == plain);
+    rx = wire;
+    WCHECK(!cam.unprotect_rtp(rx, at));                                // replay refused
+    rx = pkt(101, 0xB0B0, 9); WCHECK(browser.protect_rtp(rx)); rx[20] ^= 0x40;
+    WCHECK(!cam.unprotect_rtp(rx, at));                                // tampered payload refused
+    rx = pkt(102, 0xB0B0, 9); std::vector<uint8_t> p102 = rx; WCHECK(browser.protect_rtp(rx));
+    WCHECK(cam.unprotect_rtp(rx, at) && rx == p102);                   // the stream goes on after a refusal
+
+    // Across the 16-bit wrap: the rollover counter is estimated, not lost.
+    webrtc::SrtpSession cam2(k1, k2), browser2(k2, k1);
+    bool wrap_ok = true;
+    for (uint32_t n = 0; n < 40; ++n) {
+        const uint16_t seq = (uint16_t)(65520 + n);                    // 65520..65535, 0..23
+        std::vector<uint8_t> p = pkt(seq, 0xC0C0, (uint8_t)n), w = p;
+        if (!browser2.protect_rtp(w)) wrap_ok = false;
+        size_t pa = 0;
+        if (!cam2.unprotect_rtp(w, pa) || w != p) wrap_ok = false;
+    }
+    WCHECK(wrap_ok);
+
+    // Two SSRCs on one session keep separate counters: video wrapping does
+    // not throw off audio.
+    webrtc::SrtpSession cam3(k1, k2), browser3(k2, k1);
+    bool two_ok = true;
+    for (uint32_t n = 0; n < 30; ++n) {
+        std::vector<uint8_t> v = pkt((uint16_t)(65530 + n), 0x1111, 1), a2 = pkt((uint16_t)(500 + n), 0x2222, 2);
+        std::vector<uint8_t> vw = v, aw = a2;
+        if (!cam3.protect_rtp(vw) || !cam3.protect_rtp(aw)) two_ok = false;
+        size_t p1 = 0, p2 = 0;
+        if (!browser3.unprotect_rtp(vw, p1) || vw != v) two_ok = false;
+        if (!browser3.unprotect_rtp(aw, p2) || aw != a2) two_ok = false;
+    }
+    WCHECK(two_ok);
+
+    // Header extension and padding (what browsers put on audio). protect_rtp
+    // never writes those, so the packet is built here by hand, the way a
+    // browser does (RFC 3711 3.1): only the payload is encrypted, the tag
+    // covers the whole packet plus the ROC.
+    {
+        uint8_t ek[16], ak[20], salt[14];
+        webrtc::srtp_kdf(k2, 0, ek, 16);                                // browser's out = the camera's in
+        webrtc::srtp_kdf(k2, 1, ak, 20);
+        webrtc::srtp_kdf(k2, 2, salt, 14);
+        const uint32_t ssrc = 0x33333333; const uint16_t seq = 5;
+        std::vector<uint8_t> p = {0xB0, 8, 0x00, (uint8_t)seq, 0, 0, 0, 0, 0x33, 0x33, 0x33, 0x33,
+                                  0xBE, 0xDE, 0x00, 0x01, 0x10, 0xAA, 0x00, 0x00};  // X + P, one extension word
+        for (int i = 0; i < 20; ++i) p.push_back((uint8_t)(100 + i));
+        p.push_back(0); p.push_back(0); p.push_back(3);                                // 3 bytes of padding
+        const std::vector<uint8_t> expect(p.begin(), p.end() - 3);
+        uint8_t iv[16] = {0};
+        memcpy(iv, salt, 14);
+        iv[4] ^= (uint8_t)(ssrc >> 24); iv[5] ^= (uint8_t)(ssrc >> 16); iv[6] ^= (uint8_t)(ssrc >> 8); iv[7] ^= (uint8_t)ssrc;
+        iv[12] ^= (uint8_t)(seq >> 8); iv[13] ^= (uint8_t)seq;          // index = ROC 0 | seq
+        std::vector<uint8_t> ks(p.size() - 20);
+        webrtc::aes_cm_keystream(webrtc::Aes128(ek), iv, ks.data(), ks.size());
+        for (size_t i = 20; i < p.size(); ++i) p[i] ^= ks[i - 20];
+        std::vector<uint8_t> m = p; m.insert(m.end(), 4, 0);             // || ROC
+        uint8_t mac[20];
+        webrtc::hmac_sha1(ak, 20, m.data(), m.size(), mac);
+        p.insert(p.end(), mac, mac + 10);
+        size_t pa = 0;
+        webrtc::SrtpSession fresh(k1, k2);
+        WCHECK(fresh.unprotect_rtp(p, pa) && pa == 20 && p == expect);  // payload after the extension, padding gone
+
+        std::vector<uint8_t> shortx = {0x90, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0xBE, 0xDE, 0x00, 0xFF};
+        shortx.insert(shortx.end(), 10, 0);
+        WCHECK(!fresh.unprotect_rtp(shortx, pa));                        // extension longer than the packet
+    }
+}
+
 // A refused offer has to say what the browser DID offer. The old message was
 // the same whether the browser had no H264 at all - a platform limitation the
 // user can act on - or offered it only in mode 0, which is a negotiation

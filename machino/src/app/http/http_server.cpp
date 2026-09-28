@@ -207,6 +207,11 @@ struct HttpServer::Client {
     std::unique_ptr<webrtc::PeerSession> rtc;
     std::shared_ptr<Sink>    rtc_sink;
     lifecycle::DemandHandle  rtc_demand;
+    // The session's audio: the microphone out (an AudioService listener) and
+    // talkback in (queued on the speaker). Both only when the answer says so.
+    std::shared_ptr<Sink>    rtc_audio_sink;
+    int                      rtc_audio_rate = 0;
+    bool                     rtc_talk_refused = false;   // log a refused talkback once, not per packet
     // Front-door relay: per-client non-blocking upstream state. The poll loop
     // owns both sockets; no thread ever blocks on the busybox side, so a slow
     // CGI can not starve /ws/video or any other connection. Upstream bytes are
@@ -285,6 +290,7 @@ void HttpServer::stop() {
         if (c->ws_sink) { StreamHub* h = c->ws_hub ? c->ws_hub : hub_; if (h) { c->ws_sink->close(); h->unsubscribe(c->ws_sink); } }
         if (c->rtc_sink) { StreamHub* h = c->rtc_hub ? c->rtc_hub : hub_; if (h) { c->rtc_sink->close(); h->unsubscribe(c->rtc_sink); } }
         if (c->audio_sink && audio_) audio_->unlisten(c->audio_sink);
+        if (c->rtc_audio_sink && audio_) audio_->unlisten(c->rtc_audio_sink);
         if (c->relay_fd >= 0) close(c->relay_fd);
         // The upgrade child is NEVER killed here: once sysupgrade is flashing it
         // survives a disconnect on purpose ("Protected: flashing continues").
@@ -1559,8 +1565,16 @@ bool HttpServer::rtc_ws_input(Client& c) {
             inet_ntop(AF_INET, &la.sin_addr, ip, sizeof ip);
         std::unique_ptr<webrtc::PeerSession> sess(new webrtc::PeerSession(ip));
         std::string err;
+        // Audio both ways, each only where it is switched on: the microphone
+        // out (audio.enabled), talkback in (audio.outputEnabled). With either
+        // off the answer says so in its direction, which is exactly what the
+        // stock player reads ("a camera with audio.outputEnabled off answers
+        // sendonly").
+        const bool a_send = audio_ && audio_->available() && audio_->config().enabled;
+        const bool a_recv = audio_ && audio_->output_available() && audio_->config().output_enabled;
         const std::string answer = sess->on_offer(data->as_string(), err,
-                                                  c.rtc_unit >= 0 && c.rtc_unit < 4 ? h264_profile_[c.rtc_unit] : std::string());
+                                                  c.rtc_unit >= 0 && c.rtc_unit < 4 ? h264_profile_[c.rtc_unit] : std::string(),
+                                                  a_send, a_recv);
         if (answer.empty()) { LOGW(MOD, "webrtc: offer rejected: %s", err.c_str()); if (!reply("error", err)) return false; continue; }
         StreamHub* h = c.rtc_unit == lifecycle::UNIT_SUB ? sub_hub_ : hub_;
         Result dr;
@@ -1572,6 +1586,12 @@ bool HttpServer::rtc_ws_input(Client& c) {
         c.rtc_hub = h;
         c.rtc_sink = h->subscribe();
         pipeline_->request_idr(c.rtc_unit);
+        if (c.rtc->audio_sending()) {
+            std::string why;
+            c.rtc_audio_sink = audio_->listen(why);
+            c.rtc_audio_rate = audio_->sample_rate();
+            if (!c.rtc_audio_sink) LOGW(MOD, "%s: webrtc audio: microphone refused (%s) - video only", c.peer.c_str(), why.c_str());
+        }
         if (!reply("answer", answer)) return false;
         LOGI(MOD, "%s: webrtc session negotiated (unit %d)", c.peer.c_str(), c.rtc_unit);
     }
@@ -1584,6 +1604,32 @@ void HttpServer::pump_rtc(Client& c) {
     c.rtc->log_stats();
     if (c.rtc->take_pli() && pipeline_) pipeline_->request_idr(c.rtc_unit);
     if (!c.rtc->media_ready() || !c.rtc_sink) return;
+    // Talkback: whatever arrived since the last tick goes to the speaker
+    // queue (8 kHz clips of a tick's length). A refusal (speaker switched off
+    // meanwhile) drops the audio; the video session goes on.
+    {
+        std::vector<int16_t> talk;
+        if (audio_ && c.rtc->take_audio_in(talk)) {
+            std::string why;
+            if (!audio_->play(std::move(talk), 8000, why)) {
+                if (!c.rtc_talk_refused) LOGW(MOD, "%s: talkback dropped: %s", c.peer.c_str(), why.c_str());
+                c.rtc_talk_refused = true;
+            } else c.rtc_talk_refused = false;
+        }
+    }
+    // The microphone out, as the negotiated G.711.
+    if (c.rtc_audio_sink) {
+        for (int k = 0; k < 4; ++k) {
+            AuPtr a;
+            if (!c.rtc_audio_sink->pop(a, 0)) break;
+            if (!a || a->data.empty()) continue;
+            std::string g711;
+            audio_encode(c.rtc->audio_is_pcma() ? AudioFormat::Alaw : AudioFormat::Ulaw, c.rtc_audio_rate,
+                         a->data.data(), a->data.size(), g711);
+            c.rtc->send_audio(reinterpret_cast<const uint8_t*>(g711.data()), g711.size());
+        }
+        if (c.rtc_audio_sink->closed()) { audio_->unlisten(c.rtc_audio_sink); c.rtc_audio_sink.reset(); }
+    }
     for (int i = 0; i < 8; ++i) {
         AuPtr au; bool disc = false;
         if (!c.rtc_sink->pop(au, 0, &disc)) return;
@@ -1763,6 +1809,7 @@ void HttpServer::loop() {
                 if (c.ws_sink) { StreamHub* h = c.ws_hub ? c.ws_hub : hub_; if (h) { c.ws_sink->close(); h->unsubscribe(c.ws_sink); } }
                 if (c.rtc_sink) { StreamHub* h = c.rtc_hub ? c.rtc_hub : hub_; if (h) { c.rtc_sink->close(); h->unsubscribe(c.rtc_sink); } }
                 if (c.audio_sink && audio_) { audio_->unlisten(c.audio_sink); c.audio_sink.reset(); }
+                if (c.rtc_audio_sink && audio_) { audio_->unlisten(c.rtc_audio_sink); c.rtc_audio_sink.reset(); }
                 c.rtc.reset();                          // closes the UDP socket
                 // The two DemandHandles (ws_demand, rtc_demand) are NOT
                 // released here: they are Client members and their destructors

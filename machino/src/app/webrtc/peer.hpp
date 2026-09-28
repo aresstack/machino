@@ -2,9 +2,10 @@
 // vector-tested modules: ICE-lite STUN responder (learns the peer address),
 // passive DTLS (mbedTLS) whose exporter keys feed Machino's SRTP, and the
 // RFC 6184 packetizer fed straight from StreamHub access units. RFC 5764
-// demux by first byte: 0..3 STUN, 20..63 DTLS, 128..191 SRTCP. The browser
-// sends no RTP on a sendonly track - inbound media traffic is its RTCP,
-// which matters for exactly one thing: PLI -> on-demand IDR.
+// demux by first byte: 0..3 STUN, 20..63 DTLS, 128..191 SRTP/SRTCP. Inbound
+// RTCP matters for one thing: PLI -> on-demand IDR. Inbound RTP is talkback:
+// G.711 from the browser's microphone, decoded here to PCM for the speaker.
+// Outbound audio is the camera's microphone as G.711 on its own SSRC.
 #pragma once
 #include "app/webrtc/dtls.hpp"
 #include "app/webrtc/rtp.hpp"
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace machino { namespace webrtc {
 
@@ -31,8 +33,20 @@ public:
     // `local_profile` is the profile-level-id this camera really emits (from
     // the SPS, e.g. "640033"); an offer that contains it is answered with it
     // instead of an approximation. Empty = follow the browser's preference.
+    // `audio_send` / `audio_recv`: may this session carry the microphone out /
+    // talkback in? The offer's own direction narrows it (plan_audio).
     std::string on_offer(const std::string& offer_sdp, std::string& error,
-                         const std::string& local_profile = "");
+                         const std::string& local_profile = "",
+                         bool audio_send = false, bool audio_recv = false);
+
+    // What the answer settled for audio.
+    bool audio_sending() const { return audio_.send; }
+    bool audio_receiving() const { return audio_.recv; }
+    bool audio_is_pcma() const { return audio_pcma_; }
+    // One chunk of G.711 (8 kHz, one byte per sample) from the microphone.
+    void send_audio(const uint8_t* g711, size_t n);
+    // Talkback received since the last call, as 8 kHz PCM. False when none.
+    bool take_audio_in(std::vector<int16_t>& pcm);
 
     // The UDP socket is readable: drain and demux.
     void on_readable();
@@ -59,6 +73,13 @@ private:
     std::unique_ptr<SrtpSession> srtp_;
     RtpParams   rtp_;
     uint16_t    seq_ = 0;
+    AudioPlan   audio_;
+    bool        audio_pcma_ = true;    // the negotiated payload is PCMA (else PCMU)
+    uint32_t    audio_ssrc_ = 0;
+    uint16_t    audio_seq_ = 0;
+    uint32_t    audio_ts_ = 0;
+    std::vector<int16_t> audio_in_;    // decoded talkback, bounded (1 s)
+    uint64_t    audio_out_pkts_ = 0, audio_in_pkts_ = 0;
     bool        await_key_ = true;
     bool        pli_ = false;
     bool        offered_ = false;

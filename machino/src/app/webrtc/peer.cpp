@@ -1,5 +1,6 @@
 #include "app/webrtc/peer.hpp"
 #include "app/webrtc/stun.hpp"
+#include "core/audio/g711.hpp"
 #include "core/log.hpp"
 #include "core/runtime_stats.hpp"
 
@@ -41,6 +42,8 @@ PeerSession::PeerSession(const std::string& host_ip) {
     rtp_.ssrc = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16) | ((uint32_t)r[2] << 8) | r[3];
     if (!rtp_.ssrc) rtp_.ssrc = 0x4d414348;                     // "MACH"
     seq_ = (uint16_t)(rtp_.ssrc >> 8);
+    audio_ssrc_ = rtp_.ssrc ^ 0x41554449u;                      // "AUDI": its own stream
+    audio_seq_ = (uint16_t)(audio_ssrc_ >> 4);
 
     sock_ = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (sock_ < 0) return;
@@ -59,7 +62,7 @@ PeerSession::~PeerSession() {
 }
 
 std::string PeerSession::on_offer(const std::string& offer_sdp, std::string& error,
-                                  const std::string& local_profile) {
+                                  const std::string& local_profile, bool audio_send, bool audio_recv) {
     if (!ok()) { error = "session setup failed"; return ""; }
     if (offered_) { error = "already offered"; return ""; }
     Offer o = parse_offer(offer_sdp, local_profile);
@@ -76,6 +79,16 @@ std::string PeerSession::on_offer(const std::string& offer_sdp, std::string& err
     p.host_ip = ip;
     p.port = ntohs(a.sin_port);
     p.ssrc = rtp_.ssrc;
+    audio_ = plan_audio(o, audio_send, audio_recv);
+    if (audio_.pt >= 0) {
+        audio_pcma_ = audio_.pt == o.media[(size_t)o.audio_index].pcma_pt;
+        p.audio_pt = audio_.pt;
+        p.audio_send = audio_.send;
+        p.audio_recv = audio_.recv;
+        p.audio_ssrc = audio_ssrc_;
+        LOGI(MOD, "audio: %s %s", audio_pcma_ ? "PCMA" : "PCMU",
+             audio_.send && audio_.recv ? "both ways (talkback)" : audio_.send ? "camera -> browser" : "browser -> camera (talkback)");
+    }
     offered_ = true;
     // The negotiated profile next to the one actually sent: when they differ
     // the browser is decoding a stream whose label it chose, and that is the
@@ -150,12 +163,25 @@ void PeerSession::on_readable() {
                 }
             }
         } else if (b0 >= 128 && b0 <= 191) {                    // SRTP/SRTCP
-            ++rtcp_in_;
             if (!srtp_) continue;
             std::vector<uint8_t> pkt(buf, buf + n);
-            if (is_rtcp(buf, (size_t)n) && srtp_->unprotect_rtcp(pkt)) {
-                RtcpInfo info = parse_rtcp(pkt.data(), pkt.size());
-                if (info.pli) { pli_ = true; ++pli_in_; RuntimeStats::get().inc(&RuntimeCounters::webrtc_pli); }
+            if (is_rtcp(buf, (size_t)n)) {
+                ++rtcp_in_;
+                if (srtp_->unprotect_rtcp(pkt)) {
+                    RtcpInfo info = parse_rtcp(pkt.data(), pkt.size());
+                    if (info.pli) { pli_ = true; ++pli_in_; RuntimeStats::get().inc(&RuntimeCounters::webrtc_pli); }
+                }
+            } else if (audio_.recv) {                           // talkback
+                size_t at = 0;
+                if (!srtp_->unprotect_rtp(pkt, at)) continue;
+                if ((int)(pkt[1] & 0x7f) != audio_.pt) continue;
+                ++audio_in_pkts_;
+                const size_t len = pkt.size() - at;
+                if (audio_in_.size() + len > 8000) continue;     // nobody drained 1 s: drop, never grow
+                const size_t base = audio_in_.size();
+                audio_in_.resize(base + len);
+                for (size_t i = 0; i < len; ++i)
+                    audio_in_[base + i] = audio_pcma_ ? audio::alaw_decode(pkt[at + i]) : audio::ulaw_decode(pkt[at + i]);
             }
         }
     }
@@ -166,6 +192,31 @@ void PeerSession::tick() {
         dtls_.step();                                           // drives DTLS retransmission timers
         flush_dtls();
     }
+}
+
+void PeerSession::send_audio(const uint8_t* g711, size_t n) {
+    if (!srtp_ || !have_peer_ || !audio_.send || n == 0) return;
+    for (size_t off = 0; off < n; ) {
+        const size_t len = n - off < 1000 ? n - off : 1000;
+        std::vector<uint8_t> pkt(12 + len);
+        pkt[0] = 0x80; pkt[1] = (uint8_t)(audio_.pt & 0x7f);
+        pkt[2] = (uint8_t)(audio_seq_ >> 8); pkt[3] = (uint8_t)audio_seq_; ++audio_seq_;
+        pkt[4] = (uint8_t)(audio_ts_ >> 24); pkt[5] = (uint8_t)(audio_ts_ >> 16); pkt[6] = (uint8_t)(audio_ts_ >> 8); pkt[7] = (uint8_t)audio_ts_;
+        pkt[8] = (uint8_t)(audio_ssrc_ >> 24); pkt[9] = (uint8_t)(audio_ssrc_ >> 16); pkt[10] = (uint8_t)(audio_ssrc_ >> 8); pkt[11] = (uint8_t)audio_ssrc_;
+        memcpy(pkt.data() + 12, g711 + off, len);
+        audio_ts_ += (uint32_t)len;                             // one byte per 8 kHz sample
+        off += len;
+        if (!srtp_->protect_rtp(pkt)) return;
+        if (send_udp(pkt.data(), pkt.size())) ++audio_out_pkts_;
+        else return;                                            // backpressure: audio is the first to go
+    }
+}
+
+bool PeerSession::take_audio_in(std::vector<int16_t>& pcm) {
+    if (audio_in_.empty()) return false;
+    pcm.swap(audio_in_);
+    audio_in_.clear();
+    return true;
 }
 
 bool PeerSession::take_pli() {
@@ -203,11 +254,12 @@ void PeerSession::log_stats() {
     const int64_t now = (int64_t)time(nullptr) * 1000;
     if (now - last_stat_ms_ < 2000) return;
     last_stat_ms_ = now;
-    LOGI(MOD, "media: peer=%d dtls=%d srtp=%d AUs=%llu RTP=%llu bytes=%llu send_err=%llu(errno=%d) rtcp_in=%llu pli=%llu stun=%llu",
+    LOGI(MOD, "media: peer=%d dtls=%d srtp=%d AUs=%llu RTP=%llu bytes=%llu send_err=%llu(errno=%d) rtcp_in=%llu pli=%llu stun=%llu audio_out=%llu audio_in=%llu",
          have_peer_ ? 1 : 0, dtls_.handshake_done() ? 1 : 0, srtp_ ? 1 : 0,
          (unsigned long long)au_count_, (unsigned long long)rtp_count_, (unsigned long long)rtp_bytes_,
          (unsigned long long)send_err_, last_send_errno_,
-         (unsigned long long)rtcp_in_, (unsigned long long)pli_in_, (unsigned long long)stun_reqs_);
+         (unsigned long long)rtcp_in_, (unsigned long long)pli_in_, (unsigned long long)stun_reqs_,
+         (unsigned long long)audio_out_pkts_, (unsigned long long)audio_in_pkts_);
 }
 
 }} // namespace machino::webrtc

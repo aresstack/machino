@@ -86,10 +86,16 @@ void Speaker::shutdown() {
 void Speaker::loop() {
     std::unique_ptr<IAudioOut> dev;
     int dev_rate = 0;
-    auto close_locked = [&](std::unique_lock<std::mutex>& lk) {
+    // `drain`: let the device play out what it still holds before it goes
+    // (the normal close after the grace); false for a failed or switched
+    // device, where the rest is abandoned anyway.
+    auto close_locked = [&](std::unique_lock<std::mutex>& lk, bool drain) {
         dev_ = nullptr;
         open_ = false;
         lk.unlock();
+        // SendFrame only waits for ring space: the tail of the last clip is
+        // still in the device and would be cut off by the close.
+        if (drain) dev->drain(0);
         dev.reset();                      // IMP_AO_DisableChn/Disable, outside the lock
         lk.lock();
         LOGI(MOD, "speaker closed");
@@ -103,7 +109,7 @@ void Speaker::loop() {
                 // clip does not pay for a second open.
                 const bool more = cv_.wait_for(lk, std::chrono::milliseconds(grace_ms_),
                                                [&] { return quit_ || !queue_.empty(); });
-                if (!more && dev) close_locked(lk);
+                if (!more && dev) close_locked(lk, true);
             } else {
                 cv_.wait(lk, [&] { return quit_ || !queue_.empty(); });
             }
@@ -113,7 +119,7 @@ void Speaker::loop() {
         queue_.pop_front();
         queued_samples_ -= std::min(queued_samples_, c.pcm.size());
 
-        if (dev && dev_rate != c.rate) close_locked(lk);
+        if (dev && dev_rate != c.rate) close_locked(lk, true);
         if (!dev) {
             AudioParams p;
             p.sample_rate = c.rate;
@@ -152,19 +158,16 @@ void Speaker::loop() {
             const size_t n = std::min(chunk, c.pcm.size() - off);
             if (!dev->write(c.pcm.data() + off, n)) { ok = false; break; }
         }
-        bool last = false;
-        { std::lock_guard<std::mutex> g(m_); last = queue_.empty(); }
-        // SendFrame only waits for ring space; the tail of the clip is still
-        // in the device. Flush it when nothing follows, or it is cut off by
-        // the close below.
-        if (ok && !cut && last) dev->drain(0);
+        // No flush here: talkback arrives as a stream of 20-40 ms clips, and
+        // waiting for the device to run dry after each one would put a gap
+        // between every two of them. The flush happens once, before closing.
         lk.lock();
         playing_ = false;
         if (!ok) {
             last_error_ = "writing to the speaker failed";
             LOGW(MOD, "%s - output closed", last_error_.c_str());
             ++dropped_;
-            close_locked(lk);
+            close_locked(lk, false);
         } else if (cut) {
             ++dropped_;
         } else {
@@ -172,7 +175,7 @@ void Speaker::loop() {
         }
         cv_.notify_all();
     }
-    if (dev) close_locked(lk);
+    if (dev) close_locked(lk, !cut_);
 }
 
 }} // namespace machino::audio

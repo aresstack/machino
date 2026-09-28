@@ -398,8 +398,9 @@ void test_speaker() {
     ACHECK(spk.wait_idle(2000));
     ACHECK(c.opens == 1 && c.samples == 1200 && c.last_rate == 16000);    // two clips, one open
     ACHECK(c.volume == audio::output_volume_to_vendor(90));                // stock-calibrated output curve
-    ACHECK(c.drains >= 1 && spk.stats().clips == 2);
-    ACHECK(eventually([&] { return c.closes == 1 && !spk.stats().open; }));   // closed after the grace
+    ACHECK(c.drains == 0 && spk.stats().clips == 2);                      // back to back: no flush between clips
+    ACHECK(eventually([&] { return c.closes == 1 && !spk.stats().open; }));   // closed after the grace...
+    ACHECK(c.drains == 1);                                                 // ...having played out first
 
     // A clip at another rate reopens at that rate.
     ACHECK(spk.play(std::vector<int16_t>(80), 8000, why) && spk.wait_idle(2000));

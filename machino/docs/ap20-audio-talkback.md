@@ -385,9 +385,34 @@ Line-/Kopfhörerausgang ist dafür nicht gebaut.
   beim PLAY. Laesst es sich nicht oeffnen, laeuft die Sitzung ohne Ton weiter;
   wird das Mikrofon ausgeschaltet, endet nur die Audiospur.
 
+### WebRTC: Ton und Talkback im Live-Bild (seit 2026-09-29)
+
+Der Live-Player der Stock-WebUI (`preview-webrtc.js`) bietet Audio ohne
+Codec-Vorgabe an — also neben Opus immer auch PCMA/PCMU, die jeder
+WebRTC-Browser kann. Talkback laeuft dort ueber dieselbe Sitzung
+(`sendrecv`), nicht ueber einen eigenen Kanal.
+
+* SDP (`webrtc::plan_audio`): die Kamera SENDET (Mikrofon), wenn
+  `audio.enabled` und der Browser empfaengt; sie EMPFAENGT (Talkback), wenn
+  `audio.outputEnabled` und der Browser sendet. Antwort `sendrecv`,
+  `sendonly` (Lautsprecher aus — genau das, was der Player liest) oder
+  `recvonly`; keine Richtung = m-line abgelehnt wie bisher. PCMA vor PCMU,
+  gleicher Port, im BUNDLE.
+* SRTP: Rollover-Zaehler jetzt PRO SSRC (Video und Audio sind getrennte
+  Sequenzraeume), neu `unprotect_rtp` fuer den Empfang: Index-Schaetzung nach
+  RFC 3711 Anhang A, 64er-Replay-Fenster, Header-Extension und Padding (was
+  Browser an Audio haengen). Gegen ein von Hand gebautes Browser-Paket
+  getestet.
+* Peer: Mikrofon als G.711 auf eigener SSRC; empfangenes G.711 wird zu PCM
+  dekodiert (max. 1 s gepuffert) und landet in der Lautsprecher-Warteschlange.
+* Der Lautsprecher leert das Geraet nicht mehr nach jedem Clip, sondern
+  einmal vor dem Schliessen: Talkback kommt als Strom von 20–40-ms-Clips, und
+  ein Flush dazwischen haette jede Luecke hoerbar gemacht.
+
 ### Noch offen
 
-* Talkback (RTSP-Backchannel), Audio in `/ws/video` (`&audio=`), Opus/AAC.
+* ONVIF/RTSP-Backchannel, Audio in `/ws/video` (`&audio=`, braucht Opus oder
+  AAC), `/audio.opus`, `/audio.m4a`.
 * Hardwareabnahme mit `machino --audio-test` (Daemon vorher stoppen):
 
   ```

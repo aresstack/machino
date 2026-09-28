@@ -3,8 +3,9 @@
 // play() only QUEUES: the caller is the HTTP poll loop, which must never wait
 // for audio to come out of a speaker. One playback thread opens the output
 // through the platform when there is something to play, writes the clips in
-// order, waits until the device has played them out, and closes the output
-// again grace_ms after the queue ran dry ("no clip, no speaker").
+// order back to back (talkback is a stream of 20-40 ms clips and must not get
+// a gap between each), and grace_ms after the queue ran dry lets the device
+// play out and closes it ("no clip, no speaker").
 //
 // The device runs at the rate of the clip it plays; a clip at another rate
 // than the open device closes and reopens it. The queue is bounded in
