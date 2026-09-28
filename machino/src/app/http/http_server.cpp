@@ -48,6 +48,14 @@ static size_t input_cap(const std::string& in) {
     static const char ONVIF_POST[] = "POST /onvif/";
     if (in.compare(0, sizeof(ONVIF_POST) - 1, ONVIF_POST) == 0)
         return onvif::MAX_REQUEST + 4096;
+    // The AI page's model-bundle upload: a .tgz (model .bin + manifest) relayed
+    // to the busybox CGI, which streams it to disk. machino buffers the request
+    // body once before relaying, so this bound is also the RAM ceiling for the
+    // upload - 8 MB, matching the CGI's own limit. A deliberate admin action on
+    // an otherwise idle camera; models are a few MB.
+    static const char AI_UPLOAD[] = "POST /cgi-bin/machino-ai-upload.cgi";
+    if (in.compare(0, sizeof(AI_UPLOAD) - 1, AI_UPLOAD) == 0)
+        return 8 * 1024 * 1024 + 4096;
     return MAX_IN;
 }
 

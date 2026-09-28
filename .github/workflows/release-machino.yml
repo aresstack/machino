@@ -130,6 +130,7 @@ jobs:
           cp -f machino/openipc/www/machino-cgi-run.cgi "$O/www/machino-cgi-run.cgi"
           cp -f machino/openipc/www/machino-dyndns.cgi  "$O/www/machino-dyndns.cgi"
           cp -f machino/openipc/www/machino-ai.cgi      "$O/www/machino-ai.cgi"
+          cp -f machino/openipc/www/machino-ai-upload.cgi "$O/www/machino-ai-upload.cgi"
           cp -f machino/openipc/www/machino-ipsec.cgi   "$O/www/machino-ipsec.cgi"
           cp -f machino/openipc/www/machino-cleanup.cgi    "$O/www/machino-cleanup.cgi"
           cp -f machino/openipc/www/machino-cleanup-dl.cgi "$O/www/machino-cleanup-dl.cgi"
