@@ -32,4 +32,16 @@ const hw::IPinResolver& ingenic_pin_resolver();
 // USB service reports "not switchable" rather than guessing a pin.
 bool usb_power_for_board(const std::string& board_id, UsbPowerCapability& out);
 
+// W2b: Day/Night-Pin-Defaults je Board -- dasselbe Muster wie der USB-Port:
+// das Profil liefert die STOCK-belegten Pins als Vorgabe, die UI (night.*
+// im Store) darf sie jederzeit ueberschreiben. Quelle fuer board-a: aus der
+// Stock-Firmware disassembliert (ovfs_boardsystem HalPerip_Init:
+// HalGpio_Init(96,22)/(96,23) -> PD22/PD23 fuer die IR-Cut-Spulen;
+// PB17 als EINGANG = Tag/Nacht-Lichtsensor, docs/night-stock-findings.md).
+struct NightDefaults {
+    std::string ircut_pin1, ircut_pin2;   // leer = Board hat keine bekannte Belegung
+    std::string light_sensor_pin;         // Eingang; fuer die spaetere Automatik
+};
+bool night_defaults_for_board(const std::string& board_id, NightDefaults& out);
+
 }} // namespace machino::profiles

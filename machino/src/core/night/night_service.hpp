@@ -56,6 +56,13 @@ public:
 
     NightPins pins() const;               // live aus dem ConfigStore
 
+    // W2b: Board-Profil-Defaults (USB-Muster): das Profil kennt die
+    // Stock-Belegung, der Store (UI) ueberschreibt. Nur die PINS werden
+    // vorbelegt -- die irCut/backlight-FREIGABE bleibt eine bewusste
+    // Nutzerentscheidung (kein ueberraschendes Klicken ab Werk).
+    void set_default_pins(const std::string& ircut_pin1, const std::string& ircut_pin2)
+    { def_ircut_pin1_ = ircut_pin1; def_ircut_pin2_ = ircut_pin2; }
+
 private:
     std::string drive_ircut_(bool engaged);
     std::string drive_light_(bool on);
@@ -66,6 +73,7 @@ private:
     bool night_ = false;
     bool ircut_ = true;                   // Tag = Filter drin
     bool light_ = false;
+    std::string def_ircut_pin1_, def_ircut_pin2_;   // Board-Profil-Vorgaben
 };
 
 }} // namespace machino::night

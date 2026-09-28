@@ -33,6 +33,12 @@ NightPins NightService::pins() const
     p.ircut_single_invert = store_.get("night.ircut_single_invert") == "true";
     p.backlight           = store_.get("night.backlight") == "true";
     p.backlight_pin       = store_.get("night.backlight_pin");
+    // W2b: Board-Profil-Defaults, wenn die UI (Store) nichts gesetzt hat --
+    // dieselbe Rangfolge wie beim USB-Port: Profil-Vorgabe, Nutzer gewinnt.
+    if (p.ircut_pin1.empty() && p.ircut_pin2.empty()) {
+        p.ircut_pin1 = def_ircut_pin1_;
+        p.ircut_pin2 = def_ircut_pin2_;
+    }
     return p;
 }
 

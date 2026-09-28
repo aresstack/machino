@@ -9,6 +9,21 @@ const hw::IPinResolver& ingenic_pin_resolver()
     return r;
 }
 
+bool night_defaults_for_board(const std::string& board_id, NightDefaults& out)
+{
+    // Stock-Belegung dieses Boards, aus ovfs_boardsystem disassembliert
+    // (HalPerip_Init: base 96 + idx 22/23 -> PD22/PD23; InitIrLight:
+    // 32+17 -> PB17 als Eingang = Lichtsensor). Andere T40-Boards erben
+    // das NICHT durch den SoC -- nur durch eigene Messung/Analyse.
+    if (board_id == "t40nn-imx307-board-a") {
+        out.ircut_pin1 = "PD22";
+        out.ircut_pin2 = "PD23";
+        out.light_sensor_pin = "PB17";
+        return true;
+    }
+    return false;
+}
+
 bool usb_power_for_board(const std::string& board_id, UsbPowerCapability& out)
 {
     // The board this was measured on. Other T40NN cameras may well wire the

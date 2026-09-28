@@ -1080,6 +1080,21 @@ void test_w2_night() {
     }
     ACHECK(saw_hi_on && saw_hi_off);
 
+    // W2b: Board-Profil-Defaults (Stock-Belegung) fuellen die Pins vor,
+    // solange die UI nichts gesetzt hat; ein Store-Wert gewinnt.
+    {
+        FakeNightGpio g2;
+        night::NightService ns2(r.tuning, &g2, r.store);
+        ns2.set_default_pins("PD22", "PD23");
+        // Store traegt hier bereits PB18/PB19 aus dem PATCH oben -> Store gewinnt.
+        ACHECK(ns2.pins().ircut_pin1 == "PB18");
+        // Ohne Store-Pins greifen die Profil-Defaults.
+        api::Response rst = r.api.patch_config("{\"night\":{\"ircut_pin1\":\"\",\"ircut_pin2\":\"\"}}", "");
+        ACHECK(rst.status == 200);
+        ACHECK(ns2.pins().ircut_pin1 == "PD22" && ns2.pins().ircut_pin2 == "PD23");
+        r.api.patch_config("{\"night\":{\"ircut_pin1\":\"PB18\",\"ircut_pin2\":\"PB19\"}}", "");
+    }
+
     // config.json-View zeigt die Sektion im majestic-Vokabular.
     Json web = compat::majestic_config(r.api.config().body, r.api.state().body);
     ACHECK(path(web, "nightMode.irCut")->as_bool());
