@@ -191,6 +191,21 @@ jobs:
           cp -f machino/openipc/www/machino-cgi-run.cgi "$O/www/machino-cgi-run.cgi"
           cp -f machino/openipc/www/machino-dyndns.cgi  "$O/www/machino-dyndns.cgi"
           cp -f machino/openipc/www/machino-ai.cgi      "$O/www/machino-ai.cgi"
+          cp -f machino/openipc/www/machino-ipsec.cgi   "$O/www/machino-ipsec.cgi"
+
+          # Upstream WebUI overlay: pin the majestic-webui commit the backend
+          # (schema/keys/defaults) was built against and pack www/a. install.sh
+          # bind-mounts it over /var/www/a at boot so a camera flashed with an
+          # OLDER majestic-webui still renders machino's schema correctly
+          # (the live-strip squash bug is fixed at this pin). Stock files are
+          # never modified; uninstall unmounts and they are back.
+          WEBUI_PIN=8bfec408ea86ee41ba9e5942f098ab092045e1b0
+          WD=$(pwd)
+          git clone --quiet https://github.com/OpenIPC/majestic-webui /tmp/mwebui
+          git -C /tmp/mwebui checkout --quiet "$WEBUI_PIN"
+          ( cd /tmp/mwebui/www/a && tar czf "$WD/$O/webui-upstream.tgz" . )
+          cp -f machino/openipc/init/S96machino-webui   "$O/init/S96machino-webui"
+          echo "webui overlay pinned $WEBUI_PIN, $(du -h "$O/webui-upstream.tgz" | cut -f1)"
 
           # WLAN. install.sh legt das per Default ab und laesst es
           # ausgeschaltet -- usb.mode ist off, und der Helfer kehrt dann

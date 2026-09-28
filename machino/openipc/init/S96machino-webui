@@ -1,0 +1,51 @@
+#!/bin/sh
+# machino: present the upstream-current OpenIPC WebUI assets over /var/www/a.
+#
+# WHY THIS EXISTS
+# A flashed OpenIPC image carries whatever majestic-webui build shipped with
+# it, and older ones have real bugs against machino's schema -- e.g. the live
+# strip crams every x-live control into one row instead of the four tone knobs
+# (fixed upstream, LIVE_META gating). machino's BACKEND is already correct for
+# the current WebUI; this makes the FRONTEND current too, on every camera,
+# without a re-flash.
+#
+# HOW IT KEEPS THE "byte-identical" RULE
+# It does NOT touch the flashed files. It stages the pinned upstream assets in
+# tmpfs and bind-mounts them OVER /var/www/a. `stop` unmounts, and the stock
+# assets are back, unchanged. Rebuilt every boot (S96, after S95streamer), so
+# a reboot never drops it -- the failure that a hand-mount had.
+#
+# The one file kept from the real dir is video-check.js: if a machino patch
+# put its own version there (the yellow "camera is not seeing anything" box),
+# that patch is carried into the overlay instead of being shadowed away.
+SRC=/etc/machino/webui-upstream.tgz
+STAGE=/tmp/machino-wwwa
+TARGET=/var/www/a
+
+is_mounted() { mount 2>/dev/null | grep -q " $TARGET "; }
+
+start() {
+    [ -r "$SRC" ] || { echo "webui: no $SRC, leaving stock assets"; return 0; }
+    is_mounted && return 0
+    [ -d "$TARGET" ] || { echo "webui: no $TARGET, nothing to overlay"; return 0; }
+    rm -rf "$STAGE"; mkdir -p "$STAGE" || return 1
+    if ! gunzip -c "$SRC" | (cd "$STAGE" && tar x) 2>/dev/null; then
+        echo "webui: could not unpack $SRC -- staying on stock assets"
+        rm -rf "$STAGE"; return 1
+    fi
+    # Preserve a machino-patched stock asset that lives in the real dir.
+    [ -f "$TARGET/video-check.js" ] && cp "$TARGET/video-check.js" "$STAGE/video-check.js" 2>/dev/null
+    mount -o bind "$STAGE" "$TARGET" && echo "webui: upstream assets overlaid on $TARGET"
+}
+
+stop() {
+    is_mounted && umount "$TARGET" 2>/dev/null
+    rm -rf "$STAGE"
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; start ;;
+    *)       echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

@@ -69,6 +69,11 @@ FAKE
     # Machinos eigene WebUI-Seiten -- echte OpenIPC-Seiten, siehe install.sh.
     mkdir -p "$B/www"
     cp "$PKG"/www/machino-*.cgi "$B/www/"
+    # Der WebUI-Overlay-Payload, wie das Release-Artefakt ihn traegt: ein
+    # tar.gz + das Boot-Skript. install.sh legt beides ab und mountet
+    # best-effort; der Test prueft nur, dass die Dateien ankommen/gehen.
+    cp "$PKG/init/S96machino-webui" "$B/init/" 2>/dev/null || true
+    printf 'fake-webui-tarball\n' > "$B/webui-upstream.tgz"
     # Die NNA-Nutzlast (Helfer + Modell), wie das Release-Artefakt sie traegt.
     # Sie wird NUR mit --with-nna-payload installiert.
     mkdir -p "$B/nna"
@@ -248,6 +253,10 @@ is    "selection unchanged"        "$(cat "$R/etc/machino/streamer")"           
 # The install must NOT touch the stock WebUI (no standalone page, no menu edit).
 hasnt "no standalone webui page" "$R/var/www/cgi-bin/machino.cgi"
 if diff -q "$WORK/header.orig" "$R/var/www/cgi-bin/p/header.cgi" >/dev/null; then ok; else bad "install modified the stock header.cgi"; fi
+# The WebUI overlay payload is installed as machino-owned files (a bind mount
+# happens at boot, not here): the tarball and the boot script must land.
+has "webui overlay tarball installed" "$R/etc/machino/webui-upstream.tgz"
+has "webui overlay init installed"    "$R/etc/init.d/S96machino-webui"
 
 # ------------------------------------ 2) installing twice is harmless -------
 run_install || bad "second install.sh exited non-zero: $(cat "$WORK/out")"
@@ -266,6 +275,8 @@ has   "majestic back in the boot slot" "$R/etc/init.d/S95majestic"
 hasnt "boot script removed"            "$R/etc/init.d/S95streamer"
 hasnt "binary removed"                 "$R/usr/bin/machino"
 hasnt "streamerctl removed"            "$R/usr/sbin/streamerctl"
+hasnt "webui overlay init removed"     "$R/etc/init.d/S96machino-webui"
+hasnt "webui overlay tarball removed"  "$R/etc/machino/webui-upstream.tgz"
 hasnt "state dir removed"              "$R/etc/machino"
 if diff -q "$WORK/header.orig" "$R/var/www/cgi-bin/p/header.cgi" >/dev/null; then ok; else bad "header.cgi not byte-identical after uninstall"; fi
 if [ -x "$R/etc/init.d/S95majestic" ]; then ok; else bad "majestic auto-start not restored"; fi

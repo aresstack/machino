@@ -527,6 +527,25 @@ if [ -f "$INITD/S95majestic" ]; then
 fi
 put 0755 "$HERE/init/S95streamer" "$INITD/S95streamer" || die "cannot install S95streamer"
 
+# ------------------------------------------------- upstream WebUI overlay ---
+#
+# Flashed OpenIPC images ship whatever majestic-webui build was current when
+# they were built; older ones render machino's schema wrong (the live strip
+# squashes every knob into one row, fixed upstream). This overlays the pinned
+# upstream assets over /var/www/a via a bind mount at boot -- the flashed
+# files stay byte-identical and come back on uninstall. Optional: a bundle
+# without the tarball simply keeps the stock assets.
+if [ -r "$HERE/webui-upstream.tgz" ]; then
+    put 0600 "$HERE/webui-upstream.tgz" "$STATE_DIR/webui-upstream.tgz" ||
+        die "cannot install $STATE_DIR/webui-upstream.tgz"
+    put 0755 "$HERE/init/S96machino-webui" "$INITD/S96machino-webui" ||
+        die "cannot install S96machino-webui"
+    "$INITD/S96machino-webui" start || say "webui overlay: will apply on next boot"
+    say "installed upstream WebUI overlay"
+else
+    say "bundle has no webui-upstream.tgz - keeping the flashed WebUI assets"
+fi
+
 # ------------------------------------------------------------- USB WiFi ---
 #
 # Alles wird installiert, nichts wird eingeschaltet. machino-usb-helper liest

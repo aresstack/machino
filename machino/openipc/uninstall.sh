@@ -108,6 +108,10 @@ rm -f "$WWW/cgi-bin/machino-cellular.cgi" "$WWW/cgi-bin/machino-usb.cgi"
 rm -f "$WWW/cgi-bin/machino-devices.cgi" "$WWW/cgi-bin/machino-network.cgi"
 rm -f "$WWW/cgi-bin/machino-cgi-run.cgi" "$WWW/cgi-bin/machino-dyndns.cgi"
 rm -f "$WWW/cgi-bin/machino-ai.cgi" "$WWW/cgi-bin/machino-ipsec.cgi"
+# WebUI-Overlay: erst aushaengen (Stock-Assets kommen byte-identisch zurueck),
+# dann Skript und Tarball entfernen.
+[ -x "$INITD/S96machino-webui" ] && "$INITD/S96machino-webui" stop 2>/dev/null
+rm -f "$INITD/S96machino-webui" "$ROOT/etc/machino/webui-upstream.tgz"
 rm -f "$ROOT/usr/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-wifi-role"
 # Der NNA-Helfer geht mit; die Modelle unter /etc/machino/models BLEIBEN --
 # Nutzdaten des Betreibers, dieselbe Regel wie /etc/machino/payload.
