@@ -292,7 +292,7 @@ private:
         }
         if (sec_l == "audio") {
             if (leaf_l == "enabled")       return mapped(key, val, "audio.enabled", val);
-            if (leaf_l == "outputenabled") return mapped(key, val, "audio.output_enabled", val, "stored; no speaker path yet");
+            if (leaf_l == "outputenabled") return mapped(key, val, "audio.output_enabled", val);
             if (leaf_l == "volume" || leaf_l == "outputvolume") {
                 long long v; if (!to_int(val, v) || v < 0 || v > 100) return invalid(key, val, "volume must be an integer in 0..100");
                 return mapped(key, val, leaf_l == "volume" ? "audio.volume" : "audio.output_volume", val);

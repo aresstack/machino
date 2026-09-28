@@ -54,6 +54,10 @@ static size_t input_cap(const std::string& in) {
     // body once before relaying, so this bound is also the RAM ceiling for the
     // upload - 8 MB, matching the CGI's own limit. A deliberate admin action on
     // an otherwise idle camera; models are a few MB.
+    // The speaker clip: raw samples, bounded by what the speaker queue takes.
+    static const char PLAY[] = "POST /play_audio";
+    if (in.compare(0, sizeof(PLAY) - 1, PLAY) == 0)
+        return kMaxPlayBodyBytes + 4096;
     static const char AI_UPLOAD[] = "POST /cgi-bin/machino-ai-upload.cgi";
     if (in.compare(0, sizeof(AI_UPLOAD) - 1, AI_UPLOAD) == 0)
         return 8 * 1024 * 1024 + 4096;
@@ -813,6 +817,30 @@ bool HttpServer::handle_request(Client& c) {
                 return true;
             }
         }
+    } else if (path == "/play_audio") {
+        // majestic's speaker endpoint. Plain-text answers: the stock settings
+        // page shows the body of a refusal verbatim ("Rejects with what the
+        // camera said"), so it must be a sentence, not a JSON envelope.
+        int status = 200; std::string text = "OK\n";
+        if (m != "POST") { status = 405; text = "POST the samples to play\n"; }
+        else if (!audio_ || !audio_->output_available()) { status = 501; text = "this camera has no audio output\n"; }
+        else {
+            std::vector<int16_t> pcm; int rate = 0; std::string err;
+            if (!play_body_to_pcm(req.body, audio_->config().srate, pcm, rate, err)) { status = 400; text = err + "\n"; }
+            else {
+                const size_t n = pcm.size();
+                const Result pr = audio_->play(std::move(pcm), rate, err);
+                if (!pr) {
+                    status = pr.status == Status::Unsupported ? 501 : pr.status == Status::Busy ? 503 : 400;
+                    text = err + "\n";
+                } else {
+                    LOGI(MOD, "%s: play_audio queued %zu samples at %d Hz", c.peer.c_str(), n, rate);
+                }
+            }
+        }
+        bool ok = queue(c, response(status, "text/plain; charset=utf-8", text, req.keep_alive));
+        if (!req.keep_alive) c.close_after_flush = true;
+        return ok;
     } else if (path == "/audio.opus" || path == "/audio.m4a") {
         // Named, not relayed: a 404 from the busybox side would read as "this
         // camera has no microphone", which is not what is missing.

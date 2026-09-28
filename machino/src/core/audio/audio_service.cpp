@@ -35,8 +35,9 @@ int output_volume_to_vendor(int percent) {
     return interpolate(t, percent);
 }
 
-AudioService::AudioService(const AudioConfig& cfg, InFactory in)
-    : in_factory_(std::move(in)), cfg_(cfg) {}
+AudioService::AudioService(const AudioConfig& cfg, InFactory in, OutFactory out)
+    : in_factory_(std::move(in)), cfg_(cfg),
+      speaker_(std::move(out), cfg.output_enabled, cfg.output_volume, cfg.grace_ms) {}
 
 AudioService::~AudioService() { shutdown(); }
 
@@ -189,14 +190,14 @@ Result AudioService::set_sample_rate(int hz) {
 }
 
 Result AudioService::set_output_enabled(bool on) {
-    std::lock_guard<std::mutex> lk(m_);
-    cfg_.output_enabled = on;
+    { std::lock_guard<std::mutex> lk(m_); cfg_.output_enabled = on; }
+    speaker_.set_enabled(on);
     return Result::ok();
 }
 
 Result AudioService::set_output_volume(int percent) {
-    std::lock_guard<std::mutex> lk(m_);
-    cfg_.output_volume = percent;
+    { std::lock_guard<std::mutex> lk(m_); cfg_.output_volume = percent; }
+    speaker_.set_volume(percent);
     return Result::ok();
 }
 
@@ -215,6 +216,7 @@ AudioStats AudioService::stats() const {
 }
 
 void AudioService::shutdown() {
+    speaker_.shutdown();
     std::thread t;
     {
         std::lock_guard<std::mutex> lk(m_);

@@ -125,7 +125,8 @@ switch. Those need the specific endpoints below, not schema fields.
 | PTZ | `/ptz`, `/cgi-bin/j/ptz.cgi` | POST | pan/tilt | `NOT_APPLICABLE` (relay for the CGI) | — | — | this camera has no PTZ |
 | Autofocus | `/autofocus`, `/autofocus/status` | POST/GET | lens AF | `NOT_APPLICABLE` | — | — | fixed lens |
 | Audio in | `/audio.pcm`, `/audio.alaw`, `/audio.g711a`, `/audio.ulaw` | GET | microphone streams | `NATIVE` | `AudioService`, `http/audio_stream` | `test_audio` | hardware acceptance with `machino --audio-test` |
-| Audio out | `/play_audio`, `/audio.opus`, `/audio.m4a` | POST/GET | speaker + encoded audio | `MISSING` (opus/m4a answer 501 with the reason) | — | — | speaker path after the connector is confirmed |
+| Speaker | `/play_audio` | POST | raw s16le at audio.srate (or WAV) to the speaker | `NATIVE` | `audio::Speaker`, `http_server` | `test_audio` | — |
+| Encoded audio | `/audio.opus`, `/audio.m4a` | GET | Opus / AAC streams | `MISSING` (501 with the reason) | — | — | needs an encoder |
 | MJPEG | `/mjpeg`, `/mjpeg.html` | GET | multipart JPEG + viewer page | `NATIVE` (alias of `/stream.mjpeg`; 501 while `jpeg.enabled=false`) | `http_server` | — | — |
 | Other streams | `/video.mp4`, `/hls`, `/image.heif`, `/image.yuv420` | GET | progressive MP4, HLS, stills | `MISSING` (501 with the reason, never relayed) | `compat::majestic_unbuilt` | `test_audio` | build when someone needs them |
 | Multi-camera | `/api/v1/peers`, `/api/v1/calibration/*` | GET | camera roster / stereo calibration | `NOT_APPLICABLE` | — | — | single camera |

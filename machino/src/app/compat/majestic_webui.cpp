@@ -348,13 +348,20 @@ Json majestic_schema(const Json& capabilities) {
     }
     add_section(properties, "ai", ai_fields);
 
-    // Audio: only the microphone, and only when the platform has one. The
-    // speaker switch is left out until something plays through it - a switch
-    // that does nothing is worse than no switch. Every field applies inside
-    // the POST (srate at the next open of the microphone, which is when a rate
-    // can change at all), so all of them are "live" in majestic's sense.
+    // Audio: microphone and speaker, each only when the platform has it.
+    // Every field applies inside the POST (srate at the next open of the
+    // device, which is when a rate can change at all), so all of them are
+    // "live" in majestic's sense.
     Json audio_fields = Json::object();
     if (const Json* au = capabilities.get("audio"); au && au->is_object()) {
+        const Json* outc = au->get("output");
+        if (outc && outc->is_bool() && outc->as_bool()) {
+            Json oe = bool_field("Enable speaker"); oe.set("x-reload", Json::string("live"));
+            audio_fields.set("outputEnabled", oe);
+            Json vr = Json::object(); vr.set("min", Json::integer(0)); vr.set("max", Json::integer(100));
+            Json ov = integer_field("Speaker volume", &vr); ov.set("x-reload", Json::string("live"));
+            audio_fields.set("outputVolume", ov);
+        }
         const Json* in = au->get("input");
         if (in && in->is_bool() && in->as_bool()) {
             Json en = bool_field("Enable microphone"); en.set("x-reload", Json::string("live"));
@@ -522,12 +529,10 @@ Json majestic_config(const Json& native_config, const Json& state) {
     //    silence into 'switched off' sends somebody looking for a control to
     //    change that may not even be there."
     //
-    // So both switches are ALWAYS reported. The microphone half comes from the
-    // native section when this build has an audio service; outputEnabled stays
-    // false until a speaker path exists, because the WebUI's speaker test
-    // would otherwise play into nothing and blame the wiring. The live player
-    // is safe either way: preview.js drops to muted when the video init names
-    // no audio codec, which /ws/video does not (yet).
+    // So both switches are ALWAYS reported: from the native section when this
+    // build has an audio service, false otherwise. The live player is safe
+    // either way: preview.js drops to muted when the video init names no
+    // audio codec, which /ws/video does not (yet).
     {
         Json au = Json::object();
         const Json* na = native_config.get("audio");
@@ -535,9 +540,11 @@ Json majestic_config(const Json& native_config, const Json& state) {
             copy_if(*na, au, "enabled");
             copy_if(*na, au, "srate");
             copy_if(*na, au, "volume");
+            if (const Json* v = na->get("output_enabled")) au.set("outputEnabled", *v);
+            if (const Json* v = na->get("output_volume")) au.set("outputVolume", *v);
         }
         if (!au.get("enabled")) au.set("enabled", Json::boolean(false));
-        au.set("outputEnabled", Json::boolean(false));
+        if (!au.get("outputEnabled")) au.set("outputEnabled", Json::boolean(false));
         out.set("audio", au);
     }
 
@@ -1020,9 +1027,6 @@ const char* majestic_unbuilt(const std::string& path) {
         return "HEIF stills are not built; JPEG is /image.jpg";
     if (path == "/image.yuv420")
         return "raw YUV stills are not built; JPEG is /image.jpg";
-    if (path == "/play_audio")
-        return "the speaker path is not built yet: the audio connector's output is being "
-               "confirmed with `machino --audio-test tone` first";
     return nullptr;
 }
 

@@ -153,11 +153,10 @@ Json ApiService::capabilities_json() const {
     Json nightcap = Json::object();
     nightcap.set("available", Json::boolean(night_ != nullptr));
     j.set("night", nightcap);
-    // Audio: the microphone when the platform has one. The speaker is not
-    // reported as a capability until something can play through it.
+    // Audio: microphone and speaker, each when the platform has it.
     Json audiocap = Json::object();
     audiocap.set("input", Json::boolean(audio_ != nullptr && audio_->available()));
-    audiocap.set("output", Json::boolean(false));
+    audiocap.set("output", Json::boolean(audio_ != nullptr && audio_->output_available()));
     Json rates = Json::array(); rates.push(Json::integer(8000)); rates.push(Json::integer(16000));
     audiocap.set("sample_rates", rates);
     audiocap.set("streams", Json::string("/audio.pcm /audio.alaw /audio.g711a /audio.ulaw"));
@@ -617,6 +616,16 @@ Json ApiService::telemetry_json() {
         au.set("frames", Json::integer(as.frames));
         au.set("read_errors", Json::integer(as.read_errors));
         au.set("error", as.last_error.empty() ? Json::null() : Json::string(as.last_error));
+        const audio::SpeakerStats sp = audio_->speaker_stats();
+        Json spk = Json::object();
+        spk.set("enabled", Json::boolean(sp.enabled));
+        spk.set("open", Json::boolean(sp.open));
+        spk.set("playing", Json::boolean(sp.playing));
+        spk.set("queued_ms", Json::integer(sp.queued_ms));
+        spk.set("clips", Json::integer(sp.clips));
+        spk.set("dropped", Json::integer(sp.dropped));
+        spk.set("error", sp.last_error.empty() ? Json::null() : Json::string(sp.last_error));
+        au.set("speaker", spk);
         j.set("audio", au);
     }
     return j;
@@ -1159,9 +1168,9 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
             else if (c.key == "audio.srate") { audio_->set_sample_rate(iv);
                 c.r = ApplyResult::stored(ApplyMode::PipelineRestart, iv, "stored; used the next time the microphone opens"); }
             else if (c.key == "audio.output_enabled") { audio_->set_output_enabled(c.value == "true");
-                c.r = ApplyResult::stored(ApplyMode::Unsupported, c.value == "true", "stored; this build has no speaker path yet"); }
+                c.r = ApplyResult::applied(ApplyMode::Live, c.value == "true", c.value == "true"); }
             else if (c.key == "audio.output_volume") { audio_->set_output_volume(iv);
-                c.r = ApplyResult::stored(ApplyMode::Unsupported, iv, "stored; this build has no speaker path yet"); }
+                c.r = ApplyResult::applied(ApplyMode::Live, iv, iv); }
         }
         else if (c.key == "ai.enabled")       { c.r = ai_apply(detection_->set_enabled(c.value == "true"), c.value == "true" ? 1 : 0); }
         else if (c.key == "ai.detector")      { c.r = ai_apply(detection_->set_detector(c.value), -1); }

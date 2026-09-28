@@ -354,10 +354,26 @@ Line-/Kopfhörerausgang ist dafür nicht gebaut.
   Migration aus `majestic.yaml`. `outputEnabled` bleibt an die WebUI `false`
   gemeldet, solange nichts abspielt.
 
+### Lautsprecher (seit 2026-09-29)
+
+* `audio::Speaker` (`core/audio/speaker.*`): eine Warteschlange von Clips.
+  `play()` reiht nur ein — der Aufrufer ist die HTTP-Poll-Schleife, die nie auf
+  einen Lautsprecher warten darf. Ein Wiedergabe-Thread oeffnet `IMP_AO` erst,
+  wenn etwas zu spielen ist, schreibt in 200-ms-Stuecken (Ausschalten schneidet
+  sofort ab), leert das Geraet am Ende (`FlushChnBuf`, sonst fehlt der letzte
+  Teil) und schliesst es `audio.grace_ms` nach dem letzten Clip. Warteschlange
+  begrenzt auf 70 s.
+* `POST /play_audio`: der Body ist, was die Stock-WebUI schickt — rohe s16le
+  mono mit der Rate der Kamera (`audio.srate`), ohne Container; WAV (16 bit
+  mono, 8/16 kHz) geht auch. Antworten als Klartext, weil die Settings-Seite
+  den Text einer Ablehnung woertlich anzeigt. Bis 1 MiB Body.
+* `audio.outputEnabled`/`outputVolume` sind live (Pegelkurve aus dem Stock
+  `audio_param.json`), im Schema, in der Config und in der Telemetrie
+  (`audio.speaker`).
+
 ### Noch offen
 
-* `/play_audio`, Talkback (RTSP-Backchannel), Audio in RTSP und in
-  `/ws/video` (`&audio=`), Opus/AAC.
+* Talkback (RTSP-Backchannel), Audio in `/ws/video` (`&audio=`), Opus/AAC.
 * Hardwareabnahme mit `machino --audio-test` (Daemon vorher stoppen):
 
   ```

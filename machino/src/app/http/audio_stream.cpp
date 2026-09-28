@@ -1,4 +1,5 @@
 #include "app/http/audio_stream.hpp"
+#include "app/audio_test.hpp"
 #include "core/audio/g711.hpp"
 #include <cstring>
 
@@ -60,6 +61,20 @@ void audio_encode(AudioFormat f, int capture_rate, const uint8_t* s16le, size_t 
         const int16_t v = (int16_t)(acc / (int)step);
         dst[o] = f == AudioFormat::Alaw ? audio::alaw_encode(v) : audio::ulaw_encode(v);
     }
+}
+
+bool play_body_to_pcm(const std::string& body, int raw_rate, std::vector<int16_t>& pcm, int& rate, std::string& err) {
+    if (body.size() < 2) { err = "the body holds no samples"; return false; }
+    if (body.size() >= 12 && body.compare(0, 4, "RIFF") == 0 && body.compare(8, 4, "WAVE") == 0) {
+        const std::vector<uint8_t> file(body.begin(), body.end());
+        if (!app::wav_parse(file, rate, pcm, err)) return false;
+        if (pcm.empty()) { err = "the WAV file holds no samples"; return false; }
+        return true;
+    }
+    rate = raw_rate;
+    pcm.resize(body.size() / 2);                     // an odd trailing byte is not a sample
+    std::memcpy(pcm.data(), body.data(), pcm.size() * 2);
+    return true;
 }
 
 }} // namespace machino::http

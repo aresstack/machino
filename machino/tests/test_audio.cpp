@@ -297,6 +297,12 @@ void test_majestic_audio_mapping() {
     ACHECK(fields && !fields->get("outputEnabled") && !fields->get("outputVolume"));
     ACHECK(fields && fields->get("srate")->get("enum")->size() == 2);
     ACHECK(fields && fields->get("volume")->get("maximum")->as_int() == 100);
+    // With an output the speaker switch and level appear too.
+    au.set("output", Json::boolean(true));
+    caps.set("audio", au);
+    const Json with_out = majestic_schema(caps);             // kept alive: sf points into it
+    const Json* sf = with_out.get("properties")->get("audio")->get("properties");
+    ACHECK(sf && sf->get("outputEnabled") && sf->get("outputVolume") && sf->get("enabled"));
 
     // Config: both switches ALWAYS present (absent is not false); the speaker stays false.
     Json none = majestic_config(Json::object(), Json::object());
@@ -309,7 +315,7 @@ void test_majestic_audio_mapping() {
     Json mc = majestic_config(native, Json::object());
     const Json* ma = mc.get("audio");
     ACHECK(ma && ma->get("enabled")->as_bool() && ma->get("srate")->as_int() == 16000 && ma->get("volume")->as_int() == 55);
-    ACHECK(ma && !ma->get("outputEnabled")->as_bool());          // no speaker path: never claimed
+    ACHECK(ma && ma->get("outputEnabled")->as_bool());           // the speaker switch round-trips
 
     // Migration from majestic.yaml.
     MigrationResult r = migrate_majestic_yaml("audio:\n  enabled: true\n  volume: 45\n  srate: 48000\n  codec: opus\n  outputEnabled: true\n");
@@ -329,20 +335,139 @@ void test_majestic_audio_mapping() {
 // ones that ARE served natively never land on that list.
 void test_majestic_unbuilt_urls() {
     using compat::majestic_unbuilt;
-    for (const char* u : {"/video.mp4", "/hls", "/hls/index.m3u8", "/image.heif", "/image.yuv420", "/play_audio"}) {
+    for (const char* u : {"/video.mp4", "/hls", "/hls/index.m3u8", "/image.heif", "/image.yuv420"}) {
         const char* why = majestic_unbuilt(u);
         ACHECK(why != nullptr && std::string(why).size() > 20);
     }
     for (const char* u : {"/mjpeg", "/mjpeg.html", "/image.jpg", "/audio.pcm", "/audio.alaw", "/audio.ulaw",
-                          "/audio.g711a", "/night/on", "/metrics", "/api/v1/config.json", "/hlsx", "/"}) {
+                          "/audio.g711a", "/play_audio", "/night/on", "/metrics", "/api/v1/config.json", "/hlsx", "/"}) {
         ACHECK(majestic_unbuilt(u) == nullptr);
     }
-    ACHECK(std::string(majestic_unbuilt("/play_audio")).find("audio-test") != std::string::npos);
+}
+
+struct FakeSpkCounters {
+    std::atomic<int> opens{0}, closes{0}, drains{0}, volume{-999}, last_rate{0};
+    std::atomic<size_t> samples{0};
+    std::atomic<bool> refuse{false}, fail_write{false};
+    std::atomic<int> write_delay_ms{0};
+};
+
+class FakeSpk final : public IAudioOut {
+public:
+    FakeSpk(FakeSpkCounters& c, const AudioParams& p) : c_(c), rate_(p.sample_rate) { c_.opens++; c_.last_rate = p.sample_rate; c_.volume = p.volume; }
+    ~FakeSpk() override { c_.closes++; }
+    Result write(const int16_t*, size_t n) override {
+        if (c_.write_delay_ms) std::this_thread::sleep_for(std::chrono::milliseconds(c_.write_delay_ms.load()));
+        if (c_.fail_write) return Result::error();
+        c_.samples += n; return Result::ok();
+    }
+    Result drain(int) override { c_.drains++; return Result::ok(); }
+    Result set_volume(int v) override { c_.volume = v; return Result::ok(); }
+    int sample_rate() const override { return rate_; }
+private:
+    FakeSpkCounters& c_;
+    int rate_;
+};
+
+audio::Speaker::OutFactory spk_factory(FakeSpkCounters& c) {
+    return [&c](const AudioParams& p) -> std::unique_ptr<IAudioOut> {
+        if (c.refuse) return nullptr;
+        return std::unique_ptr<IAudioOut>(new FakeSpk(c, p));
+    };
+}
+
+void test_speaker() {
+    std::string why;
+    // No output on this platform: said, not pretended.
+    audio::Speaker none(nullptr, true, 50, 50);
+    ACHECK(!none.available() && none.play(std::vector<int16_t>(80), 8000, why).status == Status::Unsupported);
+    ACHECK(why.find("no audio output") != std::string::npos);
+
+    FakeSpkCounters c;
+    {
+        audio::Speaker off(spk_factory(c), false, 50, 50);
+        ACHECK(off.play(std::vector<int16_t>(80), 8000, why).status == Status::Busy && why.find("switched off") != std::string::npos);
+        ACHECK(c.opens == 0);                                              // switched off: never opened
+    }
+
+    audio::Speaker spk(spk_factory(c), true, 90, 60);
+    ACHECK(c.opens == 0 && !spk.stats().open);                             // no clip, no speaker
+    ACHECK(spk.play(std::vector<int16_t>(800), 16000, why));
+    ACHECK(spk.play(std::vector<int16_t>(400), 16000, why));
+    ACHECK(spk.wait_idle(2000));
+    ACHECK(c.opens == 1 && c.samples == 1200 && c.last_rate == 16000);    // two clips, one open
+    ACHECK(c.volume == audio::output_volume_to_vendor(90));                // stock-calibrated output curve
+    ACHECK(c.drains >= 1 && spk.stats().clips == 2);
+    ACHECK(eventually([&] { return c.closes == 1 && !spk.stats().open; }));   // closed after the grace
+
+    // A clip at another rate reopens at that rate.
+    ACHECK(spk.play(std::vector<int16_t>(80), 8000, why) && spk.wait_idle(2000));
+    ACHECK(c.opens == 2 && c.last_rate == 8000);
+    spk.set_volume(20);
+    ACHECK(eventually([&] { return c.closes == 2; }));
+
+    // Refusals.
+    ACHECK(spk.play(std::vector<int16_t>(80), 44100, why).status == Status::Unsupported && why.find("44100") != std::string::npos);
+    ACHECK(!spk.play(std::vector<int16_t>(), 8000, why) && why.find("empty") != std::string::npos);
+    const size_t cap = (size_t)audio::Speaker::kMaxQueueSeconds * 8000;
+    c.write_delay_ms = 20;                                                 // keep the first clip busy
+    ACHECK(spk.play(std::vector<int16_t>(8000), 8000, why));
+    ACHECK(spk.play(std::vector<int16_t>(cap - 100), 8000, why));
+    ACHECK(spk.play(std::vector<int16_t>(8000), 8000, why).status == Status::Busy && why.find("full") != std::string::npos);
+
+    // Off cuts what plays and drops what waits.
+    spk.set_enabled(false);
+    ACHECK(spk.wait_idle(3000));
+    ACHECK(spk.stats().dropped >= 1 && spk.stats().queued_ms == 0);
+    c.write_delay_ms = 0;
+    spk.set_enabled(true);
+
+    // A device that refuses to open, or fails to write, is reported.
+    ACHECK(eventually([&] { return !spk.stats().open; }));               // the cut clip's output has closed
+    c.refuse = true;
+    ACHECK(spk.play(std::vector<int16_t>(80), 8000, why) && spk.wait_idle(2000));
+    ACHECK(spk.stats().last_error.find("refused") != std::string::npos);
+    c.refuse = false; c.fail_write = true;
+    ACHECK(spk.play(std::vector<int16_t>(80), 8000, why) && spk.wait_idle(2000));
+    ACHECK(spk.stats().last_error.find("writing") != std::string::npos && !spk.stats().open);
+    c.fail_write = false;
+    spk.shutdown();
+    ACHECK(spk.play(std::vector<int16_t>(80), 8000, why).status == Status::Busy);
+
+    // Through the AudioService: the switch and the level are live.
+    FakeSpkCounters sc;
+    AudioConfig ac; ac.output_enabled = false; ac.output_volume = 40; ac.grace_ms = 30;
+    audio::AudioService svc(ac, nullptr, spk_factory(sc));
+    ACHECK(svc.output_available() && !svc.available());
+    ACHECK(svc.play(std::vector<int16_t>(80), 8000, why).status == Status::Busy);
+    svc.set_output_enabled(true);
+    ACHECK(svc.play(std::vector<int16_t>(80), 8000, why) && svc.wait_speaker_idle(2000));
+    ACHECK(sc.opens == 1 && sc.volume == audio::output_volume_to_vendor(40));
+    ACHECK(svc.config().output_enabled && svc.speaker_stats().clips == 1);
+}
+
+void test_play_body() {
+    std::vector<int16_t> pcm; int rate = 0; std::string err;
+    // Raw: the camera's own rate, little-endian pairs; an odd byte is dropped.
+    const std::string raw("\x01\x00\xff\x7f\x00\x80\x05", 7);
+    ACHECK(http::play_body_to_pcm(raw, 16000, pcm, rate, err) && rate == 16000 && pcm.size() == 3);
+    ACHECK(pcm[0] == 1 && pcm[1] == 32767 && pcm[2] == -32768);
+    // WAV: its own rate.
+    std::vector<uint8_t> w = app::wav_header(8000, 2);
+    w.insert(w.end(), {0x10, 0x00, 0xf0, 0xff});
+    ACHECK(http::play_body_to_pcm(std::string(w.begin(), w.end()), 16000, pcm, rate, err) && rate == 8000 && pcm.size() == 2 && pcm[1] == -16);
+    // Refusals say why.
+    ACHECK(!http::play_body_to_pcm(std::string(1, 'x'), 8000, pcm, rate, err) && err.find("no samples") != std::string::npos);
+    std::vector<uint8_t> st = app::wav_header(8000, 2); st[22] = 2; st.insert(st.end(), 8, 0);
+    ACHECK(!http::play_body_to_pcm(std::string(st.begin(), st.end()), 8000, pcm, rate, err) && err.find("mono") != std::string::npos);
+    ACHECK(http::kMaxPlayBodyBytes / 2 <= (size_t)audio::Speaker::kMaxQueueSeconds * 8000);   // a maximal body fits the queue
 }
 
 } // namespace
 
 void run_audio_tests() {
+    test_speaker();
+    test_play_body();
     test_majestic_unbuilt_urls();
     test_http_audio_stream();
     test_audio_test_helpers();

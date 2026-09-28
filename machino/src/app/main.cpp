@@ -447,9 +447,12 @@ int main(int argc, char** argv) {
         // Audio: the microphone as a demand-driven stream. Independent of the
         // video pipeline (no sensor, no ISP): the codec input is open only
         // while somebody listens on /audio.*, plus audio.grace_ms.
-        audio::AudioService audio_service(cfg.audio, [&platform](const AudioParams& p) { return platform->create_audio_in(p); });
-        LOGI(MOD, "audio: %s, %d Hz, opened only while somebody listens",
-             cfg.audio.enabled ? "enabled" : "disabled (audio.enabled=false)", cfg.audio.srate);
+        audio::AudioService audio_service(cfg.audio,
+            [&platform](const AudioParams& p) { return platform->create_audio_in(p); },
+            [&platform](const AudioParams& p) { return platform->create_audio_out(p); });
+        LOGI(MOD, "audio: microphone %s, speaker %s, %d Hz; each side is opened only while it is used",
+             cfg.audio.enabled ? "enabled" : "disabled (audio.enabled=false)",
+             cfg.audio.output_enabled ? "enabled" : "disabled (audio.output_enabled=false)", cfg.audio.srate);
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection, &rtsp);
         api.set_audio_service(&audio_service);
         // AP-NNA5: der Availability-Vertrag aus der Plattform in die API --

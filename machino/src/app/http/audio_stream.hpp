@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace machino { namespace http {
 
@@ -26,5 +27,12 @@ int audio_wire_rate(AudioFormat f, int capture_rate);
 std::string audio_stream_headers(AudioFormat f, int capture_rate);
 // One captured frame (s16le mono at capture_rate) appended to `out` as wire bytes.
 void audio_encode(AudioFormat f, int capture_rate, const uint8_t* s16le, size_t bytes, std::string& out);
+
+// /play_audio: the body is what the stock WebUI sends - raw s16le mono at the
+// camera's own rate (`raw_rate`, audio.srate), no container. A RIFF/WAVE body
+// (16-bit mono) is accepted too and plays at its own rate. False with `err`
+// for an empty or malformed body.
+static const size_t kMaxPlayBodyBytes = 1024 * 1024;   // ~32 s at 16 kHz, ~65 s at 8 kHz
+bool play_body_to_pcm(const std::string& body, int raw_rate, std::vector<int16_t>& pcm, int& rate, std::string& err);
 
 }} // namespace machino::http

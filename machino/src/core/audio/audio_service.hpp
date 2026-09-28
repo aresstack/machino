@@ -12,6 +12,7 @@
 // Transitions are serialised by one mutex that the frame path never holds
 // across a blocking read.
 #pragma once
+#include "core/audio/speaker.hpp"
 #include "core/config.hpp"
 #include "core/result.hpp"
 #include "core/stream_hub.hpp"
@@ -46,15 +47,22 @@ struct AudioStats {
 class AudioService {
 public:
     using InFactory = std::function<std::unique_ptr<IAudioIn>(const AudioParams&)>;
+    using OutFactory = Speaker::OutFactory;
 
-    // `in` may be empty: the platform has no audio input, and every listen()
-    // is refused with that reason.
-    AudioService(const AudioConfig& cfg, InFactory in);
+    // `in` / `out` may be empty: the platform has no audio input / output,
+    // and every listen() / play() is refused with that reason.
+    AudioService(const AudioConfig& cfg, InFactory in, OutFactory out = nullptr);
     ~AudioService();
     AudioService(const AudioService&) = delete;
     AudioService& operator=(const AudioService&) = delete;
 
     bool available() const { return (bool)in_factory_; }
+    bool output_available() const { return speaker_.available(); }
+
+    // The speaker (majestic /play_audio): queues a clip, returns at once.
+    Result play(std::vector<int16_t> pcm, int rate, std::string& why) { return speaker_.play(std::move(pcm), rate, why); }
+    SpeakerStats speaker_stats() const { return speaker_.stats(); }
+    bool wait_speaker_idle(int timeout_ms) { return speaker_.wait_idle(timeout_ms); }
 
     // A new listener. Opens the microphone if it is not open yet. nullptr with
     // `why` when audio is disabled, unavailable, or the device refused.
@@ -71,8 +79,7 @@ public:
     // Stored; the running device keeps its rate until it is next opened
     // (after the last listener has gone and the grace has run out).
     Result set_sample_rate(int hz);
-    // The speaker side is configuration only in this build: remembered and
-    // reported, so the WebUI round-trips it, but nothing plays yet.
+    // The speaker switch and level, live.
     Result set_output_enabled(bool on);
     Result set_output_volume(int percent);
 
@@ -97,6 +104,7 @@ private:
     std::string            last_error_;
     std::atomic<unsigned>  frames_{0}, read_errors_{0};
     std::atomic<bool>      quit_{false};
+    Speaker                speaker_;    // last: its thread stops first on destruction
 };
 
 }} // namespace machino::audio
