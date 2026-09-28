@@ -1,4 +1,5 @@
 #include "app/http/http_server.hpp"
+#include "app/http/audio_stream.hpp"
 #include "app/compat/majestic_webui.hpp"
 #include "app/webrtc/peer.hpp"
 #include "app/http/fmp4.hpp"
@@ -170,6 +171,11 @@ struct HttpServer::Client {
     StreamHub* ws_hub = nullptr;    // the hub ws_sink came from (for unsubscribe)
     std::shared_ptr<Sink>    ws_sink;
     lifecycle::DemandHandle  ws_demand;
+    // /audio.*: one AudioService listener. The body is the raw sample stream,
+    // no framing; a full output buffer drops frames instead of growing.
+    AudioFormat audio_fmt = AudioFormat::None;
+    int         audio_rate = 0;     // capture rate the listener was opened at
+    std::shared_ptr<Sink> audio_sink;
     bool ws_init_sent = false;
     bool ws_await_key = true;       // never hand the decoder a P-frame without its reference
     std::vector<uint8_t> ws_sps, ws_pps;
@@ -265,6 +271,7 @@ void HttpServer::stop() {
         if (c->rtc)      RuntimeStats::get().dec(&RuntimeCounters::webrtc_sessions);
         if (c->ws_sink) { StreamHub* h = c->ws_hub ? c->ws_hub : hub_; if (h) { c->ws_sink->close(); h->unsubscribe(c->ws_sink); } }
         if (c->rtc_sink) { StreamHub* h = c->rtc_hub ? c->rtc_hub : hub_; if (h) { c->rtc_sink->close(); h->unsubscribe(c->rtc_sink); } }
+        if (c->audio_sink && audio_) audio_->unlisten(c->audio_sink);
         if (c->relay_fd >= 0) close(c->relay_fd);
         // The upgrade child is NEVER killed here: once sysupgrade is flashing it
         // survives a disconnect on purpose ("Protected: flashing continues").
@@ -761,6 +768,30 @@ bool HttpServer::handle_request(Client& c) {
             LOGI(MOD, "%s: MJPEG stream started", c.peer.c_str());
             return true;
         }
+    } else if (audio_format_for_path(path) != AudioFormat::None) {
+        if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else if (!audio_) { r = api::ApiService::fail(501, "unavailable", path, "this build has no audio path"); }
+        else {
+            std::string why;
+            std::shared_ptr<Sink> s = audio_->listen(why);
+            if (!s) { r = api::ApiService::fail(503, "unavailable", path, why); }
+            else {
+                const AudioFormat f = audio_format_for_path(path);
+                c.audio_fmt = f;
+                c.audio_rate = audio_->sample_rate();
+                c.audio_sink = std::move(s);
+                queue(c, audio_stream_headers(f, c.audio_rate));
+                LOGI(MOD, "%s: audio stream started (%s, %d Hz on the wire)", c.peer.c_str(),
+                     audio_format_name(f), audio_wire_rate(f, c.audio_rate));
+                return true;
+            }
+        }
+    } else if (path == "/audio.opus" || path == "/audio.m4a") {
+        // Named, not relayed: a 404 from the busybox side would read as "this
+        // camera has no microphone", which is not what is missing.
+        r = api::ApiService::fail(501, "unavailable", path,
+                                  "Opus/AAC encoding is not built; the microphone is served as "
+                                  "/audio.pcm, /audio.alaw, /audio.g711a and /audio.ulaw");
     } else if (path == "/snapshot" || path == "/snapshot.jpg" || path == "/api/v1/snapshot" ||
                path == "/image.jpg") {
         // W3: /image.jpg ist majestics Name fuer dasselbe Standbild (Dashboard
@@ -1251,6 +1282,20 @@ void HttpServer::pump_ws_video(Client& c) {
     }
 }
 
+void HttpServer::pump_audio(Client& c) {
+    if (!c.audio_sink) return;
+    if (c.audio_sink->closed()) { c.close_after_flush = true; return; }   // audio switched off / shutdown
+    // ~4 s of 16 kHz PCM. A stalled player loses frames here - old audio is
+    // worse than a gap - and the connection itself is never the casualty.
+    const size_t cap = 128 * 1024;
+    for (int i = 0; i < 16; ++i) {
+        AuPtr au;
+        if (!c.audio_sink->pop(au, 0)) return;
+        if (!au || au->data.empty() || c.out.size() > cap) continue;
+        audio_encode(c.audio_fmt, c.audio_rate, au->data.data(), au->data.size(), c.out);
+    }
+}
+
 // Client -> server on a /ws/video socket: tiny JSON ({"request":"idr"}),
 // ping (answered), close. Returns false to drop the connection.
 bool HttpServer::ws_video_input(Client& c) {
@@ -1592,7 +1637,7 @@ void HttpServer::loop() {
                 refs.push_back({c, 3});
             }
         }
-        for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
+        for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc || c->audio_sink) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
         const size_t logs_idx = (logs_fd() >= 0) ? pfds.size() : (size_t)-1;
         if (logs_fd() >= 0) pfds.push_back({logs_fd(), POLLIN, 0});
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
@@ -1617,7 +1662,7 @@ void HttpServer::loop() {
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.rtc_ws)   { c.in.append(buf, (size_t)r); ok = rtc_ws_input(c); }
                 else if (c.ws_upgrade) { c.in.append(buf, (size_t)r); ok = ws_upgrade_input(c); }
-                else if (c.sse || c.mjpeg || c.ws_logs) { /* ignore input on streaming connections */ }
+                else if (c.sse || c.mjpeg || c.ws_logs || c.audio_sink) { /* ignore input on streaming connections */ }
                 else { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; else ok = pump_requests(c); }
             }
             if (ok && c.relay_state != Client::Relay::None) {
@@ -1630,7 +1675,7 @@ void HttpServer::loop() {
                 // there until the idle timeout.
                 if (ok && c.relay_state == Client::Relay::None &&
                     !c.close_after_flush && !c.ws_video && !c.rtc_ws && !c.sse &&
-                    !c.mjpeg && !c.ws_logs)
+                    !c.mjpeg && !c.ws_logs && !c.audio_sink)
                     ok = pump_requests(c);
             }
             if (ok && c.sse) {
@@ -1639,6 +1684,7 @@ void HttpServer::loop() {
             }
             if (ok && c.mjpeg && !c.close_after_flush) push_mjpeg(c);
             if (ok && c.ws_video && !c.close_after_flush) pump_ws_video(c);
+            if (ok && c.audio_sink && !c.close_after_flush) pump_audio(c);
             if (ok && c.rtc) {
                 if (ure & POLLIN) c.rtc->on_readable();
                 pump_rtc(c);
@@ -1651,7 +1697,7 @@ void HttpServer::loop() {
             // refreshes last_activity_ms. A socket still only AWAITING its start
             // frame is not exempt, so an abandoned handshake is still reaped.
             const bool upgrade_running = c.ws_upgrade && c.upgrade_started;
-            if (ok && !c.sse && !c.mjpeg && !c.ws_video && !c.rtc_ws && !c.ws_logs && !upgrade_running && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
+            if (ok && !c.sse && !c.mjpeg && !c.ws_video && !c.rtc_ws && !c.ws_logs && !c.audio_sink && !upgrade_running && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
             if (!ok) {
                 // Close now, erase after the iteration: refs holds pointers
                 // into clients_, so the vector must not shift under it.
@@ -1661,6 +1707,7 @@ void HttpServer::loop() {
                 if (c.sub) bus_.unsubscribe(c.sub);
                 if (c.ws_sink) { StreamHub* h = c.ws_hub ? c.ws_hub : hub_; if (h) { c.ws_sink->close(); h->unsubscribe(c.ws_sink); } }
                 if (c.rtc_sink) { StreamHub* h = c.rtc_hub ? c.rtc_hub : hub_; if (h) { c.rtc_sink->close(); h->unsubscribe(c.rtc_sink); } }
+                if (c.audio_sink && audio_) { audio_->unlisten(c.audio_sink); c.audio_sink.reset(); }
                 c.rtc.reset();                          // closes the UDP socket
                 // The two DemandHandles (ws_demand, rtc_demand) are NOT
                 // released here: they are Client members and their destructors

@@ -276,3 +276,95 @@ gegen den, der gerade läuft.
   einen Befund hält.
 
 2534 Hosttests, 0 failed.
+
+---
+
+## Nachtrag 2026-09-28: Stock-Firmware ausgewertet, Mikrofonpfad gebaut
+
+### Die Stock-Firmware widerlegt „kein Ausgabepfad"
+
+Ausgewertet wurde ein vollständiger Flash-Dump der Kamera mit der
+Hersteller-Firmware (16 MB NOR; `JZT40N_D13_Q38`, IMX307, V4.3.S62I;
+Partitionen `uboot 256k, factory 64k, config 512k, kernel 1920k, rootfs 1440k,
+appfs 12192k`).
+
+* **Der Hersteller lädt den Treiber mit denselben Parametern**
+  (`appfs/ko.tar.xz` → `loadko.sh`):
+
+  ```
+  insmod audio.ko spk_gpio=-1 mono_channel=1
+  ```
+
+  Und trotzdem gibt die Stock-Firmware Ton aus: `ovfs_boardsystem` ruft
+  `IMP_AO_Enable/EnableChn/SendFrame/SetVol/SetGain`, spielt acht
+  Sprachansagen (`appfs/soundFile/`, G.711 µ-law) und nimmt RTSP-Talkback an
+  (`RtspReceiveTalkingDataCallback`). Die Aufnahmeseite nutzt
+  `IMP_AI_Enable/GetFrame/SetVol/SetGain` samt `EnableAec` — Echounterdrückung,
+  die nur mit gleichzeitiger Ausgabe Sinn ergibt.
+* **`spk_gpio = -1` heißt also nur: der Treiber schaltet keinen
+  Verstärker-Pin.** Die Folgerung aus Abschnitt 1 („es gibt auf diesem Board
+  keinen konfigurierten Ausgabepfad") war zu stark und ist hiermit
+  zurückgenommen. Auch die App kennt keinen Speaker-GPIO (nur
+  `AlarmLightGpio`/`LightGpio`): Der Ausgang ist entweder dauerhaft verstärkt
+  oder ein Line-Pegel am Stecker.
+* **Kalibrierung:** `appfs/audio_param.json` enthält die Pegelkurven des
+  Herstellers für Ein- und Ausgang (`VolConfig`, ein Punkt je 10 %). Machino
+  übernimmt genau diese Kurven für `audio.volume` (0..100 → IMP −30..120).
+* **Unterschied zu OpenIPC:** Stock nutzt `mono_channel=1`, unter OpenIPC
+  läuft der Treiber mit `mono_channel=2` (Abschnitt 1). Falls die Aufnahme
+  still bleibt, ist das der erste Verdacht: der Parameter wählt den
+  Mikrofonkanal, und er lässt sich nur beim Laden von `audio.ko` setzen.
+* Die Config des Exemplars (`BoardSys.json`) hatte `AudioEnable: 0` — Audio
+  war dort abgeschaltet, nicht unmöglich.
+
+### Der Stecker (Messung am Gerät, stromlos bzw. Audio aus)
+
+| Pin | DC an | Widerstand stromlos | Arbeitshypothese |
+|---|---|---|---|
+| 1 | 0 V | ~400–500 kΩ | Audio-Out (HPOUTL, AC-gekoppelt) |
+| 2 | 0 V | 0 Ω | GND |
+| 3 | ~0,8 V | kapazitiv, MΩ | Mikrofonbeschaltung (Pegel nahe VCM ≈ AVD/2) |
+| 4 | 0 V | ~2 kΩ stabil | Mikrofon über Bias-Widerstand (2,2 kΩ ist der Elektret-Standard) |
+| 5 | 0 V | kapazitiv, MΩ | zweite Mikrofonseite oder unbelegt |
+
+Gemessen wurde bei **abgeschaltetem Audio**: MICBIAS ist dann aus, der
+Ausgang liegt auf Ruhepegel. Die Belegung wird mit `machino --audio-test`
+bestätigt (unten). Bis dahin **keinen 8-Ω-Lautsprecher an Pin 1** — ein
+Line-/Kopfhörerausgang ist dafür nicht gebaut.
+
+### Was jetzt gebaut ist
+
+* **Port** `ports/iaudio.hpp` (`IAudioIn`, `IAudioOut`), Fabriken an
+  `IPlatform`; **Adapter** `adapters/ingenic/ingenic_audio.*` auf
+  `IMP_AI`/`IMP_AO` dev 0 / chn 0, 8 oder 16 kHz, 40-ms-Frames,
+  `usrFrmDepth` gesetzt (ohne liefert der T-Series-AI nichts).
+  **Kein** HPF/NS/AGC/AEC: die liegen in `libaudioProcess.so`, die libimp per
+  `dlopen` lädt und die OpenIPC nicht mitbringt. Geprüft am Archiv:
+  `IMP_AI_Enable` selbst ruft sie nicht.
+* **`AudioService`** (`core/audio/`): das Mikrofon nach „kein Zuhörer, keine
+  Pipeline". Der erste Zuhörer öffnet den Codec-Eingang, nach dem letzten
+  bleibt er `audio.grace_ms` offen und wird dann geschlossen. Braucht weder
+  Sensor noch ISP, nimmt keine Video-Demand.
+* **HTTP** (majestic-Namen, Stream-URLs-Seite): `/audio.pcm` (s16le mono,
+  Aufnahmerate — das Format, das die Settings-Seite der WebUI liest),
+  `/audio.alaw` = `/audio.g711a`, `/audio.ulaw` (G.711, 8 kHz; bei 16 kHz
+  Aufnahme 2:1 dezimiert). `/audio.opus`, `/audio.m4a` → 501 mit Begründung.
+* **Config** `audio.enabled|srate|volume|gain|output_enabled|output_volume|grace_ms`,
+  per `PATCH /api/v1/config` live, im Majestic-Schema als Mikrofon-Sektion,
+  Migration aus `majestic.yaml`. `outputEnabled` bleibt an die WebUI `false`
+  gemeldet, solange nichts abspielt.
+
+### Noch offen
+
+* `/play_audio`, Talkback (RTSP-Backchannel), Audio in RTSP und in
+  `/ws/video` (`&audio=`), Opus/AAC.
+* Hardwareabnahme mit `machino --audio-test` (Daemon vorher stoppen):
+
+  ```
+  streamerctl stop
+  machino --audio-test bias 60        # jetzt DC an allen Pins messen: MICBIAS (~1,4–1,7 V) zeigt den Mikrofon-Pin
+  machino --audio-test tone 20 1000   # jetzt AC zwischen Pin 1 und Pin 2 messen
+  machino --audio-test record /tmp/mic.wav 5   # dabei aufs Mikrofon klopfen; Pegel wird je Sekunde ausgegeben
+  machino --audio-test play /tmp/mic.wav
+  streamerctl start
+  ```

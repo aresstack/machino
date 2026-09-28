@@ -124,7 +124,8 @@ switch. Those need the specific endpoints below, not schema fields.
 | Pin mux | `/api/v1/pinmux`, `/ws/pins` | GET / WS | live pin state | `MISSING` | — | — | low priority |
 | PTZ | `/ptz`, `/cgi-bin/j/ptz.cgi` | POST | pan/tilt | `NOT_APPLICABLE` (relay for the CGI) | — | — | this camera has no PTZ |
 | Autofocus | `/autofocus`, `/autofocus/status` | POST/GET | lens AF | `NOT_APPLICABLE` | — | — | fixed lens |
-| Audio out | `/play_audio`, `/audio.opus`, `/audio.pcm` | POST/GET | speaker + audio streams | `MISSING` | — | — | no audio path yet |
+| Audio in | `/audio.pcm`, `/audio.alaw`, `/audio.g711a`, `/audio.ulaw` | GET | microphone streams | `NATIVE` | `AudioService`, `http/audio_stream` | `test_audio` | hardware acceptance with `machino --audio-test` |
+| Audio out | `/play_audio`, `/audio.opus`, `/audio.m4a` | POST/GET | speaker + encoded audio | `MISSING` (opus/m4a answer 501 with the reason) | — | — | speaker path after the connector is confirmed |
 | Multi-camera | `/api/v1/peers`, `/api/v1/calibration/*` | GET | camera roster / stereo calibration | `NOT_APPLICABLE` | — | — | single camera |
 | Outgoing | `/api/v1/outgoing.json` | GET | RTMP/SRT push targets | `MISSING` | — | — | no outgoing publisher |
 | Live beacon | `/api/v1/live` | POST beacon | viewer heartbeat; **404 is expected and remembered** by the UI | `MISSING` (404) | — | — | harmless: the UI explicitly tolerates an older daemon |

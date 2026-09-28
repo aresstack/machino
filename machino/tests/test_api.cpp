@@ -1134,7 +1134,53 @@ void test_w2_night() {
     r.api.set_night_service(nullptr);
 }
 
+// Audio: the section exists only when the service is wired, PATCH applies
+// through the service and persists, bad values are named, and no API read or
+// write ever opens the microphone (only a listener does).
+void test_audio_api() {
+    Rig r;
+    ACHECK(!r.api.config().body.get("audio"));
+    api::Response p0 = r.api.patch_config("{\"audio\":{\"enabled\":true}}", "");
+    ACHECK(p0.status == 422 && p0.body.get("error"));
+
+    AudioConfig ac;
+    int opens = 0;
+    audio::AudioService svc(ac, [&opens](const AudioParams&) -> std::unique_ptr<IAudioIn> { ++opens; return nullptr; });
+    r.api.set_audio_service(&svc);
+    api::Response c = r.api.config();
+    ACHECK(path(c.body, "audio.enabled") && !path(c.body, "audio.enabled")->as_bool());
+    ACHECK(path(c.body, "audio.srate") && path(c.body, "audio.srate")->as_int() == 8000);
+    api::Response cap = r.api.capabilities();
+    ACHECK(path(cap.body, "audio.input") && path(cap.body, "audio.input")->as_bool());
+    ACHECK(path(cap.body, "audio.output") && !path(cap.body, "audio.output")->as_bool());
+
+    api::Response p = r.api.patch_config("{\"audio\":{\"enabled\":true,\"volume\":70,\"srate\":16000,\"gain\":20}}", "");
+    ACHECK(p.status == 200);
+    const AudioConfig now = svc.config();
+    ACHECK(now.enabled && now.volume == 70 && now.srate == 16000 && now.gain == 20);
+    ACHECK(r.store.get("audio.enabled") == "true" && r.store.get("audio.srate") == "16000" && r.store.get("audio.volume") == "70");
+    ACHECK(path(r.api.config().body, "audio.volume")->as_int() == 70);
+
+    // The speaker half is stored and says it does nothing yet.
+    api::Response po = r.api.patch_config("{\"audio\":{\"output_enabled\":true,\"output_volume\":40}}", "");
+    ACHECK(po.status == 200 && r.store.get("audio.output_enabled") == "true" && svc.config().output_volume == 40);
+
+    ACHECK(r.api.patch_config("{\"audio\":{\"srate\":44100}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"audio\":{\"volume\":101}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"audio\":{\"gain\":32}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"audio\":{\"enabled\":\"yes\"}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"audio\":{\"codec\":\"opus\"}}", "").status == 400);
+    ACHECK(svc.config().srate == 16000);                      // a refused PATCH changed nothing
+
+    api::Response t = r.api.telemetry();
+    ACHECK(path(t.body, "audio.capturing") && !path(t.body, "audio.capturing")->as_bool());
+    ACHECK(path(t.body, "audio.listeners")->as_int() == 0 && path(t.body, "audio.error")->is_null());
+    ACHECK(opens == 0);                                        // reads and writes never open the microphone
+    svc.shutdown();
+}
+
 void run_api_tests() {
+    test_audio_api();
     test_w2_night();
     test_ap3_ipsec_api();
     test_get_documents();

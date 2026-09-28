@@ -130,6 +130,21 @@ struct AiConfig {
     std::string model_path;            // only for model-based backends
 };
 
+// Audio (microphone). Names and defaults are majestic's `audio` section as it
+// ships in /etc/majestic.yaml (enabled false, volume 30, srate 8000). Off by
+// default like upstream: turning on a microphone is the owner's decision.
+// The capture path only runs while somebody listens (grace_ms after the last
+// listener leaves), exactly like the video units.
+struct AudioConfig {
+    bool enabled = false;          // audio.enabled
+    int  srate = 8000;             // audio.srate - 8000|16000 on the T40 inner codec
+    int  volume = 30;              // audio.volume, 0..100 (0 = mute), mapped onto the vendor scale
+    int  gain = -1;                // audio.gain, analog 0..31; -1 = driver default (machino key)
+    bool output_enabled = false;   // audio.outputEnabled
+    int  output_volume = 30;       // audio.outputVolume, 0..100
+    int  grace_ms = 2000;          // audio.grace_ms: keep the codec input up this long after the last listener
+};
+
 struct TelemetryConfig {
     int log_interval_s = 0;        // 0 = off; otherwise one compact line every N seconds
 };
@@ -235,6 +250,7 @@ struct AppConfig {
     media::ImageSettings image;
     media::LatencySettings latency;
     AiConfig          ai;
+    AudioConfig       audio;
     OsdConfig         osd;
     SystemConfig      system;
     WatchdogConfig    watchdog;

@@ -326,15 +326,39 @@ Json majestic_schema(const Json& capabilities) {
     }
     add_section(properties, "ai", ai_fields);
 
+    // Audio: only the microphone, and only when the platform has one. The
+    // speaker switch is left out until something plays through it - a switch
+    // that does nothing is worse than no switch. Every field applies inside
+    // the POST (srate at the next open of the microphone, which is when a rate
+    // can change at all), so all of them are "live" in majestic's sense.
+    Json audio_fields = Json::object();
+    if (const Json* au = capabilities.get("audio"); au && au->is_object()) {
+        const Json* in = au->get("input");
+        if (in && in->is_bool() && in->as_bool()) {
+            Json en = bool_field("Enable microphone"); en.set("x-reload", Json::string("live"));
+            audio_fields.set("enabled", en);
+            Json sr = Json::object();
+            sr.set("type", Json::string("integer"));
+            sr.set("title", Json::string("Sample rate (Hz)"));
+            if (const Json* rates = au->get("sample_rates")) sr.set("enum", *rates);
+            sr.set("x-reload", Json::string("live"));
+            audio_fields.set("srate", sr);
+            Json vr = Json::object(); vr.set("min", Json::integer(0)); vr.set("max", Json::integer(100));
+            Json vol = integer_field("Microphone volume", &vr); vol.set("x-reload", Json::string("live"));
+            audio_fields.set("volume", vol);
+        }
+    }
+    add_section(properties, "audio", audio_fields);
+
     schema.set("properties", properties);
 
     Json groups = Json::array();
     const char* media_sections[] = {"video0", "video1", "sensor", "latency"};
     const char* image_sections[] = {"image", "nightMode"};   // W2: Day / Night neben Image
-    const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai"};
+    const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai", "audio"};
     Json media = group("media", "Media", properties, media_sections, 4);
     Json image = group("image", "Image", properties, image_sections, 2);
-    Json runtime = group("runtime", "Runtime", properties, runtime_sections, 4);
+    Json runtime = group("runtime", "Runtime", properties, runtime_sections, 5);
     if (media.get("sections")->size()) groups.push(media);
     if (image.get("sections")->size()) groups.push(image);
     if (runtime.get("sections")->size()) groups.push(runtime);
@@ -468,28 +492,29 @@ Json majestic_config(const Json& native_config, const Json& state) {
         out.set("nightMode", nm);
     }
 
-    // AP20: this build has no audio path at all. Saying so matters, because
-    // upstream's audio-check.js treats silence and "off" as different answers
-    // and says why in its own words:
+    // Audio. upstream's audio-check.js treats silence and "off" as different
+    // answers and says why in its own words:
     //
     //   "Absent is not false. A camera that never sent the key has not said
     //    its microphone is off - it has said nothing - and a panel that turns
     //    silence into 'switched off' sends somebody looking for a control to
     //    change that may not even be there."
     //
-    // With the section missing the panel answers "The camera has not said what
-    // its audio settings are yet" - a waiting state, about a camera that will
-    // never answer. With both switches present and false it answers "This
-    // camera has both its microphone and its speaker switched off, so there is
-    // nothing to test yet", which is what a STOCK camera with stock defaults
-    // says (majestic.yaml ships audio.enabled and outputEnabled false).
-    //
-    // Only the two switches, not volume/srate/codec: those would be settings
-    // that do nothing. The player is unaffected either way - preview-page.js
-    // reads `audio.enabled === true`, so absent and false already agree there.
+    // So both switches are ALWAYS reported. The microphone half comes from the
+    // native section when this build has an audio service; outputEnabled stays
+    // false until a speaker path exists, because the WebUI's speaker test
+    // would otherwise play into nothing and blame the wiring. The live player
+    // is safe either way: preview.js drops to muted when the video init names
+    // no audio codec, which /ws/video does not (yet).
     {
         Json au = Json::object();
-        au.set("enabled", Json::boolean(false));
+        const Json* na = native_config.get("audio");
+        if (na && na->is_object()) {
+            copy_if(*na, au, "enabled");
+            copy_if(*na, au, "srate");
+            copy_if(*na, au, "volume");
+        }
+        if (!au.get("enabled")) au.set("enabled", Json::boolean(false));
         au.set("outputEnabled", Json::boolean(false));
         out.set("audio", au);
     }
@@ -608,18 +633,17 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
         // NightService IR-Cut/Licht wirklich -- die Sektion wird oben
         // uebersetzt; ob der ZIEL-Build sie hat, entscheidet die native
         // Validierung mit "day/night is not wired on this platform".)
-        // AP20: audio is reported, so a write to it
-        // is refused with the reason rather than called unknown.
-        if (name == "audio") {
-            r.code = "unsupported_control";
-            r.status = 403;
-            r.path = name;
-            r.message = "this build has no audio path: nothing captures from /dev/dsp and "
-                        "nothing plays to it. The T40 inner codec is up and the SDK has "
-                        "IMP_AI/IMP_AO, so capture is possible later - but the audio driver "
-                        "was given spk_gpio=-1 and no external codec, so there is no "
-                        "configured output on this board at all.";
-            return r;
+        // Audio: majestic's camelCase speaker keys onto the native ones; the
+        // native validation decides (and names) everything else.
+        if (name == "audio" && value.is_object()) {
+            Json native_audio = Json::object();
+            for (const auto& kv : value.members()) {
+                const std::string key = kv.first == "outputEnabled" ? "output_enabled"
+                                      : kv.first == "outputVolume"  ? "output_volume" : kv.first;
+                native_audio.set(key, kv.second);
+            }
+            patch.set("audio", native_audio);
+            continue;
         }
         r.code = "unknown_field";
         r.path = name;

@@ -8,6 +8,9 @@
 // The HTTP API (/api/v1) is served by its own bounded poll() thread; API
 // access is never media demand.
 #include "adapters/ingenic/ingenic_platform.hpp"
+#include "adapters/ingenic/ingenic_audio.hpp"
+#include "app/audio_test.hpp"
+#include "core/audio/audio_service.hpp"
 #include "app/api/api_service.hpp"
 #include "app/api/net_api.hpp"
 #include "core/devices/aic8800_package.hpp"
@@ -204,7 +207,9 @@ static bool eula_present() {
 static void usage(const char* argv0) {
     fprintf(stderr, "usage: %s [-c machino.conf] [-v]\n"
                     "       %s --version\n"
-                    "       %s --migrate-majestic <majestic.yaml> [-o machino.conf]\n", argv0, argv0, argv0);
+                    "       %s --migrate-majestic <majestic.yaml> [-o machino.conf]\n"
+                    "       %s --audio-test [--rate 8000|16000] [--volume 0..100] [--gain 0..31] bias|record|tone|play ...\n",
+            argv0, argv0, argv0, argv0);
 }
 
 // One-way import of an existing OpenIPC majestic.yaml. Prints a full
@@ -287,6 +292,12 @@ static const char* lc_lower(lifecycle::State s) {
 int main(int argc, char** argv) {
     if (argc >= 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-V"))) { printf("machino %s\n", MACHINO_VERSION); return 0; }
     if (argc >= 2 && !strcmp(argv[1], "--migrate-majestic")) return run_migration(argc, argv);
+    // Hardware bring-up aid for the audio connector (docs/ap20-audio-talkback.md):
+    // the codec straight through the adapter, no config, no daemon.
+    if (argc >= 2 && !strcmp(argv[1], "--audio-test"))
+        return app::run_audio_test(argc, argv, 2,
+            [](const AudioParams& p) -> std::unique_ptr<IAudioIn>  { return ingenic::IngenicAudioIn::create(p); },
+            [](const AudioParams& p) -> std::unique_ptr<IAudioOut> { return ingenic::IngenicAudioOut::create(p); });
 
     const char* conf = "/etc/machino/machino.conf";   // canonical path (init, streamerctl, installer, manager all use it)
     bool verbose = false;
@@ -433,7 +444,14 @@ int main(int argc, char** argv) {
                         [] { return claim_state() == http::ClaimState::Claimed; },
                         cfg.system.unsafe);
         IStreamServer& server = rtsp;
+        // Audio: the microphone as a demand-driven stream. Independent of the
+        // video pipeline (no sensor, no ISP): the codec input is open only
+        // while somebody listens on /audio.*, plus audio.grace_ms.
+        audio::AudioService audio_service(cfg.audio, [&platform](const AudioParams& p) { return platform->create_audio_in(p); });
+        LOGI(MOD, "audio: %s, %d Hz, opened only while somebody listens",
+             cfg.audio.enabled ? "enabled" : "disabled (audio.enabled=false)", cfg.audio.srate);
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection, &rtsp);
+        api.set_audio_service(&audio_service);
         // AP-NNA5: der Availability-Vertrag aus der Plattform in die API --
         // dieselbe Bewertung, die auch die Detector-Fabrik gated.
         // static_cast, nicht dynamic_cast: das Binary baut mit -fno-rtti, und
@@ -899,6 +917,7 @@ int main(int argc, char** argv) {
         httpd.set_setup(&setup_gate);
         httpd.set_log_reader(&log_reader);
         httpd.set_net_api(&net_api);
+        httpd.set_audio(&audio_service);
 
         // AP11 ONVIF. Off by default until it has met a real client; the
         // profiles it advertises are the ones the pipeline actually has, so
@@ -1155,6 +1174,7 @@ int main(int argc, char** argv) {
             wdt.stop();
         }
         httpd.stop();
+        audio_service.shutdown();   // no listener is left once the server is down; close the codec input now
         server.stop();
         detection.shutdown();   // stop the detector and release its base demand before the base goes down
         hold.release();

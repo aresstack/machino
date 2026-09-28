@@ -68,8 +68,11 @@ Jede davon ist gemessen und in einem eigenen Dokument belegt.
 * **Kein Recording, keine Analytics-Indizes, keine Peers.** Es steckt keine
   SD-Karte im vorhandenen Slot; der einzige beschreibbare Speicher sind 4,6 MB
   Flash. → `docs/ap19-recording-analytics-peers.md`
-* **Kein Audio, kein Talkback.** `spk_gpio = -1`, kein externer Codec. Capture
-  wäre möglich, ist aber nicht gebaut. → `docs/ap20-audio-talkback.md`
+* **Mikrofon ja, Lautsprecher noch nicht.** `/audio.pcm`, `/audio.alaw`,
+  `/audio.g711a`, `/audio.ulaw` (aus bis `audio.enabled = true`). Kein
+  `/play_audio`, kein Talkback, kein Opus/AAC. `spk_gpio = -1` heißt nicht
+  „kein Ausgang" — die Stock-Firmware spielt damit. Hardwareabnahme über
+  `machino --audio-test`. → `docs/ap20-audio-talkback.md`
 * **Keine NNA.** Treiber vorhanden, aber kein `nmem=` reserviert, keine SDK-API,
   keine Bibliothek, kein Modell. → `docs/ap23-nna-analytics.md`
 * **Machino flasht keine Firmware.** `/ws/upgrade` lehnt mit Begründung ab;

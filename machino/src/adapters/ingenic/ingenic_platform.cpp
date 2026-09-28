@@ -1,4 +1,5 @@
 #include "adapters/ingenic/ingenic_platform.hpp"
+#include "adapters/ingenic/ingenic_audio.hpp"
 #include "adapters/ingenic/detection/ivs_motion.hpp"
 #include "adapters/ingenic/detection/nna_source.hpp"
 #include "adapters/linux/linux_nna_process.hpp"
@@ -122,6 +123,16 @@ std::unique_ptr<IJpegEncoder> IngenicPlatform::create_jpeg(int chn, const JpegPa
     int nw = hw_.sensor.native_width  > 0 ? hw_.sensor.native_width  : hw_.mode.value.width;
     int nh = hw_.sensor.native_height > 0 ? hw_.sensor.native_height : hw_.mode.value.height;
     return IngenicJpegEncoder::create(chn, p, nw, nh);
+}
+
+// Audio needs neither the sensor nor the ISP, so these do not look at the
+// bring-up state: a listener can hear the camera while no video runs.
+std::unique_ptr<IAudioIn> IngenicPlatform::create_audio_in(const AudioParams& p) {
+    return IngenicAudioIn::create(p);
+}
+
+std::unique_ptr<IAudioOut> IngenicPlatform::create_audio_out(const AudioParams& p) {
+    return IngenicAudioOut::create(p);
 }
 
 namespace {
