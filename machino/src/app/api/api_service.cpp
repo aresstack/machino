@@ -715,6 +715,40 @@ Response ApiService::night_action(const std::string& cmd) {
     return r;
 }
 
+Response ApiService::gpio_map() {
+    if (!night_) return fail(404, "not_found", "/api/v1/gpio", "gpio map is not wired on this platform");
+    const night::NightService::GpioMap m = night_->gpio_map();
+    Json j = Json::object();
+    Json banks = Json::array();
+    for (int base : m.bank_bases) {
+        Json b = Json::object();
+        b.set("base", Json::integer(base));
+        b.set("n", Json::integer(m.bank_size));   // die Karte zeichnet n Pads ab base
+        banks.push(b);
+    }
+    j.set("banks", banks);
+    Json held = Json::array();
+    for (const auto& h : m.held) {
+        Json e = Json::object(); e.set("pin", Json::integer(h.pin)); e.set("owner", Json::string(h.owner));
+        held.push(e);
+    }
+    j.set("held", held);
+    Json assigned = Json::array();
+    for (const auto& a : m.assigned) {
+        Json e = Json::object(); e.set("pin", Json::integer(a.pin)); e.set("role", Json::string(a.role));
+        assigned.push(e);
+    }
+    j.set("assigned", assigned);
+    Json avoid = Json::array();
+    for (int p : m.avoid) avoid.push(Json::integer(p));
+    j.set("avoid", avoid);
+    // machino kann Fremdhalter nicht sicher wissen -> ehrlich melden, statt
+    // Pads faelschlich als frei/belegt zu zeichnen.
+    j.set("ownersUnknown", Json::boolean(m.owners_unknown));
+    j.set("ptzUnknown", Json::boolean(true));   // kein PTZ/Motor auf dieser Plattform
+    return Response{200, j};
+}
+
 bool ApiService::night_metric(const std::string& value_name, std::string& out) {
     if (!night_) return false;
     if      (value_name == "night_enabled") out = night_->night() ? "1" : "0";

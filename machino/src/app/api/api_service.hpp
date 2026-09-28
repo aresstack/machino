@@ -66,6 +66,9 @@ public:
     void set_night_service(night::NightService* s) { night_ = s; }
     Response night_action(const std::string& cmd);
     bool night_metric(const std::string& value_name, std::string& out);
+    // W4: GET /api/v1/gpio -- die Pin-Landkarte, aus der die Day/Night-Seite
+    // ihren Chip zeichnet (Baenke, gehaltene Pins, Rollen-Zuordnung).
+    Response gpio_map();
     Response ipsec_get();                              // GET  /api/v1/ipsec
     Response ipsec_put_config(const std::string& body);// PUT  /api/v1/ipsec/config
     Response ipsec_connect();                          // POST /api/v1/ipsec/connect

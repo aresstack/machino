@@ -3,6 +3,7 @@
 // PipelineManager (no HTTP sockets - the transport is tested on hardware).
 #include "app/api/api_service.hpp"
 #include "app/compat/majestic_webui.hpp"
+#include "core/hw/pin_resolver.hpp"
 #include "core/config_store.hpp"
 #include "core/detection/detection_service.hpp"
 #include "core/events.hpp"
@@ -1092,6 +1093,31 @@ void test_w2_night() {
         api::Response rst = r.api.patch_config("{\"night\":{\"ircut_pin1\":\"\",\"ircut_pin2\":\"\"}}", "");
         ACHECK(rst.status == 200);
         ACHECK(ns2.pins().ircut_pin1 == "PD22" && ns2.pins().ircut_pin2 == "PD23");
+        r.api.patch_config("{\"night\":{\"ircut_pin1\":\"PB18\",\"ircut_pin2\":\"PB19\"}}", "");
+    }
+
+    // W4: /api/v1/gpio -- die Pin-Karte. Mit Resolver werden Namen (PD22) auf
+    // Nummern (118) fuer die Karte uebersetzt; Baenke + Rollen kommen mit.
+    {
+        static const hw::BankPinResolver res(32, 6);
+        night::NightService ns4(r.tuning, &gpio, r.store, &res);
+        r.api.set_night_service(&ns4);
+        r.api.patch_config("{\"night\":{\"ircut_pin1\":\"PD22\",\"ircut_pin2\":\"PD23\"}}", "");
+        api::Response g = r.api.gpio_map();
+        ACHECK(g.status == 200);
+        ACHECK(g.body.get("banks")->size() == 6);
+        ACHECK(g.body.get("banks")->at(0).get("n")->as_int() == 32);
+        ACHECK(g.body.get("ownersUnknown")->as_bool());
+        // PD22 = 3*32+22 = 118, PD23 = 119 -- als Nummern in assigned.
+        const Json* asg = g.body.get("assigned");
+        bool p118 = false, p119 = false;
+        for (size_t i = 0; i < asg->size(); ++i) {
+            long long pin = asg->at(i).get("pin")->as_int();
+            if (pin == 118 && asg->at(i).get("role")->as_string() == "irCutPin1") p118 = true;
+            if (pin == 119 && asg->at(i).get("role")->as_string() == "irCutPin2") p119 = true;
+        }
+        ACHECK(p118 && p119);
+        r.api.set_night_service(&ns);   // zurueck auf den Rig-Dienst
         r.api.patch_config("{\"night\":{\"ircut_pin1\":\"PB18\",\"ircut_pin2\":\"PB19\"}}", "");
     }
 

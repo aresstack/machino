@@ -855,7 +855,7 @@ int main(int argc, char** argv) {
         // ISP (RunningMode), IR-Cut/Licht ueber GPIO -- derselbe Controller
         // wie der USB-Port (ein sysfs, nie stehlen). Pins kommen aus der
         // Day / Night-Sektion der WebUI (night.* im Store).
-        night::NightService night_service(tuning, &usb_gpio, store);
+        night::NightService night_service(tuning, &usb_gpio, store, &profiles::ingenic_pin_resolver());
         // W2b: Stock-belegte Pins als Board-Profil-Vorgabe (PD22/PD23 auf
         // board-a, aus ovfs_boardsystem disassembliert); die UI ueberschreibt.
         profiles::NightDefaults night_def;

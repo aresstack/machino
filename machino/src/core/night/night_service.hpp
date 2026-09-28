@@ -17,10 +17,12 @@
 // ("set to off in Day / Night settings") speist sich aus genau dieser Config.
 #pragma once
 #include "core/config_store.hpp"
+#include "core/hw/pin_resolver.hpp"
 #include "core/media/tuning_service.hpp"
 #include "ports/igpio.hpp"
 
 #include <string>
+#include <vector>
 
 namespace machino { namespace night {
 
@@ -35,8 +37,26 @@ struct NightPins {
 class NightService {
 public:
     // gpio darf null sein (Plattform ohne GPIO): Filter/Licht sind dann
-    // ehrlich unsupported, der Nachtmodus (ISP) geht trotzdem.
-    NightService(media::TuningService& tuning, IGpioController* gpio, ConfigStore& store);
+    // ehrlich unsupported, der Nachtmodus (ISP) geht trotzdem. resolver
+    // uebersetzt GPIO-Nummer<->Name (die WebUI-Pin-Karte spricht Nummern,
+    // sysfs auch; die Config speichert Nummern).
+    NightService(media::TuningService& tuning, IGpioController* gpio, ConfigStore& store,
+                 const hw::IPinResolver* resolver = nullptr);
+
+    // W4: die GPIO-Landkarte fuer /api/v1/gpio -- Baenke, gehaltene Pins und
+    // die aktuelle Rollen-Zuordnung. Rein aus dem, was machino WEISS
+    // (Resolver-Baenke, eigene Exporte, Config); nichts erfunden.
+    struct HeldPin { int pin; std::string owner; };
+    struct AssignedPin { int pin; std::string role; };
+    struct GpioMap {
+        std::vector<int> bank_bases;      // 0,32,... ; alle Baenke voll (n=bank_size)
+        int              bank_size = 32;
+        std::vector<HeldPin> held;
+        std::vector<AssignedPin> assigned;
+        std::vector<int> avoid;
+        bool owners_unknown = true;       // machino kann Fremdhalter nicht sicher wissen
+    };
+    GpioMap gpio_map() const;
 
     // Zustand (Boot: Tag, Filter drin, Licht aus -- und der erste Wechsel
     // stellt den Filter AKTIV auf den gewuenschten Zustand, statt einem
@@ -66,10 +86,15 @@ public:
 private:
     std::string drive_ircut_(bool engaged);
     std::string drive_light_(bool on);
+    // Pin-String (Nummer ODER Name) -> sysfs-Name fuer den GPIO-Aufruf.
+    // Leer, wenn nicht aufloesbar.
+    std::string pin_name_(const std::string& pin) const;
+    int         pin_number_(const std::string& pin) const;   // -1 = leer/ungueltig
 
     media::TuningService& tuning_;
     IGpioController*      gpio_;
     ConfigStore&          store_;
+    const hw::IPinResolver* resolver_ = nullptr;
     bool night_ = false;
     bool ircut_ = true;                   // Tag = Filter drin
     bool light_ = false;

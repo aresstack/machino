@@ -499,6 +499,10 @@ bool HttpServer::handle_request(Client& c) {
         r = (m == "GET") ? api_.night_action(path.substr(7))
                          : api::ApiService::fail(405, "unknown_field", path, "method not allowed");
     }
+    else if (path == "/api/v1/gpio") {
+        r = (m == "GET") ? api_.gpio_map()
+                         : api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+    }
     else if (path == "/metrics/night") {
         // majestic-Vertrag: value=<name>_enabled -> "0"/"1" als text/plain.
         const std::string v = SessionGate::form_value(req.query, "value");
