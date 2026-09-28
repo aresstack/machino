@@ -49,12 +49,16 @@ NightPins NightService::pins() const
     p.ircut_single_invert = store_.get("night.ircut_single_invert") == "true";
     p.backlight           = store_.get("night.backlight") == "true";
     p.backlight_pin       = store_.get("night.backlight_pin");
+    p.light_sensor_pin    = store_.get("night.light_sensor_pin");
+    p.light_sensor_invert = store_.get("night.light_sensor_invert") == "true";
     // W2b: Board-Profil-Defaults, wenn die UI (Store) nichts gesetzt hat --
     // dieselbe Rangfolge wie beim USB-Port: Profil-Vorgabe, Nutzer gewinnt.
     if (p.ircut_pin1.empty() && p.ircut_pin2.empty()) {
         p.ircut_pin1 = def_ircut_pin1_;
         p.ircut_pin2 = def_ircut_pin2_;
     }
+    if (p.light_sensor_pin.empty())
+        p.light_sensor_pin = def_light_sensor_pin_;
     return p;
 }
 
@@ -177,6 +181,7 @@ NightService::GpioMap NightService::gpio_map() const
     add_assigned(p.ircut_pin1, "irCutPin1");
     add_assigned(p.ircut_pin2, "irCutPin2");
     add_assigned(p.backlight_pin, "backlightPin");
+    add_assigned(p.light_sensor_pin, "lightSensorPin");
 
     // avoid: komma-separierte Nummern aus dem Store (die Karte darf Pads vom
     // Scan ausschliessen; der Scan selbst kommt spaeter).

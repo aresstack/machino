@@ -13,6 +13,7 @@
 #include "core/media/tuning_service.hpp"
 #include "core/power/performance_service.hpp"
 #include "core/stream_hub.hpp"
+#include "profiles/usb_profiles.hpp"
 #include "fake_platform.hpp"
 #include "fake_power.hpp"
 
@@ -1044,8 +1045,20 @@ void test_w2_night() {
     Json schema = compat::majestic_schema(r.api.capabilities().body);
     ACHECK(path(schema, "properties.nightMode.properties.irCut.type")->as_string() == "boolean");
     ACHECK(path(schema, "properties.nightMode.properties.irCutPin1") != nullptr);
+    // Der Tag/Nacht-Fotosensor hat ein Feld -- die Pin-Karte bindet daran.
+    ACHECK(path(schema, "properties.nightMode.properties.lightSensorPin") != nullptr);
     // Auto-Tag/Nacht ist NICHT implementiert -> kein Feld dafuer (ehrlich).
     ACHECK(path(schema, "properties.nightMode.properties.minThreshold") == nullptr);
+
+    // Die Stock-Belegung dieses Boards steht als Default -- und zwar als
+    // NUMMERN, sonst zeigt die WebUI-Pin-Karte den Default als "not set"
+    // (currentAssign() nimmt nur numerische Werte auf).
+    {
+        profiles::NightDefaults nd;
+        ACHECK(profiles::night_defaults_for_board("t40nn-imx307-board-a", nd));
+        ACHECK(nd.ircut_pin1 == "118" && nd.ircut_pin2 == "119");   // PD22/PD23
+        ACHECK(nd.light_sensor_pin == "49");                        // PB17
+    }
 
     // Nachtmodus: RunningMode 0/1, Antwort = nacktes Boolean.
     api::Response t = r.api.night_action("toggle");
@@ -1086,13 +1099,15 @@ void test_w2_night() {
     {
         FakeNightGpio g2;
         night::NightService ns2(r.tuning, &g2, r.store);
-        ns2.set_default_pins("PD22", "PD23");
+        ns2.set_default_pins("PD22", "PD23", "49");
         // Store traegt hier bereits PB18/PB19 aus dem PATCH oben -> Store gewinnt.
         ACHECK(ns2.pins().ircut_pin1 == "PB18");
         // Ohne Store-Pins greifen die Profil-Defaults.
         api::Response rst = r.api.patch_config("{\"night\":{\"ircut_pin1\":\"\",\"ircut_pin2\":\"\"}}", "");
         ACHECK(rst.status == 200);
         ACHECK(ns2.pins().ircut_pin1 == "PD22" && ns2.pins().ircut_pin2 == "PD23");
+        // Der Lichtsensor-Default greift eigenstaendig (Ein-Pin, kein Paar-Gate).
+        ACHECK(ns2.pins().light_sensor_pin == "49");
         r.api.patch_config("{\"night\":{\"ircut_pin1\":\"PB18\",\"ircut_pin2\":\"PB19\"}}", "");
     }
 

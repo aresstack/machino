@@ -129,6 +129,8 @@ static const struct { const char* maj; const char* nat; bool boolean; } kNightAl
     {"irCutSingleInvert", "ircut_single_invert", true},
     {"backlight",         "backlight",           true},
     {"backlightPin",      "backlight_pin",       false},
+    {"lightSensorPin",    "light_sensor_pin",    false},
+    {"lightSensorInvert", "light_sensor_invert", true},
 };
 
 // Attach the shared compiled-in default to an already-built schema field, so
@@ -263,6 +265,8 @@ Json majestic_schema(const Json& capabilities) {
             nf.set("irCutSingleInvert", boolf("Invert single-pin level"));
             nf.set("backlight", boolf("Camera light"));
             nf.set("backlightPin", strf("Light pin"));
+            nf.set("lightSensorPin", strf("Daylight sensor pin (photocell)"));
+            nf.set("lightSensorInvert", boolf("Invert daylight sensor level"));
             add_section(properties, "nightMode", nf);
         }
     }
