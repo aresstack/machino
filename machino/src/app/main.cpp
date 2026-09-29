@@ -480,12 +480,19 @@ int main(int argc, char** argv) {
         // M8: hardware JPEG for snapshots - ephemeral, created on demand only.
         // Gated behind jpeg.enabled (default OFF): the live T40NN wedged whole-
         // daemon when the extra FS/encoder pair came up; opt-in until verified.
-        if (!cfg.jpeg.enabled) {
-            LOGI(MOD, "jpeg snapshots disabled (jpeg.enabled=false; MJPEG/snapshot report unsupported)");
-        } else if (platform->capabilities().jpeg.supported == Cap::Supported) {
+        // The unit is CONFIGURED whenever the platform has a JPEG path (that
+        // only records parameters; the encoder is built on the first capture)
+        // and ENABLED by the switch. Keeping the two apart is what lets
+        // jpeg.enabled flip at runtime from the API (the dashboard tile's
+        // "JPEG snapshots" setting) without a daemon restart.
+        if (platform->capabilities().jpeg.supported == Cap::Supported) {
             JpegParams jp; jp.quality = cfg.jpeg.quality;
             pipeline.configure_jpeg(jp, cfg.snapshot.cache_ms, cfg.snapshot.grace_ms, &jpeg_timer);
-            LOGI(MOD, "jpeg snapshots available (quality %d, cache %dms, grace %dms)", cfg.jpeg.quality, cfg.snapshot.cache_ms, cfg.snapshot.grace_ms);
+            pipeline.set_jpeg_enabled(cfg.jpeg.enabled);
+            if (cfg.jpeg.enabled)
+                LOGI(MOD, "jpeg snapshots available (quality %d, cache %dms, grace %dms)", cfg.jpeg.quality, cfg.snapshot.cache_ms, cfg.snapshot.grace_ms);
+            else
+                LOGI(MOD, "jpeg snapshots disabled (jpeg.enabled=false; MJPEG/snapshot report unsupported until enabled)");
         }
         power::PerformanceService perf(pipeline, *platform, sysstats, hwr, cfg.video);
         log_capabilities(perf.capabilities());

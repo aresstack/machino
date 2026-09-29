@@ -379,15 +379,46 @@ Json majestic_schema(const Json& capabilities) {
     }
     add_section(properties, "audio", audio_fields);
 
+    // The dashboard's camera tile. Two settings, both live:
+    //   jpeg.enabled           the JPEG snapshot path (OpenIPC's own tile,
+    //                          /image.jpg, /snapshot). Off by default on the
+    //                          T40NN: building that encoder wedged the daemon
+    //                          (machino-t40nn-jpeg-wedge). The title says so;
+    //                          the switch is the operator's.
+    //   webui.dashboard_preview auto = OpenIPC's way (JPEG if enabled, else
+    //                          the notice), live = a muted stream player in
+    //                          the tile (no JPEG needed), off = tile dark.
+    Json jpeg_fields = Json::object();
+    if (const Json* jc = capabilities.get("jpeg"); jc && jc->is_object()) {
+        const Json* st = jc->get("status");
+        if (st && st->is_string() && st->as_string() == "supported") {
+            Json en = bool_field("JPEG snapshots (dashboard tile, /image.jpg) - WARNING: on the T40NN the JPEG encoder has wedged the daemon until power-cycle; keep off unless verified on your camera");
+            en.set("x-reload", Json::string("live"));
+            jpeg_fields.set("enabled", en);
+            set_default(jpeg_fields, "jpeg", "enabled");
+        }
+    }
+    add_section(properties, "jpeg", jpeg_fields);
+    Json webui_fields = Json::object();
+    {
+        Json modes = Json::array();
+        for (const char* m : {"auto", "live", "off"}) modes.push(Json::string(m));
+        Json pv = enum_field("Dashboard preview (auto = JPEG snapshot when enabled, live = stream player in the tile, off = none)", modes);
+        pv.set("x-reload", Json::string("live"));
+        webui_fields.set("dashboard_preview", pv);
+        set_default(webui_fields, "webui", "dashboard_preview");
+    }
+    add_section(properties, "webui", webui_fields);
+
     schema.set("properties", properties);
 
     Json groups = Json::array();
     const char* media_sections[] = {"video0", "video1", "sensor", "latency"};
     const char* image_sections[] = {"image", "nightMode"};   // W2: Day / Night neben Image
-    const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai", "audio"};
+    const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai", "audio", "jpeg", "webui"};
     Json media = group("media", "Media", properties, media_sections, 4);
     Json image = group("image", "Image", properties, image_sections, 2);
-    Json runtime = group("runtime", "Runtime", properties, runtime_sections, 5);
+    Json runtime = group("runtime", "Runtime", properties, runtime_sections, 7);
     if (media.get("sections")->size()) groups.push(media);
     if (image.get("sections")->size()) groups.push(image);
     if (runtime.get("sections")->size()) groups.push(runtime);
@@ -423,8 +454,19 @@ Json majestic_config(const Json& native_config, const Json& state) {
     // requesting a path this camera must not be asked for: the T40NN JPEG
     // encoder wedges the whole daemon (machino-t40nn-jpeg-wedge), which is why
     // jpeg.enabled defaults to false here.
-    if (const Json* j = native_config.get("jpeg"); j && j->is_object()) out.set("jpeg", *j);
-    else {
+    // webui.dashboard_preview=off darkens the tile even with JPEG on: the
+    // page's own gate is jpeg.enabled, so the majestic-shaped view reports
+    // the switch the dashboard should act on, not the raw encoder state. The
+    // native /api/v1/config keeps the raw value.
+    copy_if(native_config, out, "webui");
+    const Json* wb = native_config.get("webui");
+    const Json* pv = wb && wb->is_object() ? wb->get("dashboard_preview") : nullptr;
+    const bool tile_off = pv && pv->is_string() && pv->as_string() == "off";
+    if (const Json* j = native_config.get("jpeg"); j && j->is_object()) {
+        Json jp = *j;
+        if (tile_off) jp.set("enabled", Json::boolean(false));
+        out.set("jpeg", jp);
+    } else {
         Json jp = Json::object();
         jp.set("enabled", Json::boolean(false));
         out.set("jpeg", jp);
@@ -654,7 +696,8 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
             continue;
         }
         if (name == "performance" || name == "sensor" || name == "image" ||
-            name == "latency" || name == "rtsp" || name == "lifecycle" || name == "power" || name == "ai") {
+            name == "latency" || name == "rtsp" || name == "lifecycle" || name == "power" || name == "ai" ||
+            name == "jpeg" || name == "webui") {
             patch.set(name, value);
             continue;
         }
@@ -855,6 +898,8 @@ bool compiled_default(const std::string& key, Json& out) {
     if (key == "video0.gop")              { out = Json::integer(def.video.gop); return true; }
     if (key == "ai.enabled")              { out = Json::boolean(def.ai.enabled); return true; }
     if (key == "ai.inference_fps")        { out = Json::integer(def.ai.inference_fps); return true; }
+    if (key == "jpeg.enabled")            { out = Json::boolean(def.jpeg.enabled); return true; }
+    if (key == "webui.dashboard_preview") { out = Json::string(def.webui.dashboard_preview); return true; }
     // W1: die vier Tone-Knoepfe. 128 = dokumentierter IMP-Neutralwert
     // (SetBrightness/Contrast/Saturation/Hue, 0..255, Mitte = keine
     // Verschiebung) -- bildgleich mit dem Tuning-Bin-Default, aber ohne den

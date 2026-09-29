@@ -45,6 +45,9 @@ public:
     Response capabilities() const;
     Response state();
     Response config();
+    // webui.dashboard_preview as of now (store first, then the loaded config):
+    // the front door reads it per relayed dashboard page.
+    std::string dashboard_preview() const;
     Response telemetry();
     // AP-NNA5: der Availability-Vertrag als API. Provider kommt aus main
     // (die Plattform kennt die Fakten); ohne Provider antwortet die Route

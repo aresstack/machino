@@ -85,6 +85,15 @@ std::string inject_machino_nav(const std::string& html, bool& changed);
 // angefasst; nur die durchgereichte HTTP-Antwort.
 std::string inject_machino_network_cards(const std::string& html, bool& changed);
 
+// webui.dashboard_preview=live: turn the stock dashboard's snapshot tile into
+// a muted MSE player of stream `stream` (0 = main, 1 = sub) by adding the
+// stock player (/a/preview.js) and a small inline script after dashboard.js.
+// Nothing under /var/www is touched; the tile's JPEG polling stays gated by
+// jpeg.enabled exactly as before, this only puts a <video> on top of it.
+// Fail-closed: no dashboard.js script tag -> unchanged, changed stays false.
+// Idempotent (marker "mch-prev").
+std::string inject_machino_dashboard_preview(const std::string& html, int stream, bool& changed);
+
 // True when a relayed head is a plain HTML page safe to buffer for injection:
 // Content-Type text/html and NOT chunked (we do not parse chunk framing). Query
 // only, never rewrites.

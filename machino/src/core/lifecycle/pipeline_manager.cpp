@@ -64,6 +64,22 @@ void PipelineManager::configure_jpeg(const JpegParams& p, int cache_ms, int grac
     jpeg_.timer = timer;
 }
 
+void PipelineManager::set_jpeg_enabled(bool on) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (jpeg_.enabled == on) return;
+    jpeg_.enabled = on;
+    LOGI(MOD, "jpeg snapshots %s", on ? "enabled" : "disabled");
+    if (!on && jpeg_.enc && jpeg_.demand == 0 && state_ == State::Active) {
+        if (jpeg_.grace_armed && jpeg_.timer) { jpeg_.timer->disarm(); jpeg_.grace_armed = false; }
+        stop_jpeg_locked();
+    }
+}
+
+bool PipelineManager::jpeg_enabled() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return jpeg_.enabled;
+}
+
 void PipelineManager::transition(State to, const char* why) {
     LOGI(MOD, "%s -> %s%s%s", state_name(state_), state_name(to), why ? " " : "", why ? why : "");
     State from = state_;
@@ -286,7 +302,7 @@ EffectiveStream PipelineManager::stream_unit(int unit) const {
 
 bool PipelineManager::unit_configured(int unit) const {
     std::lock_guard<std::mutex> lk(m_);
-    if (unit == UNIT_JPEG) return jpeg_.configured;
+    if (unit == UNIT_JPEG) return jpeg_.configured && jpeg_.enabled;
     return unit >= 0 && unit <= UNIT_SUB && units_[unit].configured;
 }
 
@@ -446,6 +462,7 @@ Result PipelineManager::snapshot(std::vector<uint8_t>& out, std::string& err, in
         std::lock_guard<std::mutex> lk(m_);
         if (shutdown_) { err = "shutting down"; return Result::busy(); }
         if (!jpeg_.configured) { err = "jpeg not configured on this platform"; return Result::unsupported(); }
+        if (!jpeg_.enabled)    { err = "jpeg snapshots are disabled (jpeg.enabled=false)"; return Result::unsupported(); }
         if (!ensure_base_locked(ConsumerType::Snapshot, UNIT_JPEG)) { err = last_error_; return Result::error(); }
         if (jpeg_.grace_armed && jpeg_.timer) { jpeg_.timer->disarm(); jpeg_.grace_armed = false; }
         if (!jpeg_.enc && !start_jpeg_locked()) {

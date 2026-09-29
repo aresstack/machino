@@ -391,6 +391,9 @@ Json ApiService::config_json() {
     jcfg.set("enabled", Json::boolean(cfg_.jpeg.enabled));
     jcfg.set("quality", Json::integer(cfg_.jpeg.quality));
     j.set("jpeg", jcfg);
+    Json wcfg = Json::object();
+    wcfg.set("dashboard_preview", Json::string(dashboard_preview()));
+    j.set("webui", wcfg);
     Json lat = Json::object(); lat.set("profile", Json::string(media::latency_profile_name(tune.requested_latency.profile)));
     lat.set("gop", tune.requested_latency.gop ? Json::integer(*tune.requested_latency.gop) : Json::null());
     lat.set("framesource_buffers", tune.requested_latency.framesource_buffers ? Json::integer(*tune.requested_latency.framesource_buffers) : Json::null());
@@ -444,6 +447,11 @@ Json ApiService::config_json() {
     return j;
 }
 Response ApiService::config() { return Response{200, config_json()}; }
+
+std::string ApiService::dashboard_preview() const {
+    const std::string v = store_.get("webui.dashboard_preview");
+    return v.empty() ? cfg_.webui.dashboard_preview : v;
+}
 
 
 Json ApiService::telemetry_json() {
@@ -1104,17 +1112,25 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     if (!get_int(val, n) || n < -1 || n > 31) return bad(422, "invalid_value", path, "gain must be an integer in 0..31, or -1 for the driver default");
                     c.key = "audio.gain"; c.value = std::to_string(n);
                 } else return bad(400, "unknown_field", path, "unknown field");
+            } else if (s == "jpeg" && kv.first == "enabled") {
+                // The operator's switch for the JPEG snapshot path (the
+                // dashboard tile, /image.jpg, /snapshot). Live: the pipeline
+                // only records it; the encoder is built on the first capture.
+                // The T40NN wedge (machino-t40nn-jpeg-wedge) is exactly that
+                // first capture, which is why the default is off and the
+                // settings page says so next to the switch -- but it is the
+                // operator's call, and turning it back off is one PATCH away.
+                if (!val.is_bool()) return bad(422, "invalid_value", path, "enabled must be a boolean");
+                if (caps.jpeg.supported != Cap::Supported) return bad(422, "unsupported_control", path, "this platform has no JPEG path");
+                c.key = "jpeg.enabled"; c.value = val.as_bool() ? "true" : "false";
             } else if (s == "jpeg") {
-                // AP14: reported by /api/v1/config, deliberately NOT writable.
-                // Enabling the JPEG encoder on this platform wedges the whole
-                // daemon - IMP blocks under the manager lock and RTSP and the
-                // API die with it until a power-cycle. A bare "unknown field"
-                // for a key we ourselves publish is not an answer, so the
-                // refusal says why and where the decision lives.
-                return bad(403, "unsupported_control", path,
-                           "jpeg is reported but not settable here: enabling the JPEG encoder "
-                           "wedges this platform (machino-t40nn-jpeg-wedge). Set jpeg.enabled in "
-                           "machino.conf and restart if you have isolated that on your hardware.");
+                return bad(400, "unknown_field", path, "jpeg.quality is set in machino.conf (needs a daemon restart)");
+            } else if (s == "webui" && kv.first == "dashboard_preview") {
+                if (!val.is_string()) return bad(422, "invalid_value", path, "dashboard_preview must be a string");
+                const std::string& v = val.as_string();
+                if (v != "auto" && v != "live" && v != "off")
+                    return bad(422, "invalid_value", path, "dashboard_preview must be auto, live or off");
+                c.key = "webui.dashboard_preview"; c.value = v;
             } else return bad(400, "unknown_field", path, "unknown field");
             changes.push_back(c);
         }
@@ -1209,9 +1225,21 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         else if (c.key == "ai.detector")      { c.r = ai_apply(detection_->set_detector(c.value), -1); }
         else if (c.key == "ai.inference_fps") { int n2 = atoi(c.value.c_str()); c.r = ai_apply(detection_->set_inference_fps(n2), n2); }
         else if (c.key == "ai.model_path")    { c.r = ai_apply(detection_->set_model_path(c.value), -1); }
+        else if (c.key == "jpeg.enabled") {
+            const bool on = c.value == "true";
+            pipeline_.set_jpeg_enabled(on);
+            c.r = ApplyResult::applied(ApplyMode::Live, on ? 1 : 0, on ? 1 : 0,
+                                       on ? "jpeg snapshots enabled; the encoder is built on the first capture"
+                                          : "jpeg snapshots disabled");
+        }
+        else if (c.key == "webui.dashboard_preview") {
+            c.r = ApplyResult::applied(ApplyMode::Live, 0, 0, "takes effect when the dashboard is next loaded");
+        }
         c.has_result = true;
         if (c.r.ok) {
             if (c.key == "rtsp.enabled") cfg_.rtsp.enabled = c.value == "true";
+            else if (c.key == "jpeg.enabled") cfg_.jpeg.enabled = c.value == "true";
+            else if (c.key == "webui.dashboard_preview") cfg_.webui.dashboard_preview = c.value;
             else if (c.key == "rtsp.port") cfg_.rtsp.port = atoi(c.value.c_str());
             else if (c.key == "rtsp.send_buffer_bytes") cfg_.rtsp.send_buffer_bytes = atoi(c.value.c_str());
             else if (c.key == "rtsp.send_stall_ms") cfg_.rtsp.send_stall_ms = atoi(c.value.c_str());

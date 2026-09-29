@@ -99,6 +99,10 @@ public:
     // demand goes while the base stays active.
     void configure_sub(const EffectiveStream& s, StreamHub& hub, IGraceTimer* timer);
     void configure_jpeg(const JpegParams& p, int cache_ms, int grace_ms, IGraceTimer* timer);
+    // jpeg.enabled at runtime. Disabling stops an idle JPEG encoder at once;
+    // one still serving a capture winds down with its grace timer.
+    void set_jpeg_enabled(bool on);
+    bool jpeg_enabled() const;
     // Per-unit grace timer (main included, so ch0 also winds down on its own
     // when another consumer keeps the base up). nullptr = stop immediately.
     void set_unit_grace_timer(int unit, IGraceTimer* timer);
@@ -198,6 +202,12 @@ private:
 
     struct JpegUnit {
         bool            configured = false;
+        // The operator's switch (jpeg.enabled), separate from "the platform
+        // has a JPEG path": configured says the encoder COULD be built,
+        // enabled says it may be. Off = snapshot() answers Unsupported and
+        // the encoder is never created -- the T40NN wedge (machino-t40nn-
+        // jpeg-wedge) is never reached. Flipped live from the API.
+        bool            enabled = true;
         JpegParams      params{};
         int             cache_ms = 300;
         int             grace_ms = 2000;

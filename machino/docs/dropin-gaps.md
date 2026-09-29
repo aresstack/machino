@@ -88,7 +88,7 @@ this camera.**
 
 | Endpoint | Why |
 |---|---|
-| `/image.jpg` | **W3 (2026-09-28): aliased to the snapshot path.** Same handler as `/snapshot.jpg`; `?t=`/`?session=` cache-busting is ignored. With `jpeg.enabled=false` (the T40NN default, `machino-t40nn-jpeg-wedge`) it answers an honest 501. `/image.dng` stays absent. |
+| `/image.jpg` | **W3 (2026-09-28): aliased to the snapshot path.** Same handler as `/snapshot.jpg`; `?t=`/`?session=` cache-busting is ignored. With `jpeg.enabled=false` (the T40NN default, `machino-t40nn-jpeg-wedge`) it answers an honest 501. Since 2026-09-29 `jpeg.enabled` is a live switch (settings page, Runtime) and `webui.dashboard_preview` (auto/live/off) decides what the dashboard tile shows; `live` injects the stock MSE player into the relayed dashboard. `/image.dng` stays absent. |
 | `/night/*`, `/metrics/night`, `nightMode` section | **W2 (2026-09-28): real.** `NightService` drives RunningMode (ISP) + IR-cut/light GPIO; pins configured in the Day / Night settings. Auto day/night (thresholds/delays) deliberately NOT advertised until implemented. |
 | `/image.yuv420?crop=` | **Real.** One NV12 frame of the running main channel via `IMP_FrameSource_SnapFrame` (no frame depth, the encoder keeps every frame), cropped to the page's rectangle and described in the `X-Frame-*` / `X-Pixel-Format` / `X-Stride-*` headers the detail-still feature probes for. |
 | `/video.mp4`, `/hls`, `/image.heif`, `rtsp://…/stream=2` | **Real.** Progressive fMP4 (with AAC), HLS v7 (fMP4 segments in RAM, bounded), HEIF stills (H.264 item, `avci`), MJPEG over RTP (RFC 2435) from the JPEG unit. |

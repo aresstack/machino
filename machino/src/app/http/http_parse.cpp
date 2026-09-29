@@ -332,6 +332,80 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     return out;
 }
 
+std::string inject_machino_dashboard_preview(const std::string& html, int stream, bool& changed) {
+    changed = false;
+    if (html.find("mch-prev") != std::string::npos) return html;
+    // Anker ist die dashboard.js-Einbindung der Stock-Seite -- robust ueber die
+    // src, nicht die exakte Tag-Schreibweise (Attributreihenfolge/Whitespace
+    // duerfen sich aendern, ohne dass die Injektion still ausfaellt). Unser
+    // Skript kommt HINTER ihrem schliessenden </script>. Fehlt sie, bleibt die
+    // Seite unveraendert (fail-closed).
+    const size_t js = html.find("/a/dashboard.js");
+    if (js == std::string::npos) return html;
+    const size_t close = html.find("</script>", js);
+    if (close == std::string::npos) return html;
+    const size_t end = close + 9;  // hinter "</script>"
+    const std::string s = stream == 1 ? "1" : "0";
+    // Die Kachel (#st-prev) ist position:relative mit overflow:hidden; das
+    // Video fuellt sie wie das Bild (object-fit: cover). Der Hinweis der
+    // Stock-Seite ("Snapshots are disabled") wird ausgeblendet, sobald der
+    // Player laeuft, und kommt zurueck, wenn er es nicht schafft -- die
+    // Seite bleibt sonst unveraendert (Play-Knopf, Chip, Leiste).
+    const std::string script =
+        "\n<script src=\"/a/preview.js\" defer></script>\n"
+        "<script id=\"mch-prev\">\n"
+        "// machino: webui.dashboard_preview=live - stream player in the snapshot tile\n"
+        "(function () {\n"
+        "\t'use strict';\n"
+        "\tfunction start() {\n"
+        "\t\tvar tile = document.getElementById('st-prev');\n"
+        "\t\tvar off = document.getElementById('st-prev-off');\n"
+        "\t\tvar note = document.getElementById('st-prev-note');\n"
+        "\t\tvar note0 = note ? note.textContent : '';\n"
+        "\t\tif (!tile || !window.MajesticVideo || !window.MajesticVideo.attach) return;\n"
+        "\t\tvar v = document.createElement('video');\n"
+        "\t\tv.id = 'mch-prev-video'; v.muted = true; v.autoplay = true; v.playsInline = true;\n"
+        "\t\tv.setAttribute('playsinline', ''); v.setAttribute('muted', '');\n"
+        "\t\tv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;background:#0d0f14';\n"
+        "\t\ttile.insertBefore(v, tile.firstChild);\n"
+        "\t\tvar img = document.getElementById('st-prev-img');\n"
+        "\t\tfunction show(on) {\n"
+        "\t\t\tv.style.display = on ? 'block' : 'none';\n"
+        "\t\t\tif (img) img.style.display = on ? 'none' : '';\n"
+        "\t\t\tif (off) off.style.display = on ? 'none' : '';\n"
+        "\t\t\t// Bei Erfolg 'live | sub/main', bei Fehlschlag zurueck auf den\n"
+        "\t\t\t// urspruenglichen Text (sonst bleibt ein falsches 'live' stehen).\n"
+        "\t\t\tif (note) note.textContent = on ? 'live \\u00b7 " + (stream == 1 ? std::string("sub") : std::string("main")) + "' : note0;\n"
+        "\t\t}\n"
+        "\t\tv.addEventListener('playing', function () { show(true); });\n"
+        "\t\twindow.MajesticVideo.attach(v, { stream: " + s + ", onState: function (st) {\n"
+        "\t\t\tif (st === 'unreachable' || st === 'error' || st === 'unsupported') show(false);\n"
+        "\t\t} });\n"
+        "\t\t// Ein Tab im Hintergrund haelt keine Sitzung offen: Browser drosseln\n"
+        "\t\t// das Video ohnehin, und die Kamera hat nur wenige Slots. (Kein\n"
+        "\t\t// eigener 'pause'-Handler: der wuerde bei einem stotternden Stream\n"
+        "\t\t// eine play/pause-Schleife ausloesen; visibilitychange reicht.)\n"
+        "\t\tdocument.addEventListener('visibilitychange', function () {\n"
+        "\t\t\tif (document.hidden) v.pause(); else v.play().catch(function () {});\n"
+        "\t\t});\n"
+        "\t}\n"
+        "\t// preview.js ist defer und definiert window.MajesticVideo erst nach\n"
+        "\t// dem Parsen; ein Inline-<script> ignoriert defer und liefe zu frueh\n"
+        "\t// (dann waere MajesticVideo undefined und die Vorschau tot). Also\n"
+        "\t// erst starten, wenn die defer-Skripte fertig sind: DOMContentLoaded.\n"
+        "\tif (window.MajesticVideo && window.MajesticVideo.attach) start();\n"
+        "\telse document.addEventListener('DOMContentLoaded', start);\n"
+        "})();\n"
+        "</script>";
+    std::string out;
+    out.reserve(html.size() + script.size());
+    out.append(html, 0, end);
+    out.append(script);
+    out.append(html, end, std::string::npos);
+    changed = true;
+    return out;
+}
+
 std::string inject_machino_network_cards(const std::string& html, bool& changed) {
     changed = false;
 

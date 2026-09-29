@@ -334,6 +334,50 @@ void run_relay_head_end_tests() {
         HCHECK(parse_request("GET /a/b?p=../x HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Ok);
     }
 
+    // inject_machino_dashboard_preview: the stock dashboard's snapshot tile
+    // gets a stream player when webui.dashboard_preview=live. Anchor is the
+    // page's own dashboard.js tag; no anchor -> unchanged; never twice.
+    {
+        const std::string page =
+            "<!DOCTYPE html><html><body>"
+            "<a class=\"st-prev\" id=\"st-prev\" href=\"live.cgi\">"
+            "<img id=\"st-prev-img\" hidden><span class=\"st-prev-off small\" id=\"st-prev-off\">loading</span></a>"
+            "<script src=\"/a/charts.js\" defer></script>\n"
+            "<script src=\"/a/dashboard.js\" defer></script>\n"
+            "</body></html>";
+        bool changed = false;
+        const std::string out = inject_machino_dashboard_preview(page, 1, changed);
+        HCHECK(changed);
+        HCHECK(out.find("/a/preview.js") != std::string::npos);
+        HCHECK(out.find("id=\"mch-prev\"") != std::string::npos);
+        HCHECK(out.find("stream: 1") != std::string::npos);
+        // the player script comes AFTER dashboard.js (so preview.js loads before)
+        HCHECK(out.find("/a/dashboard.js") < out.find("/a/preview.js"));
+        // the bootstrap must NOT run at parse time: an inline <script> ignores
+        // `defer`, so it would run before the deferred preview.js defines
+        // window.MajesticVideo. It starts on DOMContentLoaded instead.
+        HCHECK(out.find("DOMContentLoaded") != std::string::npos);
+        // the page's own tile markup is untouched
+        HCHECK(out.find("id=\"st-prev-off\"") != std::string::npos);
+        bool again = true;
+        HCHECK(inject_machino_dashboard_preview(out, 1, again) == out && !again);
+        // main stream when there is no sub
+        bool c0 = false;
+        HCHECK(inject_machino_dashboard_preview(page, 0, c0).find("stream: 0") != std::string::npos && c0);
+        // fail-closed on a page without the anchor
+        bool nc = true;
+        const std::string other = "<html><body><script src=\"/a/network.js\" defer></script></body></html>";
+        HCHECK(inject_machino_dashboard_preview(other, 1, nc) == other && !nc);
+        // the anchor matches by src, not exact tag spelling: attribute order or
+        // spacing may differ in the stock page without silently no-op'ing.
+        bool cr = false;
+        const std::string swapped =
+            "<html><body><a id=\"st-prev\"></a>"
+            "<script  defer  src=\"/a/dashboard.js\"></script></body></html>";
+        const std::string sout = inject_machino_dashboard_preview(swapped, 1, cr);
+        HCHECK(cr && sout.find("id=\"mch-prev\"") != std::string::npos);
+    }
+
     // inject_machino_nav: add the two links into a relayed OpenIPC page without
     // touching any file. Modelled on the real header.cgi rendered output.
     {
