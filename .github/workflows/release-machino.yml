@@ -78,6 +78,13 @@ jobs:
           # Model + its manifest/provenance into one standalone, upload-ready tgz.
           tar czf machino-nna-model-t40nn.tgz -C nna-model .
           echo "nna model asset:"; ls -l machino-nna-model-t40nn.tgz; tar tzf machino-nna-model-t40nn.tgz
+          # The NNA HELPER (machino-nna) is machino's OWN code, not the model,
+          # so it DOES belong in the install bundle: --with-nna-payload can then
+          # install it and the operator only uploads the model. Same run.
+          gh run download "$id" --name machino-nna-t40 -D nna-helper ||
+            { echo "::error::machino-nna-t40 (helper) artifact of run $id is not downloadable; re-run build-nna-t40"; exit 1; }
+          [ -f nna-helper/machino-nna ] ||
+            { echo "::error::the helper artifact carries no machino-nna binary"; exit 1; }
 
       - name: "Fetch and build mbedTLS"
         run: sh machino/tools/fetch-mbedtls.sh "$PWD/3p" gcc ar
@@ -159,6 +166,13 @@ jobs:
           cp -f machino/openipc/www/machino-ipsec.cgi   "$O/www/machino-ipsec.cgi"
           cp -f machino/openipc/www/machino-cleanup.cgi    "$O/www/machino-cleanup.cgi"
           cp -f machino/openipc/www/machino-cleanup-dl.cgi "$O/www/machino-cleanup-dl.cgi"
+          # NNA helper (machino's own code) so a tagged release can install NNA
+          # via --with-nna-payload, same as the build-machino-t40 bundle. The
+          # MODEL stays OUT (AGPL, shipped as the separate machino-nna-model
+          # release asset; operators upload it through the WebUI).
+          mkdir -p "$O/nna"
+          cp -f nna-helper/machino-nna "$O/nna/machino-nna" && chmod 0755 "$O/nna/machino-nna"
+          echo "nna helper bundled (model deliberately excluded - AGPL, WebUI upload)"
           # Upstream WebUI overlay (see build-machino-t40.yml): pin the
           # majestic-webui the backend was built against so an older flashed
           # WebUI still renders machino's schema right. Bind-mounted at boot,
