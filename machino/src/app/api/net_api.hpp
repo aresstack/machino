@@ -112,6 +112,14 @@ private:
     Response cellular_get() const;
     Response cellular_patch(const std::string& body);
     Response cellular_presets() const;
+    // Aktionen: sofort angenommen (202) oder mit Grund abgelehnt (409/422).
+    // Nichts davon ist eine Netzaenderung mit Bestaetigungsfenster: der Scan
+    // stellt die Konfiguration selbst wieder her, die anderen aendern keine
+    // Route.
+    Response cellular_bandscan();
+    Response cellular_neighbours();
+    Response cellular_restart();
+    Response cellular_sim_lock(const std::string& body);
     Response change_get() const;
     Response change_confirm(const std::string& token_text);
 

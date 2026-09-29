@@ -690,6 +690,120 @@ void test_presets_reach_the_api_with_their_reason()
     TCHECK(txt.find("\"username\"") != std::string::npos && txt.find("t-mobile") != std::string::npos);
     TCHECK(txt.find("\"password\"") != std::string::npos);
 }
+// ------------------------------------------------ Bandwahl in der API-Sicht --
+
+void test_band_fields_round_trip_through_json_and_settings()
+{
+    cellular::CellularConfig c;
+    std::string err;
+    TCHECK(cellular_config_from_json(parse("{\"netMode\":\"lte\",\"bandProfile\":\"custom\",\"bands\":[3,20]}"), c, err));
+    TCHECK(c.net_mode == cellular::NetMode::LteOnly);
+    TCHECK(c.band_profile == cellular::BandProfile::Custom);
+    TCHECK(c.band_mask == 0x80004);
+
+    const std::string txt = cellular_config_json(c).dump();
+    TCHECK(txt.find("\"netMode\":\"lte\"") != std::string::npos);
+    TCHECK(txt.find("\"bandProfile\":\"custom\"") != std::string::npos);
+    TCHECK(txt.find("\"bands\":[3,20]") != std::string::npos);
+    TCHECK(txt.find("\"effectiveBands\":[3,20]") != std::string::npos);
+
+    // Profil "low": die eigene Auswahl bleibt gespeichert, die wirksamen
+    // Baender sind die des Profils.
+    TCHECK(cellular_config_from_json(parse("{\"bandProfile\":\"low\"}"), c, err));
+    const std::string t2 = cellular_config_json(c).dump();
+    TCHECK(t2.find("\"bands\":[3,20]") != std::string::npos);
+    TCHECK(t2.find("\"effectiveBands\":[5,8,20,28]") != std::string::npos);
+
+    std::vector<std::pair<std::string, std::string>> kv;
+    cellular_config_to_settings(c, kv);
+    bool saw_mask = false;
+    for (const auto& p : kv) if (p.first == "cellular.band_mask") { saw_mask = true; TCHECK(p.second == "80004"); }
+    TCHECK(saw_mask);
+    cellular::CellularConfig back;
+    TCHECK(cellular_config_from_settings(kv, back, err));
+    TCHECK(back.net_mode == c.net_mode && back.band_profile == c.band_profile && back.band_mask == c.band_mask);
+
+    // Eine Datei aus der Zeit davor traegt die Schluessel nicht: Defaults.
+    cellular::CellularConfig old;
+    TCHECK(cellular_config_from_settings({{"cellular.apn", "x"}}, old, err));
+    TCHECK(old.net_mode == cellular::NetMode::Auto && old.band_profile == cellular::BandProfile::Auto);
+    // Unsinn in der Datei ist ein Fehler.
+    TCHECK(!cellular_config_from_settings({{"cellular.net_mode", "5g"}}, old, err));
+    TCHECK(!cellular_config_from_settings({{"cellular.band_profile", "high"}}, old, err));
+    TCHECK(!cellular_config_from_settings({{"cellular.band_mask", "0xzz"}}, old, err));
+}
+
+void test_band_patch_refuses_nonsense()
+{
+    cellular::CellularConfig c;
+    std::string err;
+    TCHECK(!cellular_config_from_json(parse("{\"netMode\":\"3g\"}"), c, err));
+    TCHECK(!cellular_config_from_json(parse("{\"bandProfile\":\"high\"}"), c, err));
+    TCHECK(!cellular_config_from_json(parse("{\"bands\":\"3\"}"), c, err));
+    TCHECK(!cellular_config_from_json(parse("{\"bands\":[3.5]}"), c, err));
+    // Ein Band, das die EU-Variante nicht hat, wird HIER genannt -- das Modem
+    // saegte nur "CME ERROR".
+    TCHECK(!cellular_config_from_json(parse("{\"bands\":[3,66]}"), c, err));
+    TCHECK(err.find("66") != std::string::npos);
+    // Custom ohne ein einziges Band ist ein Versehen, kein "alle".
+    TCHECK(!cellular_config_from_json(parse("{\"bandProfile\":\"custom\",\"bands\":[]}"), c, err));
+    TCHECK(c.band_mask == 0 && c.band_profile == cellular::BandProfile::Auto);   // nichts hat gewirkt
+}
+
+void test_band_and_action_documents_carry_state_without_secrets()
+{
+    cellular::RadioState r;
+    r.desired_mask = 0x80004;
+    r.desired_mode = cellular::NetMode::LteOnly;
+    r.sync = cellular::RadioSync::InSync;
+    r.modem_mask = cellular::Maybe<uint64_t>(0x80004);
+    r.modem_nwscanmode = cellular::MaybeInt(3);
+    r.scan = cellular::ScanState::Done;
+    r.scan_best = 20;
+    cellular::ScanRow row; row.band = 20; row.mhz = 800; row.ok = true; row.samples = 4;
+    row.sinr = cellular::MaybeInt(9);
+    r.rows.push_back(row);
+    cellular::CellularConfig c;
+    c.band_profile = cellular::BandProfile::Custom;
+    const std::string txt = cellular_bands_json(r, c).dump();
+    TCHECK(txt.find("\"supported\":[{\"band\":1,\"mhz\":2100,\"tdd\":false}") != std::string::npos);
+    TCHECK(txt.find("\"sync\":\"in-sync\"") != std::string::npos);
+    TCHECK(txt.find("\"lteMaskHex\":\"80004\"") != std::string::npos);
+    TCHECK(txt.find("\"netMode\":\"lte\"") != std::string::npos);
+    TCHECK(txt.find("\"best\":20") != std::string::npos);
+    TCHECK(txt.find("\"sinrDb\":9") != std::string::npos);
+    TCHECK(txt.find("\"rsrpDbm\":null") != std::string::npos);   // fehlend bleibt null
+
+    // Ohne Rueckmeldung: modem = null, nicht ein erfundenes 0.
+    cellular::RadioState none;
+    const std::string t2 = cellular_bands_json(none, c).dump();
+    TCHECK(t2.find("\"modem\":null") != std::string::npos);
+    TCHECK(t2.find("\"sync\":\"unknown\"") != std::string::npos);
+
+    // Nachbarzellen und PIN-Sperre: null, solange nie gefragt wurde.
+    TCHECK(cellular_neighbours_json(cellular::NeighbourReport{}).is_null());
+    TCHECK(cellular_sim_lock_json(cellular::SimLockReport{}).is_null());
+    cellular::SimLockReport sl;
+    sl.have = true; sl.ok = false; sl.action = cellular::SimLockAction::Enable;
+    sl.detail = "the card rejected the request (+CME ERROR: 16)";
+    sl.enabled = cellular::MaybeInt(1);
+    sl.pin_left = cellular::MaybeInt(2);
+    const std::string t3 = cellular_sim_lock_json(sl).dump();
+    TCHECK(t3.find("\"enabled\":true") != std::string::npos);
+    TCHECK(t3.find("\"pinAttemptsLeft\":2") != std::string::npos);
+    TCHECK(t3.find("\"pukAttemptsLeft\":null") != std::string::npos);
+    TCHECK(t3.find("\"action\":\"enable\"") != std::string::npos);
+
+    // Die Anfrage: Form geprueft, PIN nur Ziffern.
+    cellular::SimLockRequest q;
+    std::string err;
+    TCHECK(sim_lock_request_from_json(parse("{\"action\":\"change\",\"pin\":\"1234\",\"newPin\":\"5678\"}"), q, err));
+    TCHECK(q.action == cellular::SimLockAction::Change && q.pin == "1234" && q.new_pin == "5678");
+    TCHECK(!sim_lock_request_from_json(parse("{\"action\":\"unlock\"}"), q, err));
+    TCHECK(!sim_lock_request_from_json(parse("{\"action\":\"enable\",\"pin\":\"abcd\"}"), q, err));
+    TCHECK(!sim_lock_request_from_json(parse("{\"action\":\"status\",\"puk\":\"1\"}"), q, err));
+}
+
 } // namespace
 
 void run_net_views_tests()
@@ -724,4 +838,7 @@ void run_net_views_tests()
     test_cellular_patch_refuses_nonsense();
     test_cellular_settings_round_trip_including_the_secrets();
     test_presets_reach_the_api_with_their_reason();
+    test_band_fields_round_trip_through_json_and_settings();
+    test_band_patch_refuses_nonsense();
+    test_band_and_action_documents_carry_state_without_secrets();
 }

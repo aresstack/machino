@@ -588,6 +588,7 @@ int main(int argc, char** argv) {
         LOGI(MOD, "cellular: data link is %s", want_ppp ? "ppp" : "ecm");
 
         net::CellularUplink cell_uplink(cell_service, cell_link);
+        cell_uplink.set_clock([] { return (uint64_t)now_ms(); });
 
         // The stored cellular configuration is the SOURCE OF TRUTH.
         //
@@ -827,6 +828,20 @@ int main(int argc, char** argv) {
                           "it is live now and will be gone after a reboot", e.c_str());
         };
         api::NetApiService net_api(nd);
+
+        // Eine SIM-Aktion (PIN-Sperre an/aus, PIN geaendert) aendert die
+        // gespeicherte PIN SOFORT und ohne Bestaetigungsfenster: die Karte hat
+        // die Aenderung bereits angenommen, und eine Datei, die noch die alte
+        // PIN traegt, hiesse beim naechsten Start eine gesperrte Karte.
+        cell_uplink.set_persist([&store](const cellular::CellularConfig& cc) {
+            KeyValues kv; api::cellular_config_to_settings(cc, kv);
+            std::string e;
+            if (!store.commit(kv, e))
+                LOGE(MOD, "cellular: the changed SIM PIN could not be saved (%s) - "
+                          "it is live now and will be gone after a reboot", e.c_str());
+            else
+                LOGI(MOD, "cellular: SIM PIN configuration updated by a SIM action");
+        });
 
         // Transports hear about an uplink switch; the media pipeline never
         // does. The source address and the NAT path change underneath a live

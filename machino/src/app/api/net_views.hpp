@@ -15,6 +15,8 @@
 #include "core/cellular/cellular_config.hpp"
 #include "core/cellular/cellular_status.hpp"
 #include "core/cellular/ecm_link.hpp"
+#include "core/cellular/modem_actions.hpp"
+#include "core/cellular/radio_tuner.hpp"
 #include "core/usb/usb_host_service.hpp"
 #include <string>
 #include <vector>
@@ -81,6 +83,16 @@ Json cellular_config_json(const cellular::CellularConfig& c);
 
 // Die bekannten Anbieterkonfigurationen als Vorschlaege, mit dem Grund dabei.
 Json cellular_presets_json();
+
+// Die Extras der Mobilfunkseite: Bandwahl samt Scan, Nachbarzellen, PIN-Sperre
+// der Karte. Getrennt von cellular_network_json, damit /api/v1/network schlank
+// bleibt -- nur /api/v1/network/cellular traegt sie.
+Json cellular_bands_json(const cellular::RadioState& r, const cellular::CellularConfig& c);
+Json cellular_neighbours_json(const cellular::NeighbourReport& n);
+// Ohne PIN und ohne Rohtext -- der Bericht traegt beides nicht.
+Json cellular_sim_lock_json(const cellular::SimLockReport& s);
+// {"action":"status|enable|disable|change","pin":"...","newPin":"..."}
+bool sim_lock_request_from_json(const Json& body, cellular::SimLockRequest& out, std::string& err);
 
 // Mobilfunk so, wie die Netzwerkseite ihn braucht: Modemzustand UND Uplink in
 // einem Dokument.

@@ -61,6 +61,8 @@
 #pragma once
 #include "core/cellular/cellular_service.hpp"
 #include "core/cellular/ecm_link.hpp"
+#include "core/cellular/modem_actions.hpp"
+#include "core/cellular/radio_tuner.hpp"
 #include "ports/inetwork.hpp"
 #include <functional>
 #include <mutex>
@@ -86,6 +88,11 @@ public:
                    std::string id = "cellular");
 
     void set_reachability(ReachabilityFn fn) { reach_ = std::move(fn); }
+
+    // Die Uhr fuer Scan-Fristen und Zeitstempel der Aktionen. Dieselbe Quelle
+    // wie beim Dienst und dem Datenlink; ohne sie laufen Fristen nie ab.
+    using ClockFn = std::function<uint64_t()>;
+    void set_clock(ClockFn now) { tuner_.set_clock(now); actions_.set_clock(std::move(now)); }
 
     // Eine Runde Modemarbeit: Absicht durchsetzen, Status abfragen,
     // Zustandsmaschine einen Schritt weiterdrehen, Abschrift hinterlegen.
@@ -135,6 +142,28 @@ public:
     cellular::CellularConfig    config() const;
     cellular::CellularStatus    modem_status() const;
     cellular::CellularLinkState link_state() const;
+    cellular::RadioState        radio_state() const;
+    cellular::NeighbourReport   neighbour_cells() const;
+    cellular::SimLockReport     sim_lock() const;
+
+    // ---- Aktionen auf Zuruf (aus dem HTTP-Thread) ---------------------------
+    //
+    // Dieselbe Form wie connect(): eine Absicht wird hinterlegt und im
+    // naechsten tick() ausgefuehrt. Was sich schon an der Abschrift entscheiden
+    // laesst (kein Modem, Mobilfunk aus, Scan laeuft bereits), wird hier mit
+    // Begruendung abgelehnt, damit die API sofort antworten kann.
+    bool request_band_scan(std::string& why_not);
+    bool request_neighbour_cells(std::string& why_not);
+    bool request_sim_lock(const cellular::SimLockRequest& r, std::string& why_not);
+    bool request_modem_restart(std::string& why_not);
+
+    // Aendert eine SIM-Aktion die gespeicherte PIN (Sperre aktiviert, PIN
+    // geaendert, Sperre aufgehoben), muss die Konfigurationsdatei das sofort
+    // wissen -- sonst steht beim naechsten Start eine gesperrte Karte da, und
+    // die PIN kennt nur noch der Benutzer. Der Haken wird aus tick() gerufen,
+    // ausserhalb der Sperre, mit der vollstaendigen Konfiguration.
+    using PersistFn = std::function<void(const cellular::CellularConfig&)>;
+    void set_persist(PersistFn fn);
 
 private:
     LinkState state_locked() const;
@@ -143,18 +172,35 @@ private:
     cellular::ICellularDataLink& link_;
     std::string                id_;
     ReachabilityFn             reach_;
+    PersistFn                  persist_;
+
+    // Bandwahl und Einmal-Aktionen. NUR aus tick() angefasst -- sie sprechen
+    // mit dem Modem, und der HTTP-Thread tut das nicht.
+    cellular::RadioTuner       tuner_;
+    cellular::ModemActions     actions_;
+    bool                       scan_held_link_ = false;
 
     mutable std::mutex m_;
 
     // Die Wahrheit fuer alle Leser. Nur tick() schreibt sie.
     cellular::CellularStatus    st_;
     cellular::CellularLinkState ls_;
+    cellular::RadioState        radio_;
+    cellular::NeighbourReport   nb_;
+    cellular::SimLockReport     sl_;
 
     // Die Absicht. Von jedem Thread setzbar, vom Hauptthread ausgefuehrt.
     cellular::CellularConfig cfg_;
     bool cfg_dirty_ = true;      // beim ersten tick() anwenden
     bool want_up_ = false;
     bool intent_dirty_ = false;
+
+    // Absichten fuer die Aktionen, ebenso von jedem Thread setzbar.
+    bool scan_requested_ = false;
+    bool nb_requested_ = false;
+    bool restart_requested_ = false;
+    bool sim_requested_ = false;
+    cellular::SimLockRequest sim_req_;   // traegt die PIN bis zum naechsten tick()
 };
 
 }} // namespace machino::net

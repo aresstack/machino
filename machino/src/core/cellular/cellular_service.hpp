@@ -38,6 +38,11 @@ public:
 
     SimManager& sim() { return sim_; }
 
+    // Der geliehene Transport, fuer die Nachbarn, die SCHREIBEN duerfen
+    // (radio_tuner, modem_actions). Dieser Dienst selbst bleibt lesend; wer
+    // hier einen AT+QCFG sucht, findet ihn dort.
+    IAtTransport& transport() { return at_; }
+
     // Eine Abfragerunde. Billig genug fuer einen Sekundentakt, weil sie
     // abbricht, sobald etwas fehlt: ohne Antwort kein SIM-Check, ohne SIM
     // keine Registrierung, ohne Registrierung keine Funkwerte.

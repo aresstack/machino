@@ -180,7 +180,8 @@ harte Reihenfolge fuer AP-M2/M4: `option` + `usb_wwan` sind die Voraussetzung,
 | Provider-Profile (o2 `netpublic`, Telekom `internet.t-d1.de`) | bekannte funktionierende Konfigurationen | **UEBERNEHMEN als Defaults** | Presets | keine |
 | `modem_clock.*` | Netzzeit ueber `AT+CTZU=1` / `AT+CCLK?` | **SPAETER** (eigener AP) | -- | keine |
 | PPP (`pppStart`/`pppStop`, lwIP-Pumpe) | PPP-Datenpfad | **SPAETER (AP-M7)** | -- | `pppd` statt lwIP |
-| `modemSpeedtest*`, `modemStartBandScan`, `modemNeighbourDump` | Diagnose-Extras | **SPAETER** | -- | keine |
+| `modemApplyBands`, `modemStartBandScan`, `modemNeighbourDump`, `modemSimPinManage`, `modemReset` | Bandwahl, SINR-Scan, Nachbarzellen, PIN-Sperre, Neustart | **PORTIERT** (2026-09-29, siehe `cellular-bands.md`) | `RadioTuner`, `ModemActions` | keine |
+| `modemSpeedtest*` | Diagnose-Extra | **SPAETER** | -- | keine |
 | ESP32 `usb_host`-API, Claim/Endpoints, `modemUsbRootPortCycle` | USB-Transport | **ERSETZEN** | Kernel + vorhandene GPIO-50-Portsteuerung | `option`, `usb_wwan`, `usbnet` |
 | ESP-IDF-Tasks, NVS/Preferences | Nebenlaeufigkeit, Persistenz | **ERSETZEN** | machino-Eventloop + `ConfigStore` | keine |
 | `network_registry.*`, `net_scan.*`, `network_mode.*` | ESP32-Netzzonen/Diagnose | **NICHT portieren** | -- | ausserhalb des Auftrags |
@@ -195,8 +196,9 @@ harte Reihenfolge fuer AP-M2/M4: `option` + `usb_wwan` sind die Voraussetzung,
     REPLACE  ESP32 usb_host, Interface-Claim, Bulk-Pumpe, lwIP-netif,
              ESP-IDF-Tasks, NVS, modemUsbRootPortCycle
 
-    DEFER    PPP (AP-M7), modem_clock, Speedtest, Bandscan,
-             Nachbarzellen, IPv6
+    DEFER    modem_clock, Speedtest, IPv6
+             (PPP: AP-M7; Bandwahl, Bandscan, Nachbarzellen, PIN-Sperre,
+             Neustart: 2026-09-29, cellular-bands.md)
 
     UNKNOWN  siehe Abschnitt 5
 
