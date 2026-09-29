@@ -156,10 +156,12 @@ Result LinuxRouteBackend::route_op(int nlmsg_type, int flags, const std::string&
         // refuse it with ENETUNREACH, which reads like the network is down.
         rtm->rtm_scope    = have_gw ? RT_SCOPE_UNIVERSE : RT_SCOPE_LINK;
         rtm->rtm_type     = RTN_UNICAST;
-        // The gateway of a /32 point-to-point uplink is not inside any prefix
-        // on the interface. Without ONLINK the kernel rejects the route with
-        // ENETUNREACH; with it, it sends and lets the link answer for the
-        // gateway -- which is what a modem in ECM mode does.
+        // The gateway of a /32 uplink is not inside any prefix on the
+        // interface. Without ONLINK the kernel rejects the route with
+        // ENETUNREACH; with it, it ARPs for the gateway on the link and lets
+        // the neighbour answer -- which a modem in ECM mode does (measured
+        // 2026-09-29: usb0 is a plain Ethernet NIC, the modem answers ARP
+        // for 37.85.117.255 as 00:e4:e4:e4:e4:e4).
         if (have_gw && onlink) rtm->rtm_flags |= RTNH_F_ONLINK;
     }
 

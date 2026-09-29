@@ -73,9 +73,15 @@ case "$1" in
 		# (gemessen 2026-09-29: 37.85.117.0/8). Damit gilt jedes Ziel im
 		# gesamten Block des Traegers als direkt erreichbar, die Kamera fragt
 		# per ARP auf usb0 statt ueber das Gateway zu senden, und jeder Client
-		# mit einer Adresse aus 37.0.0.0/8 ist fuer sie unerreichbar. Ein
-		# Mobilfunk-Link ist Punkt-zu-Punkt: es gibt genau einen Nachbarn, das
-		# Gateway, und den erreicht die Route unten mit `onlink`.
+		# mit einer Adresse aus 37.0.0.0/8 ist fuer sie unerreichbar.
+		#
+		# usb0 ist dabei KEIN Punkt-zu-Punkt-Interface, sondern ein normales
+		# Ether-NIC (<BROADCAST,MULTICAST>, gemessen 2026-09-29). Es hat nur
+		# genau einen Nachbarn: das Modem, das per ARP fuer das Gateway
+		# antwortet (gemessen: 37.85.117.255 -> 00:e4:e4:e4:e4:e4, REACHABLE,
+		# dieselbe MAC wie fuer 169.254.0.1). Genau deshalb traegt die Route
+		# unten mit `onlink` und einem /32 -- und das /8 mit seinen
+		# Muell-Broadcasts 37.0.0.0/37.255.255.255 in `table local` faellt weg.
 		#
 		# Eine Erneuerung mit unveraenderter Adresse fasst das Interface nicht
 		# an: das Flush wuerde jede laufende Verbindung fuer die Dauer des
