@@ -253,6 +253,8 @@ struct HttpServer::Client {
     // talkback in (queued on the speaker). Both only when the answer says so.
     std::shared_ptr<Sink>    rtc_audio_sink;
     int                      rtc_audio_rate = 0;
+    uint32_t                 rtc_audio_last_seq = 0;    // Seq-Gap-Kompensation (wie audio_last_seq)
+    bool                     rtc_audio_seq_valid = false;
     bool                     rtc_talk_refused = false;   // log a refused talkback once, not per packet
     // Front-door relay: per-client non-blocking upstream state. The poll loop
     // owns both sockets; no thread ever blocks on the busybox side, so a slow
@@ -2114,10 +2116,17 @@ void HttpServer::pump_rtc(Client& c) {
             AuPtr a;
             if (!c.rtc_audio_sink->pop(a, 0)) break;
             if (!a || a->data.empty()) continue;
+            // Sink-verworfene Frames ueberspringen den RTP-Takt (wie RTSP und
+            // die HTTP-Audio-Pfade), sonst driftet WebRTC-Audio bei Congestion.
+            const uint32_t missing = (c.rtc_audio_seq_valid && a->seq > c.rtc_audio_last_seq + 1)
+                                         ? a->seq - c.rtc_audio_last_seq - 1 : 0;
+            c.rtc_audio_last_seq = a->seq; c.rtc_audio_seq_valid = true;
             std::string g711;
             audio_encode(c.rtc->audio_is_pcma() ? AudioFormat::Alaw : AudioFormat::Ulaw, c.rtc_audio_rate,
                          a->data.data(), a->data.size(), g711);
-            c.rtc->send_audio(reinterpret_cast<const uint8_t*>(g711.data()), g711.size());
+            // Ein 40-ms-Frame @8 kHz = 320 Samples; die Luecke ist missing davon.
+            c.rtc->send_audio(reinterpret_cast<const uint8_t*>(g711.data()), g711.size(),
+                              missing * (uint32_t)g711.size());
         }
         if (c.rtc_audio_sink->closed()) { audio_->unlisten(c.rtc_audio_sink); c.rtc_audio_sink.reset(); }
     }

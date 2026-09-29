@@ -191,8 +191,13 @@ void PeerSession::tick() {
     }
 }
 
-void PeerSession::send_audio(const uint8_t* g711, size_t n) {
+void PeerSession::send_audio(const uint8_t* g711, size_t n, uint32_t skip_samples) {
     if (!srtp_ || !have_peer_ || !audio_.send || n == 0) return;
+    // Frames the sink dropped still took their time: advance the RTP clock
+    // over the gap so the browser's jitter buffer keeps audio aligned with
+    // video (the RTSP and HTTP audio paths do the same). Without this every
+    // backpressure drop shifts the timeline earlier and the offset accrues.
+    audio_ts_ += skip_samples;
     for (size_t off = 0; off < n; ) {
         const size_t len = n - off < 1000 ? n - off : 1000;
         std::vector<uint8_t> pkt(rtp::kHeaderBytes + len);

@@ -428,22 +428,22 @@ Json ApiService::config_json() {
         ai.set("inference_fps", Json::integer(cfg_.ai.inference_fps));
     }
     j.set("ai", ai);
-    // Only what the platform has: the capabilities say audio.input /
-    // audio.output, and a config that reports a microphone as "enabled" on a
-    // board without one would be a capability the camera does not have.
-    if (audio_ && (audio_->available() || audio_->output_available())) {
+    // The full, stable set of six audio keys whenever the audio subsystem is
+    // present -- consumers (WebUI, migration, cam-tool) read and round-trip
+    // them unconditionally, so omitting a key made a save-all write it back as
+    // false. enabled/output_enabled are CLAMPED to what the hardware actually
+    // offers, so a board without a microphone still never reports it as on
+    // (the capability the camera lacks is expressed by the clamp, not by a
+    // missing key).
+    if (audio_) {
         const AudioConfig ac = audio_->config();
         Json au = Json::object();
-        if (audio_->available()) {
-            au.set("enabled", Json::boolean(ac.enabled));
-            au.set("srate", Json::integer(ac.srate));
-            au.set("volume", Json::integer(ac.volume));
-            au.set("gain", Json::integer(ac.gain));
-        }
-        if (audio_->output_available()) {
-            au.set("output_enabled", Json::boolean(ac.output_enabled));
-            au.set("output_volume", Json::integer(ac.output_volume));
-        }
+        au.set("enabled", Json::boolean(audio_->available() && ac.enabled));
+        au.set("srate", Json::integer(ac.srate));
+        au.set("volume", Json::integer(ac.volume));
+        au.set("gain", Json::integer(ac.gain));
+        au.set("output_enabled", Json::boolean(audio_->output_available() && ac.output_enabled));
+        au.set("output_volume", Json::integer(ac.output_volume));
         j.set("audio", au);
     }
     return j;

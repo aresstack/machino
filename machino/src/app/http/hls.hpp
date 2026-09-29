@@ -65,6 +65,11 @@ private:
     bool     await_key_ = true;
     bool     pending_disc_ = false;   // the next segment follows a new init
     unsigned init_gen_ = 0;
+    // RFC 8216: EXT-X-DISCONTINUITY-SEQUENCE zaehlt Discontinuities, die aus
+    // der Playlist ENTFERNT wurden (MUST increment beim Trimmen eines
+    // getaggten Segments) -- nicht die Init-Generation. Solange das getaggte
+    // Segment im Fenster ist, traegt ES den Tag und die Sequence steht still.
+    unsigned disc_seq_ = 0;
     uint64_t next_seq_ = 0;
     uint32_t frag_seq_ = 1;
     fmp4::Timeline tl_;

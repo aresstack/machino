@@ -65,7 +65,10 @@ public:
     // write the grayscale mode into the day. Wins over the requested value
     // while it is set; clear_image_override hands the control back.
     power::ApplyResult set_image_override(ImageControl c, int value);
-    void clear_image_override(ImageControl c);
+    // `fallback` applies when no user value was ever recorded for the control
+    // (requested_ unset): without it the ISP would keep the old override level
+    // while the hold reads as released.
+    void clear_image_override(ImageControl c, int fallback = -1);
 
 private:
     power::ApplyResult apply_image(ImageControl c, int value, bool record_requested, bool from_override);

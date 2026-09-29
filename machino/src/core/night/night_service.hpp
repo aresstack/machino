@@ -160,6 +160,10 @@ private:
     const hw::IPinResolver* resolver_ = nullptr;
     bool night_ = false;
     bool ircut_ = true;                   // Tag = Filter drin
+    // Zuletzt tatsaechlich GEPULSTE Richtung der Zweipin-Spule (-1 = noch
+    // nie). Ein Retry der Automatik darf eine bereits geschaltete Spule
+    // nicht erneut pulsen: hoerbares Klicken, Verschleiss, 150 ms unter m_.
+    int  ircut_driven_ = -1;
     bool light_ = false;
     std::string def_ircut_pin1_, def_ircut_pin2_;   // Board-Profil-Vorgaben
     std::string def_light_sensor_pin_;              // dto., Lichtsensor
@@ -177,6 +181,11 @@ private:
         bool        announced = false;    // "automatic on" einmal geloggt
         std::string error;                // Sensor: warum nicht gelesen wird
         std::string switch_error;         // Schalten: warum der letzte Versuch scheiterte (einmal geloggt)
+        // Der MODUS steht, ein Aktor (Licht/Filter) fehlt noch: begrenzt
+        // nachfassen statt die ganze Nacht alle 2 s -- ein dauerhaft
+        // scheiternder Pin ist keine Endlosschleife wert.
+        bool        actuator_pending = false;
+        int         actuator_tries = 0;
     } auto_;
     std::thread             thread_;
     std::mutex              thread_m_;

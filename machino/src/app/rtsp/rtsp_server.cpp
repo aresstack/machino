@@ -694,11 +694,16 @@ void RtspServer::pump_backchannel_udp(Session& s) {
         sockaddr_in from{}; socklen_t fl = sizeof from;
         const ssize_t un = recvfrom(s.back.udp_fd, ub, sizeof ub, MSG_DONTWAIT, (sockaddr*)&from, &fl);
         if (un <= 0) break;
-        if (from.sin_addr.s_addr != s.back.udp_peer.sin_addr.s_addr || from.sin_port != s.back.udp_peer.sin_port) {
+        // Nur die Quell-IP muss der authentifizierte RTSP-Peer sein (das
+        // schliesst die Fremd-Injektion). NICHT der Quell-Port: symmetrisches
+        // RTP ist nur ein SHOULD (RFC), und legitime ONVIF-Clients senden oft
+        // von einem ephemeren Port, waehrend client_port nur ihr Empfangsport
+        // ist -- ein Portvergleich hier mutet sie stumm.
+        if (from.sin_addr.s_addr != s.back.udp_peer.sin_addr.s_addr) {
             if (!s.bc_source_logged) {
                 char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
-                LOGW(MOD, "%s: backchannel datagram from %s:%d ignored - not the RTSP peer at its client_port",
-                     s.peer.c_str(), ip, ntohs(from.sin_port));
+                LOGW(MOD, "%s: backchannel datagram from %s ignored - not the RTSP peer's address",
+                     s.peer.c_str(), ip);
                 s.bc_source_logged = true;
             }
             continue;

@@ -44,7 +44,10 @@ public:
     bool audio_receiving() const { return audio_.recv; }
     bool audio_is_pcma() const { return audio_pcma_; }
     // One chunk of G.711 (8 kHz, one byte per sample) from the microphone.
-    void send_audio(const uint8_t* g711, size_t n);
+    // skip_samples: G.711 samples (8 kHz) for sink-dropped frames since the
+    // last send, so the RTP timestamp skips the gap instead of pretending the
+    // dropped frames' airtime never passed.
+    void send_audio(const uint8_t* g711, size_t n, uint32_t skip_samples = 0);
     // Talkback received since the last call, as 8 kHz PCM. False when none.
     bool take_audio_in(std::vector<int16_t>& pcm);
 

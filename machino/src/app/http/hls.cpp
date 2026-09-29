@@ -21,12 +21,20 @@ void Segmenter::close_current() {
 
 // The newest complete segment always stays: a player needs something.
 void Segmenter::trim() {
-    // By count, and by the bytes of the FINISHED segments: the one in
-    // progress is bounded on its own (feed), and counting it here shrank the
-    // window to a single segment with 2 s GOPs of a few MB. Never below two.
+    // By count, and by TOTAL bytes (finished plus the segment in progress).
+    // Counting only the finished ones let the window hold max_bytes ON TOP of
+    // a cur_ of up to another half budget; together with the floor of two
+    // that is bounded at 1.5x max_bytes worst case (feed caps one segment at
+    // max_bytes/2), not the ~3x the uncounted variant allowed. Never below
+    // two finished segments - a player needs a window.
     auto finished = [this] { size_t n = 0; for (const Seg& s : segs_) n += s.data.size(); return n; };
-    while (segs_.size() > lim_.max_segments || (segs_.size() > 2 && finished() > lim_.max_bytes))
+    while (segs_.size() > lim_.max_segments ||
+           (segs_.size() > 2 && finished() + cur_.size() > lim_.max_bytes)) {
+        // RFC 8216: dropping a segment that carries the DISCONTINUITY tag
+        // MUST increment EXT-X-DISCONTINUITY-SEQUENCE.
+        if (segs_.front().disc) ++disc_seq_;
         segs_.pop_front();
+    }
 }
 
 void Segmenter::feed(const uint8_t* annexb, size_t n, bool key, int64_t pts_us, int width, int height,
@@ -41,7 +49,13 @@ void Segmenter::feed(const uint8_t* annexb, size_t n, bool key, int64_t pts_us, 
             (sps != sps_ || pps != pps_)) {
             // New parameter sets: a new init; everything held refers to the
             // old one, so the window restarts behind a discontinuity.
-            if (!init_.empty()) { segs_.clear(); cur_.clear(); cur_open_ = false; pending_disc_ = true; ++init_gen_; }
+            if (!init_.empty()) {
+                // Die weggeworfenen Segmente verlassen die Playlist: ein noch
+                // im Fenster stehender Disc-Tag zaehlt dabei in die Sequence
+                // (gleiche MUST-Regel wie beim Trimmen).
+                for (const Seg& s : segs_) if (s.disc) ++disc_seq_;
+                segs_.clear(); cur_.clear(); cur_open_ = false; pending_disc_ = true; ++init_gen_;
+            }
             sps_ = sps; pps_ = pps;
             init_ = fmp4::init_segment(sps_, pps_, width, height, 90000);
         }
@@ -63,9 +77,11 @@ void Segmenter::feed(const uint8_t* annexb, size_t n, bool key, int64_t pts_us, 
     cur_.insert(cur_.end(), f.begin(), f.end());
     cur_end_ = dts + dur;
     trim();
-    // A GOP far longer than the target must not grow without bound: one
-    // segment may take the whole byte budget, never more.
-    if (cur_.size() > lim_.max_bytes) { cur_.clear(); cur_open_ = false; await_key_ = true; }
+    // A GOP far longer than the target must not grow without bound: half the
+    // byte budget per segment (as the base had it). A full-budget segment
+    // plus the two-finished floor held up to ~3x the window in RAM - on a
+    // 48 MB camera that is an OOM, not a feature.
+    if (cur_.size() > lim_.max_bytes / 2) { cur_.clear(); cur_open_ = false; await_key_ = true; }
 }
 
 std::string Segmenter::playlist(const std::string& prefix) const {
@@ -78,10 +94,12 @@ std::string Segmenter::playlist(const std::string& prefix) const {
              target ? target : 1, (unsigned long long)first_seq());
     p += b;
     p += "#EXT-X-INDEPENDENT-SEGMENTS\n";
-    // A new init generation is a discontinuity: the segments before it were
-    // dropped with it, so it is the front segment that carries the tag, and
-    // the DISCONTINUITY-SEQUENCE tells a player which one it is looking at.
-    if (init_gen_) { snprintf(b, sizeof b, "#EXT-X-DISCONTINUITY-SEQUENCE:%u\n", init_gen_); p += b; }
+    // Der Tag reist mit dem ersten Segment der neuen Generation (unten);
+    // die SEQUENCE zaehlt nur ENTFERNTE Discontinuities (RFC 8216). Beides
+    // zusammen aus init_gen_ abzuleiten zaehlte doppelt und liess die Nummer
+    // eines Segments zwischen zwei Reloads SINKEN, sobald das getaggte
+    // Segment aus dem Fenster fiel - hls.js/Safari resetten dann die Timeline.
+    if (disc_seq_) { snprintf(b, sizeof b, "#EXT-X-DISCONTINUITY-SEQUENCE:%u\n", disc_seq_); p += b; }
     p += "#EXT-X-MAP:URI=\"" + prefix + init_name() + "\"\n";
     for (const Seg& s : segs_) {
         if (s.disc) p += "#EXT-X-DISCONTINUITY\n";

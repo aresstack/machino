@@ -88,10 +88,14 @@ ApplyResult TuningService::set_image_override(ImageControl c, int value) {
     return r;
 }
 
-void TuningService::clear_image_override(ImageControl c) {
+void TuningService::clear_image_override(ImageControl c, int fallback) {
     int back = -1;
     { std::lock_guard<std::mutex> lk(m_); override_[(int)c] = -1; back = requested_[(int)c]; }
-    if (back >= 0) apply_image(c, back, false, false);  // the user's value again, now
+    // The user's value again, now. With NO user value ever recorded the ISP
+    // would otherwise silently stay at the old override level while state()
+    // reports the hold as gone - the caller names the sane default instead.
+    if (back < 0) back = fallback;
+    if (back >= 0) apply_image(c, back, false, false);
 }
 
 ApplyResult TuningService::apply_image(ImageControl c, int value, bool record_requested, bool from_override) {
