@@ -230,6 +230,32 @@ std::string relay_head_stream_close(const std::string& head) {
     return out;
 }
 
+std::string inject_machino_footer_brand(const std::string& html, bool& changed) {
+    changed = false;
+    // Schon gebrandet (etwa eine frueher per Patch editierte footer.cgi, oder
+    // eine doppelt transformierte Seite): niemals doppeln.
+    if (html.find("Machino by AresStack") != std::string::npos)
+        return html;
+    // Der Anker ist die OpenIPC-Footerzeile: ihr Link traegt ?ref=webui, und
+    // der kommt auf der Seite sonst nirgends vor (footer.cgi, #549). Seiten
+    // ohne Footer (full_bleed) haben den Anker nicht und bleiben unveraendert.
+    const size_t at = html.find("?ref=webui");
+    if (at == std::string::npos)
+        return html;
+    const size_t pEnd = html.find("</p>", at);
+    if (pEnd == std::string::npos)
+        return html;   // nicht die bekannte Struktur: lieber gar nicht anfassen
+    const size_t insertAt = pEnd + 4;
+    static const char add[] = "\n\t<p class=\"text-end\">Machino by AresStack</p>";
+    std::string out;
+    out.reserve(html.size() + sizeof(add));
+    out.append(html, 0, insertAt);
+    out.append(add);
+    out.append(html, insertAt, std::string::npos);
+    changed = true;
+    return out;
+}
+
 std::string inject_machino_nav(const std::string& html, bool& changed) {
     changed = false;
 

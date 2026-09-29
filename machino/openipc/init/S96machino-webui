@@ -25,6 +25,12 @@ TARGET=/var/www/a
 is_mounted() { mount 2>/dev/null | grep -q " $TARGET "; }
 
 start() {
+    # Verankerte CGI-Modifikationen (z. B. der network.cgi-eval-Fix) bei jedem
+    # Boot neu pruefen: ein Firmware-Update bringt die Original-Dateien zurueck
+    # (oder neue), der Modifikator setzt die Fixes an der aktuellen Datei neu
+    # an - oder laesst eine unbekannte Variante in Ruhe. Ein Fehler hier darf
+    # den Boot nie aufhalten.
+    [ -x /usr/sbin/machino-webui-mod ] && /usr/sbin/machino-webui-mod apply
     [ -r "$SRC" ] || { echo "webui: no $SRC, leaving stock assets"; return 0; }
     is_mounted && return 0
     [ -d "$TARGET" ] || { echo "webui: no $TARGET, nothing to overlay"; return 0; }

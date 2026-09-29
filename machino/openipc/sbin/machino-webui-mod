@@ -1,0 +1,120 @@
+#!/bin/sh
+# machino-webui-mod -- gezielte, verankerte Modifikationen an OpenIPC-WebUI-
+# Dateien, bei JEDEM Boot neu geprueft (S96machino-webui ruft `apply`) und beim
+# Install einmal sofort.
+#
+# KEIN Datei-Ersetzen: jede Modifikation setzt an einem Anker in der VORHANDENEN
+# Datei an, ist idempotent und gated -- eine unbekannte Dateivariante bleibt
+# unangetastet (lieber der alte Bug als eine zerschossene Seite). Deshalb
+# ueberlebt eine Modifikation auch ein Firmware-Update MIT neuen Inhalten:
+# nichts Altes wird darueberkopiert, der Fix wird in der neuen Datei neu
+# verankert.
+#
+# Der Overlay-Fallstrick dabei: / ist overlayfs, /rom die Flash-Firmware.
+# Unsere gepatchte Kopie liegt im Overlay und VERSCHATTET nach einem Update die
+# neue /rom-Datei fuer immer. `apply` erkennt das am Backup (die Vor-Patch-
+# Kopie stammt dann von der ALTEN Firmware, /rom traegt eine andere), holt die
+# neue Datei herein und setzt den Fix regulaer neu an.
+#
+#   machino-webui-mod apply    alle Modifikationen pruefen/anwenden (Boot)
+#   machino-webui-mod revert   Modifikationen zuruecknehmen (Uninstall):
+#                              stellt die gesicherte Vor-Patch-Datei wieder her
+#
+# Heute eine Modifikation:
+#   netcgi-pipe   network.cgi vor OpenIPC #547 baut den setnetwork-Aufruf als
+#                 eval-String; ein WLAN-Passwort mit | ; oder Leerzeichen wird
+#                 als Shell geparst und abgeschnitten (T40NN-Befund 2026-09-26:
+#                 Passphrase auf |4 wurde ohne |4 gespeichert, Handshake
+#                 reason 15). Portiert den Upstream-Fix: Argument-Array statt
+#                 eval, und die Klartext-Passwortzeile ins Log faellt weg.
+#
+# Der Footer-Brand ("Machino by AresStack") laeuft absichtlich NICHT hierueber:
+# der Footer steht in jeder relayten Seite, machinod ergaenzt ihn zur Laufzeit
+# (inject_machino_footer_brand) -- ganz ohne Dateiaenderung.
+set -u
+ROOT="${MACHINO_ROOT:-}"            # test hook, see install.sh
+CGI="$ROOT/var/www/cgi-bin"
+ROM="$ROOT/rom/var/www/cgi-bin"     # overlay lower layer: die geflashte Firmware
+
+say() { echo "webui-mod: $*"; }
+
+# sha256sum ist auf der Kamera garantiert (install.sh verifiziert das Bundle
+# damit); cmp dagegen ist ein optionales busybox-Applet. Leer = nicht lesbar.
+fsha() { sha256sum < "$1" 2>/dev/null | awk '{print $1}'; }
+
+# ---- netcgi-pipe ------------------------------------------------------------
+netcgi_apply() {
+    F="$CGI/network.cgi"; BAK="$F.pre-pipe-fix"; LOWER="$ROM/network.cgi"
+    SIDE="$F.machino-base"     # sha256 der /rom-Basis, auf der F beruht
+    [ -f "$F" ] || { say "netcgi: no $F (skip)"; return 0; }
+
+    # Firmware-Wechsel-Erkennung ueber die BASIS-IDENTITAET: beim ersten Lauf
+    # wird die sha256 der /rom-Datei (overlay lower) als Sidecar notiert. Traegt
+    # /rom spaeter eine ANDERE Datei, verschattet unsere Overlay-Kopie (Patch
+    # ODER frueher adoptierte Basis) die neue Firmware-Datei - dann wird die
+    # neue Basis uebernommen und der Fix unten regulaer (gated) neu angesetzt.
+    # Das Backup allein reicht nicht: eine adoptierte, ungepatchte Kopie hat
+    # keines, wuerde aber genauso verschatten.
+    lower_sha=""
+    [ -f "$LOWER" ] && lower_sha=$(fsha "$LOWER")
+    if [ -n "$lower_sha" ] && [ -f "$SIDE" ] && [ "$(cat "$SIDE" 2>/dev/null)" != "$lower_sha" ]; then
+        say "netcgi: firmware brought a new network.cgi - rebasing onto it"
+        cp "$LOWER" "$F" && chmod 755 "$F" && rm -f "$BAK" || { say "netcgi: rebase failed"; return 1; }
+    fi
+    [ -n "$lower_sha" ] && printf '%s\n' "$lower_sha" > "$SIDE"
+
+    # Schon argv (unser Fix, oder eine Firmware nach #547): nichts zu tun.
+    if grep -q 'setnetwork "$@"' "$F" && ! grep -q 'eval "$command"' "$F"; then
+        return 0
+    fi
+    # Nicht die bekannte Bug-Form: an einer fremden network.cgi wird nicht geraten.
+    grep -q 'out=$(eval "$command"' "$F" || {
+        say "netcgi: unknown network.cgi variant - left unchanged"
+        return 0
+    }
+
+    cp "$F" "$BAK" || { say "netcgi: backup failed"; return 1; }
+    awk '
+        $0 ~ /^[\t]+command="setnetwork"$/ && !done {
+            ind = $0; sub(/command=.*/, "", ind)
+            print ind "# Argument list, not an eval string (upstream #547): a | or ;"
+            print ind "# in the password is a VALUE, not shell."
+            print ind "set -- -i \"$network_interface\" -m \"$network_mode\" -h \"$network_hostname\""
+            print ind "if [ \"$network_interface\" = \"wlan0\" ]; then"
+            print ind "\tset -- \"$@\" -s \"$network_wlan_ssid\" -p \"$network_wlan_password\""
+            print ind "fi"
+            print ind "if [ \"$network_mode\" != \"dhcp\" ]; then"
+            print ind "\tset -- \"$@\" -a \"$network_address\" -n \"$network_netmask\""
+            print ind "\t[ -n \"$network_gateway\" ] && set -- \"$@\" -g \"$network_gateway\""
+            print ind "\t[ -n \"$network_nameserver\" ] && set -- \"$@\" -d \"$network_nameserver\""
+            print ind "fi"
+            print ind "if ! out=$(setnetwork \"$@\" 2>&1); then"
+            skip = 1; done = 1; next
+        }
+        skip && /out=\$\(eval "\$command"/ { skip = 0; next }
+        skip { next }
+        { print }
+    ' "$F" > "$F.new" || { rm -f "$F.new"; say "netcgi: awk failed"; return 1; }
+
+    grep -q 'setnetwork "$@"' "$F.new" || { rm -f "$F.new"; say "netcgi: argv line missing"; return 1; }
+    grep -q 'eval "$command"' "$F.new" && { rm -f "$F.new"; say "netcgi: eval line still present"; return 1; }
+    old=$(wc -l < "$F"); new=$(wc -l < "$F.new")
+    [ "$new" -ge $(( old - 10 )) ] && [ "$new" -le "$old" ] || {
+        rm -f "$F.new"; say "netcgi: line count implausible ($old -> $new)"; return 1; }
+
+    chmod 755 "$F.new" && mv "$F.new" "$F" || { rm -f "$F.new"; say "netcgi: replace failed"; return 1; }
+    say "netcgi: fixed (eval -> argv, backup $BAK)"
+}
+
+netcgi_revert() {
+    F="$CGI/network.cgi"; BAK="$F.pre-pipe-fix"; SIDE="$F.machino-base"
+    rm -f "$SIDE"
+    [ -f "$BAK" ] || return 0        # nie angefasst (oder die Firmware war schon fixiert)
+    mv "$BAK" "$F" && chmod 755 "$F" && say "netcgi: restored the pre-fix network.cgi"
+}
+
+case "${1:-apply}" in
+    apply)  netcgi_apply ;;
+    revert) netcgi_revert ;;
+    *) echo "usage: $0 {apply|revert}" >&2; exit 1 ;;
+esac

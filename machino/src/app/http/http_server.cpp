@@ -1366,6 +1366,14 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
                         LOGW(MOD, "relay: %s: dashboard.js tag not found - page served without the live preview",
                              c.relay_what.c_str());
                 }
+                // Footer-Brand zuletzt: sein Anker liegt am Seitenende und
+                // beruehrt keinen der anderen Anker. Kein Warnlog, wenn er
+                // fehlt - full_bleed-Seiten haben schlicht keinen Footer.
+                {
+                    bool didFoot = false;
+                    std::string withFoot = http::inject_machino_footer_brand(emit, didFoot);
+                    if (didFoot) emit = std::move(withFoot);
+                }
                 if (!emit.empty() &&
                     !queue(c, emit, cfg_.max_page_transform_bytes + cfg_.max_out_buffer + sizeof buf))
                     return false;
@@ -1413,38 +1421,24 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
             c.relay_head.clear();
             c.relay_head_done = true;
 
-            // Menu injection: a GET whose head says text/html is delivered
-            // close-framed with Machino's nav links inserted near the top. The
-            // page is NOT buffered whole — the navbar is at the start of <body>,
-            // so we scan a bounded window, inject once, and stream the rest
-            // verbatim. Nothing under /var/www is touched.
+            // Seiten-Transformation: ein GET, dessen Head text/html meldet,
+            // wird close-framed ausgeliefert und VOLLSTAENDIG gepuffert (bis
+            // max_page_transform_bytes, Notbremse unten). Frueher wurde nur ein
+            // Fenster am Seitenanfang gescannt (Nav injiziert, Rest roh
+            // durchgereicht) - damit lief der Footer ungebrandet vorbei. Jetzt
+            // haengen die Anker vorn (Nav), tief in der Seite (Karten/Preview)
+            // UND am Ende (Footer-Brand); erst am EOF sind alle sicher im
+            // Puffer. Die WebUI-Seiten sind klein (zweistellige KB von busybox
+            // nebenan), und die Ganzseiten-Pufferung ist auf network.cgi /
+            // dashboard.cgi laengst hardware-erprobt. Nothing under /var/www
+            // is touched.
             if (c.relay_get && http::relay_head_is_html(head)) {
                 const std::string sh = http::relay_head_stream_close(head);
                 if (!queue(c, sh, cfg_.max_out_buffer + sizeof buf)) return false;
                 c.relay_total += sh.size();
                 c.relay_keep = false;      // close-framed: the socket close is the end
                 c.relay_inject = true;
-                c.relay_inject_buf = rest; // begin the scan window
-                // Try to inject from what we already have; otherwise keep reading.
-                // Im Karten-Modus wird NIE vorzeitig emittiert: der zweite
-                // Anker liegt tief in der Seite, alles laeuft bis zum EOF auf.
-                if (c.relay_inject && !c.relay_inject_cards && !c.relay_inject_preview) {
-                    bool did = false;
-                    // Erst emittieren, wenn die GANZE Navbar im Fenster liegt:
-                    // die Services-Eintraege haengen am zweiten Anker.
-                    std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
-                    if ((did && http::relay_nav_complete(c.relay_inject_buf)) ||
-                        c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
-                        const std::string& emit = did ? merged : c.relay_inject_buf;
-                        if (!queue(c, emit, cfg_.max_out_buffer + sizeof buf)) return false;
-                        c.relay_total += emit.size();
-                        c.relay_inject = false;
-                        c.relay_inject_buf.clear();
-                        if (!did)
-                            LOGW(MOD, "relay: %s: nav anchor not found in first %zu B - page served unchanged",
-                                 c.relay_what.c_str(), cfg_.max_inject_bytes);
-                    }
-                }
+                c.relay_inject_buf = rest;
                 progress();
                 continue;
             }
@@ -1467,42 +1461,23 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
             continue;
         }
 
-        // Still scanning for the navbar anchor: accumulate into the bounded
-        // window and inject as soon as it is found (or give up at the window
-        // edge and pass the buffer through). These bytes never take the verbatim
-        // path below.
+        // A page being transformed: accumulate everything up to the EOF (the
+        // injections run there, when every anchor is certainly in the buffer).
+        // Die Notbremse gibt eine ueberlange Seite UNVERAENDERT weiter, statt
+        // sie abzuschneiden. These bytes never take the verbatim path below.
         if (c.relay_inject) {
             c.relay_inject_buf.append(buf, (size_t)rd);
-            if (c.relay_inject_cards || c.relay_inject_preview) {
-                // Ganzseiten-Pufferung. Die Notbremse gibt die Seite
-                // UNVERAENDERT weiter, statt sie abzuschneiden.
-                if (c.relay_inject_buf.size() > cfg_.max_page_transform_bytes) {
-                    LOGW(MOD, "relay: %s: page exceeds %zu B - served unchanged, no card",
-                         c.relay_what.c_str(), cfg_.max_page_transform_bytes);
-                    if (!queue(c, c.relay_inject_buf,
-                               cfg_.max_page_transform_bytes + cfg_.max_out_buffer + sizeof buf))
-                        return false;
-                    c.relay_total += c.relay_inject_buf.size();
-                    c.relay_inject = false;
-                    c.relay_inject_cards = false;
-                    c.relay_inject_preview = false;
-                    c.relay_inject_buf.clear();
-                }
-                progress();
-                continue;
-            }
-            bool did = false;
-            std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
-            if ((did && http::relay_nav_complete(c.relay_inject_buf)) ||
-                c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
-                const std::string& emit = did ? merged : c.relay_inject_buf;
-                if (!queue(c, emit, cfg_.max_out_buffer + sizeof buf)) return false;
-                c.relay_total += emit.size();
+            if (c.relay_inject_buf.size() > cfg_.max_page_transform_bytes) {
+                LOGW(MOD, "relay: %s: page exceeds %zu B - served unchanged",
+                     c.relay_what.c_str(), cfg_.max_page_transform_bytes);
+                if (!queue(c, c.relay_inject_buf,
+                           cfg_.max_page_transform_bytes + cfg_.max_out_buffer + sizeof buf))
+                    return false;
+                c.relay_total += c.relay_inject_buf.size();
                 c.relay_inject = false;
+                c.relay_inject_cards = false;
+                c.relay_inject_preview = false;
                 c.relay_inject_buf.clear();
-                if (!did)
-                    LOGW(MOD, "relay: %s: nav anchor not in first %zu B - page served unchanged",
-                         c.relay_what.c_str(), cfg_.max_inject_bytes);
             }
             progress();
             continue;

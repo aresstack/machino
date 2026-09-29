@@ -79,6 +79,15 @@ size_t relay_head_end(const std::string& buf, size_t& sep_len);
 // corrupt HTML from a future WebUI.
 std::string inject_machino_nav(const std::string& html, bool& changed);
 
+// "Machino by AresStack" als zweite Zeile unter die OpenIPC-Footerzeile jeder
+// relayten Seite. KEINE Datei wird angefasst (der fruehere Cam-Tool-Patch
+// editierte p/footer.cgi und verschwand mit jedem OpenIPC-Update): der Footer
+// laeuft in jeder gerenderten Seite durch die Front-Door, also wird er dort
+// ergaenzt. Anker ist die ?ref=webui-Zeile; Seiten ohne Footer (full_bleed)
+// und bereits gebrandete Seiten (z. B. eine von Hand editierte footer.cgi)
+// bleiben unveraendert.
+std::string inject_machino_footer_brand(const std::string& html, bool& changed);
+
 // Eine native Karte "USB network hardware" in OpenIPCs network.cgi einsetzen,
 // direkt neben "Wireless adapter". Fail-closed: unbekannte Struktur ->
 // unveraendert zurueck, changed bleibt false. Nichts unter /var/www wird

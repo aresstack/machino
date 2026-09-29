@@ -114,6 +114,13 @@ rm -f "$WWW/cgi-bin/machino-ai-upload.cgi" "$WWW/cgi-bin/machino-audio.cgi"
 # dann Skript und Tarball entfernen.
 [ -x "$INITD/S96machino-webui" ] && "$INITD/S96machino-webui" stop 2>/dev/null
 rm -f "$INITD/S96machino-webui" "$ROOT/etc/machino/webui-upstream.tgz"
+# Verankerte CGI-Modifikationen zuruecknehmen: die gesicherte Vor-Patch-Datei
+# kommt zurueck ("the way it was found" - auch wenn das den alten Bug
+# wiederbringt; das entscheidet die Firmware, nicht der Uninstaller).
+if [ -x "$ROOT/usr/sbin/machino-webui-mod" ]; then
+    MACHINO_ROOT="$ROOT" sh "$ROOT/usr/sbin/machino-webui-mod" revert || warn "webui-mod revert reported a problem"
+fi
+rm -f "$ROOT/usr/sbin/machino-webui-mod"
 rm -f "$ROOT/usr/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-wifi-role"
 # Der NNA-Helfer geht mit; die Modelle unter /etc/machino/models BLEIBEN --
 # Nutzdaten des Betreibers, dieselbe Regel wie /etc/machino/payload.

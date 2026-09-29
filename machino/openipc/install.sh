@@ -543,6 +543,14 @@ put 0755 "$HERE/sbin/machino-manager" "$ROOT/usr/sbin/machino-manager" || die "c
 # `machino --ctl`, hence no second binary on the overlay.
 [ -r "$HERE/sbin/machinoctl" ] || die "the bundle has no sbin/machinoctl"
 put 0755 "$HERE/sbin/machinoctl" "$ROOT/usr/sbin/machinoctl" || die "cannot install machinoctl"
+# Der WebUI-Modifikator: verankerte, gated Fixes an OpenIPC-CGI-Dateien (heute:
+# der network.cgi-eval-Bug vor #547), bei jedem Boot neu geprueft
+# (S96machino-webui) und hier einmal sofort angewandt. Kein Datei-Ersetzen --
+# eine unbekannte Variante bleibt unangetastet, und nach einem Firmware-Update
+# setzt der Boot-Lauf die Fixes an der NEUEN Datei neu an (rebase gegen /rom).
+[ -r "$HERE/sbin/machino-webui-mod" ] || die "the bundle has no sbin/machino-webui-mod"
+put 0755 "$HERE/sbin/machino-webui-mod" "$ROOT/usr/sbin/machino-webui-mod" || die "cannot install machino-webui-mod"
+MACHINO_ROOT="$ROOT" sh "$ROOT/usr/sbin/machino-webui-mod" apply || say "webui-mod: apply reported a problem (boot will retry)"
 [ -r "$HERE/uninstall.sh" ] && put 0755 "$HERE/uninstall.sh" "$STATE_DIR/uninstall.sh"
 # A webui.passwd from an older bundle would only confuse a reader - the Basic
 # auth layer it fed is gone (Machino's session login owns authentication now).

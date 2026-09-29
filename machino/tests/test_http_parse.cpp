@@ -354,6 +354,38 @@ void run_relay_head_end_tests() {
                out.find("machino-dyndns.cgi") != std::string::npos);
     }
 
+    // inject_machino_footer_brand: "Machino by AresStack" as a second line
+    // under the OpenIPC footer credit of every relayed page - no file is
+    // touched (the old Cam-Tool patch edited p/footer.cgi and vanished with
+    // every OpenIPC update). Anchor is the ?ref=webui line from footer.cgi.
+    {
+        const std::string page =
+            "<!DOCTYPE html><html><body><footer class=\"x-small\"><div class=\"col\">\n"
+            "\t<p class=\"text-end\"><a href=\"https://github.com/openipc/majestic-webui\">WebUI</a>"
+            " by <a href=\"https://openipc.org/?ref=webui\">OpenIPC</a></p>\n"
+            "</div></footer></body></html>";
+        bool changed = false;
+        const std::string out = inject_machino_footer_brand(page, changed);
+        HCHECK(changed);
+        const size_t oipc = out.find("?ref=webui");
+        const size_t brand = out.find("Machino by AresStack");
+        HCHECK(oipc != std::string::npos && brand != std::string::npos && brand > oipc);   // UNDER the OpenIPC line
+        HCHECK(out.find(">OpenIPC</a></p>\n\t<p class=\"text-end\">Machino by AresStack</p>") != std::string::npos);
+        // Idempotent: a second pass (or a footer.cgi already patched on disk)
+        // never doubles the line.
+        bool again = false;
+        const std::string twice = inject_machino_footer_brand(out, again);
+        HCHECK(!again && twice == out);
+        // full_bleed pages have no footer -> no anchor -> untouched.
+        bool nb = false;
+        const std::string plain = "<!DOCTYPE html><html><body><main>video</main></body></html>";
+        HCHECK(inject_machino_footer_brand(plain, nb) == plain && !nb);
+        // The anchor without the known </p> structure: left alone entirely.
+        bool odd = false;
+        const std::string broken = "<a href=\"https://openipc.org/?ref=webui\">OpenIPC</a>";
+        HCHECK(inject_machino_footer_brand(broken, odd) == broken && !odd);
+    }
+
     // inject_machino_dashboard_preview: the stock dashboard's snapshot tile
     // gets a stream player when webui.dashboard_preview=live. Anchor is the
     // page's own dashboard.js tag; no anchor -> unchanged; never twice.

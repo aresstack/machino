@@ -53,7 +53,7 @@ esac
 FAKE
     chmod +x "$B/machino"
     printf 'board = t40nn-imx307-board-a\napi.port = 8080\n' > "$B/machino.conf"
-    cp "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/sbin/machinoctl" "$B/sbin/"
+    cp "$PKG/sbin/streamerctl" "$PKG/sbin/machino-manager" "$PKG/sbin/machinoctl" "$PKG/sbin/machino-webui-mod" "$B/sbin/"
     cp "$PKG/init/S95streamer" "$PKG/init/machino" "$PKG/init/S42usb" "$B/init/"
     mkdir -p "$B/sbin"
     cp "$PKG/sbin/machino-wifi-role" "$PKG/sbin/machino-usb-helper" "$B/sbin/"
@@ -680,6 +680,70 @@ rm -f "$R/etc/machino/backup/machino.prev"
 if [ "$rc" != "0" ]; then ok; else bad "install did not fail when even in-place will not fit: $(cat "$WORK/out")"; fi
 if grep -q "not enough space" "$WORK/out"; then ok; else bad "no space message: $(cat "$WORK/out")"; fi
 is "the running daemon is untouched on a hard refusal" "$(cat "$R/usr/bin/machino")" "still-the-old-one"
+
+# ---- 18d) machino-webui-mod: anchored CGI fixes, boot-rechecked -------------
+# The pre-#547 network.cgi builds the setnetwork call as an eval string; the
+# modifier rewrites it to an argv call - anchored, gated, backed up. A firmware
+# update brings a NEW file: the overlay copy would shadow it forever, so apply
+# rebases against the /rom original. Uninstall restores the pre-fix file.
+buggy_netcgi() {   # $1 = output file; the known pre-#547 shape
+    printf '#!/bin/sh\n. ./p/common.cgi\nif [ "$REQUEST_METHOD" = "POST" ]; then\n' > "$1"
+    printf '\tcommand="setnetwork"\n' >> "$1"
+    for _o in "-i \$network_interface" "-m \$network_mode" "-h \$network_hostname" \
+              "-s \$network_wlan_ssid" "-p \$network_wlan_password" "-a \$network_address" \
+              "-n \$network_netmask" "-g \$network_gateway" "-d \$network_nameserver" \
+              "-x one" "-y two" "-z three"; do
+        printf '\tcommand="$command %s"\n' "$_o" >> "$1"
+    done
+    printf '\techo "$command" >> /tmp/webui.log\n' >> "$1"
+    printf '\tif ! out=$(eval "$command" 2>&1); then\n\t\techo "$out"\n\tfi\nfi\n' >> "$1"
+    chmod 755 "$1"
+}
+make_bundle; make_camera auto
+buggy_netcgi "$R/var/www/cgi-bin/network.cgi"
+run_install
+has "webui-mod installed" "$R/usr/sbin/machino-webui-mod"
+if grep -q 'setnetwork "$@"' "$R/var/www/cgi-bin/network.cgi"; then ok; else bad "netcgi not rewritten to argv: $(cat "$WORK/out")"; fi
+if grep -q 'eval "$command"' "$R/var/www/cgi-bin/network.cgi"; then bad "eval line survived the fix"; else ok; fi
+has "pre-fix backup kept" "$R/var/www/cgi-bin/network.cgi.pre-pipe-fix"
+# Idempotent: a second apply changes nothing.
+cp "$R/var/www/cgi-bin/network.cgi" "$WORK/netcgi.first"
+( MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-webui-mod" apply ) >"$WORK/out" 2>&1
+if cmp -s "$WORK/netcgi.first" "$R/var/www/cgi-bin/network.cgi"; then ok; else bad "second apply changed the file"; fi
+# A foreign variant is left alone entirely.
+printf '#!/bin/sh\necho totally different\n' > "$R/var/www/cgi-bin/network.cgi"
+rm -f "$R/var/www/cgi-bin/network.cgi.pre-pipe-fix"
+( MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-webui-mod" apply ) >"$WORK/out" 2>&1
+is "unknown variant untouched" "$(sed -n 2p "$R/var/www/cgi-bin/network.cgi")" "echo totally different"
+hasnt "no backup for an untouched file" "$R/var/www/cgi-bin/network.cgi.pre-pipe-fix"
+# Firmware update: the base identity (sha of the /rom lower file) is recorded
+# as a sidecar on every apply. When /rom later carries a DIFFERENT file, the
+# overlay copy (our patch, or an earlier adopted base) would shadow it forever;
+# apply must adopt the new file instead - and re-fix it only if it has the
+# known buggy shape.
+buggy_netcgi "$R/var/www/cgi-bin/network.cgi"
+mkdir -p "$R/rom/var/www/cgi-bin"
+buggy_netcgi "$R/rom/var/www/cgi-bin/network.cgi"                      # same base as the overlay copy
+( MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-webui-mod" apply ) >"$WORK/out" 2>&1
+has "fix applied, base recorded" "$R/var/www/cgi-bin/network.cgi.machino-base"
+has "pre-fix backup kept again"  "$R/var/www/cgi-bin/network.cgi.pre-pipe-fix"
+printf '#!/bin/sh\n# new firmware, post-547\nout=$(setnetwork "$@" 2>&1)\nNEW_MENU=yes\n' > "$R/rom/var/www/cgi-bin/network.cgi"
+( MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-webui-mod" apply ) >"$WORK/out" 2>&1
+if grep -q 'NEW_MENU=yes' "$R/var/www/cgi-bin/network.cgi"; then ok; else bad "new firmware file not adopted: $(cat "$WORK/out")"; fi
+hasnt "stale backup dropped on rebase" "$R/var/www/cgi-bin/network.cgi.pre-pipe-fix"
+# A SECOND update, this time to a firmware that still has the bug (variant2):
+# detected via the sidecar even though no backup existed, adopted, re-fixed.
+{ buggy_netcgi "$WORK/netcgi.v2.tmp"; printf '# variant2\n' >> "$WORK/netcgi.v2.tmp"; }
+cp "$WORK/netcgi.v2.tmp" "$R/rom/var/www/cgi-bin/network.cgi"
+( MACHINO_ROOT="$R" sh "$R/usr/sbin/machino-webui-mod" apply ) >"$WORK/out" 2>&1
+if grep -q 'setnetwork "$@"' "$R/var/www/cgi-bin/network.cgi" && grep -q 'variant2' "$R/var/www/cgi-bin/network.cgi"; then ok
+else bad "second update not adopted+refixed: $(cat "$WORK/out")"; fi
+# Uninstall restores the pre-fix file (the variant2 base) and removes the tool.
+run_uninstall
+if grep -q 'eval "$command"' "$R/var/www/cgi-bin/network.cgi" && grep -q 'variant2' "$R/var/www/cgi-bin/network.cgi"; then ok
+else bad "uninstall did not restore the pre-fix network.cgi"; fi
+hasnt "base sidecar removed"  "$R/var/www/cgi-bin/network.cgi.machino-base"
+hasnt "webui-mod removed" "$R/usr/sbin/machino-webui-mod"
 
 # ---- 19) AP26: the platform check discriminates, in both directions --------
 mk_dt() {   # $1 = compatible string (nul-separated, as the kernel exposes it)
