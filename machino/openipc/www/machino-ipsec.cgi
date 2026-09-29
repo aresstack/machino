@@ -38,6 +38,8 @@ page_title="IPsec"
 		<button id="ips-connect" class="btn btn-sm btn-primary" type="button">Connect</button>
 		<button id="ips-disconnect" class="btn btn-sm btn-outline-secondary" type="button">Disconnect</button>
 		<button id="ips-reconnect" class="btn btn-sm btn-outline-secondary" type="button">Reconnect</button>
+		<button id="ips-rekey" class="btn btn-sm btn-outline-secondary" type="button" title="CREATE_CHILD_SA now (PFS proof)">Rekey</button>
+		<button id="ips-rekey-ike" class="btn btn-sm btn-outline-secondary" type="button" title="IKE-SA rekey now">Rekey IKE</button>
 	</div>
 </div></div></div>
 
@@ -148,15 +150,11 @@ page_title="IPsec"
 <!-- Card 4: advanced algorithms (fixed, capability-based) -->
 <div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap">Algorithms</h3><span class="mj-live-rule"></span></div>
-	<p class="mj-card-note">This build negotiates exactly the suite proven against strongSwan.
-	  Other options are deliberately not offered &mdash; there is no silent downgrade.</p>
-	<dl class="row mb-0">
-		<dt class="col-6">IKE encryption</dt><dd class="col-6">AES-256-CBC</dd>
-		<dt class="col-6">IKE hash / PRF</dt><dd class="col-6">SHA-256</dd>
-		<dt class="col-6">DH group</dt><dd class="col-6">modp2048 (14)</dd>
-		<dt class="col-6">ESP encryption</dt><dd class="col-6">AES-256-CBC</dd>
-		<dt class="col-6">ESP integrity</dt><dd class="col-6">SHA-256</dd>
-	</dl>
+	<p class="mj-card-note">Allow-lists per IKEv2 transform type, the LANCOM Advanced VPN Client grid.
+	  A ticked entry may be offered <b>and</b> accepted; the gateway picks. Greyed entries are not
+	  implemented in this build and are refused by name &mdash; nothing is offered that cannot be kept.
+	  <span class="mj-mono">*</span> = LANCOM DEFAULT profile.</p>
+	<div class="row" id="cfg-algos"></div>
 	<div class="form-check mt-3 mb-2">
 		<input class="form-check-input" type="checkbox" id="cfg-pfs">
 		<label class="form-check-label" for="cfg-pfs">Perfect Forward Secrecy on Child rekeys (modp2048)</label>
@@ -164,6 +162,32 @@ page_title="IPsec"
 		  behaviour proven in the interop CI; on matches the LANCOM / FRITZ!Box default.</div>
 	</div>
 	<button id="cfg-save3" class="btn btn-sm btn-primary" type="button">Save</button>
+</div></div></div>
+
+<!-- Card 4b: liveness, lifetimes, MTU -->
+<div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
+	<div class="mj-live-head"><h3 class="mj-cap">Liveness &amp; lifetimes</h3><span class="mj-live-rule"></span></div>
+	<div class="form-check mb-2">
+		<input class="form-check-input" type="checkbox" id="cfg-dpd">
+		<label class="form-check-label" for="cfg-dpd">Dead Peer Detection (own probes; the peer's probes are always answered)</label>
+	</div>
+	<div class="row g-2">
+		<div class="col-6 mb-2"><label class="form-label" for="cfg-dpdinterval">DPD interval (s, 0 = default)</label>
+			<input class="form-control form-control-sm" id="cfg-dpdinterval" type="number" min="0" max="3600"></div>
+		<div class="col-6 mb-2"><label class="form-label" for="cfg-dpdretries">DPD retries (0 = default 5)</label>
+			<input class="form-control form-control-sm" id="cfg-dpdretries" type="number" min="0" max="20"></div>
+		<div class="col-6 mb-2"><label class="form-label" for="cfg-nattka">NAT-T keepalive (s, 0 = default 20)</label>
+			<input class="form-control form-control-sm" id="cfg-nattka" type="number" min="0" max="600"></div>
+		<div class="col-6 mb-2"><label class="form-label" for="cfg-mtu">Tunnel MTU</label>
+			<input class="form-control form-control-sm" id="cfg-mtu" type="number" min="576" max="9000"></div>
+		<div class="col-6 mb-2"><label class="form-label" for="cfg-ikelt">IKE-SA lifetime (s, 0 = default)</label>
+			<input class="form-control form-control-sm" id="cfg-ikelt" type="number" min="0" max="604800"></div>
+		<div class="col-6 mb-2"><label class="form-label" for="cfg-childlt">Child-SA lifetime (s, 0 = default)</label>
+			<input class="form-control form-control-sm" id="cfg-childlt" type="number" min="0" max="604800"></div>
+		<div class="col-6 mb-2"><label class="form-label" for="cfg-childmb">Child-SA byte lifetime (MiB, 0 = none)</label>
+			<input class="form-control form-control-sm" id="cfg-childmb" type="number" min="0" max="1048576"></div>
+	</div>
+	<button id="cfg-save4" class="btn btn-sm btn-primary" type="button">Save</button>
 </div></div></div>
 
 <!-- Card 5: diagnostics -->
@@ -282,6 +306,15 @@ async function loadConfig() {
   $("cfg-localsubnet").value = c.localSubnet || "";
   $("cfg-pfs").checked = !!c.pfs;
   $("cfg-autoconnect").checked = c.autoConnect !== false;
+  renderAlgos(c.algorithms || {}, c);
+  $("cfg-dpd").checked = c.dpd !== false;
+  $("cfg-dpdinterval").value = c.dpdIntervalS != null ? c.dpdIntervalS : 30;
+  $("cfg-dpdretries").value = c.dpdRetries || 0;
+  $("cfg-nattka").value = c.nattKeepaliveS || 0;
+  $("cfg-mtu").value = c.mtu || 1400;
+  $("cfg-ikelt").value = c.ikeLifetimeS || 0;
+  $("cfg-childlt").value = c.childLifetimeS || 0;
+  $("cfg-childmb").value = c.childLifetimeMb || 0;
   $("cfg-remotesubnet").value = c.remoteSubnet || "";
   $("cfg-auth").value = c.auth || "psk";
   $("cfg-eapuser").value = c.eapUser || "";
@@ -293,6 +326,44 @@ async function loadConfig() {
   setBadge("cfg-extrapemset", c.extraPemSet);
   applyAuthVisibility();
   applyTrustAvailability();
+}
+
+const ALGO_GROUPS = [
+  ["ikeDh",   "DH groups (IKE_SA_INIT, PFS)"],
+  ["ikeEnc",  "IKE-SA encryption"],
+  ["ikeHash", "IKE-SA hash (PRF + integrity)"],
+  ["espEnc",  "Child-SA encryption (ESP)"],
+  ["espHash", "Child-SA hash (ESP integrity)"]
+];
+
+// The grid comes from the API's catalogue: every LANCOM entry is shown, the
+// ones this build cannot negotiate are disabled -- nothing here is hardcoded.
+function renderAlgos(cat, c) {
+  const root = $("cfg-algos"); root.replaceChildren();
+  for (const [field, title] of ALGO_GROUPS) {
+    const list = cat[field] || [];
+    const chosen = new Set(c[field] || []);
+    const col = document.createElement("div"); col.className = "col-12 col-md-6 mb-2";
+    const h = document.createElement("div"); h.className = "fw-semibold small mb-1"; h.textContent = title; col.appendChild(h);
+    for (const a of list) {
+      const id = "alg-" + field + "-" + a.id;
+      const wrap = document.createElement("div"); wrap.className = "form-check";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.className = "form-check-input";
+      cb.id = id; cb.dataset.group = field; cb.dataset.algo = a.id;
+      cb.checked = chosen.has(a.id); cb.disabled = !a.implemented;
+      const lb = document.createElement("label"); lb.className = "form-check-label" + (a.implemented ? "" : " text-secondary");
+      lb.htmlFor = id;
+      lb.textContent = a.label + (a.lancomDefault ? " *" : "") + (a.implemented ? "" : " (not implemented)");
+      wrap.appendChild(cb); wrap.appendChild(lb); col.appendChild(wrap);
+    }
+    root.appendChild(col);
+  }
+}
+
+function algoList(field) {
+  const out = [];
+  document.querySelectorAll('#cfg-algos input[data-group="' + field + '"]').forEach(cb => { if (cb.checked) out.push(cb.dataset.algo); });
+  return out;
 }
 
 function buildBody() {
@@ -308,11 +379,22 @@ function buildBody() {
     localSubnet: $("cfg-localsubnet").value.trim(),
     pfs: $("cfg-pfs").checked,
     autoConnect: $("cfg-autoconnect").checked,
+    dpd: $("cfg-dpd").checked,
+    dpdIntervalS: parseInt($("cfg-dpdinterval").value, 10) || 0,
+    dpdRetries: parseInt($("cfg-dpdretries").value, 10) || 0,
+    nattKeepaliveS: parseInt($("cfg-nattka").value, 10) || 0,
+    mtu: parseInt($("cfg-mtu").value, 10) || 1400,
+    ikeLifetimeS: parseInt($("cfg-ikelt").value, 10) || 0,
+    childLifetimeS: parseInt($("cfg-childlt").value, 10) || 0,
+    childLifetimeMb: parseInt($("cfg-childmb").value, 10) || 0,
     remoteSubnet: $("cfg-remotesubnet").value.trim(),
     auth: $("cfg-auth").value,
     eapUser: $("cfg-eapuser").value.trim(),
     trustMode: $("cfg-trust").value
   };
+  // The algorithm allow-lists, only when the grid has been rendered (an empty
+  // list would be refused by the API, never silently narrowed).
+  for (const [field] of ALGO_GROUPS) { const l = algoList(field); if (l.length) body[field] = l; }
   // All secrets write-only: only send when the operator typed/pasted one.
   const psk = $("cfg-psk").value;         if (psk) body.psk = psk;
   const eappw = $("cfg-eappw").value;     if (eappw) body.eapPassword = eappw;
@@ -376,6 +458,8 @@ async function loadStatus() {
   if (s.requestCp !== undefined)
     row(b, "Config payload", s.requestCp ? (s.cpAddress ? "assigned " + s.cpAddress : "requested, nothing assigned") : "not requested");
   if (s.pfsGroup !== undefined) row(b, "PFS", s.pfsGroup ? "on (DH group " + s.pfsGroup + ")" : "off");
+  if (s.ikeSuite) row(b, "IKE suite (negotiated)", s.ikeSuite);
+  if (s.childSuite) row(b, "Child suite (negotiated)", s.childSuite);
   if (s.failure) row(b, "Last failure", pill(s.failure.code || "failed", "bad"));
   if (s.fullTunnelRefused) row(b, "Full tunnel", pill("requested, refused (unsupported)", "warn"));
 
@@ -402,6 +486,9 @@ async function loadStatus() {
 $("cfg-save").addEventListener("click", save);
 $("cfg-save2").addEventListener("click", save);
 $("cfg-save3").addEventListener("click", save);
+$("cfg-save4").addEventListener("click", save);
+$("ips-rekey").addEventListener("click", () => act("/api/v1/ipsec/rekey", "Rekey"));
+$("ips-rekey-ike").addEventListener("click", () => act("/api/v1/ipsec/rekey-ike", "IKE rekey"));
 $("cfg-auth").addEventListener("change", applyAuthVisibility);
 $("ips-connect").addEventListener("click", () => act("/api/v1/ipsec/connect", "Connect"));
 $("ips-disconnect").addEventListener("click", () => act("/api/v1/ipsec/disconnect", "Disconnect"));

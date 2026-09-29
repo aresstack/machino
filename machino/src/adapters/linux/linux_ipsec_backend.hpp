@@ -28,6 +28,7 @@ public:
     bool del_peer_route(const std::string& peer_ip, const std::string& ifname,
                         const std::string& gateway_ip, std::string& err) override;
     bool host_store_available() override;   // AP9: /etc/ssl/... vorhanden?
+    bool rekey(bool ike_sa, std::string& out) override;   // AP11: ctl rekey | ikerekey
 
 private:
     bool peer_route(const std::string& peer_ip, const std::string& ifname,

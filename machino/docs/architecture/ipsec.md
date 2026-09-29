@@ -316,15 +316,70 @@ laufender weirdiked (machinod-Neustart bei lebendem Daemon) wird nicht
 angefasst. Ein manueller `disconnect` gilt wie bisher bis zum naechsten
 `connect`; einen Boot ueberlebt er nicht (manualStop ist Prozesszustand).
 
-Kompatibilitaet: eine unveraenderte Konfiguration erzeugt eine byteidentische
-Daemon-Datei; eine alte `ipsec.conf` ohne die Keys liest sich mit den
-Vorgaben. Hosttests: `tests/test_ipsec.cpp` (`test_ap10_profile_parity`),
+Kompatibilitaet: eine unveraenderte Konfiguration erzeugt ausser den AP11-
+Listenzeilen dieselbe Daemon-Datei; eine alte `ipsec.conf` ohne die Keys
+liest sich mit den Vorgaben. Hosttests: `tests/test_ipsec.cpp` (`test_ap10_profile_parity`),
 `tests/test_api.cpp` (`test_ap10_ipsec_api_fields`), `tests/test_ctl.cpp`,
 `weirdike-openipc/tests/test_config.c` (`t_profile_fields`).
 
 Hardware-Abnahme gegen die LANCOM-Gegenstelle (RFC822-ID, CP-Adresse auf
 ipsec0, Rekey mit PFS nach 55 min, Tunnel nach Reboot ohne Klick):
 PENDING_PHYSICAL.
+
+## AP11: die LANCOM-Matrix — Algorithmen, Liveness, Rekey, Diagnose
+
+Befund vor AP11: die Config liess genau EINE Suite zu, der Daemon reichte aber
+gar keine Policy an die Engine — die bot ihre Vorgabe an (AES-256-CBC,
+SHA-256 *und* SHA-512, DH14). Config und Kabel stimmten nicht ueberein, die
+Behauptung „exakt die AP2-Suite auf dem Kabel" war fuer IKE falsch. Und die
+Engine kann laengst mehr (ike_suite.c): AES-CBC 128/192/256, SHA-1/256/384/512
+als PRF und Integritaet, DH 14/15/16/19/20/21/28/29/30/31.
+
+**Katalog** (`core/net/ipsec_algos.cpp`): das komplette Raster des LANCOM
+Advanced VPN Client in Anzeige-Reihenfolge — 13 D-H-Gruppen, 8 IKE-Chiffren,
+5 Hashes, 9 ESP-Chiffren inkl. NULL, 6 ESP-Hashes — je Eintrag Host-Name (wie
+WeirdOS), IANA-ID, Schluessellaenge, `implemented` (Spiegel des gepinnten
+Engine-Builds) und `lancomDefault`. Die API liefert ihn als `algorithms` in
+`GET /api/v1/ipsec`; WebUI-Kaestchen und `machinoctl ipsec algos` rendern
+daraus, nichts ist dort hartkodiert. Nicht Implementiertes bleibt sichtbar
+(grau bzw. `[-]`) und wird beim Speichern MIT NAMEN abgelehnt: kein Angebot,
+das der Build nicht halten kann. Engine-Arbeit fuer AES-GCM, ChaCha20, 3DES,
+MD5, NULL, DH2/5/32 gehoert in WeirdIKE, nicht in Machinos vendored Kopie.
+
+**Allow-Listen** `ikeDh`, `ikeEnc`, `ikeHash`, `espEnc`, `espHash` (RFC 7296
+3.3.1): ein Eintrag heisst „darf angeboten UND angenommen werden", keine
+Prioritaet; die Engine normalisiert. Config = Kabel: `to_weirdike_conf`
+schreibt alle fuenf Listen immer, der Daemon (`wd_config.c`: Namen → IANA,
+alle fuenf oder keine) baut daraus `weirdike_ike_policy_t`/`child_policy_t`
+und prueft sie beim Start mit `weirdike_policy_check()` — verweigert die
+Engine, startet er nicht und benennt die Liste. Ohne Listen (Interop-CI)
+gilt weiter die Engine-Vorgabe. PFS nutzt die kleinste erlaubte D-H-Gruppe
+(`pfs_group = min(ikeDh)`), dieselbe, mit der die Engine das KE baut.
+
+**Liveness/MTU**: `dpd` (an/aus; Peer-Proben werden immer beantwortet),
+`dpdRetries` (0 = Vorgabe 5), `nattKeepaliveS` (0 = Vorgabe 20), 
+`childLifetimeMb` (Byte-Lifetime, 0 = keine; Zeit UND Bytes gelten), `mtu`
+(576..9000, Vorgabe 1400). Daemon-Zeilen nur, wenn nicht Vorgabe.
+
+**Rekey auf Zuruf**: `POST /api/v1/ipsec/rekey` (Child) und `/rekey-ike`
+(IKE-SA) → `IIpsecBackend::rekey` → `weirdikectl rekey|ikerekey` (ctl
+`ikerekey` ist neu, `weirdike_rekey_ike`). Der PFS-Nachweis gegen ein
+Gateway: `machinoctl ipsec rekey`, dann `ipsec log` zeigt „rekey sent (PFS)".
+
+**Status**: `ikeSuite` (enc/prf/integ/dh) und `childSuite` (enc/integ) — die
+AUSGEHANDELTEN Suiten aus der Engine-Diag, nicht die konfigurierten.
+
+**Diagnose in der Konsole**: `ipsec ping <ip>`, `ipsec fetch <ip[:port]>`,
+`ipsec log [n]` fuehren `ping`, `curl` und `logread` in der Shell des
+Bedienenden aus (machinoctl ist ein eigener Prozess; machinod forkt weiter
+nicht). Nur IPv4-Literale und Zahlen gelangen in die Kommandozeile.
+
+Nicht uebernommen aus WeirdOS: die Server-Rolle (dort selbst nur Konfig ohne
+Runtime), L2TP und Zertifikats-Auth (dort beim Speichern abgelehnt), die
+ESP32-spezifische AES-Backend-Wahl. Hosttests: `test_ap11_algorithm_grid`,
+`test_ap11_ipsec_api_grid`, `test_ctl.cpp`, `weirdike-openipc` `t_policy_lists`.
+Hardware-Abnahme (breitere Suite gegen das LANCOM, Rekey mit PFS, Suite im
+Status): PENDING_PHYSICAL.
 
 ## Terminal: machinoctl
 

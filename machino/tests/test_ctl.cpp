@@ -63,6 +63,8 @@ struct Term {
     std::vector<std::string> secrets;
     size_t next_secret = 0;
     std::vector<std::string> prompts;   // was read_secret gefragt hat
+    std::vector<std::string> shell_cmds; // AP11: was die Konsole ausfuehren wollte
+    std::string shell_out = "ok\n"; bool shell_ok = true;
     Console c;
 
     Term() : c{http,
@@ -70,6 +72,7 @@ struct Term {
                [this](const std::string& s) { err += s; },
                [this](std::string& l) { if (next >= lines.size()) return false; l = lines[next++]; return true; },
                [this](const std::string& p) { prompts.push_back(p); return next_secret < secrets.size() ? secrets[next_secret++] : std::string(); },
+               [this](const std::string& cmd, std::string& o) { shell_cmds.push_back(cmd); o = shell_out; return shell_ok; },
                false, true} {}
     int run(const std::vector<std::string>& a) { return run_command(c, a); }
     const FakeHttp::Req& last() const { return http.reqs.back(); }
@@ -83,7 +86,16 @@ const char* CFG_JSON =
     "\"espEnc\":[\"aes256cbc\"],\"espHash\":[\"sha256\"],\"pskSet\":true,\"auth\":\"psk\","
     "\"eapUser\":\"\",\"trustMode\":\"host-store\",\"eapPasswordSet\":false,\"caPemSet\":false,"
     "\"extraPemSet\":false,\"hostStoreAvailable\":true,"
-    "\"localIdType\":\"fqdn\",\"remoteIdType\":\"fqdn\",\"pfs\":false,\"autoConnect\":true,\"requestCp\":false}";
+    "\"localIdType\":\"fqdn\",\"remoteIdType\":\"fqdn\",\"pfs\":false,\"autoConnect\":true,\"requestCp\":false,"
+    "\"dpd\":true,\"dpdRetries\":0,\"nattKeepaliveS\":0,\"childLifetimeMb\":0,\"mtu\":1400,"
+    "\"algorithms\":{\"ikeDh\":[{\"id\":\"dh2\",\"label\":\"DH2 - MODP-1024\",\"implemented\":false,\"lancomDefault\":false},"
+    "{\"id\":\"dh14\",\"label\":\"DH14 - MODP-2048\",\"implemented\":true,\"lancomDefault\":true},"
+    "{\"id\":\"dh19\",\"label\":\"DH19 - ECP-256\",\"implemented\":true,\"lancomDefault\":false}],"
+    "\"ikeEnc\":[{\"id\":\"aes256cbc\",\"label\":\"AES-CBC-256\",\"implemented\":true,\"lancomDefault\":true}],"
+    "\"ikeHash\":[{\"id\":\"sha1\",\"label\":\"SHA-1\",\"implemented\":true,\"lancomDefault\":true},"
+    "{\"id\":\"sha256\",\"label\":\"SHA-256\",\"implemented\":true,\"lancomDefault\":true}],"
+    "\"espEnc\":[{\"id\":\"aes256cbc\",\"label\":\"AES-CBC-256\",\"implemented\":true,\"lancomDefault\":true}],"
+    "\"espHash\":[{\"id\":\"sha256\",\"label\":\"SHA-256\",\"implemented\":true,\"lancomDefault\":true}]}}";
 
 const char* STATUS_JSON =
     "{\"daemonRunning\":true,\"state\":\"childEstablished\",\"runtimeState\":\"dataPlaneUp\","
@@ -94,7 +106,8 @@ const char* STATUS_JSON =
     "\"espTransport\":\"udp4500\",\"auth\":\"psk\","
     "\"routes\":[{\"prefix\":\"10.66.0.0/24\",\"source\":\"tsr\",\"device\":\"ipsec0\"}],"
     "\"childGeneration\":1,\"ikeGeneration\":1,\"uptimeS\":120,\"txPackets\":12,\"txBytes\":1024,"
-    "\"rxPackets\":10,\"rxBytes\":900,\"tunnelIpv4\":\"10.77.0.2\",\"requestCp\":false,\"pfsGroup\":0}";
+    "\"rxPackets\":10,\"rxBytes\":900,\"tunnelIpv4\":\"10.77.0.2\",\"requestCp\":false,\"pfsGroup\":0,"
+    "\"ikeSuite\":\"aes256cbc/sha256/sha256/dh14\",\"childSuite\":\"aes256cbc/sha256\"}";
 
 void test_split_line() {
     std::vector<std::string> a = split_line("  ipsec set  gateway \"vpn example\" 'it''s' a\\b \"q\\\"x\"\t");
@@ -211,6 +224,8 @@ void test_commands_ipsec() {
     CCHECK(has(t.out, "local=cam.test (fqdn)") && has(t.out, "remote=vpn.test (fqdn)"));
     CCHECK(has(t.out, "local=10.77.0.2/32") && has(t.out, "remote=10.66.0.0/24") && has(t.out, "ausgehandelt=10.66.0.0/24"));
     CCHECK(has(t.out, "tunnel=10.77.0.2") && has(t.out, "pfs=nein") && has(t.out, "autoConnect=ja"));
+    CCHECK(has(t.out, "algos    : ike=aes256cbc/sha256/dh14  esp=aes256cbc/sha256"));
+    CCHECK(has(t.out, "ausgehandelt: ike=aes256cbc/sha256/sha256/dh14  esp=aes256cbc/sha256"));
     CCHECK(has(t.out, "10.66.0.0/24 (tsr, ipsec0)"));
     CCHECK(has(t.out, "ike=udp4500") && has(t.out, "natDetected=ja"));
     CCHECK(has(t.out, "psk=gesetzt") && has(t.out, "eapPassword=nicht gesetzt"));
@@ -243,6 +258,47 @@ void test_commands_ipsec() {
     CCHECK(t.run({"ipsec", "set", "requestCp", "true"}) == 2);   // abgeleitet, kein Feld
     t.out.clear();
     CCHECK(t.run({"ipsec", "fields"}) == 0 && has(t.out, "localIdType") && has(t.out, "pfs") && has(t.out, "autoConnect") && has(t.out, "Config Payload"));
+    CCHECK(has(t.out, "ipsec algos") && has(t.out, "dpdRetries") && has(t.out, "nattKeepaliveS") && has(t.out, "childLifetimeMb") && has(t.out, "mtu"));
+
+    // AP11: Listen gegen den Katalog -- lokal, vor dem Request
+    CCHECK(t.run({"ipsec", "set", "ike-dh", "dh14, dh19", "ikeHash", "sha1,sha256", "mtu", "1300", "dpd", "nein"}) == 0);
+    CCHECK(t.last().body == "{\"ikeDh\":[\"dh14\",\"dh19\"],\"ikeHash\":[\"sha1\",\"sha256\"],\"mtu\":1300,\"dpd\":false}");
+    const size_t n1 = t.http.reqs.size();
+    t.err.clear();
+    CCHECK(t.run({"ipsec", "set", "ikeEnc", "chacha20"}) == 2 && has(t.err, "chacha20") && has(t.err, "nicht implementiert") && t.http.reqs.size() == n1);
+    t.err.clear();
+    CCHECK(t.run({"ipsec", "set", "espHash", "sha3"}) == 2 && has(t.err, "unbekannt") && has(t.err, "sha3") && t.http.reqs.size() == n1);
+    CCHECK(t.run({"ipsec", "set", "mtu", "100"}) == 2 && t.run({"ipsec", "set", "dpdRetries", "21"}) == 2);
+    // ipsec algos: Katalog aus der API, mit Markierungen
+    t.out.clear();
+    CCHECK(t.run({"ipsec", "algos"}) == 0);
+    CCHECK(has(t.out, "[-] dh2        DH2 - MODP-1024") && has(t.out, "[x] dh14       DH14 - MODP-2048") && has(t.out, "[ ] dh19       DH19 - ECP-256"));
+    CCHECK(has(t.out, "[x] sha256     SHA-256                          *") && has(t.out, "ikeHash -- IKE-SA-Hash"));
+    // rekey
+    t.http.reply("POST", "/api/v1/ipsec/rekey", 200, "{\"ok\":true}");
+    t.http.reply("POST", "/api/v1/ipsec/rekey-ike", 200, "{\"ok\":true}");
+    t.out.clear();
+    CCHECK(t.run({"ipsec", "rekey"}) == 0 && t.last().path == "/api/v1/ipsec/rekey" && has(t.out, "Child-Rekey angefordert"));
+    CCHECK(t.run({"ipsec", "rekey", "ike"}) == 0 && t.last().path == "/api/v1/ipsec/rekey-ike");
+    CCHECK(t.run({"ipsec", "ikerekey"}) == 0 && t.last().path == "/api/v1/ipsec/rekey-ike");
+    t.http.reply("POST", "/api/v1/ipsec/rekey", 409, "{\"ok\":false,\"error\":{\"code\":\"conflict\",\"message\":\"kein Tunnel (Daemon laeuft nicht)\"}}");
+    t.err.clear();
+    CCHECK(t.run({"ipsec", "rekey"}) == 1 && has(t.err, "kein Tunnel"));
+    // Diagnose: die Konsole baut geprueft Kommandozeilen, die Shell fuehrt aus
+    t.shell_out = "64 bytes from 192.168.110.11: seq=0 ttl=63 time=45.1 ms\n"; t.out.clear();
+    CCHECK(t.run({"ipsec", "ping", "192.168.110.11"}) == 0 && t.shell_cmds.back() == "ping -c 3 -W 2 192.168.110.11 2>&1" && has(t.out, "64 bytes from"));
+    CCHECK(t.run({"ipsec", "ping", "fritz.box; rm -rf /"}) == 2 && t.shell_cmds.size() == 1);
+    CCHECK(t.run({"ipsec", "ping", "192.168.110.11", "x"}) == 2);
+    CCHECK(t.run({"ipsec", "fetch", "192.168.110.1:8080"}) == 0 && has(t.shell_cmds.back(), "http://192.168.110.1:8080/") && has(t.shell_cmds.back(), "curl -s -m 5"));
+    CCHECK(t.run({"ipsec", "fetch", "192.168.110.1"}) == 0 && has(t.shell_cmds.back(), "http://192.168.110.1:80/"));
+    CCHECK(t.run({"ipsec", "fetch", "192.168.110.1:0"}) == 2 && t.run({"ipsec", "fetch", "example.org"}) == 2);
+    CCHECK(t.run({"ipsec", "log"}) == 0 && has(t.shell_cmds.back(), "logread") && has(t.shell_cmds.back(), "grep -i weirdike | tail -n 40"));
+    CCHECK(t.run({"ipsec", "log", "5"}) == 0 && has(t.shell_cmds.back(), "tail -n 5"));
+    CCHECK(t.run({"ipsec", "log", "0"}) == 2 && t.run({"ipsec", "log", "x"}) == 2);
+    t.shell_ok = false; t.err.clear();
+    CCHECK(t.run({"ipsec", "ping", "10.0.0.1"}) == 1 && has(t.err, "ping: fehlgeschlagen"));
+    t.shell_ok = true;
+    { Term noshell; noshell.c.shell = nullptr; CCHECK(noshell.run({"ipsec", "ping", "10.0.0.1"}) == 2 && has(noshell.err, "Kamera-Shell")); }
 
     // enable/disable
     CCHECK(t.run({"ipsec", "disable"}) == 0 && t.last().body == "{\"enabled\":false}");
@@ -500,6 +556,7 @@ struct ApiHttp : IHttpClient {
         else if (p == "/api/v1/ipsec/connect"    && m == "POST") r = api.ipsec_connect();
         else if (p == "/api/v1/ipsec/disconnect" && m == "POST") r = api.ipsec_disconnect();
         else if (p == "/api/v1/ipsec/status"     && m == "GET")  r = api.ipsec_status();
+        else if (p == "/api/v1/ipsec/rekey"      && m == "POST") r = api.ipsec_rekey(false);
         else if (p == "/api/v1/state"            && m == "GET")  r = api.state();
         else if (p == "/api/v1/config"           && m == "GET")  r = api.config();
         else if (p == "/api/v1/config"           && m == "PATCH") r = api.patch_config(body, "");
@@ -535,7 +592,7 @@ void test_against_real_api() {
     ApiHttp http(api);
     std::string out, err;
     Console c{http, [&](const std::string& s) { out += s; }, [&](const std::string& s) { err += s; },
-              nullptr, [](const std::string&) { return std::string("real-psk-geheim"); }, false, true};
+              nullptr, [](const std::string&) { return std::string("real-psk-geheim"); }, nullptr, false, true};
 
     // Jedes Feld der Konsole nimmt die API an -- KEIN unknown_field.
     CCHECK(run_command(c, {"ipsec", "set",
@@ -554,9 +611,17 @@ void test_against_real_api() {
     CCHECK(run_command(c, {"ipsec", "set", "remoteIdType", "ipv4"}) == 1 && has(err, "remoteId"));
 
     // Die API lehnt einen fremden Algorithmus MIT NAMEN ab -- die Konsole reicht das durch.
+    // AP11: die Konsole lehnt Nicht-Implementiertes selbst ab (derselbe Katalog);
+    // eine breitere, implementierte Liste nimmt die API an, 'ipsec algos' zeigt sie.
     out.clear(); err.clear();
-    CCHECK(run_command(c, {"ipsec", "set", "ikeEnc", "chacha20"}) == 1);
-    CCHECK(has(err, "chacha20") && has(err, "HTTP 400"));
+    CCHECK(run_command(c, {"ipsec", "set", "ikeEnc", "chacha20"}) == 2);
+    CCHECK(has(err, "chacha20") && has(err, "nicht implementiert"));
+    out.clear(); err.clear();
+    CCHECK(run_command(c, {"ipsec", "set", "ikeDh", "dh14,dh19,dh31", "ikeHash", "sha1,sha256,sha512", "espHash", "sha1,sha256"}) == 0);
+    out.clear();
+    CCHECK(run_command(c, {"ipsec", "algos"}) == 0);
+    CCHECK(has(out, "[x] dh31       DH31 - Curve25519") && has(out, "[-] dh32       DH32 - Curve448") && has(out, "[x] sha512     SHA-512") && has(out, "[ ] sha384     SHA-384"));
+    CCHECK(has(out, "[-] chacha20   ChaCha20-Poly1305") && has(out, "[-] null       NULL"));
 
     // enable ohne PSK: die API verlangt ihn -- und die Meldung nennt keinen Wert.
     out.clear(); err.clear();
@@ -570,6 +635,9 @@ void test_against_real_api() {
     CCHECK(run_command(c, {"ipsec", "connect"}) == 0 && be.running);
     be.status_text = "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\nlast_notify=0\n";
     CCHECK(run_command(c, {"ipsec"}) == 0);
+    CCHECK(has(out, "algos    : ike=aes256cbc/sha1,sha256,sha512/dh14,dh19,dh31  esp=aes256cbc/sha1,sha256"));
+    err.clear();
+    CCHECK(run_command(c, {"ipsec", "rekey"}) == 1 && has(err, "abgelehnt"));   // Fake-Backend kann kein rekey -> 409, benannt
     CCHECK(has(out, "state=childEstablished") && has(out, "vpn.example.org:4500") && has(out, "psk=gesetzt"));
     CCHECK(has(out, "cam.test (rfc822)") && has(out, "pfs=ja") && has(out, "autoConnect=nein"));
     CCHECK(run_command(c, {"ipsec", "config"}) == 0 && has(out, "pskSet: true"));

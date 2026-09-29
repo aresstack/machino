@@ -55,6 +55,7 @@ ipsec                          Kurzansicht: Zustand, Gateway, Underlay, IDs, Net
 ipsec status                   voller Status (/api/v1/ipsec/status)
 ipsec config                   Konfiguration (Secrets nur als gesetzt/nicht gesetzt)
 ipsec fields                   alle Schluessel mit Typ und erlaubten Werten
+ipsec algos                    Algorithmen-Katalog (LANCOM-Raster): gewaehlt, implementiert, Vorgabe
 ipsec get <schluessel>         einen Wert lesen (Secrets: nur ob gesetzt)
 ipsec set <k> <v> [<k> <v>..]  speichern (ein PUT, Pruefung wie in der WebUI)
 ipsec enable | disable         Kurzform fuer set enabled true|false
@@ -65,6 +66,10 @@ ipsec extra-pem <datei>|-      zusaetzliches Kettenmaterial
 ipsec setup                    gefuehrte Einrichtung (fragt ab, speichert, verbindet)
 ipsec connect | disconnect     wie die Web-Buttons
 ipsec reconnect                trennen + neu aufbauen (nach einer Aenderung)
+ipsec rekey [ike]              Child-SA (oder IKE-SA) jetzt neu schluesseln
+ipsec ping <ip>                ICMP durch den Tunnel (ping -c 3)
+ipsec fetch <ip>[:port]        HTTP GET durch den Tunnel (curl): Status, Bytes, Zeit
+ipsec log [<n>]                die letzten n Zeilen des weirdiked-Logs (logread)
 api get <pfad>                 beliebige Route lesen (Nicht-JSON kommt roh)
 api put|post|patch|delete <pfad> [<json>|@datei|-]
 ```
@@ -85,9 +90,17 @@ dann `local=automatisch vom Gateway (CP)` und, sobald der Tunnel steht,
 `tunnel=<adresse>`.
 
 Werte: `true|false` (auch `ja|nein`, `on|off`, `1|0`), Ganzzahlen mit den
-API-Grenzen, Listen mit Komma (`ikeEnc aes256cbc,aes256cbc`). Ein falscher
-Wert wird **vor** dem Request mit Feldname abgelehnt; was die API dann noch
-ablehnt (etwa `chacha20`), wird woertlich weitergegeben.
+API-Grenzen, Listen mit Komma (`ikeDh dh14,dh19,dh31`). Ein falscher Wert
+wird **vor** dem Request mit Feldname abgelehnt — bei den Algorithmen gegen
+denselben Katalog wie im Daemon: unbekannt oder in diesem Build nicht
+implementiert (`chacha20`) heisst es sofort und mit Namen.
+
+Die Algorithmen sind Allow-Listen im LANCOM-Raster (`ipsec algos` zeigt es
+mit `[x]` gewaehlt, `[ ]` moeglich, `[-]` nicht implementiert, `*`
+LANCOM-DEFAULT). Dazu die Liveness-Knoepfe `dpd`, `dpdRetries`,
+`nattKeepaliveS`, `childLifetimeMb`, `mtu`. Die Diagnose (`ping`, `fetch`,
+`log`) laeuft in der Shell des Bedienenden, nur IPv4-Literale und Zahlen
+gelangen in die Kommandozeile.
 
 Rueckgabewerte: `0` ok, `1` API- oder Transportfehler, `2` Bedienfehler.
 `--json` gibt die Antwort des Daemons unformatiert aus — fuer Skripte.
@@ -122,6 +135,8 @@ ids      : local=cam@example.org (rfc822)  remote=(leer = jede)
 nets     : local=automatisch vom Gateway (CP)  remote=192.168.178.0/24  ausgehandelt=192.168.178.0/24  tunnel=10.9.0.7  cp=10.9.0.7
 routes   : 192.168.178.0/24 (tsr, ipsec0)
 transport: natT=ja  natDetected=ja  ike=udp4500  esp=udp4500  pfs=ja (dh14)  if=ipsec0
+algos    : ike=aes256cbc/sha1,sha256/dh14  esp=aes256cbc/sha1,sha256
+         ausgehandelt: ike=aes256cbc/sha256/sha256/dh14  esp=aes256cbc/sha256
 secrets  : psk=gesetzt  eapPassword=nicht gesetzt  caPem=nicht gesetzt
 traffic  : tx 12 Pakete/1024 B  rx 10 Pakete/900 B  uptime 120 s  child-gen 1  ike-gen 1
 ```

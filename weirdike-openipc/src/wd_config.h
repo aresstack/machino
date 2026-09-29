@@ -19,6 +19,19 @@
 #define WD_MAX_ID      128
 #define WD_MAX_REMOTE_TS 4    /* == WEIRDIKE_TS_MAX; AP6 multi-subnet request */
 
+/* AP11: proposal policy lists (allow-lists per IKEv2 transform type). The
+ * config carries the HOST NAMES the WeirdOS/machino catalogue uses
+ * ("aes256cbc", "sha256", "dh14"); the parser maps them onto IANA transform
+ * IDs. An unknown name is a parse error; whether THIS build can negotiate an
+ * entry is the engine's call (weirdike_policy_check at start, fail closed). */
+#define WD_ALGO_MAX 16                 /* == WEIRDIKE_POLICY_MAX */
+typedef struct {
+    uint16_t id[WD_ALGO_MAX];          /* ENCR / PRF / D-H / INTEG (ESP hash) */
+    uint16_t id2[WD_ALGO_MAX];         /* IKE hash: INTEG (id = PRF); else 0 */
+    uint16_t bits[WD_ALGO_MAX];        /* AES key length; else 0 */
+    size_t   n;
+} wd_algo_list;
+
 /* AP10: identity types (local_id_type / remote_id_type). Numbers are OURS;
  * weirdiked.c maps them onto weirdike_id_type_t. */
 #define WD_ID_FQDN   0
@@ -78,6 +91,19 @@ typedef struct {
     /* AP10: D-H group for Child rekeys (PFS, RFC 7296 2.8); 0 = no PFS. */
     uint32_t pfs_group;
 
+    /* AP11: the proposal policy. have_policy = all five lists were given
+     * (machinod always writes all five); none given = the engine's built-in
+     * default (the interop CI's configuration). Giving some but not all is a
+     * parse error -- a half policy would silently mix config and default. */
+    int          have_policy;
+    wd_algo_list ike_enc, ike_hash, ike_dh, esp_enc, esp_hash;
+
+    /* AP11: liveness / NAT-T / byte lifetime (0 = engine default). */
+    int      dpd_disable;             /* dpd = no -> no self-initiated probes */
+    uint32_t dpd_retries;
+    uint32_t natt_keepalive_s;
+    uint32_t child_lifetime_kb;
+
     wd_cidr  local_ts;                /* the network we protect */
     wd_cidr  remote_ts;               /* remote_ts_list[0]; kept for back-compat */
     int      have_local_ts;
@@ -119,6 +145,13 @@ int wd_valid_hostname(const char *s);            /* 1 = ok */
 int wd_valid_ifname(const char *s);              /* 1 = ok */
 int wd_parse_cidr(const char *s, wd_cidr *out);  /* 0 = ok */
 int wd_parse_ipv4(const char *s, uint8_t out[4]);  /* 0 = ok; a plain dotted quad */
+
+/* AP11: the algorithm catalogue (host names <-> IANA ids). group: 0 D-H,
+ * 1 IKE ENCR, 2 IKE hash (PRF+INTEG), 3 ESP ENCR, 4 ESP INTEG. */
+int         wd_algo_lookup(int group, const char *name, uint16_t *id, uint16_t *id2, uint16_t *bits); /* 0 = known */
+const char *wd_algo_name(int group, uint16_t id, uint16_t bits);   /* "?" when unknown */
+/* Parse a comma-separated name list into out; err names the first unknown. */
+int wd_parse_algo_list(int group, const char *csv, wd_algo_list *out, char *err, size_t errcap);
 
 /* Format a CIDR back out, for logs and status. Never fails. */
 void wd_cidr_str(const wd_cidr *c, char *buf, size_t cap);

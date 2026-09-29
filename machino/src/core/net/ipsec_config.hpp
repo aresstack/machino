@@ -14,6 +14,8 @@
 // wird MIT NAMEN abgelehnt — kein stilles Ignorieren, kein Downgrade. Die
 // IDs sind die fachlichen aus der P4-Referenz (ipsec_crypto_caps).
 #pragma once
+#include "core/net/ipsec_algos.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -79,12 +81,22 @@ struct IpsecConfig {
     std::string eap_user;             // Identity/Username (kein Secret)
     TrustMode   trust_mode = TrustMode::HostStore;
 
-    // Geschlossene Mengen; AP3 erlaubt exakt die AP2-Suite.
+    // AP11: Allow-Listen aus dem Katalog (ipsec_algos.hpp) -- das komplette
+    // LANCOM-Raster ist konfigurierbar; was dieser Build nicht implementiert,
+    // lehnt validate() MIT NAMEN ab. Die Vorgabe ist die AP2-bewiesene Suite.
+    // Die Listen gehen 1:1 als Policy an die Engine (Config = Kabel).
     std::vector<std::string> ike_enc  {"aes256cbc"};
     std::vector<std::string> ike_hash {"sha256"};
     std::vector<std::string> ike_dh   {"dh14"};
     std::vector<std::string> esp_enc  {"aes256cbc"};
     std::vector<std::string> esp_hash {"sha256"};
+
+    // AP11: Liveness, Byte-Lifetime, MTU (0 = Engine-/Daemon-Vorgabe).
+    bool        dpd = true;               // eigene DPD-Proben (Peer-Proben werden immer beantwortet)
+    int         dpd_retries = 0;          // 0 = Engine-Vorgabe (5); sonst 1..20
+    int         natt_keepalive_s = 0;     // 0 = Engine-Vorgabe (20 s); sonst 5..600
+    uint32_t    child_lifetime_mb = 0;    // 0 = kein Byte-Limit; Zeit UND Bytes gelten
+    int         mtu = 1400;               // ipsec0-MTU, 576..9000
 };
 
 // AP10: fordert diese Konfiguration eine Tunnel-Adresse per CP an? Abgeleitet,

@@ -82,6 +82,7 @@ public:
     Response ipsec_put_config(const std::string& body);// PUT  /api/v1/ipsec/config
     Response ipsec_connect();                          // POST /api/v1/ipsec/connect
     Response ipsec_disconnect();                       // POST /api/v1/ipsec/disconnect
+    Response ipsec_rekey(bool ike_sa);                 // POST /api/v1/ipsec/rekey | rekey-ike (AP11)
     Response ipsec_status();                           // GET  /api/v1/ipsec/status
     // Partial update. `if_match` = expected revision ("" = none). Serialised.
     Response patch_config(const std::string& body, const std::string& if_match);

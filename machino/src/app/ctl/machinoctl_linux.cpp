@@ -129,6 +129,20 @@ std::string read_secret(const std::string& prompt) {
     return ok ? s : std::string();
 }
 
+// AP11: Diagnose-Kommandos der Kamera-Shell (ping, curl, logread). Die
+// Kommandozeile baut der reine Teil aus geprueften Argumenten (nur IPv4-
+// Literale und Zahlen), also nichts, was die Shell deuten koennte.
+bool run_shell(const std::string& cmdline, std::string& out) {
+    out.clear();
+    FILE* p = popen(cmdline.c_str(), "r");
+    if (!p) return false;
+    char buf[512];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, p)) > 0) { out.append(buf, n); if (out.size() > 65536) break; }
+    const int rc = pclose(p);
+    return rc == 0;
+}
+
 } // namespace
 
 int run_ctl(int argc, char** argv, int first)
@@ -164,6 +178,7 @@ int run_ctl(int argc, char** argv, int first)
         [](const std::string& s) { fputs(s.c_str(), stderr); fflush(stderr); },
         read_stdin_line,
         read_secret,
+        run_shell,
         raw,
         isatty(0) != 0,
     };

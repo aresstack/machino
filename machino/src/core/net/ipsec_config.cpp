@@ -61,16 +61,27 @@ std::string cidr_list_check(const std::string& s)
     return {};
 }
 
-// Die geschlossene AP2-Menge. Ein Eintrag ausserhalb wird MIT NAMEN abgelehnt.
-std::string check_algos(const char* field, const std::vector<std::string>& got,
-                        const char* only)
+// AP11: Listen serialisieren/parsen (CSV, getrimmt, leere Eintraege weg).
+std::string join_csv(const std::vector<std::string>& v)
 {
-    if (got.size() != 1 || got[0] != only)
-        return std::string(field) + ": erlaubt ist in dieser Stufe ausschliesslich '" + only
-               + "' (AP2-bewiesene Suite); abgelehnt: '"
-               + (got.empty() ? std::string("<leer>") : got[0])
-               + "' — kein stilles Downgrade";
-    return {};
+    std::string s;
+    for (size_t i = 0; i < v.size(); ++i) { if (i) s += ","; s += v[i]; }
+    return s;
+}
+std::vector<std::string> split_csv(const std::string& s)
+{
+    std::vector<std::string> out;
+    size_t pos = 0;
+    while (pos <= s.size()) {
+        size_t comma = s.find(',', pos);
+        std::string tok = s.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+        pos = comma == std::string::npos ? s.size() + 1 : comma + 1;
+        size_t a = tok.find_first_not_of(" \t");
+        if (a == std::string::npos) continue;
+        size_t b = tok.find_last_not_of(" \t");
+        out.push_back(tok.substr(a, b - a + 1));
+    }
+    return out;
 }
 
 std::string trim(const std::string& s)
@@ -250,12 +261,19 @@ std::string validate(const IpsecConfig& c)
     if (c.ike_lifetime_s > 86400u * 7) return "ikeLifetime: 0..604800";
     if (c.child_lifetime_s > 86400u * 7) return "childLifetime: 0..604800";
 
+    // AP11: jede Liste gegen den Katalog -- unbekannt oder in diesem Build
+    // nicht implementiert wird MIT NAMEN abgelehnt, nie still verkleinert.
     std::string e;
-    if (!(e = check_algos("ikeEnc", c.ike_enc, "aes256cbc")).empty()) return e;
-    if (!(e = check_algos("ikeHash", c.ike_hash, "sha256")).empty()) return e;
-    if (!(e = check_algos("ikeDh", c.ike_dh, "dh14")).empty()) return e;
-    if (!(e = check_algos("espEnc", c.esp_enc, "aes256cbc")).empty()) return e;
-    if (!(e = check_algos("espHash", c.esp_hash, "sha256")).empty()) return e;
+    if (!(e = algo_list_check(AlgoGroup::IkeEnc,  c.ike_enc)).empty())  return e;
+    if (!(e = algo_list_check(AlgoGroup::IkeHash, c.ike_hash)).empty()) return e;
+    if (!(e = algo_list_check(AlgoGroup::Dh,      c.ike_dh)).empty())   return e;
+    if (!(e = algo_list_check(AlgoGroup::EspEnc,  c.esp_enc)).empty())  return e;
+    if (!(e = algo_list_check(AlgoGroup::EspHash, c.esp_hash)).empty()) return e;
+    if (c.dpd_retries < 0 || c.dpd_retries > 20) return "dpdRetries: 0..20 (0 = Vorgabe)";
+    if (c.natt_keepalive_s != 0 && (c.natt_keepalive_s < 5 || c.natt_keepalive_s > 600))
+        return "nattKeepaliveS: 0 (Vorgabe) oder 5..600";
+    if (c.child_lifetime_mb > 1048576u) return "childLifetimeMb: 0..1048576";
+    if (c.mtu < 576 || c.mtu > 9000) return "mtu: 576..9000";
     return {};
 }
 
@@ -278,8 +296,17 @@ std::string to_machino_conf(const IpsecConfig& c)
     s += "dpd_interval_s = " + std::to_string(c.dpd_interval_s) + "\n";
     s += "ike_lifetime_s = " + std::to_string(c.ike_lifetime_s) + "\n";
     s += "child_lifetime_s = " + std::to_string(c.child_lifetime_s) + "\n";
-    s += "ike = aes256cbc,sha256,dh14\n";
-    s += "esp = aes256cbc,sha256\n";
+    // AP11: die Allow-Listen (CSV, Katalog-Namen) und die Liveness-Knoepfe.
+    s += "ike_dh = " + join_csv(c.ike_dh) + "\n";
+    s += "ike_enc = " + join_csv(c.ike_enc) + "\n";
+    s += "ike_hash = " + join_csv(c.ike_hash) + "\n";
+    s += "esp_enc = " + join_csv(c.esp_enc) + "\n";
+    s += "esp_hash = " + join_csv(c.esp_hash) + "\n";
+    s += "dpd = " + std::string(c.dpd ? "true" : "false") + "\n";
+    s += "dpd_retries = " + std::to_string(c.dpd_retries) + "\n";
+    s += "natt_keepalive_s = " + std::to_string(c.natt_keepalive_s) + "\n";
+    s += "child_lifetime_mb = " + std::to_string(c.child_lifetime_mb) + "\n";
+    s += "mtu = " + std::to_string(c.mtu) + "\n";
     // AP9: Auth-Modell (ohne Secret): der PSK/das EAP-Passwort/das PEM leben
     // NICHT in der machino-Datei.
     s += "auth = " + std::string(auth_name(c.auth)) + "\n";
@@ -317,7 +344,18 @@ bool from_machino_conf(const std::string& text, IpsecConfig& out, std::string& e
         else if (k == "dpd_interval_s") c.dpd_interval_s = atoi(v.c_str());
         else if (k == "ike_lifetime_s") c.ike_lifetime_s = (uint32_t)strtoul(v.c_str(), nullptr, 10);
         else if (k == "child_lifetime_s") c.child_lifetime_s = (uint32_t)strtoul(v.c_str(), nullptr, 10);
-        else if (k == "ike" || k == "esp") { /* informativ; die Menge ist geschlossen */ }
+        else if (k == "ike" || k == "esp") { /* vor AP11: informativ, wird ignoriert */ }
+        // AP11:
+        else if (k == "ike_dh")   c.ike_dh = split_csv(v);
+        else if (k == "ike_enc")  c.ike_enc = split_csv(v);
+        else if (k == "ike_hash") c.ike_hash = split_csv(v);
+        else if (k == "esp_enc")  c.esp_enc = split_csv(v);
+        else if (k == "esp_hash") c.esp_hash = split_csv(v);
+        else if (k == "dpd") c.dpd = (v == "true");
+        else if (k == "dpd_retries") c.dpd_retries = atoi(v.c_str());
+        else if (k == "natt_keepalive_s") c.natt_keepalive_s = atoi(v.c_str());
+        else if (k == "child_lifetime_mb") c.child_lifetime_mb = (uint32_t)strtoul(v.c_str(), nullptr, 10);
+        else if (k == "mtu") c.mtu = atoi(v.c_str());
         else if (k == "auth") { if (!auth_from_name(v, c.auth)) { err = "auth: '" + v + "'"; return false; } }
         else if (k == "eap_user") c.eap_user = v;
         else if (k == "trust_mode") { if (!trust_mode_from_name(v, c.trust_mode)) { err = "trust_mode: '" + v + "'"; return false; } }
@@ -382,8 +420,22 @@ std::string to_weirdike_conf(const IpsecConfig& c, const IpsecSecrets& secrets,
     if (request_cp(c)) s += "request_cp = yes\n";
     if (!c.remote_subnet.empty()) s += "remote_subnet = " + c.remote_subnet + "\n";
     s += "nat_t = " + std::string(c.nat_t ? "true" : "false") + "\n";
-    // AP10: PFS = Gruppe der (einzigen erlaubten) IKE-DH-Gruppe.
-    if (c.pfs) s += "pfs_group = 14\n";
+    // AP11: Config = Kabel. Die Allow-Listen gehen als Policy an die Engine;
+    // ohne diese Zeilen nimmt der Daemon die Engine-Vorgabe (Interop-CI).
+    s += "ike_dh = " + join_csv(c.ike_dh) + "\n";
+    s += "ike_enc = " + join_csv(c.ike_enc) + "\n";
+    s += "ike_hash = " + join_csv(c.ike_hash) + "\n";
+    s += "esp_enc = " + join_csv(c.esp_enc) + "\n";
+    s += "esp_hash = " + join_csv(c.esp_hash) + "\n";
+    // AP10/AP11: PFS mit der kleinsten erlaubten D-H-Gruppe -- derselben, mit
+    // der die Engine das KE baut (sie normalisiert aufsteigend).
+    if (c.pfs) s += "pfs_group = " + std::to_string(algo_smallest_dh(c.ike_dh)) + "\n";
+    // AP11: Liveness/MTU nur, wenn nicht Vorgabe (0 = Engine-Vorgabe).
+    if (!c.dpd) s += "dpd = no\n";
+    if (c.dpd_retries) s += "dpd_retries = " + std::to_string(c.dpd_retries) + "\n";
+    if (c.natt_keepalive_s) s += "natt_keepalive_s = " + std::to_string(c.natt_keepalive_s) + "\n";
+    if (c.child_lifetime_mb) s += "child_lifetime_kb = " + std::to_string((unsigned long long)c.child_lifetime_mb * 1024ull) + "\n";
+    if (c.mtu != 1400) s += "mtu = " + std::to_string(c.mtu) + "\n";
     s += "dpd_interval_s = " + std::to_string(c.dpd_interval_s) + "\n";
     if (c.ike_lifetime_s)   s += "ike_lifetime_s = " + std::to_string(c.ike_lifetime_s) + "\n";
     if (c.child_lifetime_s) s += "child_lifetime_s = " + std::to_string(c.child_lifetime_s) + "\n";

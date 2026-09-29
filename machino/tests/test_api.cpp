@@ -1108,6 +1108,57 @@ void test_ap10_ipsec_api_fields() {
     remove(MC); remove(DC);
 }
 
+// AP11: Katalog + Allow-Listen + Knoepfe + Rekey ueber die API.
+void test_ap11_ipsec_api_grid() {
+    Rig r;
+    const char* MC = "test_api_ipsec11_m.conf";
+    const char* DC = "test_api_ipsec11_d.conf";
+    remove(MC); remove(DC);
+    struct Be : ApiFakeIpsecBackend {
+        int rekeys = 0;
+        bool rekey(bool, std::string& out) override { ++rekeys; out = "ok: child rekey requested\n"; return true; }
+    } be;
+    machino::ipsec::IpsecService svc(be, MC, DC);
+    r.api.set_ipsec_service(&svc);
+
+    // GET traegt den Katalog: jede Gruppe, jedes Raster-Feld, implemented-Flag.
+    api::Response g0 = r.api.ipsec_get();
+    ACHECK(g0.status == 200 && g0.body.has("algorithms"));
+    const Json* cat = g0.body.get("algorithms");
+    ACHECK(cat->get("ikeDh") && cat->get("ikeDh")->size() == 13 && cat->get("espEnc")->size() == 9 && cat->get("ikeHash")->size() == 5);
+    ACHECK(cat->get("ikeDh")->at(2).get("id")->as_string() == "dh14" && cat->get("ikeDh")->at(2).get("implemented")->as_bool());
+    ACHECK(cat->get("ikeEnc")->at(7).get("id")->as_string() == "chacha20" && !cat->get("ikeEnc")->at(7).get("implemented")->as_bool());
+    ACHECK(g0.body.get("dpd")->as_bool() && g0.body.get("mtu")->as_int() == 1400 && g0.body.get("dpdRetries")->as_int() == 0);
+
+    // Listen setzen: implementiert geht, nicht implementiert wird MIT NAMEN abgelehnt.
+    api::Response ok = r.api.ipsec_put_config(
+        "{\"enabled\":true,\"gateway\":\"vpn.example.org\",\"remoteSubnet\":\"10.66.0.0/24\",\"psk\":\"api-psk-geheim\","
+        "\"ikeDh\":[\"dh14\",\"dh19\"],\"ikeHash\":[\"sha1\",\"sha256\"],\"espHash\":[\"sha1\",\"sha256\"],"
+        "\"dpd\":false,\"dpdRetries\":8,\"nattKeepaliveS\":15,\"childLifetimeMb\":64,\"mtu\":1300}");
+    ACHECK(ok.status == 200);
+    api::Response g1 = r.api.ipsec_get();
+    ACHECK(g1.body.get("ikeDh")->size() == 2 && g1.body.get("ikeHash")->at(0).as_string() == "sha1");
+    ACHECK(!g1.body.get("dpd")->as_bool() && g1.body.get("dpdRetries")->as_int() == 8 && g1.body.get("mtu")->as_int() == 1300);
+    api::Response bad = r.api.ipsec_put_config("{\"espEnc\":[\"aes256gcm\"]}");
+    ACHECK(bad.status == 400 && bad.body.dump().find("aes256gcm") != std::string::npos && bad.body.dump().find("nicht implementiert") != std::string::npos);
+    bad = r.api.ipsec_put_config("{\"ikeDh\":[]}");
+    ACHECK(bad.status == 400 && bad.body.dump().find("ikeDh") != std::string::npos);
+    bad = r.api.ipsec_put_config("{\"mtu\":100}");
+    ACHECK(bad.status == 400 && bad.body.dump().find("mtu") != std::string::npos);
+    bad = r.api.ipsec_put_config("{\"algorithms\":{}}");
+    ACHECK(bad.status == 400 && bad.body.dump().find("algorithms") != std::string::npos);   // Katalog: nur GET
+
+    // Rekey: 409 ohne Tunnel, 200 mit; Status traegt die Suiten.
+    ACHECK(r.api.ipsec_rekey(false).status == 409);
+    ACHECK(r.api.ipsec_connect().status == 200);
+    ACHECK(r.api.ipsec_rekey(false).status == 200 && be.rekeys == 1);
+    be.status_text = "state=CHILD_SA_ESTABLISHED\nike_suite=aes256cbc/sha256/sha256/dh14\nchild_suite=aes256cbc/sha256\n";
+    api::Response st = r.api.ipsec_status();
+    ACHECK(st.body.get("ikeSuite")->as_string() == "aes256cbc/sha256/sha256/dh14" && st.body.get("childSuite")->as_string() == "aes256cbc/sha256");
+    ACHECK(r.api.ipsec_disconnect().status == 200);
+    remove(MC); remove(DC);
+}
+
 // W2 (Day/Night): /night/*-Vertrag der Stock-Seite an Fake-GPIO + Rig.
 namespace {
 struct FakeNightGpio : IGpioController {
@@ -1483,6 +1534,7 @@ void run_api_tests() {
     test_w2_night();
     test_ap3_ipsec_api();
     test_ap10_ipsec_api_fields();
+    test_ap11_ipsec_api_grid();
     test_get_documents();
     test_ai_detectors_route_and_person_config();
     test_patch_cold_and_partial();

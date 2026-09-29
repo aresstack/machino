@@ -52,6 +52,31 @@ psk = change-me
 # only group this build negotiates). 0 = no PFS (the pre-AP10 behaviour).
 # pfs_group = 14
 
+# --- proposal policy (AP11) ---------------------------------------------------
+
+# Allow-lists per IKEv2 transform type, comma-separated catalogue names -- the
+# LANCOM Advanced VPN Client grid. ALL FIVE or none (none = the engine's
+# built-in default: aes256cbc / sha256,sha512 / dh14; ESP aes256cbc / sha256).
+# An entry means "may be offered AND accepted"; order does not matter. Names
+# this build cannot negotiate make the daemon refuse to start, by name.
+#   ike_dh    dh2 dh5 dh14 dh15 dh16 dh19 dh20 dh21 dh28 dh29 dh30 dh31 dh32
+#   ike_enc   aes128cbc aes192cbc aes256cbc aes128gcm aes192gcm aes256gcm 3des chacha20
+#   ike_hash  sha1 sha256 sha384 sha512 md5
+#   esp_enc   as ike_enc, plus null
+#   esp_hash  sha1 sha256 sha384 sha512 md5 null
+# ike_dh = dh14
+# ike_enc = aes256cbc
+# ike_hash = sha256
+# esp_enc = aes256cbc
+# esp_hash = sha256
+
+# Liveness (0 = engine default): own DPD probes on/off, probe retransmits,
+# NAT-T keepalive interval, and a soft BYTE lifetime for the Child SA.
+# dpd = yes
+# dpd_retries = 5
+# natt_keepalive_s = 20
+# child_lifetime_kb = 0
+
 # --- transport ---------------------------------------------------------------
 
 # port = 500
