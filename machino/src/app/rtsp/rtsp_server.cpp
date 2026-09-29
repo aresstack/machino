@@ -1,6 +1,7 @@
 #include "app/rtsp/rtsp_server.hpp"
 #include "app/http/audio_stream.hpp"
 #include "app/rtsp/rtp_audio.hpp"
+#include "app/rtsp/rtp_jpeg.hpp"
 #include <algorithm>
 #include "app/rtsp/h264_nal.hpp"
 #include "core/log.hpp"
@@ -77,6 +78,11 @@ struct RtspServer::Session {
     int         bc_ch = 4;             // interleaved channel the client sends on
     int         bc_udp_fd = -1;        // or the UDP port it sends to
     bool        bc_refused_logged = false;
+    // The MJPEG mount (unit JPEG): frames are pulled from the JPEG unit at
+    // the configured rate instead of popped from a hub.
+    int64_t     jpeg_next_us = 0;
+    int64_t     jpeg_t0_us = -1;
+    std::string jpeg_last_why;
 };
 
 RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub,
@@ -100,10 +106,15 @@ int RtspServer::unit_from_url(const std::string& url) const {
     // rtsp://CAM/stream=0 and /stream=1 - those must play against Machino too.
     if (path == "/stream=0") return lifecycle::UNIT_MAIN;
     if (sub_hub_ && path == "/stream=1") return lifecycle::UNIT_SUB;
+    // MJPEG over RTP (RFC 2435) from the JPEG unit, where one is configured.
+    if (path == "/stream=2" && pipeline_.unit_configured(lifecycle::UNIT_JPEG)) return lifecycle::UNIT_JPEG;
     return -1;                                    // unknown mount
 }
 StreamHub* RtspServer::hub_for(int unit) const { return unit == lifecycle::UNIT_SUB ? sub_hub_ : &hub_; }
-const std::string& RtspServer::path_for(int unit) const { return unit == lifecycle::UNIT_SUB ? cfg_.sub_path : cfg_.path; }
+const std::string& RtspServer::path_for(int unit) const {
+    static const std::string kJpegPath = "/stream=2";
+    return unit == lifecycle::UNIT_JPEG ? kJpegPath : unit == lifecycle::UNIT_SUB ? cfg_.sub_path : cfg_.path;
+}
 
 RtspServer::~RtspServer() { stop(); }
 
@@ -308,7 +319,12 @@ void RtspServer::client_loop(Client* c, std::string peer) {
     bool alive = true; char buf[2048];
     while (alive && !quit_) {
         pollfd p{fd, POLLIN, 0};
-        int pr = poll(&p, 1, s.playing ? 0 : 200);
+        int wait = s.playing ? 0 : 200;
+        if (s.playing && s.unit == lifecycle::UNIT_JPEG) {     // no hub to block on: sleep until the next frame is due
+            const int64_t left = (s.jpeg_next_us - mono_us()) / 1000;
+            wait = left > 0 ? (int)std::min<int64_t>(left, 200) : 0;
+        }
+        int pr = poll(&p, 1, wait);
         if (pr > 0) {
             if (p.revents & (POLLHUP | POLLERR)) break;
             ssize_t n = recv(fd, buf, sizeof buf, 0);
@@ -368,6 +384,9 @@ void RtspServer::client_loop(Client* c, std::string peer) {
                 if (!send_au(s, *au)) { LOGW(MOD, "%s: send stalled/failed - dropping client", peer.c_str()); alive = false; }
                 else if (au->fetched_us > 0) { if (StreamHub* h = hub_for(s.unit)) h->record_out_to_send(mono_us() - au->fetched_us); }
             }
+        }
+        if (alive && s.playing && s.unit == lifecycle::UNIT_JPEG && mono_us() >= s.jpeg_next_us) {
+            if (!send_jpeg(s)) { LOGW(MOD, "%s: send stalled/failed - dropping client", peer.c_str()); alive = false; }
         }
         if (alive && s.bc_setup && !s.bc_tcp && s.bc_udp_fd >= 0) {
             uint8_t ub[1600];
@@ -490,6 +509,18 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
     if (method == "OPTIONS")
         return reply("200 OK", "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n", "");
 
+    if (method == "DESCRIBE" && s.unit == lifecycle::UNIT_JPEG) {
+        // One capture up front: a JPEG unit whose frames RFC 2435 cannot carry
+        // (too large, unusual sampling) is refused here, not after PLAY.
+        std::vector<uint8_t> jpg; std::string err, why; rtsp::JpegFrame jf;
+        const Result r = pipeline_.snapshot(jpg, err, 3000);
+        if (!r) { LOGW(MOD, "DESCRIBE jpeg: %s", err.c_str()); return reply("503 Service Unavailable", "", ""); }
+        if (!rtsp::parse_jpeg(jpg.data(), jpg.size(), jf, why)) { LOGW(MOD, "DESCRIBE jpeg: %s", why.c_str()); return reply("415 Unsupported Media Type", "", ""); }
+        std::string body = "v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\ns=Machino\r\nt=0 0\r\na=control:*\r\n" + rtsp::sdp_jpeg_section();
+        if (audio_offered()) body += rtsp::sdp_audio_section();
+        return reply("200 OK", "", body);
+    }
+
     if (method == "DESCRIBE") {
         std::vector<uint8_t> sps, pps;
         if (!obtain_params(s.unit, sps, pps)) { LOGW(MOD, "DESCRIBE %s: no SPS/PPS available", unit_name(s.unit)); return reply("503 Service Unavailable", "", ""); }
@@ -579,6 +610,18 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
     }
 
     if (method == "PLAY") {
+        if (!s.playing && s.unit == lifecycle::UNIT_JPEG) {
+            // No demand handle: every frame is a snapshot, which takes and
+            // drops JPEG demand itself; the unit's grace keeps it warm.
+            s.playing = true; s.jpeg_next_us = 0; s.jpeg_t0_us = -1;
+            RuntimeStats::get().inc(&RuntimeCounters::rtsp_sessions);
+            LOGI(MOD, "%s PLAY jpeg (%s)", s.peer.c_str(), s.tcp ? "tcp-interleaved" : "udp");
+            if (s.a_setup && audio_ && !s.a_sink) {
+                std::string why;
+                s.a_sink = audio_->listen(why);
+                s.a_rate = audio_->sample_rate();
+            }
+        }
         if (!s.playing) {
             StreamHub* h = hub_for(s.unit);
             if (!h) return reply("404 Not Found", "", "");
@@ -620,7 +663,8 @@ bool RtspServer::send_rtp(Session& s, const uint8_t* payload, size_t len, uint32
     uint8_t pkt[4 + 12 + RTP_MTU]; size_t off = 0;
     if (s.tcp) { pkt[0] = '$'; pkt[1] = (uint8_t)s.rtp_ch; pkt[2] = (uint8_t)((12 + len) >> 8); pkt[3] = (uint8_t)(12 + len); off = 4; }
     uint8_t* h = pkt + off;
-    h[0] = 0x80; h[1] = (uint8_t)(96 | (marker ? 0x80 : 0));
+    const uint8_t pt = s.unit == lifecycle::UNIT_JPEG ? rtsp::kPayloadJpeg : 96;
+    h[0] = 0x80; h[1] = (uint8_t)(pt | (marker ? 0x80 : 0));
     h[2] = (uint8_t)(s.rtp_seq >> 8); h[3] = (uint8_t)s.rtp_seq; ++s.rtp_seq;
     h[4] = (uint8_t)(ts >> 24); h[5] = (uint8_t)(ts >> 16); h[6] = (uint8_t)(ts >> 8); h[7] = (uint8_t)ts;
     h[8] = (uint8_t)(s.ssrc >> 24); h[9] = (uint8_t)(s.ssrc >> 16); h[10] = (uint8_t)(s.ssrc >> 8); h[11] = (uint8_t)s.ssrc;
@@ -698,6 +742,34 @@ bool RtspServer::send_au(Session& s, const AccessUnit& au) {
             pos += chunk; first = false;
         }
     }
+    return true;
+}
+
+// One MJPEG frame: a snapshot of the JPEG unit (shared with /image.jpg and
+// /mjpeg through the snapshot cache), packetised per RFC 2435. The rate is
+// the configured MJPEG cap; a failed capture is skipped, not fatal.
+bool RtspServer::send_jpeg(Session& s) {
+    const int fps = cfg_.mjpeg_fps > 0 ? cfg_.mjpeg_fps : 5;
+    const int64_t now = mono_us();
+    s.jpeg_next_us = (s.jpeg_next_us == 0 ? now : s.jpeg_next_us) + 1000000 / fps;
+    if (s.jpeg_next_us < now) s.jpeg_next_us = now + 1000000 / fps;     // fell behind: do not burst
+    std::vector<uint8_t> jpg; std::string err, why; rtsp::JpegFrame jf;
+    if (!pipeline_.snapshot(jpg, err, 1000)) {
+        if (err != s.jpeg_last_why) LOGW(MOD, "%s: jpeg frame skipped: %s", s.peer.c_str(), err.c_str());
+        s.jpeg_last_why = err;
+        return true;
+    }
+    if (!rtsp::parse_jpeg(jpg.data(), jpg.size(), jf, why)) {
+        if (why != s.jpeg_last_why) LOGW(MOD, "%s: jpeg frame not packetisable: %s", s.peer.c_str(), why.c_str());
+        s.jpeg_last_why = why;
+        return true;
+    }
+    s.jpeg_last_why.clear();
+    if (s.jpeg_t0_us < 0) s.jpeg_t0_us = now;
+    const uint32_t ts = (uint32_t)((now - s.jpeg_t0_us) * 90 / 1000);
+    const std::vector<std::vector<uint8_t>> pk = rtsp::jpeg_rtp_payloads(jf, RTP_MTU);
+    for (size_t i = 0; i < pk.size(); ++i)
+        if (!send_rtp(s, pk[i].data(), pk[i].size(), ts, i + 1 == pk.size())) return false;
     return true;
 }
 

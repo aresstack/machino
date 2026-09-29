@@ -104,6 +104,7 @@ struct RtspConfig {
     int         send_buffer_bytes = 65536; // bounded kernel backlog per socket
     int         send_stall_ms = 750;       // disconnect, never accumulate seconds of stale live video
     int         max_clients = 4;           // concurrent connections (each costs a thread); refused, not queued
+    int         mjpeg_fps = 5;             // /stream=2 (MJPEG over RTP) frame rate, pulled from the JPEG unit
     RtspAuthConfig auth;
 };
 

@@ -385,4 +385,81 @@ std::vector<uint8_t> fragment(uint32_t sequence, uint64_t decode_time, uint32_t 
     return b;
 }
 
+std::vector<uint8_t> heif_avc_still(const std::vector<uint8_t>& sps, const std::vector<uint8_t>& pps,
+                                    int width, int height, const std::vector<uint8_t>& sample) {
+    std::vector<uint8_t> b;
+    size_t ftyp = open_box(b, "ftyp");
+    tag(b, "avci"); be32(b, 0);
+    tag(b, "mif1"); tag(b, "avci"); tag(b, "miaf");
+    close_box(b, ftyp);
+
+    size_t meta = open_full(b, "meta", 0, 0);
+    size_t hdlr = open_full(b, "hdlr", 0, 0);
+    be32(b, 0); tag(b, "pict"); zeros(b, 12); b.push_back(0);
+    close_box(b, hdlr);
+    size_t pitm = open_full(b, "pitm", 0, 0);
+    be16(b, 1);
+    close_box(b, pitm);
+    size_t iloc = open_full(b, "iloc", 0, 0);
+    b.push_back(0x44);                       // offset_size 4, length_size 4
+    b.push_back(0x00);                       // base_offset_size 0, reserved
+    be16(b, 1);                              // item count
+    be16(b, 1);                              // item id
+    be16(b, 0);                              // data reference: this file
+    be16(b, 1);                              // extent count
+    const size_t extent_offset_at = b.size();
+    be32(b, 0);                              // patched once the mdat position is known
+    be32(b, (uint32_t)sample.size());
+    close_box(b, iloc);
+    size_t iinf = open_full(b, "iinf", 0, 0);
+    be16(b, 1);
+    size_t infe = open_full(b, "infe", 2, 0);
+    be16(b, 1); be16(b, 0); tag(b, "avc1"); b.push_back(0);
+    close_box(b, infe);
+    close_box(b, iinf);
+    size_t iprp = open_box(b, "iprp");
+    size_t ipco = open_box(b, "ipco");
+    size_t avcc = open_box(b, "avcC");
+    b.push_back(1);
+    b.push_back(sps.size() > 3 ? sps[1] : 0x42);
+    b.push_back(sps.size() > 3 ? sps[2] : 0xe0);
+    b.push_back(sps.size() > 3 ? sps[3] : 0x1e);
+    b.push_back(0xff);
+    b.push_back(0xe1);
+    be16(b, (uint16_t)sps.size()); bytes(b, sps.data(), sps.size());
+    b.push_back(1);
+    be16(b, (uint16_t)pps.size()); bytes(b, pps.data(), pps.size());
+    // ISO/IEC 14496-15: the High profiles carry chroma format and bit depths
+    // in the record too, and HEIF readers (libheif) insist on them. The
+    // encoder makes 8-bit 4:2:0.
+    const uint8_t prof = sps.size() > 1 ? sps[1] : 0;
+    if (prof == 100 || prof == 110 || prof == 122 || prof == 144) {
+        b.push_back(0xfc | 1);                 // chroma_format_idc 1 (4:2:0)
+        b.push_back(0xf8 | 0);                 // bit_depth_luma_minus8
+        b.push_back(0xf8 | 0);                 // bit_depth_chroma_minus8
+        b.push_back(0);                        // no SPS extensions
+    }
+    close_box(b, avcc);
+    size_t ispe = open_full(b, "ispe", 0, 0);
+    be32(b, (uint32_t)width); be32(b, (uint32_t)height);
+    close_box(b, ispe);
+    close_box(b, ipco);
+    size_t ipma = open_full(b, "ipma", 0, 0);
+    be32(b, 1);                              // entry count
+    be16(b, 1);                              // item id
+    b.push_back(2);                          // associations
+    b.push_back(0x81);                       // property 1 (avcC), essential
+    b.push_back(0x02);                       // property 2 (ispe)
+    close_box(b, ipma);
+    close_box(b, iprp);
+    close_box(b, meta);
+
+    size_t mdat = open_box(b, "mdat");
+    const uint32_t payload_at = (uint32_t)b.size();
+    bytes(b, sample.data(), sample.size());
+    close_box(b, mdat);
+    for (int i = 0; i < 4; ++i) b[extent_offset_at + i] = (uint8_t)(payload_at >> (24 - 8 * i));
+    return b;
+}
+
 }} // namespace machino::fmp4

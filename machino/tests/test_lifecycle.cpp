@@ -258,7 +258,24 @@ void test_shutdown_with_outstanding_demand() {
 
 } // namespace
 
+// /image.yuv420: a raw frame takes unit demand for the grab only, comes at
+// the unit's geometry, and leaves the pipeline to its grace afterwards.
+void test_snap_nv12() {
+    CallLog log; FakePlatform platform{log}; FakeTimer timer; StreamHub hub;
+    EffectiveStream es{}; es.width = 64; es.height = 48; es.fps = 20;
+    LifecycleConfig cfg; cfg.idle_grace_ms = 5000; cfg.poll_timeout_ms = 10;
+    PipelineManager mgr(platform, es, cfg, timer, hub);
+    std::vector<uint8_t> f; int w = 0, h = 0; std::string err;
+    LCHECK(mgr.snap_nv12(UNIT_MAIN, f, w, h, err, 500));
+    LCHECK(w == 64 && h == 48 && f.size() == 64 * 48 * 3 / 2);
+    LCHECK(f[10 * 64 + 5] == 15);                          // the fake's gradient: luma = x + y
+    LCHECK(log.count("fs.snap") == 1 && mgr.stats().total_demand == 0);
+    LCHECK(mgr.state() == State::GraceIdle);               // the grab's demand went, grace armed
+    LCHECK(!mgr.snap_nv12(UNIT_SUB, f, w, h, err, 100) && !err.empty());   // no substream configured
+}
+
 void run_lifecycle_tests() {
+    test_snap_nv12();
     test_first_acquire_starts_once();
     test_second_acquire_no_second_start();
     test_release_one_of_two_keeps_active();

@@ -90,6 +90,15 @@ struct Timeline {
 std::vector<uint8_t> fragment(uint32_t sequence, uint64_t decode_time, uint32_t duration,
                               const std::vector<uint8_t>& sample, bool key, uint32_t track_id = 1);
 
+// A HEIF still (ISO/IEC 23008-12) holding one H.264 IDR as a coded image
+// item: ftyp 'avci' (the AVC brand of HEIF) + meta (hdlr pict, pitm, iloc,
+// iinf with one 'avc1' item, iprp with avcC + ispe) + mdat. The encoder here
+// makes H.264, not HEVC, so this is the honest HEIF of what the camera
+// encodes; libheif/ImageMagick/GIMP open it. `sample` is AVCC as for
+// fragment().
+std::vector<uint8_t> heif_avc_still(const std::vector<uint8_t>& sps, const std::vector<uint8_t>& pps,
+                                    int width, int height, const std::vector<uint8_t>& sample);
+
 // Annex-B access unit -> AVCC (4-byte big-endian lengths). SPS/PPS/AUD NALs
 // are dropped - parameter sets live in the init segment's avcC, and repeating
 // them inside an avc1 track is not what the byte-stream parser expects.

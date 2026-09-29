@@ -1,6 +1,8 @@
 #include "app/http/http_server.hpp"
 #include "app/http/audio_stream.hpp"
 #include "app/http/ogg.hpp"
+#include "app/http/stills.hpp"
+#include "app/http/hls.hpp"
 #include "core/audio/audio_encoder.hpp"
 #include "app/compat/majestic_webui.hpp"
 #include "app/webrtc/peer.hpp"
@@ -181,6 +183,10 @@ struct HttpServer::Client {
     // /ws/video: one live MSE feed = one StreamHub consumer with its own
     // demand, exactly like an RTSP session (no second encoder, no JPEG).
     bool ws_video = false;
+    bool ws_raw = false;            // /video.mp4: the same fMP4, unframed over plain HTTP
+    int64_t hls_wait_until = 0;     // a playlist request parked until the first segment exists
+    std::string hls_prefix;
+    bool hls_keep = false;
     int  ws_unit = 0;               // lifecycle unit this viewer watches (main/sub)
     StreamHub* ws_hub = nullptr;    // the hub ws_sink came from (for unsubscribe)
     std::shared_ptr<Sink>    ws_sink;
@@ -272,6 +278,14 @@ HttpServer::HttpServer(const ServerConfig& cfg, api::ApiService& api, EventBus& 
     if (cfg_.session_auth && cfg_.auth_check)
         gate_.reset(new SessionGate(cfg_.auth_check));
 }
+struct HttpServer::HlsLive {
+    lifecycle::DemandHandle demand;
+    std::shared_ptr<Sink>   sink;
+    hls::Segmenter          seg;
+    int64_t                 last_req_ms = 0;
+    int                     w = 0, h = 0;
+};
+
 HttpServer::~HttpServer() { stop(); }
 
 Result HttpServer::start() {
@@ -312,6 +326,7 @@ void HttpServer::stop() {
         close(c->fd);
     }
     clients_.clear();
+    hls_stop();
     // The logread child is NOT touched here: main owns it, it was forked
     // before IMP existed, and it must outlive every HTTP restart.
 
@@ -367,7 +382,7 @@ bool HttpServer::flush(Client& c) {
 // Dispatches one complete request; returns false to close the connection.
 bool HttpServer::pump_requests(Client& c) {
     bool ok = true;
-    while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None &&
+    while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && !c.hls_wait_until &&
            c.in.find("\r\n\r\n") != std::string::npos) {
         const size_t before = c.in.size();
         ok = handle_request(c);
@@ -709,35 +724,89 @@ bool HttpServer::handle_request(Client& c) {
             if (!d.active()) { r = api::ApiService::fail(503, "unavailable", path, "pipeline start failed"); }
             else {
                 queue(c, ws::handshake_response(wskey));
-                c.ws_video = true;
-                RuntimeStats::get().inc(&RuntimeCounters::ws_video_clients);
-                c.ws_unit = unit;
-                c.ws_hub = h;
-                c.ws_demand = std::move(d);
-                c.ws_sink = h->subscribe();
-                c.ws_await_key = true;
-                // &audio=opus,mp4a.40.2: the codecs this browser can decode, in
-                // its order. The first one this build can encode wins; with the
-                // microphone off (or no encoder) the init names no audio codec
-                // and the player drops to muted by itself.
-                const std::string want = SessionGate::form_value(req.query, "audio");
-                if (!want.empty() && audio_ && audio_->config().enabled) {
-                    size_t at = 0;
-                    while (at <= want.size() && !c.ws_audio_enc) {
-                        const size_t comma = want.find(',', at);
-                        const std::string codec = want.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
-                        c.ws_audio_enc = audio::make_encoder(codec, audio_->sample_rate());
-                        if (comma == std::string::npos) break;
-                        at = comma + 1;
-                    }
-                    if (c.ws_audio_enc) {
-                        std::string why;
-                        c.ws_audio_sink = audio_->listen(why);
-                        if (!c.ws_audio_sink) { c.ws_audio_enc.reset(); LOGW(MOD, "%s: /ws/video audio refused: %s", c.peer.c_str(), why.c_str()); }
-                    }
-                }
+                start_fmp4_viewer(c, unit, h, std::move(d), SessionGate::form_value(req.query, "audio"));
                 pipeline_->request_idr(unit);
                 LOGI(MOD, "%s: /ws/video session started (unit %d)", c.peer.c_str(), unit);
+                return true;
+            }
+        }
+    } else if (path == "/hls") {
+        // majestic's HLS viewer page. Native HLS where the browser has it
+        // (Safari, iOS, Android, recent Chrome); elsewhere hls.js, fetched by
+        // the browser - the camera serves only the page and the stream.
+        static const char kPage[] =
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>HLS</title>"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<style>html,body{margin:0;background:#000;height:100%;color:#ccc;font:14px sans-serif}"
+            "video{display:block;width:100%;height:100%;object-fit:contain}"
+            "#n{position:absolute;top:8px;left:8px}</style></head><body>"
+            "<video id=\"v\" autoplay muted playsinline controls></video><div id=\"n\"></div><script>"
+            "var v=document.getElementById('v'),u='/hls/index.m3u8';"
+            "function note(t){document.getElementById('n').textContent=t}"
+            "if(v.canPlayType('application/vnd.apple.mpegurl')){v.src=u}else{"
+            "var s=document.createElement('script');"
+            "s.src='https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';"
+            "s.onload=function(){if(window.Hls&&Hls.isSupported()){var h=new Hls({liveSyncDurationCount:2});"
+            "h.loadSource(u);h.attachMedia(v)}else note('This browser cannot play HLS.')};"
+            "s.onerror=function(){note('No native HLS here and hls.js could not be loaded: open '+location.origin+u+' in VLC.')};"
+            "document.head.appendChild(s)}</script></body></html>\n";
+        bool ok = queue(c, response(m == "GET" ? 200 : 405, "text/html; charset=utf-8",
+                                    m == "GET" ? kPage : "", req.keep_alive));
+        if (!req.keep_alive) c.close_after_flush = true;
+        return ok;
+    } else if (path == "/video.m3u8" || path == "/hls.m3u8" ||
+               (path.rfind("/hls/", 0) == 0 && path.size() > 10 && path.compare(path.size() - 5, 5, ".m3u8") == 0)) {
+        std::string err;
+        if (m != "GET") r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+        else if (!hls_touch(err)) r = api::ApiService::fail(503, "unavailable", path, err);
+        else {
+            c.hls_prefix = path.rfind("/hls/", 0) == 0 ? "" : "hls/";
+            c.hls_keep = req.keep_alive;
+            if (hls_answer_playlist(c)) return true;
+            c.hls_wait_until = now_ms() + 10000;      // the first segment is a GOP away
+            return true;
+        }
+    } else if (path.rfind("/hls/", 0) == 0) {
+        std::string err; uint64_t seq = 0;
+        const std::string name = path.substr(5);
+        std::vector<uint8_t> data;
+        const bool is_init = name == "init.mp4";
+        if (m != "GET") r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+        else if (!is_init && !hls::Segmenter::parse_segment_name(name, seq)) r = api::ApiService::fail(404, "unknown_field", path, "no such HLS resource");
+        else if (!hls_touch(err)) r = api::ApiService::fail(503, "unavailable", path, err);
+        else if (is_init ? (data = hls_->seg.init()).empty() : !hls_->seg.segment(seq, data))
+            r = api::ApiService::fail(404, "unknown_field", path, is_init ? "no key frame yet" : "segment no longer held");
+        else {
+            const std::string body(reinterpret_cast<const char*>(data.data()), data.size());
+            bool ok = queue(c, response(200, is_init ? "video/mp4" : "video/iso.segment", body, req.keep_alive), body.size() + 4096);
+            if (!req.keep_alive) c.close_after_flush = true;
+            return ok;
+        }
+    } else if (path == "/video.mp4") {
+        // majestic's progressive MP4: the /ws/video fragments (ftyp+moov, then
+        // moof+mdat per frame) straight over HTTP, close-framed. VLC, ffplay,
+        // a <video> element and `curl > file.mp4` all read it. Audio (AAC,
+        // what every MP4 player decodes) rides along when the microphone is on
+        // and the build has the encoder; ?audio=opus picks Opus instead.
+        const std::string sv = SessionGate::form_value(req.query, "stream");
+        const int unit = unit_for_stream(sv);
+        if (m != "GET")                  { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+        else if (!hub_ || !pipeline_)    { r = api::ApiService::fail(501, "unavailable", path, "no media wiring"); }
+        else if (unit < 0) {
+            r = api::ApiService::fail(404, "unknown_field", path, "stream " + sv + " is not available");
+        } else {
+            StreamHub* h = unit == lifecycle::UNIT_SUB ? sub_hub_ : hub_;
+            Result dr;
+            lifecycle::DemandHandle d = pipeline_->acquire_unit(unit, lifecycle::ConsumerType::HttpStream, &dr);
+            if (!d.active()) { r = api::ApiService::fail(503, "unavailable", path, "pipeline start failed"); }
+            else {
+                queue(c, "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nCache-Control: no-store\r\n"
+                         "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n");
+                c.ws_raw = true;
+                const std::string a = SessionGate::form_value(req.query, "audio");
+                start_fmp4_viewer(c, unit, h, std::move(d), a.empty() ? std::string("mp4a.40.2") : (a == "none" ? std::string() : a));
+                pipeline_->request_idr(unit);
+                LOGI(MOD, "%s: /video.mp4 started (unit %d)", c.peer.c_str(), unit);
                 return true;
             }
         }
@@ -815,11 +884,63 @@ bool HttpServer::handle_request(Client& c) {
                                     m == "GET" ? kPage : "", req.keep_alive));
         if (!req.keep_alive) c.close_after_flush = true;
         return ok;
-    } else if (const char* why = compat::majestic_unbuilt(path)) {
-        // A majestic URL this build does not serve. Named, not relayed: a 404
-        // from the busybox side reads as "no such camera feature", which is
-        // not what is missing.
-        r = api::ApiService::fail(501, "unavailable", path, why);
+    } else if (path == "/image.yuv420") {
+        // The stock page's detail still (preview-still.js): one uncompressed
+        // frame of the MAIN channel, optionally cropped, described in headers.
+        // Synchronous inside the single poll loop, so grabs never overlap.
+        stills::Crop want;
+        const std::string cs = SessionGate::form_value(req.query, "crop");
+        if (m != "GET") r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+        else if (!pipeline_) r = api::ApiService::fail(501, "unavailable", path, "no media wiring");
+        else if (!cs.empty() && !stills::parse_crop(cs, want)) r = api::ApiService::fail(400, "invalid_value", path, "crop is XxYxWxH");
+        else {
+            std::vector<uint8_t> frame; int fw = 0, fh = 0; std::string err;
+            const Result sr = pipeline_->snap_nv12(lifecycle::UNIT_MAIN, frame, fw, fh, err, 2000);
+            if (!sr) {
+                r = api::ApiService::fail(sr.status == Status::Unsupported ? 501 : 503, "unavailable", path, err);
+            } else {
+                std::vector<uint8_t> cut; stills::Crop got{0, 0, fw, fh};
+                const std::vector<uint8_t>* body = &frame;
+                if (!cs.empty()) {
+                    if (!stills::nv12_crop(frame.data(), fw, fh, want, cut, got)) {
+                        r = api::ApiService::fail(416, "invalid_value", path, "crop lies outside the " + std::to_string(fw) + "x" + std::to_string(fh) + " frame");
+                        body = nullptr;
+                    } else body = &cut;
+                }
+                if (body) {
+                    const std::string data(reinterpret_cast<const char*>(body->data()), body->size());
+                    bool ok = queue(c, response(200, "application/octet-stream", data, req.keep_alive,
+                                                stills::yuv_headers(got.w, got.h) +
+                                                "Access-Control-Expose-Headers: X-Frame-Width, X-Frame-Height, X-Pixel-Format, X-Stride-Luma, X-Stride-Chroma\r\n"),
+                                    data.size() + 4096);
+                    if (!req.keep_alive) c.close_after_flush = true;
+                    return ok;
+                }
+            }
+        }
+    } else if (path == "/image.heif") {
+        // One IDR of the main stream as a HEIF image item. H.264 in HEIF
+        // ('avci'), because H.264 is what the encoder makes.
+        if (m != "GET") r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
+        else if (!hub_ || !pipeline_) r = api::ApiService::fail(501, "unavailable", path, "no media wiring");
+        else {
+            AuPtr au; std::string err;
+            if (!grab_idr(lifecycle::UNIT_MAIN, au, 2000, err)) r = api::ApiService::fail(503, "unavailable", path, err);
+            else {
+                std::vector<uint8_t> sps, pps;
+                h264::extract_params(au->data.data(), au->data.size(), sps, pps);
+                const std::vector<uint8_t> sample = fmp4::annexb_to_avcc(au->data.data(), au->data.size());
+                const EffectiveStream es = pipeline_->stream_unit(lifecycle::UNIT_MAIN);
+                if (sps.empty() || pps.empty() || sample.empty()) r = api::ApiService::fail(503, "unavailable", path, "key frame without parameter sets");
+                else {
+                    const std::vector<uint8_t> heif = fmp4::heif_avc_still(sps, pps, es.width, es.height, sample);
+                    const std::string data(reinterpret_cast<const char*>(heif.data()), heif.size());
+                    bool ok = queue(c, response(200, "image/heif", data, req.keep_alive), data.size() + 4096);
+                    if (!req.keep_alive) c.close_after_flush = true;
+                    return ok;
+                }
+            }
+        }
     } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream" || path == "/mjpeg") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
         // AP24: refuse the same way /snapshot does when there is no JPEG unit.
@@ -1294,6 +1415,116 @@ void HttpServer::push_mjpeg(Client& c) {
     }
 }
 
+// Shared by /ws/video and /video.mp4: subscribe the client to a unit's hub
+// and, when asked (`audio_want`: codec names in the viewer's order), to the
+// microphone through the first encoder this build has.
+void HttpServer::start_fmp4_viewer(Client& c, int unit, StreamHub* h, lifecycle::DemandHandle d, const std::string& audio_want) {
+    c.ws_video = true;
+    RuntimeStats::get().inc(&RuntimeCounters::ws_video_clients);
+    c.ws_unit = unit;
+    c.ws_hub = h;
+    c.ws_demand = std::move(d);
+    c.ws_sink = h->subscribe();
+    c.ws_await_key = true;
+    // &audio=opus,mp4a.40.2: the codecs this browser can decode, in its
+    // order. The first one this build can encode wins; with the microphone
+    // off (or no encoder) the init names no audio codec and the player drops
+    // to muted by itself.
+    if (!audio_want.empty() && audio_ && audio_->config().enabled) {
+        size_t at = 0;
+        while (at <= audio_want.size() && !c.ws_audio_enc) {
+            const size_t comma = audio_want.find(',', at);
+            const std::string codec = audio_want.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+            c.ws_audio_enc = audio::make_encoder(codec, audio_->sample_rate());
+            if (comma == std::string::npos) break;
+            at = comma + 1;
+        }
+        if (c.ws_audio_enc) {
+            std::string why;
+            c.ws_audio_sink = audio_->listen(why);
+            if (!c.ws_audio_sink) { c.ws_audio_enc.reset(); LOGW(MOD, "%s: fMP4 audio refused: %s", c.peer.c_str(), why.c_str()); }
+        }
+    }
+}
+
+// A binary fMP4 piece for this viewer: a WebSocket frame on /ws/video, the
+// bytes themselves on /video.mp4.
+bool HttpServer::queue_fmp4(Client& c, const std::vector<uint8_t>& b, size_t cap) {
+    if (c.ws_raw) return queue(c, std::string(reinterpret_cast<const char*>(b.data()), b.size()), cap);
+    return queue(c, ws::frame(false, b.data(), b.size()), cap);
+}
+
+// ---- HLS ---------------------------------------------------------------------
+// Any HLS request keeps the segmenter alive; the first one starts it.
+bool HttpServer::hls_touch(std::string& err) {
+    if (!hub_ || !pipeline_) { err = "no media wiring"; return false; }
+    if (!hls_) {
+        Result dr;
+        lifecycle::DemandHandle d = pipeline_->acquire_unit(lifecycle::UNIT_MAIN, lifecycle::ConsumerType::HttpStream, &dr);
+        if (!d.active()) { err = "pipeline start failed"; return false; }
+        hls_.reset(new HlsLive);
+        hls_->demand = std::move(d);
+        hls_->sink = hub_->subscribe();
+        const EffectiveStream es = pipeline_->stream_unit(lifecycle::UNIT_MAIN);
+        hls_->w = es.width; hls_->h = es.height;
+        pipeline_->request_idr(lifecycle::UNIT_MAIN);
+        LOGI(MOD, "HLS segmenter started (%dx%d)", es.width, es.height);
+    }
+    hls_->last_req_ms = now_ms();
+    return true;
+}
+
+void HttpServer::hls_stop() {
+    if (!hls_) return;
+    if (hls_->sink && hub_) { hls_->sink->close(); hub_->unsubscribe(hls_->sink); }
+    hls_.reset();                                   // the demand handle releases the unit
+}
+
+// Drains the main stream into the segmenter. A player fetches the playlist
+// every target duration; 30 s without any request means nobody is watching.
+void HttpServer::hls_pump(int64_t t) {
+    if (!hls_) return;
+    if (t - hls_->last_req_ms > 30000) { LOGI(MOD, "HLS segmenter stopped (no player)"); hls_stop(); return; }
+    for (int i = 0; i < 64; ++i) {
+        AuPtr au; bool disc = false;
+        if (!hls_->sink->pop(au, 0, &disc)) return;
+        if (!au || au->data.empty()) continue;
+        hls_->seg.feed(au->data.data(), au->data.size(), au->key, au->pts_us, hls_->w, hls_->h, disc);
+    }
+}
+
+bool HttpServer::hls_answer_playlist(Client& c) {
+    if (!hls_ || !hls_->seg.ready()) return false;
+    c.hls_wait_until = 0;
+    queue(c, response(200, "application/vnd.apple.mpegurl", hls_->seg.playlist(c.hls_prefix), c.hls_keep));
+    if (!c.hls_keep) c.close_after_flush = true;
+    return true;
+}
+
+// One key frame of a unit, synchronously: demand + a private sink + an IDR
+// request, then the first key AU. Bounded, since it runs inside the poll
+// loop like the JPEG snapshot does.
+bool HttpServer::grab_idr(int unit, AuPtr& out, int timeout_ms, std::string& err) {
+    StreamHub* h = unit == lifecycle::UNIT_SUB ? sub_hub_ : hub_;
+    if (!h || !pipeline_) { err = "no media wiring"; return false; }
+    Result dr;
+    lifecycle::DemandHandle d = pipeline_->acquire_unit(unit, lifecycle::ConsumerType::Snapshot, &dr);
+    if (!d.active()) { err = "pipeline start failed"; return false; }
+    std::shared_ptr<Sink> sink = h->subscribe();
+    pipeline_->request_idr(unit);
+    const int64_t until = now_ms() + timeout_ms;
+    bool got = false;
+    for (int64_t t = now_ms(); t < until && !got; t = now_ms()) {
+        AuPtr au;
+        if (!sink->pop(au, (int)(until - t))) continue;
+        if (au && au->key && !au->data.empty()) { out = au; got = true; }
+    }
+    sink->close();
+    h->unsubscribe(sink);
+    if (!got) err = "no key frame within " + std::to_string(timeout_ms) + " ms";
+    return got;
+}
+
 void HttpServer::note_h264_profile(int unit, const std::vector<uint8_t>& sps) {
     if (unit < 0 || unit >= 4 || sps.size() < 4) return;
     char b[8];
@@ -1357,8 +1588,9 @@ void HttpServer::pump_ws_video(Client& c) {
                     const std::string init_json = info.dump();
                     std::vector<uint8_t> init = fmp4::init_segment(sps, pps, w, h, 90000,
                                                                    at.codec == fmp4::AudioTrack::None ? nullptr : &at);
-                    queue(c, ws::frame(true, init_json.data(), init_json.size()), soft_cap);
-                    if (!queue(c, ws::frame(false, init.data(), init.size()), soft_cap)) { c.close_after_flush = true; return; }
+                    if (!c.ws_raw) queue(c, ws::frame(true, init_json.data(), init_json.size()), soft_cap);
+                    else if (c.ws_init_sent) { mark_resync(c); c.close_after_flush = true; return; }   // a file cannot change its moov mid-stream
+                    if (!queue_fmp4(c, init, soft_cap)) { c.close_after_flush = true; return; }
                     c.ws_init_sent = true;
                     LOGI(MOD, "%s: /ws/video init %s %dx%d", c.peer.c_str(), cs.c_str(), w, h);
                 }
@@ -1387,7 +1619,7 @@ void HttpServer::pump_ws_video(Client& c) {
         }
         const std::vector<uint8_t> body = fmp4::fragment(c.ws_seq++, c.ws_dts, dur, sample, au->key);
         frag.insert(frag.end(), body.begin(), body.end());
-        if (!queue(c, ws::frame(false, frag.data(), frag.size()), soft_cap)) {
+        if (!queue_fmp4(c, frag, soft_cap)) {
             RuntimeStats::get().inc(&RuntimeCounters::ws_video_overruns);
             mark_resync(c);                                    // dropped: wait for the next key
             return;
@@ -1460,7 +1692,7 @@ void HttpServer::pump_ws_audio(Client& c) {
             const std::vector<uint8_t> frag = fmp4::fragment(c.ws_seq++, c.ws_audio_dt, fr.duration, fr.data, true, 2);
             c.ws_audio_dt += fr.duration;
             if (c.out.size() > soft_cap / 2) continue;      // the video's backpressure rule; audio is dropped first
-            queue(c, ws::frame(false, frag.data(), frag.size()), soft_cap);
+            queue_fmp4(c, frag, soft_cap);
         }
     }
 }
@@ -1847,11 +2079,13 @@ void HttpServer::loop() {
             }
         }
         for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc || c->audio_sink) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
+        if (hls_) timeout_ms = 20;
         const size_t logs_idx = (logs_fd() >= 0) ? pfds.size() : (size_t)-1;
         if (logs_fd() >= 0) pfds.push_back({logs_fd(), POLLIN, 0});
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)
+        hls_pump(t);
         for (size_t i = 0; i < clients_.size(); ++i) {
             Client& c = *clients_[i];
             short re = 0, rre = 0, ure = 0, uge = 0;
@@ -1868,11 +2102,22 @@ void HttpServer::loop() {
                 char buf[4096]; ssize_t r = recv(c.fd, buf, sizeof buf, MSG_DONTWAIT);
                 if (r == 0) ok = false;
                 else if (r < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) ok = false; }
+                else if (c.ws_video && c.ws_raw) { /* /video.mp4: nothing to read */ }
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.rtc_ws)   { c.in.append(buf, (size_t)r); ok = rtc_ws_input(c); }
                 else if (c.ws_upgrade) { c.in.append(buf, (size_t)r); ok = ws_upgrade_input(c); }
                 else if (c.sse || c.mjpeg || c.ws_logs || c.audio_sink) { /* ignore input on streaming connections */ }
+                else if (c.hls_wait_until) { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; }   // pipelined: parsed after the answer
                 else { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; else ok = pump_requests(c); }
+            }
+            if (ok && c.hls_wait_until) {
+                if (hls_answer_playlist(c)) ok = pump_requests(c);
+                else if (t > c.hls_wait_until) {
+                    c.hls_wait_until = 0;
+                    queue(c, response(503, "application/json", "{\"error\":\"no HLS segment within 10 s\"}", c.hls_keep));
+                    if (!c.hls_keep) c.close_after_flush = true;
+                    else ok = pump_requests(c);
+                }
             }
             if (ok && c.relay_state != Client::Relay::None) {
                 ok = pump_relay(c, rre, t);

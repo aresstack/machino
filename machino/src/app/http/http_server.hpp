@@ -163,6 +163,9 @@ private:
     // answer that follows the browser's own codec preference.
     // Written and read only from the poll loop, like every other Client-facing
     // member here - no lock, and none needed.
+    bool grab_idr(int unit, AuPtr& out, int timeout_ms, std::string& err);
+    void start_fmp4_viewer(Client& c, int unit, StreamHub* h, lifecycle::DemandHandle d, const std::string& audio_want);
+    bool queue_fmp4(Client& c, const std::vector<uint8_t>& b, size_t cap);
     void note_h264_profile(int unit, const std::vector<uint8_t>& sps);
     std::string h264_profile_[4];   // profile-level-id, "" until first seen
     bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
@@ -188,6 +191,14 @@ private:
     std::atomic<bool> quit_{false};
     std::thread       thread_;
     std::vector<std::unique_ptr<Client>> clients_;
+    // /hls: one shared segmenter on the main stream, alive while players
+    // keep fetching (see hls_pump).
+    struct HlsLive;
+    std::unique_ptr<HlsLive> hls_;
+    bool hls_touch(std::string& err);
+    void hls_pump(int64_t t);
+    void hls_stop();
+    bool hls_answer_playlist(Client& c);
     int64_t           last_telemetry_ms_ = 0;
     int64_t           last_heartbeat_ms_ = 0;
 };

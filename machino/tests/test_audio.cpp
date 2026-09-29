@@ -7,6 +7,9 @@
 #include "app/http/audio_stream.hpp"
 #include "app/http/fmp4.hpp"
 #include "app/http/ogg.hpp"
+#include "app/http/hls.hpp"
+#include "app/http/stills.hpp"
+#include "app/rtsp/rtp_jpeg.hpp"
 #include "core/audio/audio_encoder.hpp"
 #include "app/rtsp/rtp_audio.hpp"
 #include "core/audio/audio_service.hpp"
@@ -340,18 +343,169 @@ void test_majestic_audio_mapping() {
     ACHECK(parse_config_text(conf, c, err) && c.audio.enabled && c.audio.volume == 45 && c.audio.srate == 16000);
 }
 
-// The majestic URLs without a path in this build get a named 501, and the
-// ones that ARE served natively never land on that list.
-void test_majestic_unbuilt_urls() {
-    using compat::majestic_unbuilt;
-    for (const char* u : {"/video.mp4", "/hls", "/hls/index.m3u8", "/image.heif", "/image.yuv420"}) {
-        const char* why = majestic_unbuilt(u);
-        ACHECK(why != nullptr && std::string(why).size() > 20);
+bool contains(const std::vector<uint8_t>& b, const char* four) {
+    for (size_t i = 0; i + 4 <= b.size(); ++i) if (memcmp(&b[i], four, 4) == 0) return true;
+    return false;
+}
+int count(const std::vector<uint8_t>& b, const char* four) {
+    int n = 0;
+    for (size_t i = 0; i + 4 <= b.size(); ++i) if (memcmp(&b[i], four, 4) == 0) ++n;
+    return n;
+}
+uint32_t rd32(const std::vector<uint8_t>& b, size_t at) { return ((uint32_t)b[at] << 24) | ((uint32_t)b[at + 1] << 16) | ((uint32_t)b[at + 2] << 8) | b[at + 3]; }
+
+// A synthetic baseline JPEG: DQT (2 tables), optional DRI, SOF0, SOS, scan, EOI.
+std::vector<uint8_t> synth_jpeg(int w, int h, uint8_t samp0, uint16_t dri, uint8_t sof, size_t scan_len) {
+    std::vector<uint8_t> j = {0xff, 0xd8};
+    j.insert(j.end(), {0xff, 0xdb, 0x00, 132});
+    j.push_back(0x00); for (int i = 0; i < 64; ++i) j.push_back((uint8_t)(1 + i));
+    j.push_back(0x01); for (int i = 0; i < 64; ++i) j.push_back((uint8_t)(100 + i));
+    if (dri) j.insert(j.end(), {0xff, 0xdd, 0x00, 0x04, (uint8_t)(dri >> 8), (uint8_t)dri});
+    j.insert(j.end(), {0xff, sof, 0x00, 17, 8, (uint8_t)(h >> 8), (uint8_t)h, (uint8_t)(w >> 8), (uint8_t)w, 3,
+                       1, samp0, 0, 2, 0x11, 1, 3, 0x11, 1});
+    j.insert(j.end(), {0xff, 0xda, 0x00, 12, 3, 1, 0x00, 2, 0x11, 3, 0x11, 0, 63, 0});
+    for (size_t i = 0; i < scan_len; ++i) j.push_back((uint8_t)(i * 7 + 1));
+    j.insert(j.end(), {0xff, 0xd9});
+    return j;
+}
+
+// rtsp://CAM/stream=2: RFC 2435 payloads rebuild exactly the scan, with the
+// tables in-band once per frame.
+void test_rtp_jpeg() {
+    rtsp::JpegFrame f; std::string why;
+    const std::vector<uint8_t> j = synth_jpeg(640, 360, 0x22, 0, 0xc0, 3000);
+    ACHECK(rtsp::parse_jpeg(j.data(), j.size(), f, why));
+    ACHECK(f.width == 640 && f.height == 360 && f.type == 1 && f.qtables.size() == 128 && f.scan_len == 3000);
+    ACHECK(f.qtables[0] == 1 && f.qtables[63] == 64 && f.qtables[64] == 100);
+    const auto pk = rtsp::jpeg_rtp_payloads(f, 1400);
+    ACHECK(pk.size() == 3);
+    std::vector<uint8_t> scan;
+    size_t expect_off = 0; bool hdr_ok = true;
+    for (size_t i = 0; i < pk.size(); ++i) {
+        const auto& p = pk[i];
+        const size_t off = ((size_t)p[1] << 16) | ((size_t)p[2] << 8) | p[3];
+        hdr_ok = hdr_ok && p.size() <= 1400 && off == expect_off && p[4] == 1 && p[5] == 255 && p[6] == 80 && p[7] == 45;
+        size_t at = 8;
+        if (i == 0) { hdr_ok = hdr_ok && p[8] == 0 && p[9] == 0 && p[10] == 0 && p[11] == 128 && p[12] == 1 && p[12 + 64] == 100; at = 12 + 128; }
+        scan.insert(scan.end(), p.begin() + (long)at, p.end());
+        expect_off += p.size() - at;
     }
-    for (const char* u : {"/mjpeg", "/mjpeg.html", "/image.jpg", "/audio.pcm", "/audio.alaw", "/audio.ulaw",
-                          "/audio.g711a", "/play_audio", "/night/on", "/metrics", "/api/v1/config.json", "/hlsx", "/"}) {
-        ACHECK(majestic_unbuilt(u) == nullptr);
-    }
+    ACHECK(hdr_ok && scan.size() == f.scan_len && memcmp(scan.data(), f.scan, f.scan_len) == 0);
+    // Restart markers: type + 64 and the restart header in every packet.
+    const std::vector<uint8_t> jr = synth_jpeg(320, 240, 0x21, 40, 0xc0, 100);
+    ACHECK(rtsp::parse_jpeg(jr.data(), jr.size(), f, why) && f.type == 64 && f.restart_interval == 40);
+    const auto pr = rtsp::jpeg_rtp_payloads(f, 1400);
+    ACHECK(pr.size() == 1 && pr[0][8] == 0 && pr[0][9] == 40 && pr[0][10] == 0xff && pr[0][11] == 0xff && pr[0][15] == 128);
+    // What RFC 2435 cannot carry is refused with the reason.
+    const std::vector<uint8_t> big = synth_jpeg(2560, 1440, 0x22, 0, 0xc0, 10);
+    ACHECK(!rtsp::parse_jpeg(big.data(), big.size(), f, why) && why.find("2040") != std::string::npos);
+    const std::vector<uint8_t> prog = synth_jpeg(320, 240, 0x22, 0, 0xc2, 10);
+    ACHECK(!rtsp::parse_jpeg(prog.data(), prog.size(), f, why));
+    const std::vector<uint8_t> s444 = synth_jpeg(320, 240, 0x11, 0, 0xc0, 10);
+    ACHECK(!rtsp::parse_jpeg(s444.data(), s444.size(), f, why));
+    const uint8_t junk[] = {1, 2, 3, 4};
+    ACHECK(!rtsp::parse_jpeg(junk, sizeof junk, f, why));
+    ACHECK(rtsp::sdp_jpeg_section().find("a=rtpmap:26 JPEG/90000") != std::string::npos);
+}
+
+// /image.yuv420 (the stock page's detail still): crop syntax and cutting.
+void test_yuv_still() {
+    stills::Crop c;
+    ACHECK(stills::parse_crop("0x0x16x16", c) && c.x == 0 && c.w == 16 && c.h == 16);
+    ACHECK(stills::parse_crop("100x50x640x360", c) && c.x == 100 && c.y == 50 && c.w == 640 && c.h == 360);
+    for (const char* bad : {"", "1x2x3", "1x2x3x0", "ax2x3x4", "1x2x3x4x", "-1x2x3x4", "1x2x3x99999999"})
+        ACHECK(!stills::parse_crop(bad, c));
+    // A 32x16 frame, luma = x + 3y, U = x/2, V = y/2 on the 2x2 grid.
+    const int W = 32, H = 16;
+    std::vector<uint8_t> f((size_t)W * H * 3 / 2);
+    for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) f[(size_t)y * W + x] = (uint8_t)(x + 3 * y);
+    for (int y = 0; y < H / 2; ++y) for (int x = 0; x < W / 2; ++x) { f[(size_t)W * H + y * W + 2 * x] = (uint8_t)x; f[(size_t)W * H + y * W + 2 * x + 1] = (uint8_t)(100 + y); }
+    std::vector<uint8_t> out; stills::Crop got;
+    ACHECK(stills::nv12_crop(f.data(), W, H, stills::Crop{4, 2, 16, 8}, out, got));
+    ACHECK(got.x == 4 && got.y == 2 && got.w == 16 && got.h == 8 && out.size() == 16 * 8 * 3 / 2);
+    ACHECK(out[0] == 4 + 6 && out[16 * 7 + 15] == (uint8_t)(19 + 27));      // first and last luma
+    ACHECK(out[16 * 8] == 2 && out[16 * 8 + 1] == 101);                       // chroma of block (2,1)
+    // Odd origin: aligned down, the requested right/bottom edge still covered.
+    ACHECK(stills::nv12_crop(f.data(), W, H, stills::Crop{5, 3, 4, 4}, out, got) && got.x == 4 && got.y == 2 && got.w == 6 && got.h == 6);
+    // Clamped at the frame, refused outside it.
+    ACHECK(stills::nv12_crop(f.data(), W, H, stills::Crop{24, 8, 100, 100}, out, got) && got.w == 8 && got.h == 8);
+    ACHECK(!stills::nv12_crop(f.data(), W, H, stills::Crop{40, 0, 4, 4}, out, got));
+    const std::string hd = stills::yuv_headers(16, 16);
+    ACHECK(hd.find("X-Frame-Width: 16\r\n") != std::string::npos && hd.find("X-Pixel-Format: NV12") != std::string::npos &&
+           hd.find("X-Stride-Luma: 16") != std::string::npos && hd.find("X-Stride-Chroma: 16") != std::string::npos);
+}
+
+// Annex-B IDR access unit: SPS, PPS, IDR slice.
+std::vector<uint8_t> idr_au(uint8_t tag) {
+    return {0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28, 0xac, 0xd9,  0, 0, 0, 1, 0x68, 0xee, 0x3c, 0x80,
+            0, 0, 0, 1, 0x65, 0x88, tag, 0x21};
+}
+std::vector<uint8_t> p_au() { return {0, 0, 0, 1, 0x41, 0x9a, 0x02}; }
+
+// /image.heif: an 'avci' HEIF whose single item points at the IDR in mdat.
+void test_heif_still() {
+    const std::vector<uint8_t> sps = {0x67, 0x64, 0x00, 0x28, 0xac, 0xd9}, pps = {0x68, 0xee, 0x3c, 0x80};
+    const std::vector<uint8_t> sample = {0, 0, 0, 4, 0x65, 0x88, 0x77, 0x21};
+    const std::vector<uint8_t> h = fmp4::heif_avc_still(sps, pps, 1920, 1080, sample);
+    ACHECK(h.size() > 100 && memcmp(&h[4], "ftypavci", 8) == 0);
+    for (const char* b : {"meta", "hdlr", "pict", "pitm", "iloc", "iinf", "infe", "avc1", "iprp", "ipco", "avcC", "ispe", "ipma", "mdat"})
+        ACHECK(contains(h, b));
+    // iloc's extent points exactly at the sample inside mdat.
+    size_t il = 0; for (size_t i = 0; i + 4 <= h.size(); ++i) if (memcmp(&h[i], "iloc", 4) == 0) { il = i; break; }
+    const uint32_t off = rd32(h, il + 4 + 4 + 2 + 2 + 2 + 2 + 2), len = rd32(h, il + 4 + 4 + 2 + 2 + 2 + 2 + 2 + 4);
+    ACHECK(len == sample.size() && off + len == h.size() && memcmp(&h[off], sample.data(), sample.size()) == 0);
+    size_t is = 0; for (size_t i = 0; i + 4 <= h.size(); ++i) if (memcmp(&h[i], "ispe", 4) == 0) { is = i; break; }
+    ACHECK(rd32(h, is + 8) == 1920 && rd32(h, is + 12) == 1080);
+}
+
+// /hls: segments cut at key frames after the target, a bounded window, a
+// playlist that names what is held.
+void test_hls_segmenter() {
+    hls::Segmenter::Limits lim; lim.target_ms = 1000; lim.max_segments = 3;
+    hls::Segmenter s(lim);
+    ACHECK(!s.ready() && s.init().empty());
+    int64_t pts = 1000000;
+    s.feed(p_au().data(), p_au().size(), false, pts, 64, 48);      // before any key frame: ignored
+    ACHECK(s.init().empty());
+    // 5 GOPs of 1 s at 10 fps: key every 10 frames.
+    for (int g = 0; g < 5; ++g)
+        for (int i = 0; i < 10; ++i) {
+            pts += 100000;
+            const std::vector<uint8_t> au = i == 0 ? idr_au((uint8_t)g) : p_au();
+            s.feed(au.data(), au.size(), i == 0, pts, 64, 48);
+        }
+    ACHECK(s.ready() && !s.init().empty() && contains(s.init(), "avcC"));
+    // 4 GOPs are closed (the fifth is in progress); only the last 3 are held.
+    ACHECK(s.first_seq() == 1);
+    std::vector<uint8_t> seg;
+    ACHECK(!s.segment(0, seg) && s.segment(1, seg) && s.segment(3, seg) && !s.segment(4, seg));
+    ACHECK(count(seg, "moof") == 10 && count(seg, "mdat") == 10);
+    const std::string pl = s.playlist();
+    ACHECK(pl.compare(0, 7, "#EXTM3U") == 0 && pl.find("#EXT-X-VERSION:7") != std::string::npos);
+    ACHECK(pl.find("#EXT-X-MAP:URI=\"init.mp4\"") != std::string::npos && pl.find("#EXT-X-MEDIA-SEQUENCE:1\n") != std::string::npos);
+    ACHECK(pl.find("#EXT-X-TARGETDURATION:1\n") != std::string::npos && pl.find("#EXTINF:1.000,\nseg3.m4s") != std::string::npos);
+    ACHECK(pl.find("seg0.m4s") == std::string::npos && pl.find("seg4.m4s") == std::string::npos);
+    ACHECK(s.playlist("hls/").find("hls/seg1.m4s") != std::string::npos);
+    uint64_t q = 0;
+    ACHECK(hls::Segmenter::parse_segment_name("seg42.m4s", q) && q == 42);
+    for (const char* bad : {"seg.m4s", "segx.m4s", "seg1.mp4", "init.mp4", "seg1.m4s.bak"}) ACHECK(!hls::Segmenter::parse_segment_name(bad, q));
+    // A discontinuity abandons the segment in progress; the window resumes at the next key.
+    pts += 100000; s.feed(p_au().data(), p_au().size(), false, pts, 64, 48, true);
+    for (int i = 0; i < 10; ++i) { pts += 100000; const std::vector<uint8_t> au = i == 0 ? idr_au(9) : p_au(); s.feed(au.data(), au.size(), i == 0, pts, 64, 48); }
+    pts += 100000; { const std::vector<uint8_t> au = idr_au(10); s.feed(au.data(), au.size(), true, pts, 64, 48); }
+    ACHECK(s.segment(4, seg) && count(seg, "moof") == 10);        // the GOP after the gap, whole
+    // New parameter sets restart the window behind a discontinuity.
+    std::vector<uint8_t> au2 = idr_au(11); au2[8] = 0x1f;           // another level
+    pts += 100000; s.feed(au2.data(), au2.size(), true, pts, 64, 48);
+    ACHECK(!s.ready());
+    for (int i = 0; i < 10; ++i) { pts += 100000; s.feed(p_au().data(), p_au().size(), false, pts, 64, 48); }
+    pts += 100000; s.feed(au2.data(), au2.size(), true, pts, 64, 48);
+    ACHECK(s.ready() && s.playlist().find("#EXTINF") != std::string::npos);
+    // Bounded in bytes: a small budget drops the oldest segments early.
+    hls::Segmenter::Limits tiny; tiny.target_ms = 100; tiny.max_bytes = 400;
+    hls::Segmenter t(tiny);
+    for (int g = 0; g < 4; ++g) { pts += 200000; const std::vector<uint8_t> au = idr_au((uint8_t)g); t.feed(au.data(), au.size(), true, pts, 64, 48); }
+    ACHECK(t.ready() && t.first_seq() >= 1 && t.held_bytes() <= 400);
 }
 
 struct FakeSpkCounters {
@@ -535,16 +689,6 @@ void test_rtsp_audio_helpers() {
     ACHECK(pcma.size() == 320 && (uint8_t)pcma[0] == audio::alaw_encode((int16_t)1000));
 }
 
-bool contains(const std::vector<uint8_t>& b, const char* four) {
-    for (size_t i = 0; i + 4 <= b.size(); ++i) if (memcmp(&b[i], four, 4) == 0) return true;
-    return false;
-}
-int count(const std::vector<uint8_t>& b, const char* four) {
-    int n = 0;
-    for (size_t i = 0; i + 4 <= b.size(); ++i) if (memcmp(&b[i], four, 4) == 0) ++n;
-    return n;
-}
-uint32_t rd32(const std::vector<uint8_t>& b, size_t at) { return ((uint32_t)b[at] << 24) | ((uint32_t)b[at + 1] << 16) | ((uint32_t)b[at + 2] << 8) | b[at + 3]; }
 
 void test_ogg_opus() {
     const char* v = "123456789";
@@ -649,7 +793,10 @@ void run_audio_tests() {
     test_rtsp_audio_helpers();
     test_speaker();
     test_play_body();
-    test_majestic_unbuilt_urls();
+    test_yuv_still();
+    test_rtp_jpeg();
+    test_heif_still();
+    test_hls_segmenter();
     test_http_audio_stream();
     test_audio_test_helpers();
     test_majestic_audio_mapping();

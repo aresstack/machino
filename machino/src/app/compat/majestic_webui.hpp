@@ -117,9 +117,5 @@ struct UpgradePlan {
 };
 UpgradePlan upgrade_plan(const std::string& params_json);
 
-// The majestic URLs (stock WebUI, Stream URLs page) that have no path in this
-// build yet, with the reason the server answers 501 with. nullptr = not one
-// of them (served natively, or not a majestic URL at all).
-const char* majestic_unbuilt(const std::string& path);
 
 }} // namespace machino::compat
