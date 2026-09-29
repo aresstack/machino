@@ -100,8 +100,25 @@ std::string PeerSession::on_offer(const std::string& offer_sdp, std::string& err
     return build_answer(o, p);
 }
 
+bool PeerSession::is_fatal_send_errno(int e) {
+    switch (e) {
+        case EINVAL:        // source address no longer configured (measured)
+        case EADDRNOTAVAIL:
+        case ENETUNREACH:
+        case EHOSTUNREACH:
+        case ENETDOWN:
+        case ENODEV:
+            return true;
+        default:
+            return false;   // EAGAIN, ENOBUFS, EINTR, ...: transient
+    }
+}
+
 bool PeerSession::send_udp(const uint8_t* p, size_t n) {
-    if (!have_peer_) return false;
+    // No peer yet is not a path error. errno is set explicitly so the caller's
+    // streak accounting reads a defined value instead of whatever the last
+    // syscall left behind (a stale EINVAL would count towards stranded()).
+    if (!have_peer_) { errno = ENOTCONN; return false; }
     sockaddr_in a{};
     a.sin_family = AF_INET;
     a.sin_port = htons(peer_port_);
@@ -235,11 +252,16 @@ void PeerSession::send_au(const uint8_t* p, size_t n, int64_t pts_us, bool key) 
         if (!srtp_->protect_rtp(pkt)) return;
         if (send_udp(pkt.data(), pkt.size())) {
             ++rtp_count_; rtp_bytes_ += pkt.size(); ++send_ok_;
+            fatal_send_streak_ = 0;
             RuntimeStats::get().inc(&RuntimeCounters::webrtc_rtp_packets);
             RuntimeStats::get().inc(&RuntimeCounters::webrtc_rtp_bytes, pkt.size());
         } else {
             ++send_err_; last_send_errno_ = errno;
             RuntimeStats::get().inc(&RuntimeCounters::webrtc_send_errors);
+            // A full buffer (EAGAIN) is backpressure and resets nothing; a
+            // path error counts towards stranded(). One success clears it.
+            if (is_fatal_send_errno(last_send_errno_)) ++fatal_send_streak_;
+            else fatal_send_streak_ = 0;
             // socket backpressure: drop the rest of this AU, resume at a key
             await_key_ = true;
             return;

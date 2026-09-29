@@ -1,0 +1,173 @@
+name: build-nowait-t40
+# The causal test for the T40NN hardlock: a module that switches the MIPS idle
+# loop from WAIT to polling at runtime (machino/tools/kernel/nowait/README.md).
+#
+# Same recipe as build-modem-modules-t40: the camera's own 4.4.94 tree, the
+# board's own config, vermagic and symbol gates against the camera's real
+# export list. Triggered on push of the module or this file on ANY branch,
+# because the test is needed on a diagnosis branch, not after a merge.
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_ref:
+        description: "OpenIPC/linux ref to build against"
+        required: false
+        default: "ingenic-t40"
+  push:
+    paths:
+      - 'machino/tools/kernel/nowait/**'
+      - '.github/workflows/build-nowait-t40.yml'
+
+jobs:
+  nowait:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      KERNEL_REPO: "https://github.com/OpenIPC/linux"
+      KERNEL_REF: "${{ github.event.inputs.kernel_ref || 'ingenic-t40' }}"
+      FIRMWARE_REPO: "https://github.com/OpenIPC/firmware"
+      WANT_VERMAGIC: "4.4.94 SMP preempt mod_unload MIPS32_R2 32BIT"
+      ARCH: "mips"
+      CROSS: "mipsel-linux-"
+      MOD_SRC: "${{ github.workspace }}/machino/tools/kernel/nowait"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: "Dependencies"
+        run: sudo apt-get update && sudo apt-get install -y build-essential bc bison flex libssl-dev kmod file wget curl git
+
+      - name: "Toolchain"
+        run: |
+          set -eu
+          chmod +x build.sh
+          ./build.sh deps T40 --libc-musl
+          BIN=$(ls -d toolchain/*/*/bin 2>/dev/null | head -1)
+          test -n "$BIN" || { echo "::error::no toolchain"; exit 1; }
+          echo "$PWD/$BIN" >> "$GITHUB_PATH"
+          "$PWD/$BIN/${CROSS}gcc" --version | head -1
+
+      - name: "Fetch the kernel source (OpenIPC/linux @ ${{ env.KERNEL_REF }})"
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$KERNEL_REF" "$KERNEL_REPO" "$RUNNER_TEMP/linux"
+          echo "kernel commit: $(git -C "$RUNNER_TEMP/linux" rev-parse HEAD)"
+          V=$(make -s -C "$RUNNER_TEMP/linux" kernelversion)
+          echo "kernelversion: $V"
+          case "$V" in
+            4.4.94*) ;;
+            *) echo "::error::this branch is $V, the camera runs 4.4.94 -- a module built here would not load"; exit 1 ;;
+          esac
+
+      - name: "Show how this tree idles (the code path the module intercepts)"
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/linux"
+          # Not a gate, evidence: the module only works if arch_cpu_idle reads
+          # cpu_wait on every idle entry and the ingenic code installs its WAIT
+          # routine through that same pointer. Both are printed here so the
+          # run log says so instead of the README assuming it.
+          echo "--- arch/mips/kernel/idle.c: arch_cpu_idle"
+          grep -n -A6 'void arch_cpu_idle' arch/mips/kernel/idle.c || echo "::warning::arch_cpu_idle not found where expected"
+          echo "--- who assigns cpu_wait"
+          grep -rn 'cpu_wait *=' arch/mips --include='*.c' | head -20 || true
+          echo "--- ingenic_wait_irqoff"
+          grep -rn 'ingenic_wait_irqoff' arch/mips | head -10 || echo "::warning::ingenic_wait_irqoff not in this tree -- the camera's kernel may differ from this ref"
+
+      - name: "Find the board's kernel config in OpenIPC/firmware"
+        run: |
+          set -eu
+          git clone --depth 1 --filter=blob:none --sparse "$FIRMWARE_REPO" "$RUNNER_TEMP/fw"
+          git -C "$RUNNER_TEMP/fw" sparse-checkout set br-ext-chip-ingenic
+          CFG=$(find "$RUNNER_TEMP/fw" \( -name '*t40*.config' -o -name '*t40*defconfig' \) -print 2>/dev/null | sort | head -1 || true)
+          [ -n "$CFG" ] || { echo "::error::no T40 kernel config found under br-ext-chip-ingenic"; exit 1; }
+          echo "kernel config: $CFG"
+          echo "KCONFIG=$CFG" >> "$GITHUB_ENV"
+
+      - name: "Prepare the kernel tree"
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/linux"
+          cp "$KCONFIG" .config
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" olddefconfig
+          if grep -q "^CONFIG_MODVERSIONS=y" .config; then
+            echo "::error::CONFIG_MODVERSIONS=y in this config -- symbol CRCs would have to match too, not just vermagic"
+            exit 1
+          fi
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" modules_prepare
+
+      - name: "Build the module"
+        run: |
+          set -eu
+          make -C "$RUNNER_TEMP/linux" ARCH="$ARCH" CROSS_COMPILE="$CROSS" M="$MOD_SRC" -j"$(nproc)" modules
+          test -s "$MOD_SRC/nowait.ko" || { echo "::error::no nowait.ko produced"; exit 1; }
+          ls -l "$MOD_SRC/nowait.ko"
+          modinfo "$MOD_SRC/nowait.ko"
+
+      - name: "Gate: vermagic must be the camera's, exactly"
+        run: |
+          set -eu
+          trim() { printf '%s' "$1" | sed 's/[[:space:]]*$//'; }
+          want=$(trim "$WANT_VERMAGIC")
+          raw=$(modinfo -F vermagic "$MOD_SRC/nowait.ko")
+          got=$(trim "$raw")
+          echo "nowait.ko: [$raw]"
+          if [ "$got" != "$want" ]; then
+            echo "::error::vermagic is '$got', the camera wants '$want' -- insmod would refuse it"
+            exit 1
+          fi
+
+      - name: "Gate: every undefined symbol is exported by the camera's kernel"
+        run: |
+          set -eu
+          CAM="$GITHUB_WORKSPACE/machino/tools/kernel/t40nn-exported-symbols.txt"
+          test -s "$CAM" || { echo "::error::no captured symbol list at $CAM"; exit 1; }
+          n=$(wc -l < "$CAM"); echo "camera exports: $n symbols"
+          [ "$n" -gt 2000 ] || { echo "::error::only $n symbols -- the capture looks truncated"; exit 1; }
+          sort -u "$CAM" > /tmp/cam.sorted
+          "${CROSS}nm" -u "$MOD_SRC/nowait.ko" | awk '{print $2}' | sort -u > /tmp/need
+          grep -vE '^(__this_module|__gnu_|_gp_disp|__mips)' /tmp/need > /tmp/need2 || true
+          echo "--- undefined symbols"; cat /tmp/need2
+          missing=$(comm -23 /tmp/need2 /tmp/cam.sorted || true)
+          if [ -n "$missing" ]; then
+            echo "::error::nowait.ko needs symbols this kernel does not export:"
+            echo "$missing" | sed 's/^/    /'
+            exit 1
+          fi
+          grep -qx 'cpu_wait' /tmp/need2 || { echo "::error::the module does not reference cpu_wait -- it cannot be doing its job"; exit 1; }
+          echo "all undefined symbols are exported by the camera; cpu_wait among them"
+
+      - name: "Bundle"
+        run: |
+          set -eu
+          B=bundle/nowait-t40; mkdir -p "$B"
+          cp "$MOD_SRC/nowait.ko" "$B/"
+          "${CROSS}strip" --strip-debug "$B/nowait.ko"
+          cp "$MOD_SRC/README.md" "$B/"
+          {
+            echo "nowait.ko - T40NN hardlock causal test (WAIT idle off at runtime)"
+            echo
+            echo "kernel:     $KERNEL_REPO @ $KERNEL_REF ($(git -C "$RUNNER_TEMP/linux" rev-parse HEAD))"
+            echo "config:     $KCONFIG"
+            echo "toolchain:  $(${CROSS}gcc --version | head -1)"
+            echo "vermagic:   $WANT_VERMAGIC (verified)"
+            echo "source:     ${GITHUB_SHA}"
+            echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}"
+            echo
+            echo "Load:    insmod nowait.ko      -> dmesg 'cpu_wait was ..., now NULL'"
+            echo "Undo:    rmmod nowait          -> WAIT restored"
+            echo "Toggle:  /sys/module/nowait/parameters/enable"
+            echo
+            echo "NOT VERIFIED HERE: that the camera's running kernel installs its WAIT"
+            echo "routine through cpu_wait (the step 'Show how this tree idles' prints"
+            echo "what THIS tree does; the camera's dmesg line at insmod is the proof)."
+          } > "$B/BUILDINFO"
+          (cd "$B" && sha256sum nowait.ko BUILDINFO README.md > SHA256SUMS)
+          cat "$B/BUILDINFO"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nowait-t40
+          path: bundle/nowait-t40
+          if-no-files-found: error

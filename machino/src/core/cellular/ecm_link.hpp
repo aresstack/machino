@@ -168,6 +168,16 @@ private:
 
     bool dhcp_running_ = false;
     std::string dhcp_iface_;
+
+    // Aufeinanderfolgende Runden, in denen das Modem da war, aber nicht auf
+    // AT geantwortet hat. Siehe tick(): eine stehende Verbindung ueberlebt
+    // einzelne, eine Serie nicht.
+    int unresponsive_ticks_ = 0;
+
+public:
+    // Sichtbar fuer den Test: so viele Runden ohne AT-Antwort in Folge, bevor
+    // eine stehende Verbindung abgebaut wird.
+    static const int kUnresponsiveTeardownTicks = 3;
 };
 
 }} // namespace machino::cellular

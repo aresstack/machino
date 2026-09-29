@@ -69,17 +69,53 @@ case "$1" in
 		;;
 
 	renew|bound)
-		ip addr flush dev "$interface" 2>/dev/null
-		ip addr add "$ip/$mask" ${broadcast:+broadcast $broadcast} dev "$interface"
+		# /32, NICHT die Maske des Modems. Das Modem liefert per DHCP ein /8
+		# (gemessen 2026-09-29: 37.85.117.0/8). Damit gilt jedes Ziel im
+		# gesamten Block des Traegers als direkt erreichbar, die Kamera fragt
+		# per ARP auf usb0 statt ueber das Gateway zu senden, und jeder Client
+		# mit einer Adresse aus 37.0.0.0/8 ist fuer sie unerreichbar.
+		#
+		# usb0 ist dabei KEIN Punkt-zu-Punkt-Interface, sondern ein normales
+		# Ether-NIC (<BROADCAST,MULTICAST>, gemessen 2026-09-29). Es hat nur
+		# genau einen Nachbarn: das Modem, das per ARP fuer das Gateway
+		# antwortet (gemessen: 37.85.117.255 -> 00:e4:e4:e4:e4:e4, REACHABLE,
+		# dieselbe MAC wie fuer 169.254.0.1). Genau deshalb traegt die Route
+		# unten mit `onlink` und einem /32 -- und das /8 mit seinen
+		# Muell-Broadcasts 37.0.0.0/37.255.255.255 in `table local` faellt weg.
+		#
+		# Eine Erneuerung mit unveraenderter Adresse fasst das Interface nicht
+		# an: das Flush wuerde jede laufende Verbindung fuer die Dauer des
+		# Neusetzens ohne Quelladresse dastehen lassen -- und Mobilfunk
+		# erneuert alle paar Minuten.
+		if ! ip -4 addr show dev "$interface" 2>/dev/null | grep -q "inet $ip/32 "; then
+			ip addr flush dev "$interface" 2>/dev/null
+			ip addr add "$ip/32" dev "$interface"
+		fi
 
 		if [ -n "$router" ]; then
-			# Nur die eigene loeschen, nicht jede: ein "ip route del default"
-			# ohne dev wuerde die Ethernet-Route mitnehmen, und genau das soll
-			# dieses Skript verhindern.
-			ip route del default dev "$interface" 2>/dev/null
-			for r in $router; do
-				ip route add default via "$r" dev "$interface" metric $CELL_METRIC 2>/dev/null
-			done
+			r="${router%% *}"
+			# Die Default-Route hier ist nur der STARTWERT (siehe oben). Sobald
+			# machino konvergiert ist, besitzt route_plan die einzige Route
+			# ueber dieses Interface -- mit seiner Metrik, nicht mit 300. Ein
+			# Renewal darf die nicht anfassen: "ip route del default dev usb0"
+			# ohne Metrik traefe die ERSTE Default-Route auf usb0, also
+			# machinos, und der Reconciler muesste alle paar Minuten neu
+			# konvergieren. Deshalb: steht schon irgendeine Default-Route ueber
+			# dieses Gateway auf diesem Interface, bleibt alles wie es ist.
+			# Nur wenn keine da ist (erstes bound, oder ein NEUES Gateway nach
+			# einer Neuwahl), raeumt das Skript die alten weg und setzt den
+			# Startwert.
+			if ! ip -4 route show dev "$interface" 2>/dev/null | grep -q "^default via $r "; then
+				# Nur die eigenen loeschen, nicht jede: ein "ip route del
+				# default" ohne dev wuerde die Ethernet-Route mitnehmen, und
+				# genau das soll dieses Skript verhindern. Mehrere, falls
+				# machino und ein aelterer Startwert beide noch stehen.
+				while ip route del default dev "$interface" 2>/dev/null; do :; done
+				# onlink: das Gateway liegt in keinem Praefix des Interface
+				# (es gibt keins ausser dem /32), der Kernel wuerde die Route
+				# ohne das Flag mit "Network unreachable" ablehnen.
+				ip route add default via "$r" dev "$interface" onlink metric $CELL_METRIC 2>/dev/null
+			fi
 		fi
 
 		# resolv.conf wird hier NICHT angefasst. Bewusst, und anders als im

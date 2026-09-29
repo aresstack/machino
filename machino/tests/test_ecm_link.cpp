@@ -489,6 +489,72 @@ void test_link_loss_after_up_returns_to_addressing_not_to_zero()
     TCHECK(l.state().detail.find("verschwunden") != std::string::npos);
 }
 
+// Ein einzelner ausgebliebener AT-Ping reisst eine stehende Verbindung
+// NICHT ab. Gemessen 2026-09-29: der 2-s-Ping blieb waehrend eines
+// WebRTC-Streams ueber Mobilfunk einmal ohne Antwort, die Maschine baute die
+// Verbindung ab, waehlte neu und bekam eine andere Traegeradresse -- jede
+// laufende Verbindung war tot, obwohl der Datenpfad nie gestoert war.
+void test_a_single_unanswered_at_ping_does_not_tear_down_an_up_link()
+{
+    ScriptedAtTransport t; arm_ecm_ready(t);
+    t.reply("AT+QCFG=\"nat\"", "+QCFG: \"nat\",0\r\nOK\r\n");
+    FakeEcmBackend be; be.iface_present = true;
+    Clock c;
+    EcmLink l(t, be);
+    l.set_clock([&c] { return c.t; });
+    CellularConfig cfg = telekom_config(); cfg.nic_mode = false;
+    l.set_config(cfg);
+    l.connect();
+    TCHECK(run(l, healthy_status(), c) == DataLinkState::Up);
+    TCHECK(be.dhcp_stops == 0);
+
+    CellularStatus mute = healthy_status();
+    mute.responsive = false;
+
+    // Eine Runde ohne Antwort: nichts passiert. Adresse bleibt, DHCP laeuft.
+    c.t += 2000;
+    TCHECK(l.tick(mute).state == DataLinkState::Up);
+    TCHECK(l.is_up());
+    TCHECK(be.dhcp_stops == 0);
+    TCHECK(l.address().has_address());
+
+    // Antwort wieder da: der Zaehler faengt von vorn an.
+    c.t += 2000;
+    TCHECK(l.tick(healthy_status()).state == DataLinkState::Up);
+    for (int i = 0; i < EcmLink::kUnresponsiveTeardownTicks - 1; ++i) {
+        c.t += 2000;
+        TCHECK(l.tick(mute).state == DataLinkState::Up);
+    }
+    TCHECK(be.dhcp_stops == 0);
+    c.t += 2000;
+    TCHECK(l.tick(healthy_status()).state == DataLinkState::Up);
+
+    // Eine SERIE: dann haengt das Modem wirklich, und die Verbindung geht.
+    for (int i = 0; i < EcmLink::kUnresponsiveTeardownTicks; ++i) {
+        c.t += 2000;
+        l.tick(mute);
+    }
+    TCHECK(l.state().state == DataLinkState::WaitAt);
+    TCHECK(!l.is_up());
+    TCHECK(be.dhcp_stops == 1);
+
+    // Ein VERSCHWUNDENES Modem (kein AT-Port) wartet dagegen nicht: das ist
+    // eine Tatsache, kein verspaeteter Ping.
+    ScriptedAtTransport t2; arm_ecm_ready(t2);
+    t2.reply("AT+QCFG=\"nat\"", "+QCFG: \"nat\",0\r\nOK\r\n");
+    FakeEcmBackend be2; be2.iface_present = true;
+    EcmLink l2(t2, be2);
+    l2.set_clock([&c] { return c.t; });
+    l2.set_config(cfg);
+    l2.connect();
+    TCHECK(run(l2, healthy_status(), c) == DataLinkState::Up);
+    CellularStatus gone = healthy_status();
+    gone.present = false; gone.responsive = false;
+    c.t += 2000;
+    TCHECK(l2.tick(gone).state == DataLinkState::WaitDevice);
+    TCHECK(be2.dhcp_stops == 1);
+}
+
 void test_failures_back_off_instead_of_hammering()
 {
     TCHECK(EcmLink::backoff_ms(0) == 0);
@@ -651,6 +717,7 @@ void run_ecm_link_tests()
     test_a_late_interface_is_waited_for_a_missing_one_is_not_forever();
     test_an_interface_that_never_appears_gives_a_reason();
     test_link_loss_after_up_returns_to_addressing_not_to_zero();
+    test_a_single_unanswered_at_ping_does_not_tear_down_an_up_link();
 
     test_failures_back_off_instead_of_hammering();
     test_disconnect_cleans_up_and_is_idempotent();

@@ -46,6 +46,7 @@
 #include "core/capabilities.hpp"
 #include "core/config.hpp"
 #include "core/config_store.hpp"
+#include "core/diag.hpp"
 #include "core/detection/detection_service.hpp"
 #include "core/events.hpp"
 #include "core/hw/board_profile_parser.hpp"
@@ -80,12 +81,73 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 using namespace machino;
 using lifecycle::ConsumerType;
 
 static const char* MOD = "MAIN";
+
+// Hardlock diagnosis: the watchdog stall marker.
+//
+// /etc/machino/state/last-stall is written by the watchdog feeder (from
+// write_stall_marker) when the main loop has stopped advancing but the SoC is
+// still alive enough to run the feeder. If the file is there on the NEXT boot,
+// the reboot followed a Machino main-loop wedge and the file names where. If it
+// is ABSENT after a reset, the feeder never ran either -- evidence the whole SoC
+// hung, not just Machino. jffs2, so a couple of small writes an hour at most.
+static const char* kStallMarker = "/etc/machino/state/last-stall";
+
+static const char* pipeline_state_label(int s) {
+    switch (s) {   // mirrors lifecycle::State
+        case 0: return "cold_idle";
+        case 1: return "starting";
+        case 2: return "active";
+        case 3: return "grace_idle";
+        case 4: return "stopping";
+        case 5: return "failed";
+        default: return "unknown";
+    }
+}
+
+// Called from the FEEDER thread while the main loop is wedged. Async-safe-ish:
+// only lock-free diag loads, snprintf into a stack buffer, and one open/write.
+// No allocation, no locks the wedged loop could hold, no throw (-fno-exceptions).
+static void write_stall_marker(int64_t uptime_ms) {
+    ::mkdir("/etc/machino", 0755);
+    ::mkdir("/etc/machino/state", 0755);
+    char buf[256];
+    const int n = snprintf(buf, sizeof buf,
+        "main=%s\nhttp=%s\npipeline=%s\nuptime_ms=%lld\nwall=%lld\n",
+        diag::phases().main.load(std::memory_order_relaxed),
+        diag::phases().http.load(std::memory_order_relaxed),
+        pipeline_state_label(diag::phases().pipeline_state.load(std::memory_order_relaxed)),
+        (long long)uptime_ms, (long long)::time(nullptr));
+    if (n <= 0) return;
+    const int fd = ::open(kStallMarker, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    (void)!::write(fd, buf, (size_t)n);
+    ::close(fd);
+}
+
+// On startup: if a stall marker survived, the last reboot followed a Machino
+// main-loop wedge. Log it once and clear it, so the file only ever describes the
+// MOST RECENT stall.
+static void report_prior_stall() {
+    const int fd = ::open(kStallMarker, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    char buf[256];
+    const ssize_t got = ::read(fd, buf, sizeof buf - 1);
+    ::close(fd);
+    if (got > 0) {
+        buf[got] = 0;
+        for (char* p = buf; *p; ++p) if (*p == '\n') *p = ' ';
+        LOGW(MOD, "prior boot followed a main-loop stall: %s", buf);
+    }
+    ::unlink(kStallMarker);
+}
 
 // Monotonic milliseconds for the watchdog. steady_clock, not the wall clock:
 // ONVIF SetSystemDateAndTime can step the system time, and a feeder whose
@@ -1058,8 +1120,16 @@ int main(int argc, char** argv) {
             // does NOT feed on its own schedule - it feeds only when this loop
             // has advanced since the last feed. A feeder that ignores that
             // guarantees the camera will never recover from a wedged loop.
+            // Did the LAST boot follow a Machino main-loop stall? If so this logs
+            // where it stopped and clears the marker; its absence after a reset
+            // is itself evidence (the feeder never ran -> SoC-wide hang).
+            report_prior_stall();
             LinuxWatchdog wdt_dev;
             WatchdogService wdt(wdt_dev, cfg.watchdog.timeout_s);
+            const int64_t wdt_start_ms = now_ms();
+            // One marker per hang, written from the feeder when the loop has been
+            // still for two feed intervals (see WatchdogService::tick).
+            wdt.set_stall_handler([wdt_start_ms] { write_stall_marker(now_ms() - wdt_start_ms); });
             bool wdt_on = false;
             if (cfg.watchdog.enabled) wdt_on = (bool)wdt.start(now_ms());
             else LOGI(MOD, "watchdog: disabled by configuration");
@@ -1085,10 +1155,12 @@ int main(int argc, char** argv) {
             // idle camera is a healthy camera: nothing here is coupled to
             // frames, sessions or encoders.
             const int loop_wait_ms = wdt_on ? 1000 : -1;
+            std::string uplink_addr_sig;            // "id=ipv4;..." as of the last net tick
 
             bool run = true;
             while (run) {
                 wdt.heartbeat();                 // THIS is what makes a feed legitimate
+                diag::set_main("epoll");         // stall marker: idle wait (healthy)
                 epoll_event out[8];
                 int n = epoll_wait(ep, out, 8, loop_wait_ms);
                 for (int i = 0; i < n; ++i) {
@@ -1103,6 +1175,7 @@ int main(int argc, char** argv) {
                                        if (!hold.active()) LOGE(MOD, "manual hold: pipeline start failed"); }
                             }
                             else if (si.ssi_signo == SIGHUP) {
+                                diag::set_main("sighup_apply");   // stall marker: pipeline restart in the loop
                                 AppConfig fresh; std::string e2;
                                 if (!load_config(conf, fresh, e2)) { LOGW(MOD, "SIGHUP: reload failed: %s", e2.c_str()); continue; }
                                 LOGI(MOD, "SIGHUP -> applying performance/stream configuration");
@@ -1148,15 +1221,20 @@ int main(int argc, char** argv) {
                             }
                         }
                     } else if (out[i].data.fd == timer.fd()) {
+                        diag::set_main("grace_teardown");   // stall marker: IMP teardown in the loop
                         if (timer.consume()) pipeline.on_grace_timeout();
                     } else if (out[i].data.fd == sub_timer.fd()) {
+                        diag::set_main("sub_grace");
                         if (sub_timer.consume()) pipeline.on_unit_grace(lifecycle::UNIT_SUB);
                     } else if (out[i].data.fd == jpeg_timer.fd()) {
+                        diag::set_main("jpeg_grace");
                         if (jpeg_timer.consume()) pipeline.on_jpeg_grace();
                     } else if (tfd >= 0 && out[i].data.fd == tfd) {
+                        diag::set_main("telemetry");
                         uint64_t x; while (read(tfd, &x, sizeof x) > 0) {}
                         log_telemetry(perf);
                     } else if (net_tfd >= 0 && out[i].data.fd == net_tfd) {
+                        diag::set_main("net_tick");
                         uint64_t x; while (read(net_tfd, &x, sizeof x) > 0) {}
                         // Rollback first. If an unconfirmed change has run out
                         // of time, the selection that follows should see the
@@ -1170,6 +1248,25 @@ int main(int argc, char** argv) {
                         if (cell_uplink.enabled()) rediscover_modem_port();
                         cell_uplink.tick();
                         conn.evaluate();
+                        // An uplink whose ADDRESS changed without the active
+                        // uplink changing: a cellular redial with a new carrier
+                        // address (measured 2026-09-29, 37.82.116.133 ->
+                        // 37.85.117.0). evaluate() says nothing about that,
+                        // and every socket bound to the old address is dead
+                        // without knowing it. The transports are told so they
+                        // close exactly those clients.
+                        {
+                            std::string sig;
+                            for (const net::UplinkStatus& u : conn.status())
+                                sig += u.id + "=" + u.info.ipv4 + ";";
+                            if (sig != uplink_addr_sig) {
+                                if (!uplink_addr_sig.empty()) {
+                                    LOGI(MOD, "network: uplink addresses changed (%s)", sig.c_str());
+                                    httpd.on_address_change();
+                                }
+                                uplink_addr_sig = sig;
+                            }
+                        }
                         // Routes AFTER the selection, always -- not only when
                         // evaluate() reported a change. An uplink can get a new
                         // gateway from a DHCP renewal without the ACTIVE uplink
@@ -1180,6 +1277,7 @@ int main(int argc, char** argv) {
                         // Underlay-/DPD-Verlust -> Abbau; wiederherstellbare
                         // Fehler -> Reconnect mit Backoff (kein stiller
                         // Uplink-Wechsel, kein Reconnect nach manuellem Stopp).
+                        diag::set_main("ipsec_tick");
                         ipsec_service.tick((uint32_t)now_ms());
                         // Automatic day/night (nightMode.lightMonitor): one
                         // sysfs read of the photocell per tick; switches only

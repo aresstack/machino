@@ -1,5 +1,6 @@
 #!/usr/bin/haserl
 <%in p/common.cgi %>
+<% page_title="AI" %>
 <%
 # KI: eine machino-eigene OpenIPC-Seite (haserl, wie machino-dyndns.cgi).
 # KEIN machinod-Backend -- die Seite verwaltet genau das, was machinod NICHT
@@ -85,6 +86,23 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 	  not here &mdash; this page owns the platform underneath.</p>
 </div></div></div>
 
+<div class="col-12"><div class="card"><div class="card-body">
+	<div class="mj-live-head"><h3 class="mj-cap">Detectors</h3><span class="mj-live-rule"></span></div>
+	<p class="mj-card-note">Live from machino (<code>/api/v1/ai/detectors</code>): which detector
+	  can run right now and, if not, every reason. <b>motion</b> is the ISP's IVS motion
+	  engine; <b>person</b> runs the model above on the NNA. The camera's AI settings
+	  (detector, inference rate, enable) are machino's &mdash; the buttons here set them
+	  through its API.</p>
+	<div id="ai-detmsg" class="alert py-2" hidden></div>
+	<table class="table table-sm mb-2"><thead><tr><th>Detector</th><th>Available</th><th>Why not</th><th></th></tr></thead>
+	<tbody id="ai-detlist"><tr><td colspan="4" class="mj-card-note">loading &hellip;</td></tr></tbody></table>
+	<dl class="row mb-0">
+		<dt class="col-7">Detection state</dt><dd class="col-5" id="ai-state">&hellip;</dd>
+		<dt class="col-7">Configured detector / model</dt><dd class="col-5" id="ai-cfg">&hellip;</dd>
+		<dt class="col-7">Last error</dt><dd class="col-5" id="ai-err">&hellip;</dd>
+	</dl>
+</div></div></div>
+
 <div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap">Storage</h3><span class="mj-live-rule"></span></div>
 	<dl class="row mb-0">
@@ -146,7 +164,13 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 	<table class="table table-sm mb-0"><thead><tr><th>File</th><th>Size</th><th></th></tr></thead><tbody>
 	<% for f in "$MODELDIR"/*; do [ -f "$f" ] || continue; _b=$(basename "$f"); _s=$(du -k "$f" 2>/dev/null | cut -f1) %>
 		<tr><td class="text-break"><%= $_b %></td><td><%= $_s %> kB</td>
-		<td><form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"
+		<td class="text-nowrap">
+		<% case "$_b" in *.bin) %>
+			<button class="btn btn-sm btn-outline-primary ai-use" type="button"
+			        data-path="<%= $MODELDIR %>/<%= $_b %>"
+			        title="Sets ai.model_path to this file through machino's API. A running person detector restarts with it.">Use</button>
+		<% ;; esac %>
+		<form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"
 		          onsubmit="return confirm('Delete this model?')">
 			<input type="hidden" name="name" value="<%= $_b %>">
 			<button class="btn btn-sm btn-outline-danger" type="submit" name="action" value="del-model">Delete</button>
@@ -158,7 +182,133 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 	<% fi %>
 </div></div></div>
 
+<div class="col-12"><div class="card"><div class="card-body">
+	<div class="mj-live-head"><h3 class="mj-cap">Building a model with the Ingenic SDK</h3><span class="mj-live-rule"></span></div>
+	<p class="mj-card-note">The NNA runs <b>Magik</b> models only: a network exported to ONNX (or
+	  TensorFlow/TFLite), quantized and serialised for the T40 by Ingenic's
+	  <b>TransformKit</b>. The runtime on the camera is Ingenic's <b>Venus</b> library
+	  (magik-toolkit, InferenceKit <code>nna1</code>), statically linked into the
+	  helper <code>machino-nna</code>. Model and helper must come from the same toolkit
+	  revision &mdash; Venus refuses a model built for another version.</p>
+	<ol class="mj-card-note mb-2">
+		<li><b>Get the toolkit</b> (public Ingenic mirror, pinned revision used by machino's CI):<br>
+		  <code>git clone https://github.com/wispytrace/magik-toolkit &amp;&amp; git -C magik-toolkit checkout e511d370dd7ff84664c9140e0590c354947c7eac</code></li>
+		<li><b>Train or pick a network.</b> Reference (development only, AGPL weights):
+		  <code>Models/post/yolov5s/yolov5s.onnx</code>. Shippable path: your own weights via
+		  <code>Models/training/pytorch/Txx_Xs2/persondet</code> (small person detector, 1&ndash;2M parameters &mdash; it
+		  also fits the overlay, unlike the 7.6&nbsp;MB yolov5s).</li>
+		<li><b>Convert on an x86 Linux host</b> (TransformKit is an x86 binary):<br>
+		  <code>cd Models/post/yolov5s &amp;&amp; ../../../TransformKit/magik-transform-tools --inputpath yolov5s.onnx --outputpath ./yolov5s_t40_magik.mk.h --config cfg/magik_t40.cfg --save_quantize_model true</code><br>
+		  The config sets SOC=T40, input 1&times;3&times;640&times;640 RGB, NORMAL 255 and the calibration set. Output: <code>yolov5s_t40_magik.bin</code>.</li>
+		<li><b>Write the manifest</b> next to the .bin (schemaVersion 1). Minimum:<br>
+		  <code>{"schemaVersion":1,"id":"my-model","backend":"venus-nna","nnaGeneration":"nna1","soc":"t40nn","modelFile":"yolov5s_t40_magik.bin","classes":[{"id":0,"label":"person"}]}</code><br>
+		  machino refuses a model whose manifest names another backend, NNA generation, SoC or file (reason codes <code>AI_MODEL_INCOMPATIBLE_*</code>).</li>
+		<li><b>Bundle and upload:</b> <code>tar czf my-model.tgz yolov5s_t40_magik.bin manifest.json</code>, then the upload form above, then <b>Use</b> next to the file and select the <b>person</b> detector.</li>
+	</ol>
+	<p class="mj-card-note mb-0">Ready-made: the CI workflow
+	  <a href="https://github.com/aresstack/machino/actions/workflows/build-nna-t40.yml" target="_blank" rel="noopener">build-nna-t40</a>
+	  produces the helper (<code>machino-nna-t40</code>) and an upload-ready bundle
+	  (<code>machino-nna-model-bundle</code>, a .tgz) from that exact recipe.
+	  Details, evidence and the boot prerequisites (nmem window, soc-nna driver):
+	  <a href="https://github.com/aresstack/machino/blob/main/machino/docs/architecture/nna-model.md" target="_blank" rel="noopener">nna-model.md</a>,
+	  <a href="https://github.com/aresstack/machino/blob/main/machino/docs/architecture/nna.md" target="_blank" rel="noopener">nna.md</a>,
+	  <a href="https://github.com/aresstack/machino/wiki/AI-Person-Detection" target="_blank" rel="noopener">wiki: AI &amp; Person Detection</a>.
+	  The public magik-toolkit carries no LICENSE file; machino ships nothing from the stock firmware.</p>
+</div></div></div>
+
 </div>
 </div>
+
+<script>
+// Lokal (IIFE): header.cgi laedt /a/main.js, das global `function $` deklariert.
+(function () {
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+async function api(method, path, body) {
+  const r = await fetch(path, {
+    method,
+    headers: body === undefined ? {} : {"Content-Type": "application/json"},
+    body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: "same-origin"
+  });
+  if (r.status === 401) { location.href = "/login.html?next=/cgi-bin/machino-ai.cgi"; throw new Error("unauthorized"); }
+  let j = null;
+  try { j = await r.json(); } catch (e) { j = null; }
+  return {status: r.status, body: j};
+}
+function msg(el, text, kind) {
+  el.textContent = text;
+  el.className = "alert py-2 " + (kind === "ok" ? "alert-success" : kind === "bad" ? "alert-danger" : "alert-secondary");
+  el.hidden = !text;
+}
+function reason(res, fallback) {
+  const e = res.body && (res.body.error || res.body);
+  return (e && (e.message || e.error)) || fallback || ("HTTP " + res.status);
+}
+function td(tr, text, cls) { const c = document.createElement("td"); if (cls) c.className = cls; c.textContent = text; tr.appendChild(c); return c; }
+
+async function patchAi(fields, okText) {
+  const m = $("ai-detmsg");
+  msg(m, "applying \u2026", "");
+  const r = await api("PATCH", "/api/v1/config", {ai: fields});
+  if (r.status === 200) { msg(m, okText, "ok"); await refresh(); }
+  else msg(m, reason(r), "bad");
+}
+
+async function refresh() {
+  const tb = $("ai-detlist");
+  // The three reads are independent -- fire them together, one round-trip
+  // instead of three on the camera's slow HTTP path.
+  const [d, t, c] = await Promise.all([
+    api("GET", "/api/v1/ai/detectors"),
+    api("GET", "/api/v1/telemetry"),
+    api("GET", "/api/v1/config"),
+  ]);
+  tb.innerHTML = "";
+  if (d.status !== 200 || !d.body || !d.body.detectors) {
+    const tr = document.createElement("tr"); td(tr, reason(d, "machino API not reachable"), "mj-card-note").colSpan = 4; tb.appendChild(tr);
+  } else {
+    for (const det of d.body.detectors) {
+      const tr = document.createElement("tr");
+      td(tr, det.label + (det.id === d.body.selected ? "  (selected)" : ""));
+      td(tr, det.available ? "yes" : "no");
+      const why = td(tr, "", "mj-card-note");
+      if (det.reasons && det.reasons.length) {
+        for (const rs of det.reasons) {
+          const line = document.createElement("div");
+          const code = document.createElement("code"); code.textContent = rs.code;
+          line.appendChild(code); line.appendChild(document.createTextNode(" " + (rs.message || "")));
+          why.appendChild(line);
+        }
+      } else why.textContent = "\u2014";
+      const act = td(tr, "", "text-nowrap");
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn btn-sm btn-outline-primary";
+      b.textContent = det.id === d.body.selected ? "Selected" : "Select + enable";
+      b.disabled = det.id === d.body.selected;
+      b.title = det.available ? "Sets ai.detector and ai.enabled through machino's API"
+                              : "Selectable anyway (machino keeps the choice); it starts in state=error until every reason is green";
+      b.addEventListener("click", () => patchAi({detector: det.id, enabled: true}, "detector " + det.id + " selected and enabled"));
+      act.appendChild(b);
+      tb.appendChild(tr);
+    }
+  }
+  const ai = t.body && t.body.ai;
+  $("ai-state").textContent = ai ? (ai.state + (ai.backend ? " (" + ai.backend + ")" : "")) : "\u2014";
+  const cfg = c.body && c.body.ai;
+  $("ai-cfg").textContent = cfg ? (cfg.detector + " / " + (cfg.model_path || "(no model path)")) : "\u2014";
+  // The Error-state reason rides in telemetry's ai.error {code,message}
+  // (see telemetry_json) -- there is no ai.last_error field there.
+  const e = ai && ai.error ? ((ai.error.code || "") + " " + (ai.error.message || "")).trim() : "";
+  $("ai-err").textContent = e || "\u2014";
+}
+
+document.querySelectorAll(".ai-use").forEach((b) => {
+  b.addEventListener("click", () => patchAi({model_path: b.dataset.path}, "model path set to " + b.dataset.path));
+});
+refresh().catch((e) => msg($("ai-detmsg"), "machino API: " + e, "bad"));
+})();
+</script>
 
 <%in p/footer.cgi %>

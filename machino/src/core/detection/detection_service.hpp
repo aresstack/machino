@@ -26,6 +26,7 @@ struct AiTelemetry {
     AiState     state = AiState::Disabled;
     bool        enabled = false;
     std::string detector;              // requested backend name
+    std::string model_path;            // ai.model_path as configured (NNA backends)
     std::string backend;              // actual backend id once started ("" otherwise)
     std::string last_error;
     int         requested_fps = 0;
@@ -55,6 +56,10 @@ public:
     Result set_enabled(bool on);
     Result set_detector(const std::string& name);
     Result set_inference_fps(int fps);
+    // The model the NNA backend loads. Changing it while active restarts the
+    // detector so the helper respawns with the new file; a motion detector
+    // does not read it and keeps running.
+    Result set_model_path(const std::string& path);
     void   apply_config(const AiConfig& cfg);
 
     AiState     state() const;

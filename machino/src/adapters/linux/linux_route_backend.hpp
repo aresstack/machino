@@ -33,7 +33,7 @@ public:
     bool default_routes(std::vector<net::DefaultRoute>& out) const override;
 
     Result add_default(const std::string& ifname, const std::string& gateway,
-                       int metric) override;
+                       int metric, bool onlink = false) override;
     Result del_default(const std::string& ifname, const std::string& gateway,
                        int metric) override;
 
@@ -46,7 +46,7 @@ public:
 
 private:
     Result route_op(int nlmsg_type, int flags, const std::string& ifname,
-                    const std::string& gateway, int metric);
+                    const std::string& gateway, int metric, bool onlink);
 
     std::string proc_;
     std::string resolv_;

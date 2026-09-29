@@ -109,6 +109,34 @@ ohne neuen Beweis.
   provenance.txt; `machino-nna-t40` = Helfer. Das Haupt-Bundle zieht
   beide best effort; rot wird es dadurch nie.
 
+## Modell per Web-UI auf die Kamera (Stand 2026-09-29)
+
+Der Weg ohne Cam-Tool und ohne scp, alles auf der KI-Seite
+(`machino-ai.cgi`):
+
+1. **Upload**: ein `.tgz` mit `.bin` + `manifest.json` an
+   `machino-ai-upload.cgi` (prueft Pfade, Backend/NNA-Generation im
+   Manifest, Overlay-Platz; max. 8 MB, die :80-Front-Door puffert genau so
+   viel). Die CI legt dafuer das Artefakt `machino-nna-model-bundle` ab --
+   ein fertiges `.tgz` statt des Verzeichnis-Zips.
+2. **Use** neben der Datei: `PATCH /api/v1/config {"ai":{"model_path":…}}`.
+   `ai.model_path` ist damit zur Laufzeit setzbar (absoluter Pfad ohne
+   `..`; ob die Datei existiert und das Manifest passt, beantwortet weiter
+   die Availability-Bewertung, nicht der PATCH). Ein laufender
+   person-Detector startet mit dem neuen Modell neu.
+3. **Detectors-Karte**: liest `GET /api/v1/ai/detectors` und zeigt je
+   Detector `available` und ALLE Reason-Codes; "Select + enable" setzt
+   `ai.detector`/`ai.enabled` ueber die API. Die Seite besitzt keine
+   Einstellung selbst -- machinod bleibt der eine Eigentuemer.
+4. Die Karte "Building a model with the Ingenic SDK" traegt das Rezept oben
+   (Toolkit-Pin, TransformKit-Aufruf, Manifest-Minimum, tar) samt Links auf
+   diese Doku und die Wiki-Seite `AI-Person-Detection`.
+
+Treiber: `soc-nna.ko` liegt im OpenIPC-Image (AP23), wurde aber von nichts
+geladen. `init/machino` laedt ihn jetzt vor machinod, und NUR wenn `nmem=`
+auf der Cmdline steht (ohne Fenster ist der Probe sinnlos). Kein Fork bei
+lebendem IMP: das passiert im Initskript, nicht im Daemon.
+
 ## PENDING / offen
 
 - **Größenbefund (Audit 2026-09-26):** das konvertierte yolov5s wiegt

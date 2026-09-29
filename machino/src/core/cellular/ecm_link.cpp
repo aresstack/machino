@@ -140,7 +140,26 @@ const CellularLinkState& EcmLink::tick(const CellularStatus& status)
     // Das Modem ist weg. Alles, was daran hing, ist damit auch weg -- das ist
     // kein Fehler, sondern eine Tatsache, und waehrend einer erwarteten
     // Re-Enumeration sogar der Normalfall.
+    if (status.present && !status.responsive &&
+        (st_.state == DataLinkState::Up || st_.state == DataLinkState::Addressing)) {
+        // Der AT-Port ist da, nur die Antwort blieb aus. Das ist auf einer
+        // STEHENDEN Verbindung kein Grund, sie abzubauen: der Ping in
+        // CellularService hat 2 s, und ein Modem, das gerade Daten schaufelt
+        // (WebRTC ueber Mobilfunk), antwortet auf dem AT-Port schon einmal
+        // spaeter. Gemessen 2026-09-29: ~5 s nach dem Start eines Streams
+        // "network path: cellular -> (none)", Adresse weg, DHCP-Client
+        // gestoppt, Neuwahl -- mit einer NEUEN Traegeradresse, und jede
+        // laufende Verbindung war damit tot. Der Datenpfad selbst war die
+        // ganze Zeit in Ordnung.
+        //
+        // Erst eine SERIE ausgebliebener Antworten heisst, dass das Modem
+        // wirklich haengt. Eine einzelne wird protokolliert, nicht bestraft.
+        if (++unresponsive_ticks_ < kUnresponsiveTeardownTicks) return st_;
+    }
+    if (status.present && status.responsive) unresponsive_ticks_ = 0;
+
     if (!status.present || !status.responsive) {
+        unresponsive_ticks_ = 0;
         if (dhcp_running_) { be_.dhcp_stop(dhcp_iface_); dhcp_running_ = false; }
         st_.address = LinkAddress{};
         if (st_.state == DataLinkState::WaitReenumeration) {

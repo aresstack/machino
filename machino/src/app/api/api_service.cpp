@@ -422,10 +422,12 @@ Json ApiService::config_json() {
         ai.set("enabled", Json::boolean(a.enabled));
         ai.set("detector", Json::string(a.detector));
         ai.set("inference_fps", Json::integer(a.requested_fps));
+        ai.set("model_path", Json::string(a.model_path));
     } else {
         ai.set("enabled", Json::boolean(cfg_.ai.enabled));
         ai.set("detector", Json::string(cfg_.ai.detector));
         ai.set("inference_fps", Json::integer(cfg_.ai.inference_fps));
+        ai.set("model_path", Json::string(cfg_.ai.model_path));
     }
     j.set("ai", ai);
     if (audio_) {
@@ -1032,6 +1034,37 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                 } else if (kv.first == "inference_fps") {
                     long long n; if (!get_int(val, n) || n < 1 || n > 60) return bad(422, "invalid_value", path, "inference_fps must be an integer in 1..60");
                     c.key = "ai.inference_fps"; c.value = std::to_string(n);
+                } else if (kv.first == "model_path") {
+                    // The AI page selects a model this way (its "Use" button):
+                    // an absolute path without ".." segments. Whether the file
+                    // exists and its manifest fits is the availability
+                    // contract's business (GET /ai/detectors), not a 422 here:
+                    // a path may be set before the model is copied on.
+                    if (!val.is_string()) return bad(422, "invalid_value", path, "model_path must be a string");
+                    const std::string& mp = val.as_string();
+                    // "" clears it. Otherwise: confined to the model directories
+                    // (the overlay install dir and the /tmp test dir the docs
+                    // use), no "..", and a conservative filename charset. The
+                    // charset is the important part: this value is echoed by the
+                    // AI page and passed to `machino-nna --model`, so anything
+                    // outside [A-Za-z0-9/._-] (< > " ' ; | $ ...) is refused at
+                    // the source rather than escaped downstream.
+                    if (!mp.empty()) {
+                        const bool rooted = mp.rfind("/etc/machino/models/", 0) == 0 ||
+                                            mp.rfind("/tmp/models/", 0) == 0;
+                        if (!rooted || mp.size() > 255 || mp.find("/../") != std::string::npos ||
+                            (mp.size() >= 3 && mp.compare(mp.size() - 3, 3, "/..") == 0))
+                            return bad(422, "invalid_value", path,
+                                       "model_path must be under /etc/machino/models or /tmp/models, without '..'");
+                        for (char ch : mp) {
+                            const bool okc = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                                             (ch >= '0' && ch <= '9') || ch == '/' || ch == '.' ||
+                                             ch == '-' || ch == '_';
+                            if (!okc) return bad(422, "invalid_value", path,
+                                                 "model_path may contain only letters, digits, and / . - _");
+                        }
+                    }
+                    c.key = "ai.model_path"; c.value = mp;
                 } else return bad(400, "unknown_field", path, "unknown field");
             } else if (s == "night") {
                 // W2: die Day/Night-Sektion (WebUI: nightMode). Pins sind
@@ -1175,6 +1208,7 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         else if (c.key == "ai.enabled")       { c.r = ai_apply(detection_->set_enabled(c.value == "true"), c.value == "true" ? 1 : 0); }
         else if (c.key == "ai.detector")      { c.r = ai_apply(detection_->set_detector(c.value), -1); }
         else if (c.key == "ai.inference_fps") { int n2 = atoi(c.value.c_str()); c.r = ai_apply(detection_->set_inference_fps(n2), n2); }
+        else if (c.key == "ai.model_path")    { c.r = ai_apply(detection_->set_model_path(c.value), -1); }
         c.has_result = true;
         if (c.r.ok) {
             if (c.key == "rtsp.enabled") cfg_.rtsp.enabled = c.value == "true";

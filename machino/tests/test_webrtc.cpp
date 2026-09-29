@@ -3,12 +3,14 @@
 // and a full STUN Binding Request/Response roundtrip with verified
 // MESSAGE-INTEGRITY and FINGERPRINT.
 #include "app/webrtc/aes.hpp"
+#include "app/webrtc/peer.hpp"
 #include "app/webrtc/rtp.hpp"
 #include "app/webrtc/sdp.hpp"
 #include "app/webrtc/srtp.hpp"
 #include "app/webrtc/stun.hpp"
 #include "core/json.hpp"
 #include "sdp_offers.hpp"
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -719,5 +721,28 @@ void run_webrtc_ap16_tests() {
             "a=fmtp:102 packetization-mode=1;profile-level-id=42e01f\r\n";
         Offer o = parse_offer(missing);
         WCHECK(o.ok && o.media[0].h264_pt == 102 && o.media[0].h264_profile == "42e01f");
+    }
+
+    // 9. Stranded media path: the errnos that say "the source address or the
+    //    route is gone" are fatal, a full buffer is not. Measured 2026-09-29:
+    //    a cellular redial gave the uplink a new carrier address and every
+    //    sendto() on the still-bound UDP socket answered EINVAL, 959 times,
+    //    while the page waited for its own timeout. The list is pinned here
+    //    so nobody widens it to EAGAIN by accident -- that would close a
+    //    healthy session under load.
+    {
+        WCHECK(PeerSession::is_fatal_send_errno(EINVAL));
+        WCHECK(PeerSession::is_fatal_send_errno(EADDRNOTAVAIL));
+        WCHECK(PeerSession::is_fatal_send_errno(ENETUNREACH));
+        WCHECK(PeerSession::is_fatal_send_errno(EHOSTUNREACH));
+        WCHECK(PeerSession::is_fatal_send_errno(ENETDOWN));
+        WCHECK(!PeerSession::is_fatal_send_errno(EAGAIN));
+        WCHECK(!PeerSession::is_fatal_send_errno(ENOBUFS));
+        WCHECK(!PeerSession::is_fatal_send_errno(EINTR));
+        WCHECK(!PeerSession::is_fatal_send_errno(0));
+        // Well above one tick of RTP (a 30 fps stream sends several packets
+        // per frame) so a single bad burst never counts as stranded, and well
+        // below the minutes the browser needs on its own.
+        WCHECK(PeerSession::kStrandedAfter >= 10 && PeerSession::kStrandedAfter <= 100);
     }
 }

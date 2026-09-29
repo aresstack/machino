@@ -10,6 +10,7 @@
 #include "app/http/http_parse.hpp"
 #include "app/http/websocket.hpp"
 #include "app/rtsp/h264_nal.hpp"
+#include "core/diag.hpp"
 #include "core/log.hpp"
 #include "core/runtime_stats.hpp"
 
@@ -23,6 +24,7 @@
 #include <ctime>
 #include <time.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -400,6 +402,7 @@ bool HttpServer::handle_request(Client& c) {
     if (p == Parse::TooLarge) { queue(c, response(413, "application/json", api::ApiService::error("invalid_value", "", "request too large").dump(), false)); c.close_after_flush = true; return true; }
     if (p == Parse::Bad)      { queue(c, response(400, "application/json", api::ApiService::error("invalid_json", "", "malformed HTTP request").dump(), false)); c.close_after_flush = true; return true; }
     c.in.erase(0, consumed); ++c.requests; c.last_activity_ms = now_ms();
+    diag::set_http("dispatch");   // stall marker: inside request handling
 
     const std::string& path = req.path; const std::string& m = req.method;
     api::Response r;
@@ -700,6 +703,7 @@ bool HttpServer::handle_request(Client& c) {
             return ok;
         }
     } else if (path == "/api/v1/config") {
+        diag::set_http("api_config");   // stall marker: the route the hardlock reproduced on
         if (m == "GET") r = api_.config();
         else if (m == "POST") {
             compat::MajesticTranslation t = compat::majestic_post_to_native(req.body);
@@ -708,6 +712,7 @@ bool HttpServer::handle_request(Client& c) {
         } else if (m == "PATCH" || m == "PUT") r = api_.patch_config(req.body, req.header("if-match"));
         else r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
     } else if (path == "/ws/video") {
+        diag::set_http("media:ws_video");   // stall marker: acquire/IMP path
         // The stock webui's Live player (upstream preview.js): WebSocket, one
         // JSON init + fMP4 init segment, then one moof+mdat per frame.
         const std::string wskey = req.header("sec-websocket-key");
@@ -811,6 +816,7 @@ bool HttpServer::handle_request(Client& c) {
             }
         }
     } else if (path == "/ws/webrtc") {
+        diag::set_http("media:ws_webrtc");   // stall marker: acquire/IMP path
         // The stock webui's preferred Live transport (preview-webrtc.js):
         // this socket only signals; media runs over the session's UDP port.
         const std::string wskey = req.header("sec-websocket-key");
@@ -1020,6 +1026,7 @@ bool HttpServer::handle_request(Client& c) {
         return ok;
     } else if (path == "/snapshot" || path == "/snapshot.jpg" || path == "/api/v1/snapshot" ||
                path == "/image.jpg") {
+        diag::set_http("media:snapshot");   // stall marker: JPEG/IMP path
         // W3: /image.jpg ist majestics Name fuer dasselbe Standbild (Dashboard
         // pollt es, die Kameraseite holt Stills mit ?t=/?session= -- die Query
         // ist Cache-Busting und wird ignoriert). Mit jpeg.enabled=false
@@ -1078,6 +1085,7 @@ bool HttpServer::relay_upstream(Client& c, const Request& req) {
     c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
     c.relay_abs_deadline_ms  = now + cfg_.relay_max_ms;
     c.relay_what = req.method + " " + req.path;
+    diag::set_http("relay");   // stall marker: forwarding to busybox on :85
     // Every in-flight relay is a forked CGI on the busybox side; a browser
     // dashboard fires a dozen fetches at once and the camera has ~43 MiB of
     // userspace. Excess relays wait here until a slot frees (the old blocking
@@ -1940,6 +1948,16 @@ bool HttpServer::rtc_ws_input(Client& c) {
 // Per tick: DTLS timers, PLI -> on-demand IDR, and the AU pump into RTP.
 void HttpServer::pump_rtc(Client& c) {
     if (!c.rtc) return;
+    if (c.rtc->stranded() && !c.close_after_flush) {
+        // The media socket cannot reach the browser any more (source address
+        // gone). Closing the signalling socket is what makes the page notice
+        // now instead of after its own minutes-long timeout.
+        LOGW(MOD, "%s: webrtc media path is gone (sends fail) - closing the session so the client reconnects",
+             c.peer.c_str());
+        c.close_after_flush = true;
+        c.out.clear();
+        return;
+    }
     c.rtc->tick();
     c.rtc->log_stats();
     if (c.rtc->take_pli() && pipeline_) pipeline_->request_idr(c.rtc_unit);
@@ -2044,6 +2062,34 @@ void HttpServer::logs_pump(short revents) {
     }
 }
 
+void HttpServer::drop_clients_on_vanished_addresses() {
+    // The addresses that exist right now. A client bound to anything else is
+    // stranded: its packets leave with a source the network no longer routes.
+    std::vector<uint32_t> present;
+    struct ifaddrs* ifa = nullptr;
+    if (getifaddrs(&ifa) != 0) return;            // cannot tell: touch nothing
+    for (struct ifaddrs* p = ifa; p; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
+        present.push_back(((sockaddr_in*)p->ifa_addr)->sin_addr.s_addr);
+    }
+    freeifaddrs(ifa);
+    if (present.empty()) return;                   // mid-reconfiguration: touch nothing
+
+    int dropped = 0;
+    for (auto& cp : clients_) {
+        Client& c = *cp;
+        if (c.fd < 0 || c.close_after_flush) continue;
+        sockaddr_in la{}; socklen_t ll = sizeof la;
+        if (getsockname(c.fd, (sockaddr*)&la, &ll) != 0) continue;
+        if (std::find(present.begin(), present.end(), la.sin_addr.s_addr) != present.end()) continue;
+        c.close_after_flush = true;
+        c.out.clear();
+        ++dropped;
+    }
+    if (dropped)
+        LOGI(MOD, "address change: closed %d client(s) bound to an address that no longer exists", dropped);
+}
+
 void HttpServer::loop() {
     std::vector<pollfd> pfds;
     // pfds[k+1] belongs to refs[k]: an explicit fd->client map, because
@@ -2082,10 +2128,15 @@ void HttpServer::loop() {
         if (hls_) timeout_ms = 20;
         const size_t logs_idx = (logs_fd() >= 0) ? pfds.size() : (size_t)-1;
         if (logs_fd() >= 0) pfds.push_back({logs_fd(), POLLIN, 0});
+        diag::set_http("poll");   // stall marker: HTTP thread waiting for I/O
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)
         hls_pump(t);
+        {
+            const unsigned e = addr_epoch_.load(std::memory_order_acquire);
+            if (e != seen_addr_epoch_) { seen_addr_epoch_ = e; drop_clients_on_vanished_addresses(); }
+        }
         for (size_t i = 0; i < clients_.size(); ++i) {
             Client& c = *clients_[i];
             short re = 0, rre = 0, ure = 0, uge = 0;

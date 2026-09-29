@@ -929,6 +929,26 @@ void test_ai_detectors_route_and_person_config() {
     // Unbekannte Detectoren bleiben abgelehnt.
     api::Response p2 = r.api.patch_config("{\"ai\":{\"detector\":\"unicorn\"}}", "");
     ACHECK(p2.status == 422);
+
+    // Der Modellpfad ist ueber die API waehlbar (die KI-Seite setzt ihn mit
+    // "Use" neben der Datei): absolut, ohne "..", persistiert, in config.json
+    // sichtbar und die Availability-Bewertung liest den NEUEN Pfad.
+    api::Response p3 = r.api.patch_config("{\"ai\":{\"model_path\":\"/etc/machino/models/person.bin\"}}", "");
+    ACHECK(p3.status == 200);
+    ACHECK(r.store.get("ai.model_path") == "/etc/machino/models/person.bin");
+    ACHECK(path(r.api.config().body, "ai.model_path")->as_string() == "/etc/machino/models/person.bin");
+    api::Response d2 = r.api.ai_detectors();
+    ACHECK(path(d2.body, "detectors")->at(1).get("reasons")->size() == 4);   // Datei fehlt weiterhin
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"models/x.bin\"}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/etc/machino/models/../../shadow\"}}", "").status == 422);
+    // Der Testpfad /tmp/models ist erlaubt (Modell zu gross fuers Overlay).
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/tmp/models/y.bin\"}}", "").status == 200);
+    // Ausserhalb der Modell-Verzeichnisse: abgelehnt (kein /etc/shadow o.ae.).
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/etc/shadow\"}}", "").status == 422);
+    // XSS-/Injection-Zeichen: an der Quelle abgelehnt, nicht erst beim Rendern.
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/etc/machino/models/a<script>.bin\"}}", "").status == 422);
+    // Leer = kein Modell: erlaubt, damit ein Fehlgriff zuruecknehmbar ist.
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"\"}}", "").status == 200);
 }
 
 // AP3 (Feature 2): die IPsec-Routen an einem Fake-Backend. Der Kern wohnt in

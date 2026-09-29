@@ -164,6 +164,22 @@ Result DetectionService::set_detector(const std::string& name) {
     return Result::ok();
 }
 
+Result DetectionService::set_model_path(const std::string& path) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (cfg_.model_path == path) return Result::ok();
+    cfg_.model_path = path;
+    // Only a model-consuming detector needs the respawn. The motion (IVS)
+    // detector never reads model_path, so tearing it down would be a needless
+    // gap in a running detector (header contract). "motion" is the one
+    // non-model detector id (detector_availability.cpp); everything else is an
+    // NNA backend that loads the file.
+    if ((state_ == AiState::Active || state_ == AiState::Starting) && cfg_.detector != "motion") {
+        stop_locked();
+        return start_locked();
+    }
+    return Result::ok();
+}
+
 Result DetectionService::set_inference_fps(int fps) {
     std::lock_guard<std::mutex> lk(m_);
     if (fps < 1 || fps > 60) return Result::error();
@@ -185,6 +201,7 @@ AiTelemetry DetectionService::telemetry() const {
     AiTelemetry t;
     t.state = state_; t.enabled = cfg_.enabled; t.detector = cfg_.detector; t.backend = backend_;
     t.last_error = last_error_; t.requested_fps = cfg_.inference_fps;
+    t.model_path = cfg_.model_path;
     if (det_) t.skipped = det_->skipped();
     std::lock_guard<std::mutex> tl(tel_m_);
     t.completed = completed_; t.failed = failed_; t.detections_total = detections_;

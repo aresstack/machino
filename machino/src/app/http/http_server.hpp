@@ -119,6 +119,16 @@ public:
     void   stop();
     int    port() const { return cfg_.port; }
 
+    // An uplink's IPv4 address changed (a cellular redial brought a new
+    // carrier address, a lease moved). Every client whose connection is bound
+    // to an address that no longer exists is dead and does not know it: TCP
+    // keeps retransmitting into the void for minutes, a UDP media socket
+    // answers EINVAL per packet. The poll loop closes exactly those clients
+    // on its next pass so the browser reconnects at once; clients on an
+    // address that still exists (the LAN, say) are left alone. Callable from
+    // any thread.
+    void   on_address_change() { addr_epoch_.fetch_add(1, std::memory_order_release); }
+
 private:
     struct Client;
     osd::OsdService* osd_ = nullptr;
@@ -189,6 +199,11 @@ private:
 
     std::string       logs_buf_;          // partial line carried between reads
     std::atomic<bool> quit_{false};
+    std::atomic<unsigned> addr_epoch_{0};
+    unsigned          seen_addr_epoch_ = 0;
+    // Close every client whose local address is no longer configured on any
+    // interface. Poll-loop thread only.
+    void drop_clients_on_vanished_addresses();
     std::thread       thread_;
     std::vector<std::unique_ptr<Client>> clients_;
     // /hls: one shared segmenter on the main stream, alive while players
