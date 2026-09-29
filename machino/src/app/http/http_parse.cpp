@@ -332,6 +332,10 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     return out;
 }
 
+bool relay_nav_complete(const std::string& window) {
+    return window.find("</nav>") != std::string::npos;
+}
+
 std::string inject_machino_dashboard_preview(const std::string& html, int stream, bool& changed) {
     changed = false;
     if (html.find("mch-prev") != std::string::npos) return html;
