@@ -31,9 +31,10 @@ public:
     // different metrics are a normal thing to have during a switch-over, so
     // the metric is part of the identity and not a detail.
     // `onlink` installs the route even though the gateway is not inside any
-    // prefix on the interface (RTNH_F_ONLINK). Needed on a point-to-point
-    // uplink whose address is a /32: the modem answers for its gateway on the
-    // link, but the kernel cannot know that from the address alone.
+    // prefix on the interface (RTNH_F_ONLINK). Needed on a cellular uplink
+    // whose address is a /32: usb0 is a plain Ethernet NIC and the modem
+    // answers ARP for its gateway on the link (measured 2026-09-29), but the
+    // kernel cannot know that from the address alone.
     virtual Result add_default(const std::string& ifname, const std::string& gateway,
                                int metric, bool onlink = false) = 0;
     virtual Result del_default(const std::string& ifname, const std::string& gateway,

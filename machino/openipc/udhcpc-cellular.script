@@ -93,16 +93,29 @@ case "$1" in
 		fi
 
 		if [ -n "$router" ]; then
-			# Nur die eigene loeschen, nicht jede: ein "ip route del default"
-			# ohne dev wuerde die Ethernet-Route mitnehmen, und genau das soll
-			# dieses Skript verhindern.
-			ip route del default dev "$interface" 2>/dev/null
-			for r in $router; do
+			r="${router%% *}"
+			# Die Default-Route hier ist nur der STARTWERT (siehe oben). Sobald
+			# machino konvergiert ist, besitzt route_plan die einzige Route
+			# ueber dieses Interface -- mit seiner Metrik, nicht mit 300. Ein
+			# Renewal darf die nicht anfassen: "ip route del default dev usb0"
+			# ohne Metrik traefe die ERSTE Default-Route auf usb0, also
+			# machinos, und der Reconciler muesste alle paar Minuten neu
+			# konvergieren. Deshalb: steht schon irgendeine Default-Route ueber
+			# dieses Gateway auf diesem Interface, bleibt alles wie es ist.
+			# Nur wenn keine da ist (erstes bound, oder ein NEUES Gateway nach
+			# einer Neuwahl), raeumt das Skript die alten weg und setzt den
+			# Startwert.
+			if ! ip -4 route show dev "$interface" 2>/dev/null | grep -q "^default via $r "; then
+				# Nur die eigenen loeschen, nicht jede: ein "ip route del
+				# default" ohne dev wuerde die Ethernet-Route mitnehmen, und
+				# genau das soll dieses Skript verhindern. Mehrere, falls
+				# machino und ein aelterer Startwert beide noch stehen.
+				while ip route del default dev "$interface" 2>/dev/null; do :; done
 				# onlink: das Gateway liegt in keinem Praefix des Interface
 				# (es gibt keins ausser dem /32), der Kernel wuerde die Route
 				# ohne das Flag mit "Network unreachable" ablehnen.
 				ip route add default via "$r" dev "$interface" onlink metric $CELL_METRIC 2>/dev/null
-			done
+			fi
 		fi
 
 		# resolv.conf wird hier NICHT angefasst. Bewusst, und anders als im

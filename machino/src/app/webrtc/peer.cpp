@@ -102,7 +102,10 @@ bool PeerSession::is_fatal_send_errno(int e) {
 }
 
 bool PeerSession::send_udp(const uint8_t* p, size_t n) {
-    if (!have_peer_) return false;
+    // No peer yet is not a path error. errno is set explicitly so the caller's
+    // streak accounting reads a defined value instead of whatever the last
+    // syscall left behind (a stale EINVAL would count towards stranded()).
+    if (!have_peer_) { errno = ENOTCONN; return false; }
     sockaddr_in a{};
     a.sin_family = AF_INET;
     a.sin_port = htons(peer_port_);
