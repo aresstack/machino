@@ -39,6 +39,7 @@ public:
     Result set(ImageControl c, int value, int& effective) override {
         log_.add(std::string("image.set.") + image_control_name(c) + "@" + std::to_string(value));
         if (!active) { effective = -1; return Result::busy(); }
+        if (fail_sets > 0) { --fail_sets; effective = -1; return Result::error(-5); }   // a transient ISP refusal
         if (c == ImageControl::Wdr || c == ImageControl::Drc) { effective = -1; return Result::unsupported(); }
         values[(int)c] = value; effective = value; return Result::ok();
     }
@@ -51,6 +52,7 @@ public:
         out.available = true; out.luma = 100; out.target = 96; out.stable = true; return Result::ok();
     }
     bool active = false;
+    int  fail_sets = 0;                  // the next N set() calls fail
     std::array<int, (int)ImageControl::COUNT> values{};
 private:
     CallLog& log_;

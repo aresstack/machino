@@ -39,6 +39,15 @@ jobs:
           name: machino-host-test-log
           path: /tmp/host-test.log
           if-no-files-found: ignore
+      - name: "Host unit tests WITHOUT the optional codecs (the Makefile default)"
+        run: |
+          # A build without CODECS= is what `make` gives anyone who did not
+          # fetch the encoders - the AAC/Opus endpoints answer 501 there, and
+          # the #ifdef MACHINO_CODECS seams in audio_encoder.cpp and the tests
+          # must keep compiling and passing. This is the only place that
+          # configuration is built.
+          rm -f machino/tests/machino-tests
+          make -C machino test MBEDTLS="$PWD/3p/mbedtls-3.6.7" 2>&1 | tail -5
       - name: "The make-free host runner must stay equivalent to `make test`"
         run: |
           # tools/host-test.sh exists for environments with a compiler but no

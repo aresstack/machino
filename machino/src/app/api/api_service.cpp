@@ -428,15 +428,22 @@ Json ApiService::config_json() {
         ai.set("inference_fps", Json::integer(cfg_.ai.inference_fps));
     }
     j.set("ai", ai);
-    if (audio_) {
+    // Only what the platform has: the capabilities say audio.input /
+    // audio.output, and a config that reports a microphone as "enabled" on a
+    // board without one would be a capability the camera does not have.
+    if (audio_ && (audio_->available() || audio_->output_available())) {
         const AudioConfig ac = audio_->config();
         Json au = Json::object();
-        au.set("enabled", Json::boolean(ac.enabled));
-        au.set("srate", Json::integer(ac.srate));
-        au.set("volume", Json::integer(ac.volume));
-        au.set("gain", Json::integer(ac.gain));
-        au.set("output_enabled", Json::boolean(ac.output_enabled));
-        au.set("output_volume", Json::integer(ac.output_volume));
+        if (audio_->available()) {
+            au.set("enabled", Json::boolean(ac.enabled));
+            au.set("srate", Json::integer(ac.srate));
+            au.set("volume", Json::integer(ac.volume));
+            au.set("gain", Json::integer(ac.gain));
+        }
+        if (audio_->output_available()) {
+            au.set("output_enabled", Json::boolean(ac.output_enabled));
+            au.set("output_volume", Json::integer(ac.output_volume));
+        }
         j.set("audio", au);
     }
     return j;
@@ -605,10 +612,10 @@ Json ApiService::telemetry_json() {
         n.set("auto", au);
         j.set("night", n);
     }
-    if (audio_) {
+    if (audio_ && (audio_->available() || audio_->output_available())) {
         const audio::AudioStats as = audio_->stats();
         Json au = Json::object();
-        au.set("enabled", Json::boolean(as.enabled));
+        au.set("enabled", Json::boolean(as.enabled && audio_->available()));
         au.set("capturing", Json::boolean(as.capturing));
         au.set("listeners", Json::integer(as.listeners));
         au.set("sample_rate", Json::integer(as.sample_rate));

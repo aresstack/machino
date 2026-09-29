@@ -25,6 +25,7 @@ struct TuningState {
     LatencySettings requested_latency;
     std::array<int, (int)ImageControl::COUNT> image_requested{};
     std::array<int, (int)ImageControl::COUNT> image_effective{};
+    std::array<int, (int)ImageControl::COUNT> image_override{};   // -1 = none
 };
 
 class TuningService {
@@ -56,6 +57,15 @@ public:
     // `effective_` IS still updated: that is what the hardware is doing, and
     // reporting it accurately is the point of the effective state.
     power::ApplyResult set_image_live(ImageControl c, int value);
+
+    // W2: a value a SERVICE holds (the night mode's RunningMode), as opposed
+    // to one the user saved. Applied now and again after every pipeline
+    // start, like set_image - but never recorded as "requested": the config
+    // reports the user's value, so an Image page saved at night does not
+    // write the grayscale mode into the day. Wins over the requested value
+    // while it is set; clear_image_override hands the control back.
+    power::ApplyResult set_image_override(ImageControl c, int value);
+    void clear_image_override(ImageControl c);
 
 private:
     power::ApplyResult apply_image(ImageControl c, int value, bool record_requested);
@@ -97,6 +107,7 @@ private:
     ResolvedLatency resolved_;
     std::array<int, (int)ImageControl::COUNT> requested_{};
     std::array<int, (int)ImageControl::COUNT> effective_{};
+    std::array<int, (int)ImageControl::COUNT> override_{};
 };
 
 }} // namespace machino::media

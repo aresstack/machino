@@ -23,6 +23,10 @@ public:
     std::string headers();
     // One page carrying one packet of `samples48` 48 kHz samples.
     std::string packet(const std::vector<uint8_t>& opus, uint32_t samples48);
+    // A packet that is NOT sent: the granule position moves on (the audio
+    // is that much older), the page sequence does not - a sequence hole
+    // reads as lost pages to every Ogg reader, a granule jump as a gap.
+    void skip(uint32_t samples48) { granule_ += samples48; }
 
 private:
     std::string page(const std::string& body, uint8_t flags, uint64_t granule);

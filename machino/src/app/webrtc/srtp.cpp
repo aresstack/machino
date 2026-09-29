@@ -1,4 +1,5 @@
 #include "app/webrtc/srtp.hpp"
+#include "app/rtp/rtp_packet.hpp"
 #include "app/webrtc/stun.hpp"     // hmac_sha1
 #include <cstring>
 
@@ -100,16 +101,13 @@ bool SrtpSession::protect_rtp(std::vector<uint8_t>& pkt) {
 }
 
 bool SrtpSession::unprotect_rtp(std::vector<uint8_t>& pkt, size_t& payload_at) {
-    if (pkt.size() < 12 + 10 || (pkt[0] >> 6) != 2) return false;
+    if (pkt.size() < 12 + 10) return false;
     const size_t tag_at = pkt.size() - 10;
     // Header length: CSRCs, then an optional extension (browsers send one:
-    // audio level, abs-send-time). Only the payload is encrypted.
-    size_t hdr = 12 + 4 * (size_t)(pkt[0] & 0x0f);
-    if (pkt[0] & 0x10) {
-        if (hdr + 4 > tag_at) return false;
-        hdr += 4 + 4 * (size_t)((pkt[hdr + 2] << 8) | pkt[hdr + 3]);
-    }
-    if (hdr > tag_at) return false;
+    // audio level, abs-send-time). Only the payload is encrypted. The parser
+    // is the shared one - this is the path an unauthenticated peer reaches.
+    const size_t hdr = rtp::header_length(pkt.data(), tag_at);
+    if (!hdr) return false;
     const uint32_t ssrc = be32(&pkt[8]);
     const uint16_t seq = (uint16_t)((pkt[2] << 8) | pkt[3]);
     InSeq& st = slot(in_, ssrc);

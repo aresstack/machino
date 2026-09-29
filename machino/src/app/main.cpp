@@ -885,6 +885,11 @@ int main(int argc, char** argv) {
             night_service.set_default_pins(night_def.ircut_pin1, night_def.ircut_pin2,
                                            night_def.light_sensor_pin);
         api.set_night_service(&night_service);
+        // Automatic day/night (nightMode.lightMonitor): its own thread, one
+        // sysfs read of the photocell every two seconds - not a slot in this
+        // loop (an IR-cut pulse holds the main thread 150 ms) and not tied
+        // to the network poll timer.
+        night_service.start();
 
         http::ServerConfig hc; hc.bind = cfg.api.bind; hc.port = cfg.api.port;
         hc.upstream_host = cfg.api.upstream_host; hc.upstream_port = cfg.api.upstream_port;
@@ -1166,10 +1171,6 @@ int main(int argc, char** argv) {
                         // Fehler -> Reconnect mit Backoff (kein stiller
                         // Uplink-Wechsel, kein Reconnect nach manuellem Stopp).
                         ipsec_service.tick((uint32_t)now_ms());
-                        // Automatic day/night (nightMode.lightMonitor): one
-                        // sysfs read of the photocell per tick; switches only
-                        // after the configured delay of a stable change.
-                        night_service.tick(now_ms());
                     }
                 }
             }

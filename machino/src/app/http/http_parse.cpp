@@ -430,13 +430,19 @@ const char* status_text(int s) {
     return "Unknown";
 }
 
-std::string response(int status, const std::string& ct, const std::string& body, bool keep_alive, const std::string& extra) {
+std::string response_head(int status, const std::string& ct, size_t content_length, bool keep_alive, const std::string& extra) {
     std::string r = "HTTP/1.1 " + std::to_string(status) + " " + status_text(status) + "\r\n";
-    r += "Content-Type: " + ct + "\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
+    r += "Content-Type: " + ct + "\r\nContent-Length: " + std::to_string(content_length) + "\r\n";
     r += "Cache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n";
     r += extra;
     r += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
-    r += "\r\n"; r += body;
+    r += "\r\n";
+    return r;
+}
+
+std::string response(int status, const std::string& ct, const std::string& body, bool keep_alive, const std::string& extra) {
+    std::string r = response_head(status, ct, body.size(), keep_alive, extra);
+    r += body;
     return r;
 }
 

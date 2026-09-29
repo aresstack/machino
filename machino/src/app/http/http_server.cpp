@@ -14,6 +14,7 @@
 #include "core/runtime_stats.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstdint>
@@ -28,6 +29,7 @@
 #include <poll.h>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <csignal>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -44,6 +46,10 @@ static const size_t MAX_IN = 16 * 1024;
 // is granted from the REQUEST LINE, so it applies to that one route and no
 // other request inherits it - and the service still validates the body against
 // the declared w*h*4 afterwards, so this is a buffer bound, not a trust grant.
+// An /audio.* client whose output buffer has been over its bound for this long
+// is not reading at all (see pump_audio).
+static const int kAudioStallMs = 10000;
+
 static size_t input_cap(const std::string& in) {
     static const char OSD_POST[] = "POST /api/v1/osd/image";
     if (in.compare(0, sizeof(OSD_POST) - 1, OSD_POST) == 0)
@@ -196,6 +202,9 @@ struct HttpServer::Client {
     AudioFormat audio_fmt = AudioFormat::None;
     int         audio_rate = 0;     // capture rate the listener was opened at
     std::shared_ptr<Sink> audio_sink;
+    int64_t     audio_full_since_ms = 0;   // the output buffer has been over its bound since
+    uint32_t    audio_last_seq = 0;        // capture sequence of the last frame seen
+    bool        audio_seq_valid = false;
     // /audio.m4a and /audio.opus: the encoder and its container state.
     std::unique_ptr<audio::AudioEncoder> audio_enc;
     std::unique_ptr<ogg::OpusWriter>     audio_ogg;
@@ -206,6 +215,18 @@ struct HttpServer::Client {
     std::unique_ptr<audio::AudioEncoder> ws_audio_enc;
     uint64_t    ws_audio_dt = 0;
     bool        ws_audio_started = false;
+    uint32_t    ws_audio_last_seq = 0;
+    bool        ws_audio_seq_valid = false;
+    // A still being captured for this client (see StillJob).
+    std::shared_ptr<StillJob> still;
+    // Waiting for something that is not the socket: a parked request whose
+    // answer comes from the HLS segmenter or a capture thread. Input that
+    // arrives meanwhile is buffered and parsed after the answer.
+    bool parked() const { return hls_wait_until != 0 || (bool)still; }
+    // A socket this server streams INTO rather than converses on: nothing
+    // is read from it, the idle timeout does not apply, the relay never
+    // takes it over. One predicate, not six hand-kept lists.
+    bool streaming() const { return sse || mjpeg || ws_video || rtc_ws || ws_logs || (bool)audio_sink; }
     bool ws_init_sent = false;
     bool ws_await_key = true;       // never hand the decoder a P-frame without its reference
     std::vector<uint8_t> ws_sps, ws_pps;
@@ -286,6 +307,20 @@ struct HttpServer::HlsLive {
     int                     w = 0, h = 0;
 };
 
+// The capture for /image.yuv420 or /image.heif, on its own thread. It talks
+// only to the pipeline manager and the stream hubs (both outlive the server
+// and are thread-safe, exactly as they are for the RTSP threads) and writes
+// the answer here; the poll loop hands it to the client when `done`.
+struct HttpServer::StillJob {
+    std::thread       th;
+    std::atomic<bool> done{false};
+    bool        keep_alive = false;
+    std::string path;
+    int         status = 500;
+    std::string ctype, extra, error;
+    std::vector<uint8_t> body;
+};
+
 HttpServer::~HttpServer() { stop(); }
 
 Result HttpServer::start() {
@@ -308,24 +343,9 @@ void HttpServer::stop() {
     if (listen_fd_ < 0) return;
     quit_ = true;
     if (thread_.joinable()) thread_.join();
-    for (auto& c : clients_) {
-        if (c->sub) bus_.unsubscribe(c->sub);
-        if (c->ws_video) RuntimeStats::get().dec(&RuntimeCounters::ws_video_clients);
-        if (c->ws_logs)  RuntimeStats::get().dec(&RuntimeCounters::ws_logs_clients);
-        if (c->rtc)      RuntimeStats::get().dec(&RuntimeCounters::webrtc_sessions);
-        if (c->ws_sink) { StreamHub* h = c->ws_hub ? c->ws_hub : hub_; if (h) { c->ws_sink->close(); h->unsubscribe(c->ws_sink); } }
-        if (c->rtc_sink) { StreamHub* h = c->rtc_hub ? c->rtc_hub : hub_; if (h) { c->rtc_sink->close(); h->unsubscribe(c->rtc_sink); } }
-        if (c->audio_sink && audio_) audio_->unlisten(c->audio_sink);
-        if (c->rtc_audio_sink && audio_) audio_->unlisten(c->rtc_audio_sink);
-        if (c->ws_audio_sink && audio_) audio_->unlisten(c->ws_audio_sink);
-        if (c->relay_fd >= 0) close(c->relay_fd);
-        // The upgrade child is NEVER killed here: once sysupgrade is flashing it
-        // survives a disconnect on purpose ("Protected: flashing continues").
-        // We only drop our read end; the child finishes and reboots the box.
-        if (c->upgrade_fd >= 0) close(c->upgrade_fd);
-        close(c->fd);
-    }
+    for (auto& c : clients_) release_client(*c);
     clients_.clear();
+    reap_stills(true);                          // every capture thread joined before the pipeline may go
     hls_stop();
     // The logread child is NOT touched here: main owns it, it was forked
     // before IMP existed, and it must outlive every HTTP restart.
@@ -369,6 +389,69 @@ bool HttpServer::queue(Client& c, const std::string& data, size_t cap) {
     return true;
 }
 
+bool HttpServer::queue_bytes(Client& c, const std::string& head, const uint8_t* body, size_t n, size_t cap) {
+    if (c.out.size() + head.size() + n > cap) return false;
+    c.out += head;
+    c.out.append(reinterpret_cast<const char*>(body), n);
+    return true;
+}
+
+// Give back everything a client holds and close its socket. Called from the
+// poll loop's close path and from stop(); nothing else frees these.
+void HttpServer::release_client(Client& c) {
+    if (c.ws_video) RuntimeStats::get().dec(&RuntimeCounters::ws_video_clients);
+    if (c.ws_logs)  RuntimeStats::get().dec(&RuntimeCounters::ws_logs_clients);
+    if (c.rtc)      RuntimeStats::get().dec(&RuntimeCounters::webrtc_sessions);
+    if (c.sub) { bus_.unsubscribe(c.sub); c.sub.reset(); }
+    if (c.ws_sink)  { StreamHub* h = c.ws_hub  ? c.ws_hub  : hub_; if (h) { c.ws_sink->close();  h->unsubscribe(c.ws_sink); }  c.ws_sink.reset(); }
+    if (c.rtc_sink) { StreamHub* h = c.rtc_hub ? c.rtc_hub : hub_; if (h) { c.rtc_sink->close(); h->unsubscribe(c.rtc_sink); } c.rtc_sink.reset(); }
+    if (c.audio_sink && audio_)     { audio_->unlisten(c.audio_sink);     c.audio_sink.reset(); }
+    if (c.rtc_audio_sink && audio_) { audio_->unlisten(c.rtc_audio_sink); c.rtc_audio_sink.reset(); }
+    if (c.ws_audio_sink && audio_)  { audio_->unlisten(c.ws_audio_sink);  c.ws_audio_sink.reset(); }
+    c.rtc.reset();                              // closes the UDP socket
+    // The two DemandHandles (ws_demand, rtc_demand) are NOT released here:
+    // they are Client members and their destructors do it when the Client is
+    // dropped. That is safe because httpd is declared after the
+    // PipelineManager in main() and therefore destroyed before it -
+    // release() calls back into the manager.
+    if (c.still) { still_orphans_.push_back(std::move(c.still)); }   // joined once its capture is done
+    if (c.relay_fd >= 0) { close(c.relay_fd); c.relay_fd = -1; }
+    // Drop our read end of the upgrade child, but never kill it: sysupgrade
+    // past the flash point is meant to outlive us ("Protected: flashing
+    // continues"); the child finishes and reboots the box.
+    if (c.upgrade_fd >= 0) {
+        close(c.upgrade_fd); c.upgrade_fd = -1;
+        if (c.upgrade_pid > 0) waitpid(c.upgrade_pid, nullptr, WNOHANG);
+    }
+    if (c.fd >= 0) { close(c.fd); c.fd = -1; }
+}
+
+// Orphaned capture threads: join the finished ones (`wait`: all of them).
+void HttpServer::reap_stills(bool wait) {
+    for (auto it = still_orphans_.begin(); it != still_orphans_.end();) {
+        if (wait || (*it)->done.load(std::memory_order_acquire)) {
+            if ((*it)->th.joinable()) (*it)->th.join();
+            it = still_orphans_.erase(it);
+        } else ++it;
+    }
+}
+
+// The capture thread is done: its answer goes out, the parked request is
+// over and whatever the client sent meanwhile is parsed.
+void HttpServer::finish_still(Client& c) {
+    std::shared_ptr<StillJob> job = std::move(c.still);
+    if (job->th.joinable()) job->th.join();
+    if (job->status == 200) {
+        const std::string head = response_head(200, job->ctype, job->body.size(), job->keep_alive, job->extra);
+        if (!queue_bytes(c, head, job->body.data(), job->body.size(), job->body.size() + head.size() + cfg_.max_out_buffer)) { c.close_after_flush = true; return; }
+    } else {
+        queue(c, response(job->status, "application/json",
+                          api::ApiService::fail(job->status, job->status == 400 || job->status == 416 ? "invalid_value" : "unavailable", job->path, job->error).body.dump(),
+                          job->keep_alive));
+    }
+    if (!job->keep_alive) c.close_after_flush = true;
+}
+
 bool HttpServer::flush(Client& c) {
     while (!c.out.empty()) {
         ssize_t w = send(c.fd, c.out.data(), c.out.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
@@ -382,7 +465,7 @@ bool HttpServer::flush(Client& c) {
 // Dispatches one complete request; returns false to close the connection.
 bool HttpServer::pump_requests(Client& c) {
     bool ok = true;
-    while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && !c.hls_wait_until &&
+    while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && !c.parked() &&
            c.in.find("\r\n\r\n") != std::string::npos) {
         const size_t before = c.in.size();
         ok = handle_request(c);
@@ -777,8 +860,8 @@ bool HttpServer::handle_request(Client& c) {
         else if (is_init ? (data = hls_->seg.init()).empty() : !hls_->seg.segment(seq, data))
             r = api::ApiService::fail(404, "unknown_field", path, is_init ? "no key frame yet" : "segment no longer held");
         else {
-            const std::string body(reinterpret_cast<const char*>(data.data()), data.size());
-            bool ok = queue(c, response(200, is_init ? "video/mp4" : "video/iso.segment", body, req.keep_alive), body.size() + 4096);
+            const std::string head = response_head(200, is_init ? "video/mp4" : "video/iso.segment", data.size(), req.keep_alive);
+            bool ok = queue_bytes(c, head, data.data(), data.size(), data.size() + head.size() + cfg_.max_out_buffer);
             if (!req.keep_alive) c.close_after_flush = true;
             return ok;
         }
@@ -887,59 +970,65 @@ bool HttpServer::handle_request(Client& c) {
     } else if (path == "/image.yuv420") {
         // The stock page's detail still (preview-still.js): one uncompressed
         // frame of the MAIN channel, optionally cropped, described in headers.
-        // Synchronous inside the single poll loop, so grabs never overlap.
-        stills::Crop want;
+        // The capture waits for a frame (right after a cold start: up to
+        // 2 s), so it runs on its own thread and the request is parked; the
+        // poll loop that pumps every live stream never waits for it.
+        stills::Crop want; const bool has_crop = !SessionGate::form_value(req.query, "crop").empty();
         const std::string cs = SessionGate::form_value(req.query, "crop");
         if (m != "GET") r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
         else if (!pipeline_) r = api::ApiService::fail(501, "unavailable", path, "no media wiring");
-        else if (!cs.empty() && !stills::parse_crop(cs, want)) r = api::ApiService::fail(400, "invalid_value", path, "crop is XxYxWxH");
+        else if (has_crop && !stills::parse_crop(cs, want)) r = api::ApiService::fail(400, "invalid_value", path, "crop is XxYxWxH");
         else {
-            std::vector<uint8_t> frame; int fw = 0, fh = 0; std::string err;
-            const Result sr = pipeline_->snap_nv12(lifecycle::UNIT_MAIN, frame, fw, fh, err, 2000);
-            if (!sr) {
-                r = api::ApiService::fail(sr.status == Status::Unsupported ? 501 : 503, "unavailable", path, err);
-            } else {
-                std::vector<uint8_t> cut; stills::Crop got{0, 0, fw, fh};
-                const std::vector<uint8_t>* body = &frame;
-                if (!cs.empty()) {
-                    if (!stills::nv12_crop(frame.data(), fw, fh, want, cut, got)) {
-                        r = api::ApiService::fail(416, "invalid_value", path, "crop lies outside the " + std::to_string(fw) + "x" + std::to_string(fh) + " frame");
-                        body = nullptr;
-                    } else body = &cut;
+            auto job = std::make_shared<StillJob>();
+            job->keep_alive = req.keep_alive; job->path = path;
+            lifecycle::PipelineManager* pl = pipeline_;
+            job->th = std::thread([job, pl, want, has_crop] {
+                std::vector<uint8_t> frame; int fw = 0, fh = 0;
+                const Result sr = pl->snap_nv12(lifecycle::UNIT_MAIN, frame, fw, fh, job->error, 2000);
+                if (!sr) job->status = sr.status == Status::Unsupported ? 501 : 503;
+                else {
+                    stills::Crop got{0, 0, fw, fh};
+                    if (has_crop) {
+                        std::vector<uint8_t> cut;
+                        if (!stills::nv12_crop(frame.data(), fw, fh, want, cut, got)) {
+                            job->status = 416; job->error = "crop lies outside the " + std::to_string(fw) + "x" + std::to_string(fh) + " frame";
+                        } else { job->body.swap(cut); job->status = 200; }
+                    } else { job->body.swap(frame); job->status = 200; }
+                    if (job->status == 200) {
+                        job->ctype = "application/octet-stream";
+                        job->extra = stills::yuv_headers(got.w, got.h) +
+                                     "Access-Control-Expose-Headers: X-Frame-Width, X-Frame-Height, X-Pixel-Format, X-Stride-Luma, X-Stride-Chroma\r\n";
+                    }
                 }
-                if (body) {
-                    const std::string data(reinterpret_cast<const char*>(body->data()), body->size());
-                    bool ok = queue(c, response(200, "application/octet-stream", data, req.keep_alive,
-                                                stills::yuv_headers(got.w, got.h) +
-                                                "Access-Control-Expose-Headers: X-Frame-Width, X-Frame-Height, X-Pixel-Format, X-Stride-Luma, X-Stride-Chroma\r\n"),
-                                    data.size() + 4096);
-                    if (!req.keep_alive) c.close_after_flush = true;
-                    return ok;
-                }
-            }
+                job->done.store(true, std::memory_order_release);
+            });
+            c.still = job;
+            return true;
         }
     } else if (path == "/image.heif") {
         // One IDR of the main stream as a HEIF image item. H.264 in HEIF
-        // ('avci'), because H.264 is what the encoder makes.
+        // ('avci'), because H.264 is what the encoder makes. The key frame
+        // is up to a GOP away: its own thread, the request parked meanwhile.
         if (m != "GET") r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
         else if (!hub_ || !pipeline_) r = api::ApiService::fail(501, "unavailable", path, "no media wiring");
         else {
-            AuPtr au; std::string err;
-            if (!grab_idr(lifecycle::UNIT_MAIN, au, 2000, err)) r = api::ApiService::fail(503, "unavailable", path, err);
-            else {
-                std::vector<uint8_t> sps, pps;
-                h264::extract_params(au->data.data(), au->data.size(), sps, pps);
-                const std::vector<uint8_t> sample = fmp4::annexb_to_avcc(au->data.data(), au->data.size());
-                const EffectiveStream es = pipeline_->stream_unit(lifecycle::UNIT_MAIN);
-                if (sps.empty() || pps.empty() || sample.empty()) r = api::ApiService::fail(503, "unavailable", path, "key frame without parameter sets");
+            auto job = std::make_shared<StillJob>();
+            job->keep_alive = req.keep_alive; job->path = path;
+            job->th = std::thread([this, job] {
+                AuPtr au;
+                if (!grab_idr(lifecycle::UNIT_MAIN, au, 2000, job->error)) job->status = 503;
                 else {
-                    const std::vector<uint8_t> heif = fmp4::heif_avc_still(sps, pps, es.width, es.height, sample);
-                    const std::string data(reinterpret_cast<const char*>(heif.data()), heif.size());
-                    bool ok = queue(c, response(200, "image/heif", data, req.keep_alive), data.size() + 4096);
-                    if (!req.keep_alive) c.close_after_flush = true;
-                    return ok;
+                    std::vector<uint8_t> sps, pps;
+                    h264::extract_params(au->data.data(), au->data.size(), sps, pps);
+                    const std::vector<uint8_t> sample = fmp4::annexb_to_avcc(au->data.data(), au->data.size());
+                    const EffectiveStream es = pipeline_->stream_unit(lifecycle::UNIT_MAIN);
+                    if (sps.empty() || pps.empty() || sample.empty()) { job->status = 503; job->error = "key frame without parameter sets"; }
+                    else { job->body = fmp4::heif_avc_still(sps, pps, es.width, es.height, sample); job->ctype = "image/heif"; job->status = 200; }
                 }
-            }
+                job->done.store(true, std::memory_order_release);
+            });
+            c.still = job;
+            return true;
         }
     } else if (path == "/api/v1/stream.mjpeg" || path == "/stream.mjpeg" || path == "/stream" || path == "/mjpeg") {
         if (m != "GET") { r = api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
@@ -1489,6 +1578,10 @@ void HttpServer::hls_pump(int64_t t) {
         AuPtr au; bool disc = false;
         if (!hls_->sink->pop(au, 0, &disc)) return;
         if (!au || au->data.empty()) continue;
+        if (au->key) {                                  // a reconfigured stream: the next init must say the new size
+            const EffectiveStream es = pipeline_->stream_unit(lifecycle::UNIT_MAIN);
+            if (es.width > 0 && es.height > 0) { hls_->w = es.width; hls_->h = es.height; }
+        }
         hls_->seg.feed(au->data.data(), au->data.size(), au->key, au->pts_us, hls_->w, hls_->h, disc);
     }
 }
@@ -1630,35 +1723,60 @@ void HttpServer::pump_ws_video(Client& c) {
     }
 }
 
-void HttpServer::pump_audio(Client& c) {
-    if (!c.audio_sink) return;
-    if (c.audio_sink->closed()) { c.close_after_flush = true; return; }   // audio switched off / shutdown
-    // ~4 s of 16 kHz PCM. A stalled player loses frames here - old audio is
-    // worse than a gap - and the connection itself is never the casualty.
-    const size_t cap = 128 * 1024;
+bool HttpServer::pump_audio(Client& c) {
+    if (!c.audio_sink) return true;
+    if (c.audio_sink->closed()) { c.close_after_flush = true; return true; }   // audio switched off / shutdown
+    // Two seconds of the wire format. A player that falls behind loses NEW
+    // frames past that - old audio is worse than a gap, and two seconds is
+    // the most a listener is ever behind live. One that stops reading
+    // altogether is dropped after kAudioStallMs: a streaming socket has no
+    // idle timeout, so nothing else would ever free its slot.
+    const size_t cap = audio_stream_bytes(c.audio_fmt, c.audio_rate, 2);
+    const int64_t t = now_ms();
     for (int i = 0; i < 16; ++i) {
         AuPtr au;
-        if (!c.audio_sink->pop(au, 0)) return;
+        if (!c.audio_sink->pop(au, 0)) break;
         if (!au || au->data.empty()) continue;
+        const bool room = c.out.size() <= cap;
+        if (room) c.audio_full_since_ms = 0; else if (!c.audio_full_since_ms) c.audio_full_since_ms = t;
+        // Frames the sink dropped for us (a slow client) took their time too:
+        // the container clock skips them, or everything after a drop would
+        // play early.
+        const uint32_t missing = (c.audio_seq_valid && au->seq > c.audio_last_seq + 1) ? au->seq - c.audio_last_seq - 1 : 0;
+        c.audio_last_seq = au->seq; c.audio_seq_valid = true;
         if (!c.audio_enc) {
-            if (c.out.size() <= cap) audio_encode(c.audio_fmt, c.audio_rate, au->data.data(), au->data.size(), c.out);
+            if (room) audio_encode(c.audio_fmt, c.audio_rate, au->data.data(), au->data.size(), c.out);
             continue;
         }
+        const uint32_t ts = c.audio_enc->timescale();
+        const uint32_t frame_ticks = (uint32_t)((uint64_t)(au->data.size() / 2) * ts / (uint64_t)(c.audio_rate > 0 ? c.audio_rate : 8000));
+        if (missing) {
+            if (c.audio_fmt == AudioFormat::Opus) c.audio_ogg->skip(missing * frame_ticks);
+            else c.audio_dt += (uint64_t)missing * frame_ticks;
+        }
         // Compressed: always ENCODE (the encoder's state must see every
-        // frame), drop only what would not fit.
+        // frame); what does not fit is skipped in the container's clock, so
+        // the page sequence (Ogg) and the decode time (fMP4) stay honest.
         std::vector<audio::EncodedFrame> frames;
         c.audio_enc->encode(reinterpret_cast<const int16_t*>(au->data.data()), au->data.size() / 2, frames);
         for (const auto& fr : frames) {
             if (c.audio_fmt == AudioFormat::Opus) {
-                const std::string page = c.audio_ogg->packet(fr.data, fr.duration);   // granule advances even when dropped
-                if (c.out.size() <= cap) c.out += page;
+                if (room) c.out += c.audio_ogg->packet(fr.data, fr.duration);
+                else      c.audio_ogg->skip(fr.duration);
             } else {
-                const std::vector<uint8_t> frag = fmp4::fragment(c.audio_seq++, c.audio_dt, fr.duration, fr.data, true, 1);
+                if (room) {
+                    const std::vector<uint8_t> frag = fmp4::fragment(c.audio_seq++, c.audio_dt, fr.duration, fr.data, true, 1);
+                    c.out.append(reinterpret_cast<const char*>(frag.data()), frag.size());
+                }
                 c.audio_dt += fr.duration;
-                if (c.out.size() <= cap) c.out.append(reinterpret_cast<const char*>(frag.data()), frag.size());
             }
         }
     }
+    if (c.audio_full_since_ms && t - c.audio_full_since_ms > kAudioStallMs) {
+        LOGW(MOD, "%s: audio client stopped reading for %d s - dropping", c.peer.c_str(), kAudioStallMs / 1000);
+        return false;
+    }
+    return true;
 }
 
 // /ws/video&audio=: the microphone into the SAME MSE stream, as track 2. Its
@@ -1676,6 +1794,8 @@ void HttpServer::pump_ws_audio(Client& c) {
         AuPtr au;
         if (!c.ws_audio_sink->pop(au, 0)) return;
         if (!au || au->data.empty()) continue;
+        const uint32_t missing = (c.ws_audio_seq_valid && au->seq > c.ws_audio_last_seq + 1) ? au->seq - c.ws_audio_last_seq - 1 : 0;
+        c.ws_audio_last_seq = au->seq; c.ws_audio_seq_valid = true;
         std::vector<audio::EncodedFrame> frames;
         c.ws_audio_enc->encode(reinterpret_cast<const int16_t*>(au->data.data()), au->data.size() / 2, frames);
         if (!c.ws_init_sent) continue;                     // nothing to attach audio to yet
@@ -1684,15 +1804,20 @@ void HttpServer::pump_ws_audio(Client& c) {
             if (c.ws_await_key) continue;                   // anchor on a frame the player really has
             c.ws_audio_dt = c.ws_dts * ts / 90000; c.ws_audio_started = true;
         }
-        if (c.ws_await_key) {                               // video resyncing: keep the clock, send nothing
-            for (const auto& fr : frames) c.ws_audio_dt += fr.duration;
-            continue;
-        }
+        // Frames the sink dropped (a slow socket) still took their time:
+        // the audio clock skips them, or the track would run ahead of the
+        // video by every drop.
+        if (missing) c.ws_audio_dt += (uint64_t)missing * ((uint64_t)(au->data.size() / 2) * ts / (uint64_t)(c.ws_audio_enc->sample_rate() > 0 ? c.ws_audio_enc->sample_rate() : 8000));
         for (const auto& fr : frames) {
-            const std::vector<uint8_t> frag = fmp4::fragment(c.ws_seq++, c.ws_audio_dt, fr.duration, fr.data, true, 2);
+            // The video's backpressure rule (audio is dropped first), and
+            // while the video resyncs nothing is sent: the clock keeps
+            // running either way, and no fragment is built for the bin.
+            const bool send = !c.ws_await_key && c.out.size() <= soft_cap / 2;
+            if (send) {
+                const std::vector<uint8_t> frag = fmp4::fragment(c.ws_seq++, c.ws_audio_dt, fr.duration, fr.data, true, 2);
+                queue_fmp4(c, frag, soft_cap);
+            }
             c.ws_audio_dt += fr.duration;
-            if (c.out.size() > soft_cap / 2) continue;      // the video's backpressure rule; audio is dropped first
-            queue_fmp4(c, frag, soft_cap);
         }
     }
 }
@@ -2086,6 +2211,7 @@ void HttpServer::loop() {
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)
         hls_pump(t);
+        reap_stills(false);
         for (size_t i = 0; i < clients_.size(); ++i) {
             Client& c = *clients_[i];
             short re = 0, rre = 0, ure = 0, uge = 0;
@@ -2106,9 +2232,13 @@ void HttpServer::loop() {
                 else if (c.ws_video) { c.in.append(buf, (size_t)r); ok = ws_video_input(c); }
                 else if (c.rtc_ws)   { c.in.append(buf, (size_t)r); ok = rtc_ws_input(c); }
                 else if (c.ws_upgrade) { c.in.append(buf, (size_t)r); ok = ws_upgrade_input(c); }
-                else if (c.sse || c.mjpeg || c.ws_logs || c.audio_sink) { /* ignore input on streaming connections */ }
-                else if (c.hls_wait_until) { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; }   // pipelined: parsed after the answer
+                else if (c.streaming()) { /* ignore input on streaming connections */ }
+                else if (c.parked()) { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; }   // pipelined: parsed after the answer
                 else { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; else ok = pump_requests(c); }
+            }
+            if (ok && c.still && c.still->done.load(std::memory_order_acquire)) {
+                finish_still(c);
+                if (!c.close_after_flush) ok = pump_requests(c);
             }
             if (ok && c.hls_wait_until) {
                 if (hls_answer_playlist(c)) ok = pump_requests(c);
@@ -2127,9 +2257,7 @@ void HttpServer::loop() {
                 // this could not happen, because every relayed reply closed the
                 // connection; now it can, and an unparsed request would hang
                 // there until the idle timeout.
-                if (ok && c.relay_state == Client::Relay::None &&
-                    !c.close_after_flush && !c.ws_video && !c.rtc_ws && !c.sse &&
-                    !c.mjpeg && !c.ws_logs && !c.audio_sink)
+                if (ok && c.relay_state == Client::Relay::None && !c.close_after_flush && !c.streaming())
                     ok = pump_requests(c);
             }
             if (ok && c.sse) {
@@ -2138,7 +2266,7 @@ void HttpServer::loop() {
             }
             if (ok && c.mjpeg && !c.close_after_flush) push_mjpeg(c);
             if (ok && c.ws_video && !c.close_after_flush) { pump_ws_video(c); pump_ws_audio(c); }
-            if (ok && c.audio_sink && !c.close_after_flush) pump_audio(c);
+            if (ok && c.audio_sink && !c.close_after_flush) ok = pump_audio(c);
             if (ok && c.rtc) {
                 if (ure & POLLIN) c.rtc->on_readable();
                 pump_rtc(c);
@@ -2151,34 +2279,11 @@ void HttpServer::loop() {
             // refreshes last_activity_ms. A socket still only AWAITING its start
             // frame is not exempt, so an abandoned handshake is still reaped.
             const bool upgrade_running = c.ws_upgrade && c.upgrade_started;
-            if (ok && !c.sse && !c.mjpeg && !c.ws_video && !c.rtc_ws && !c.ws_logs && !c.audio_sink && !upgrade_running && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
+            if (ok && !c.streaming() && !upgrade_running && t - c.last_activity_ms > cfg_.idle_timeout_ms) ok = false;
             if (!ok) {
                 // Close now, erase after the iteration: refs holds pointers
                 // into clients_, so the vector must not shift under it.
-                if (c.ws_video) RuntimeStats::get().dec(&RuntimeCounters::ws_video_clients);
-                if (c.ws_logs)  RuntimeStats::get().dec(&RuntimeCounters::ws_logs_clients);
-                if (c.rtc)      RuntimeStats::get().dec(&RuntimeCounters::webrtc_sessions);
-                if (c.sub) bus_.unsubscribe(c.sub);
-                if (c.ws_sink) { StreamHub* h = c.ws_hub ? c.ws_hub : hub_; if (h) { c.ws_sink->close(); h->unsubscribe(c.ws_sink); } }
-                if (c.rtc_sink) { StreamHub* h = c.rtc_hub ? c.rtc_hub : hub_; if (h) { c.rtc_sink->close(); h->unsubscribe(c.rtc_sink); } }
-                if (c.audio_sink && audio_) { audio_->unlisten(c.audio_sink); c.audio_sink.reset(); }
-                if (c.rtc_audio_sink && audio_) { audio_->unlisten(c.rtc_audio_sink); c.rtc_audio_sink.reset(); }
-                if (c.ws_audio_sink && audio_) { audio_->unlisten(c.ws_audio_sink); c.ws_audio_sink.reset(); }
-                c.rtc.reset();                          // closes the UDP socket
-                // The two DemandHandles (ws_demand, rtc_demand) are NOT
-                // released here: they are Client members and their destructors
-                // do it when the erase below drops the unique_ptr. That is
-                // safe because httpd is declared after the PipelineManager in
-                // main() and therefore destroyed before it - release() calls
-                // back into the manager.
-                if (c.relay_fd >= 0) { close(c.relay_fd); c.relay_fd = -1; }
-                // Drop our read end of the upgrade child, but never kill it:
-                // sysupgrade past the flash point is meant to outlive us.
-                if (c.upgrade_fd >= 0) {
-                    close(c.upgrade_fd); c.upgrade_fd = -1;
-                    if (c.upgrade_pid > 0) waitpid(c.upgrade_pid, nullptr, WNOHANG);
-                }
-                close(c.fd); c.fd = -1;
+                release_client(c);
             }
         }
         clients_.erase(std::remove_if(clients_.begin(), clients_.end(),

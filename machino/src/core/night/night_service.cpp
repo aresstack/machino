@@ -2,6 +2,7 @@
 #include "core/log.hpp"
 
 #include <chrono>
+#include <ctime>
 #include <thread>
 
 namespace machino { namespace night {
@@ -24,6 +25,36 @@ NightService::NightService(media::TuningService& tuning, IGpioController* gpio, 
                            const hw::IPinResolver* resolver)
     : tuning_(tuning), gpio_(gpio), store_(store), resolver_(resolver)
 {
+}
+
+NightService::~NightService() { stop(); }
+
+void NightService::start()
+{
+    std::lock_guard<std::mutex> lk(thread_m_);
+    if (thread_.joinable()) return;
+    quit_ = false;
+    thread_ = std::thread([this] {
+        std::unique_lock<std::mutex> lk(thread_m_);
+        while (!quit_) {
+            lk.unlock();
+            struct timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts);
+            tick((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+            lk.lock();
+            thread_cv_.wait_for(lk, std::chrono::seconds(2), [this] { return quit_; });
+        }
+    });
+}
+
+void NightService::stop()
+{
+    {
+        std::lock_guard<std::mutex> lk(thread_m_);
+        if (!thread_.joinable()) return;
+        quit_ = true;
+    }
+    thread_cv_.notify_all();
+    thread_.join();
 }
 
 // Ein Pin-String ist entweder eine reine GPIO-Nummer (so schreibt die
@@ -157,11 +188,14 @@ std::string NightService::set_night_locked_(bool on)
     // colorToGray es will. Ein unsupported RunningMode (Plattform ohne den
     // Regler) ist ein ehrlicher Fehler.
     //
-    // set_image, nicht set_image_live: der Wert wird VORGEMERKT und nach
-    // jedem Pipeline-Start wieder angewendet. Mit _live ging er verloren,
-    // wenn das Video gerade kalt war -- eine Kamera, die nachts ohne
-    // Zuschauer umschaltet und spaeter geoeffnet wird, zeigte dann Tagmodus.
-    const power::ApplyResult ar = tuning_.set_image(ImageControl::RunningMode, on && p.color_to_gray ? 1 : 0);
+    // set_image_override, nicht set_image und nicht set_image_live: der Wert
+    // wird nach jedem Pipeline-Start wieder angewendet (mit _live ging er
+    // verloren, wenn das Video gerade kalt war -- eine Kamera, die nachts
+    // ohne Zuschauer umschaltet und spaeter geoeffnet wird, zeigte dann
+    // Tagmodus), aber er landet NICHT in der gemeldeten Config: set_image
+    // schrieb ihn dorthin, und eine nachts gespeicherte Image-Seite machte
+    // das Graubild dauerhaft, auch fuer den Tag.
+    const power::ApplyResult ar = tuning_.set_image_override(ImageControl::RunningMode, on && p.color_to_gray ? 1 : 0);
     if (!ar.ok) return ar.message.empty() ? "running_mode could not be applied" : ar.message;
     night_ = on;
 
@@ -194,7 +228,8 @@ void NightService::tick(int64_t now_ms)
         // Aus: vergessen, was gereift ist. Beim naechsten Einschalten wird der
         // dann aktuelle Zustand wieder einmal angewendet.
         auto_.committed = auto_.candidate = auto_.raw = auto_.pending_s = -1;
-        auto_.error.clear();
+        auto_.announced = false;
+        auto_.error.clear(); auto_.switch_error.clear();
         return;
     }
     auto fail = [&](const std::string& why) {
@@ -224,23 +259,36 @@ void NightService::tick(int64_t now_ms)
     const int dark = (level != p.light_sensor_invert) ? 1 : 0;
     auto_.raw = dark;
 
-    if (auto_.committed < 0) {                  // gerade eingeschaltet: einmal anwenden
+    // Ein Wechsel ist erst vollzogen, wenn das Schalten gelungen ist. Vorher
+    // stand `committed = dark` VOR dem Aufruf: ein einmal fehlgeschlagener
+    // Schaltvorgang in der Daemmerung (ISP beim Boot noch nicht da, GPIO
+    // gerade belegt) wurde nie wiederholt -- eine ganze Nacht im Tagmodus.
+    auto apply = [&](const char* how) {
+        if (auto_.switch_error.empty()) LOGI("NIGHT", "automatic day/night%s: switching to %s", how, dark ? "night" : "day");
+        const std::string e = set_night_locked_(dark == 1);
+        if (!e.empty()) {
+            if (e != auto_.switch_error) LOGW("NIGHT", "automatic switch to %s failed: %s - retrying", dark ? "night" : "day", e.c_str());
+            auto_.switch_error = e;
+            auto_.pending_s = 0;                    // faellig, noch nicht geschafft
+            return false;
+        }
+        if (!auto_.switch_error.empty()) LOGI("NIGHT", "automatic switch to %s succeeded on retry", dark ? "night" : "day");
+        auto_.switch_error.clear();
         auto_.committed = dark;
         auto_.candidate = auto_.pending_s = -1;
-        LOGI("NIGHT", "automatic day/night on: sensor says %s", dark ? "dark" : "light");
-        set_night_locked_(dark == 1);
+        return true;
+    };
+    if (auto_.committed < 0) {                  // gerade eingeschaltet: einmal anwenden
+        if (!auto_.announced) { LOGI("NIGHT", "automatic day/night on: sensor says %s", dark ? "dark" : "light"); auto_.announced = true; }
+        apply(" on");
         return;
     }
-    if (dark == auto_.committed) { auto_.candidate = auto_.pending_s = -1; return; }
-    if (auto_.candidate != dark) { auto_.candidate = dark; auto_.candidate_since_ms = now_ms; }
+    if (dark == auto_.committed) { auto_.candidate = auto_.pending_s = -1; auto_.switch_error.clear(); return; }
+    if (auto_.candidate != dark) { auto_.candidate = dark; auto_.candidate_since_ms = now_ms; auto_.switch_error.clear(); }
     const int64_t need_ms = (int64_t)(dark ? p.auto_night_delay_s : p.auto_day_delay_s) * 1000;
     const int64_t left_ms = need_ms - (now_ms - auto_.candidate_since_ms);
     if (left_ms > 0) { auto_.pending_s = (int)((left_ms + 999) / 1000); return; }
-    auto_.committed = dark;
-    auto_.candidate = auto_.pending_s = -1;
-    LOGI("NIGHT", "automatic day/night: switching to %s", dark ? "night" : "day");
-    const std::string e = set_night_locked_(dark == 1);
-    if (!e.empty()) LOGW("NIGHT", "automatic switch to %s failed: %s", dark ? "night" : "day", e.c_str());
+    apply("");
 }
 
 AutoState NightService::auto_state() const
@@ -251,7 +299,7 @@ AutoState NightService::auto_state() const
     a.sensing = a.enabled && !auto_.input_pin.empty() && auto_.error.empty();
     a.dark = auto_.raw;
     a.pending_s = auto_.pending_s;
-    a.error = auto_.error;
+    a.error = !auto_.error.empty() ? auto_.error : auto_.switch_error;
     return a;
 }
 

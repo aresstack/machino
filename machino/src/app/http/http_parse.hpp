@@ -106,6 +106,10 @@ std::string relay_head_stream_close(const std::string& head);
 const char* status_text(int status);
 std::string response(int status, const std::string& content_type, const std::string& body, bool keep_alive,
                      const std::string& extra_headers = "");
+// The status line and headers of response() alone, for a body the caller
+// appends itself (a multi-megabyte frame is not copied through a string).
+std::string response_head(int status, const std::string& content_type, size_t content_length, bool keep_alive,
+                          const std::string& extra_headers = "");
 std::string sse_headers();
 std::string sse_event(const std::string& type, const std::string& data);
 std::string mjpeg_headers(const std::string& boundary);

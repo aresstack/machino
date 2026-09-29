@@ -10,7 +10,7 @@ using power::ApplyResult;
 TuningService::TuningService(lifecycle::PipelineManager& pipeline, IPlatform& platform, StreamHub& hub,
                              const EffectiveStream& base, const ImageSettings& image, const LatencySettings& latency)
     : pipeline_(pipeline), platform_(platform), hub_(hub), image_(platform.image()), base_(base), latency_(latency) {
-    requested_.fill(-1); effective_.fill(-1);
+    requested_.fill(-1); effective_.fill(-1); override_.fill(-1);
     if (image_) image_caps_ = image_->caps();
     load_image_settings(image);
     EffectiveStream current = pipeline_.stream();
@@ -65,7 +65,7 @@ ImageCaps TuningService::image_caps() const { return image_caps_; }
 TuningState TuningService::state() const {
     std::lock_guard<std::mutex> lk(m_);
     TuningState s; s.latency = resolved_; s.requested_latency = latency_;
-    s.image_requested = requested_; s.image_effective = effective_;
+    s.image_requested = requested_; s.image_effective = effective_; s.image_override = override_;
     return s;
 }
 
@@ -77,6 +77,18 @@ Result TuningService::exposure(ExposureReadback& out) {
 ApplyResult TuningService::set_image(ImageControl c, int value) { return apply_image(c, value, true); }
 // See the header: the preview must not rewrite what the config reports.
 ApplyResult TuningService::set_image_live(ImageControl c, int value) { return apply_image(c, value, false); }
+
+ApplyResult TuningService::set_image_override(ImageControl c, int value) {
+    const ApplyResult r = apply_image(c, value, false);
+    if (r.ok) { std::lock_guard<std::mutex> lk(m_); override_[(int)c] = value; }
+    return r;
+}
+
+void TuningService::clear_image_override(ImageControl c) {
+    int back = -1;
+    { std::lock_guard<std::mutex> lk(m_); override_[(int)c] = -1; back = requested_[(int)c]; }
+    if (back >= 0) apply_image(c, back, false);         // the user's value again, now
+}
 
 ApplyResult TuningService::apply_image(ImageControl c, int value, bool record_requested) {
     const RangeCap cap = image_caps_.control[(int)c];
@@ -101,7 +113,11 @@ ApplyResult TuningService::apply_image(ImageControl c, int value, bool record_re
 
 void TuningService::apply_images_after_start() {
     std::array<int, (int)ImageControl::COUNT> values;
-    { std::lock_guard<std::mutex> lk(m_); values = requested_; }
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        values = requested_;
+        for (int i = 0; i < (int)ImageControl::COUNT; ++i) if (override_[i] >= 0) values[i] = override_[i];
+    }
     if (!image_) return;
     for (int i = 0; i < (int)ImageControl::COUNT; ++i) {
         if (values[i] < 0) continue;                    // preserve tuning-bin defaults

@@ -20,7 +20,12 @@ namespace machino {
 
 class Sink {
 public:
-    explicit Sink(size_t depth) : depth_(depth ? depth : 1) {}
+    // `key_supersedes`: the video policy - a key frame flushes everything
+    // queued before it. Audio frames are all independently decodable and
+    // continuous, so for them a full queue drops the OLDEST frame only: with
+    // the video policy every audio frame wiped the whole queue on overflow,
+    // 320 ms of sound at a time.
+    explicit Sink(size_t depth, bool key_supersedes = true) : depth_(depth ? depth : 1), key_supersedes_(key_supersedes) {}
     // Blocks up to timeout_ms; false on timeout or after close().
     // `discontinuity` is set when frames were dropped since the last pop:
     // the consumer must wait for the next key frame.
@@ -35,6 +40,7 @@ private:
     std::condition_variable cv_;
     std::deque<AuPtr>       q_;
     size_t                  depth_;
+    bool                    key_supersedes_;
     bool                    closed_  = false;
     bool                    disc_    = false;
     unsigned                dropped_ = 0;
@@ -63,6 +69,8 @@ public:
 
     void   set_default_depth(size_t d) { std::lock_guard<std::mutex> lk(m_); default_depth_ = d ? d : 1; }
     size_t default_depth() const { std::lock_guard<std::mutex> lk(m_); return default_depth_; }
+    // The overflow policy of every sink subscribed from now on (see Sink).
+    void   set_key_supersedes(bool on) { std::lock_guard<std::mutex> lk(m_); key_supersedes_ = on; }
 
     // latency accounting (called from producer / transport threads)
     void record_capture_to_out(int64_t us);
@@ -74,6 +82,7 @@ private:
     mutable std::mutex                 m_;
     std::vector<std::shared_ptr<Sink>> sinks_;
     size_t                             default_depth_ = 4;
+    bool                               key_supersedes_ = true;
     mutable std::mutex lat_m_;
     LatencyStats last_;
     int64_t  win_start_us_ = 0; unsigned n_c2o_ = 0, n_o2s_ = 0; double sum_c2o_ = 0, max_c2o_ = 0, sum_o2s_ = 0, max_o2s_ = 0; unsigned disc_ = 0;

@@ -53,6 +53,17 @@ std::string audio_stream_headers(AudioFormat f, int capture_rate) {
            "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
 }
 
+size_t audio_stream_bytes(AudioFormat f, int capture_rate, int seconds) {
+    size_t per_second = 0;
+    switch (f) {
+        case AudioFormat::Pcm:  per_second = (size_t)capture_rate * 2; break;
+        case AudioFormat::Aac:  per_second = 6000; break;                 // 32 kbit/s + fMP4 framing
+        case AudioFormat::Opus: per_second = 4000; break;                 // 24 kbit/s + Ogg framing
+        default:                per_second = 8000; break;                 // G.711 at 8 kHz
+    }
+    return per_second * (size_t)(seconds > 0 ? seconds : 1);
+}
+
 void audio_encode(AudioFormat f, int capture_rate, const uint8_t* s16le, size_t bytes, std::string& out) {
     const size_t n = bytes / 2;
     if (f == AudioFormat::Pcm) { out.append(reinterpret_cast<const char*>(s16le), n * 2); return; }

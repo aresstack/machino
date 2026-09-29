@@ -417,10 +417,33 @@ WebRTC-Browser kann. Talkback laeuft dort ueber dieselbe Sitzung
   Streaming Spec 5.3). SETUP ueber TCP-interleaved oder UDP; die empfangenen
   RTP-Pakete werden zu 8-kHz-PCM dekodiert und in die
   Lautsprecher-Warteschlange gestellt.
-* Nebenbei behoben: Interleaved-Frames (`$`) auf der RTSP-Verbindung wurden
-  bisher als Text gelesen. Das RTCP jedes TCP-Clients sammelte sich als
-  "Anfrage ohne Ende" an, bis der Client bei 8 KiB rausflog. Frames werden
-  jetzt vorne abgenommen (`rtsp::take_interleaved`, host-getestet).
+* **Wer darf sprechen** (Review-Fix K1): der UDP-Port des Backchannels ist
+  fuer jeden Host im LAN erreichbar, und die RTSP-Authentifizierung deckt
+  nur die Steuerverbindung. Gespielt wird deshalb NUR, was von der Adresse
+  der RTSP-Verbindung an dem `client_port` kommt, den der Client im SETUP
+  genannt hat (`RtspServer::pump_backchannel_udp`); alles andere wird
+  verworfen und einmal pro Sitzung geloggt. Dazu ein SSRC-Lock: die zuerst
+  gehoerte Quelle spricht, eine zweite erst nach 2 s Stille der ersten. Ein
+  Client, der sein RTP von einem anderen Port als `client_port` schickt,
+  wird nicht gehoert — die Log-Zeile nennt ihn.
+* Interleaved-Frames (`$`) auf der RTSP-Verbindung werden vorne abgenommen
+  (`rtsp::take_interleaved`, host-getestet); ein Frame ueber
+  `kMaxInterleaved` (4 KiB — RTCP und ein G.711-Frame sind weit darunter)
+  beendet die Verbindung, damit die 16-bit-Laenge nicht 64 KiB pro
+  geparkter Verbindung reservieren kann (Review-Fix H4). Eine Verbindung,
+  die vor PLAY 60 s lang nichts anfragt, wird geschlossen.
+* Der Audio-Sink verwirft bei Ueberlauf EINEN Frame (den aeltesten), nicht
+  die ganze Warteschlange (`StreamHub::set_key_supersedes(false)`): mit der
+  Video-Regel loeschte jeder Audio-Frame (alle sind Key-Frames) bei vollem
+  Sink 320 ms Ton auf einmal. Verworfene Frames ueberspringt die RTP-Uhr
+  (`AccessUnit::seq`-Luecke), damit der Ton nicht vor das Bild laeuft
+  (Review-Fix H3).
+* Die HTTP-Streams (`/audio.*`) puffern hoechstens 2 s des Drahtformats
+  (`http::audio_stream_bytes`); was daruber liegt, wird verworfen — im Ogg
+  ueber `OpusWriter::skip` (Granule laeuft, Seitennummer nicht: eine
+  Seitenluecke meldet jeder Ogg-Leser als Verlust), im fMP4 ueber die
+  Decode-Zeit. Ein Client, der 10 s lang nicht liest, wird getrennt
+  (Review-Fixes M2, M3).
 
 ### Noch offen
 
