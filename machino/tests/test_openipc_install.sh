@@ -446,6 +446,19 @@ is "selection switched to machino" "$(cat "$R/etc/machino/streamer")" "machino"
 S=$(mgr_status)
 case "$S" in *'"state":"ON"'*) ok ;; *) bad "manager status not ON after install: $S" ;; esac
 
+# 15c-2) tiny-overlay pre-flight: the live daemon counts as reclaimable, so the
+# manager proceeds with an in-place upgrade instead of refusing. Regression for
+# the 2026-09-29 failure where the pre-flight died with "not enough space ...
+# nothing was stopped" although the running binary was exactly what made room.
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1
+dd if=/dev/zero of="$R/usr/bin/machino" bs=1024 count=2000 2>/dev/null
+rm -f "$R/etc/machino/backup/machino.prev"
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=100 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1; rc=$?
+is "manager upgraded in place on a tiny overlay" "$rc" "0"
+if grep -q "nothing was stopped" "$WORK/out"; then bad "manager refused a possible in-place upgrade: $(cat "$WORK/out")"; else ok; fi
+if [ "$(wc -c < "$R/usr/bin/machino")" -lt 4096 ]; then ok; else bad "manager left the 2 MB blob in place"; fi
+
 # 15c-1) der PRODUKT-Deploy fasst die OpenIPC-WebUI NICHT an.
 #
 # Das ist eine Architekturgrenze, keine Vorsichtsmassnahme: OpenIPC bleibt
@@ -638,6 +651,33 @@ printf 'the-old-one\n' > "$WORK/root/usr/bin/machino"
 run_install
 has "previous daemon kept" "$WORK/root/etc/machino/backup/machino.prev"
 is  "and it is the one that was replaced" "$(cat "$WORK/root/etc/machino/backup/machino.prev")" "the-old-one"
+
+# ---- 18b) tiny overlay: in-place upgrade when a rollback copy will not fit ---
+# The T40NN overlay (~3.8 MB) cannot hold two machino binaries at once. When a
+# rollback copy will not fit, install.sh deletes the current daemon first and
+# upgrades IN PLACE (no rollback) - it must not refuse. Forced through the
+# MACHINO_TEST_FREE_KB seam (the real / has plenty). Regression for the
+# 2026-09-29 "not enough space" wall on an install-over-install.
+make_bundle; make_camera auto
+run_install
+dd if=/dev/zero of="$R/usr/bin/machino" bs=1024 count=2000 2>/dev/null    # a bulky current daemon to reclaim
+rm -f "$R/etc/machino/backup/machino.prev"
+( cd "$WORK/bundle" && MACHINO_ROOT="$R" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=100 sh ./install.sh ) >"$WORK/out" 2>&1; rc=$?
+is    "in-place upgrade succeeded" "$rc" "0"
+if grep -q "in place" "$WORK/out"; then ok; else bad "no in-place notice: $(cat "$WORK/out")"; fi
+has   "the new daemon is installed"        "$R/usr/bin/machino"
+hasnt "no rollback copy kept on a full overlay" "$R/etc/machino/backup/machino.prev"
+if [ "$(wc -c < "$R/usr/bin/machino")" -lt 4096 ]; then ok; else bad "the 2 MB blob was not replaced by the new binary"; fi
+
+# ---- 18c) genuinely out of space: refuse, and keep the running daemon -------
+make_bundle; make_camera auto
+run_install
+printf 'still-the-old-one\n' > "$R/usr/bin/machino"
+rm -f "$R/etc/machino/backup/machino.prev"
+( cd "$WORK/bundle" && MACHINO_ROOT="$R" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=10 sh ./install.sh ) >"$WORK/out" 2>&1; rc=$?
+if [ "$rc" != "0" ]; then ok; else bad "install did not fail when even in-place will not fit: $(cat "$WORK/out")"; fi
+if grep -q "not enough space" "$WORK/out"; then ok; else bad "no space message: $(cat "$WORK/out")"; fi
+is "the running daemon is untouched on a hard refusal" "$(cat "$R/usr/bin/machino")" "still-the-old-one"
 
 # ---- 19) AP26: the platform check discriminates, in both directions --------
 mk_dt() {   # $1 = compatible string (nul-separated, as the kernel exposes it)

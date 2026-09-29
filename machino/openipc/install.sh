@@ -262,11 +262,33 @@ fi
 
 # 1280 kB Zuschlag: die groesste Einzeldatei der Nutzlast (hostapd ~1 MB) wird
 # als tmp+mv geschrieben und braucht ihren Platz TRANSIENT doppelt, dazu etwas
-# Luft. Das alte Binary kostet nichts mehr: es wird per move_file zum Backup
-# UMBENANNT, nicht kopiert.
-need_kb=$(( ($(wc -c < "$HERE/machino") / 1024) + 1280 ))
-free_kb=$(df -k / | awk 'NR==2 {print $4}')
-[ "${free_kb:-0}" -ge "$need_kb" ] || die "not enough space on / (need ~${need_kb} kB, have ${free_kb} kB)"
+# Luft.
+#
+# Zwei Betriebspunkte, weil das T40NN-Overlay (~3,8 MB) keine ZWEI Binaries
+# gleichzeitig traegt:
+#   keep_prev=1  Es ist Platz, das laufende Binary als Rollback-Kopie
+#                (machino.prev) zu BEHALTEN und die neue daneben zu schreiben.
+#   keep_prev=0  Es reicht nur, wenn das laufende Binary ZUERST geloescht und
+#                die neue in seinen Platz geschrieben wird -- In-Place-Upgrade,
+#                kein Rollback. Genau der Fall auf dieser Kamera: das laufende
+#                machino belegt ~3,6 MB Overlay, die nie zusaetzlich frei sind.
+# Erst wenn selbst das In-Place nicht passt, ist wirklich kein Platz.
+new_kb=$(( $(wc -c < "$HERE/machino") / 1024 ))
+need_kb=$(( new_kb + 1280 ))
+# MACHINO_TEST_FREE_KB overrides the measured free space (test seam only): the
+# host install tests run against a large real /, so without it the low-space
+# branches below can never be exercised. Production reads df.
+free_kb=${MACHINO_TEST_FREE_KB:-$(df -k / | awk 'NR==2 {print $4}')}
+cur_kb=0
+[ -f "$ROOT/usr/bin/machino" ] && cur_kb=$(( $(wc -c < "$ROOT/usr/bin/machino") / 1024 ))
+if [ "${free_kb:-0}" -ge "$need_kb" ]; then
+    keep_prev=1
+elif [ "$(( ${free_kb:-0} + cur_kb ))" -ge "$need_kb" ]; then
+    keep_prev=0
+    say "not enough room to keep a rollback copy - upgrading in place; the previous daemon will NOT be kept"
+else
+    die "not enough space on / (need ~${need_kb} kB, free ~${free_kb} kB, reclaimable ~${cur_kb} kB) - free space first: the WebUI System > Storage page removes the majestic backup (~2.9 MB)"
+fi
 
 # ------------------------------------------------- AP21: check before writing
 #
@@ -397,7 +419,7 @@ mkdir -p "$ROOT/usr/bin" "$ROOT/usr/sbin" "$ROOT/var/run"
 # rename (Fallback cp+rm nur fuer den squashfs-Lower-Layer-Fall). Das kleine
 # Fenster, in dem /usr/bin/machino fehlt, schliesst der put-Schritt direkt
 # danach; der Daemon ist zu diesem Zeitpunkt ohnehin gestoppt.
-if [ -f "$ROOT/usr/bin/machino" ]; then
+if [ "${keep_prev:-1}" = "1" ] && [ -f "$ROOT/usr/bin/machino" ]; then
     if move_file "$ROOT/usr/bin/machino" "$BACKUP/machino.prev"; then
         say "kept the previous daemon as $BACKUP/machino.prev"
     else
@@ -405,6 +427,13 @@ if [ -f "$ROOT/usr/bin/machino" ]; then
         # upgrade. But it must be SAID, because the rollback will not be there.
         say "could not keep a copy of the previous daemon - no rollback target"
     fi
+elif [ -f "$ROOT/usr/bin/machino" ]; then
+    # In-place upgrade (keep_prev=0): the overlay has no room for two binaries,
+    # so the current daemon is DELETED to free its ~3.6 MB before the new one is
+    # written into that space. No rollback target - said, not silent. The daemon
+    # is already stopped (machino-manager stops it before calling install.sh).
+    rm -f "$ROOT/usr/bin/machino"
+    say "removed the current daemon to make room (in-place upgrade, no rollback target)"
 fi
 
 put 0755 "$HERE/machino" "$ROOT/usr/bin/machino" || die "cannot install $ROOT/usr/bin/machino"
