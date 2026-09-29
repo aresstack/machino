@@ -556,6 +556,29 @@ static void set_id(weirdike_id_t *id, int type, const char *val, uint8_t raw[4])
     }
 }
 
+/* AP11: wd_config lists -> the engine's policy structs (the engine
+ * normalizes and de-duplicates; order here does not matter). */
+static void policy_from_config(const wd_config *c, weirdike_ike_policy_t *ike, weirdike_child_policy_t *child)
+{
+    memset(ike, 0, sizeof(*ike)); memset(child, 0, sizeof(*child));
+    for (size_t i = 0; i < c->ike_enc.n; i++) { ike->encr[i].id = c->ike_enc.id[i]; ike->encr[i].key_bits = c->ike_enc.bits[i]; }
+    ike->n_encr = c->ike_enc.n;
+    for (size_t i = 0; i < c->ike_hash.n; i++) { ike->prf[i] = c->ike_hash.id[i]; ike->integ[i] = c->ike_hash.id2[i]; }
+    ike->n_prf = ike->n_integ = c->ike_hash.n;
+    for (size_t i = 0; i < c->ike_dh.n; i++) ike->dh[i] = c->ike_dh.id[i];
+    ike->n_dh = c->ike_dh.n;
+    for (size_t i = 0; i < c->esp_enc.n; i++) { child->encr[i].id = c->esp_enc.id[i]; child->encr[i].key_bits = c->esp_enc.bits[i]; }
+    child->n_encr = c->esp_enc.n;
+    for (size_t i = 0; i < c->esp_hash.n; i++) child->integ[i] = c->esp_hash.id[i];
+    child->n_integ = c->esp_hash.n;
+}
+
+/* AP11: the negotiated suites as catalogue names (for ctl status). */
+static const char *ike_hash_name(uint16_t prf)
+{
+    return prf == 2 ? "sha1" : prf == 5 ? "sha256" : prf == 6 ? "sha384" : prf == 7 ? "sha512" : prf == 1 ? "md5" : "?";
+}
+
 static const char *id_type_name(int t)
 {
     switch (t) { case WD_ID_RFC822: return "rfc822"; case WD_ID_IPV4: return "ipv4"; case WD_ID_KEYID: return "keyid"; }
@@ -629,7 +652,7 @@ static void ctl_status(wd_daemon *d, char *buf, size_t cap)
      * one (CP), and the PFS/identity settings in force -- so the UI shows
      * what the daemon DOES, not what someone remembers configuring. */
     {
-        char line[256];
+        char line[512];
         weirdike_cp_t cp;
         const int have_cp = (weirdike_get_cp(d->ike, &cp) == 0 && cp.have_address);
         char tip[20] = "", cpa[20] = "";
@@ -637,19 +660,34 @@ static void ctl_status(wd_daemon *d, char *buf, size_t cap)
             snprintf(tip, sizeof(tip), "%u.%u.%u.%u", d->tun_ip[0], d->tun_ip[1], d->tun_ip[2], d->tun_ip[3]);
         if (have_cp)
             snprintf(cpa, sizeof(cpa), "%u.%u.%u.%u", cp.address[0], cp.address[1], cp.address[2], cp.address[3]);
+        /* AP11: the NEGOTIATED suites, enc/prf/integ/dh and enc/integ. */
+        char ike_s[64] = "", child_s[48] = "";
+        if (have && dg.have_ike_suite)
+            snprintf(ike_s, sizeof(ike_s), "%s/%s/%s/dh%u",
+                     wd_algo_name(1, dg.ike_encr, dg.ike_encr_key_bits),
+                     ike_hash_name(dg.ike_prf),
+                     wd_algo_name(4, dg.ike_integ, 0),
+                     (unsigned)dg.ike_dh);
+        if (have && dg.child_sa_ok)
+            snprintf(child_s, sizeof(child_s), "%s/%s",
+                     wd_algo_name(3, dg.child_encr, dg.child_encr_key_bits),
+                     wd_algo_name(4, dg.child_integ, 0));
         snprintf(line, sizeof(line),
                  "tunnel_ip=%s\n"
                  "request_cp=%s\n"
                  "cp_address=%s\n"
                  "pfs_group=%u\n"
                  "local_id_type=%s\n"
-                 "remote_id_type=%s\n",
+                 "remote_id_type=%s\n"
+                 "ike_suite=%s\n"
+                 "child_suite=%s\n",
                  tip,
                  (d->cfg.request_cp || d->cfg.auth == 1) ? "yes" : "no",
                  cpa,
                  (unsigned)d->cfg.pfs_group,
                  id_type_name(d->cfg.local_id_type),
-                 id_type_name(d->cfg.remote_id_type));
+                 id_type_name(d->cfg.remote_id_type),
+                 ike_s, child_s);
         size_t have_len = strlen(buf), add = strlen(line);
         if (have_len + add < cap) memcpy(buf + have_len, line, add + 1);
     }
@@ -678,7 +716,7 @@ static void ctl_serve(wd_daemon *d)
     req[n] = 0;
     while (n > 0 && (req[n - 1] == '\n' || req[n - 1] == '\r')) req[--n] = 0;
 
-    char out[1024];
+    char out[2048];   /* AP11: status grew (suites, CP, routes) -- clients read 2048 */
     if (!strcmp(req, "status")) {
         ctl_status(d, out, sizeof(out));
     } else if (!strcmp(req, "down")) {
@@ -688,6 +726,10 @@ static void ctl_serve(wd_daemon *d)
     } else if (!strcmp(req, "rekey")) {
         int rc = weirdike_rekey_child(d->ike, wd_now_ms());
         snprintf(out, sizeof(out), "%s\n", rc == 0 ? "ok: child rekey requested" : "error: refused");
+    } else if (!strcmp(req, "ikerekey")) {
+        /* AP11: IKE-SA rekey on demand (CREATE_CHILD_SA with an IKE proposal). */
+        int rc = weirdike_rekey_ike(d->ike, wd_now_ms());
+        snprintf(out, sizeof(out), "%s\n", rc == 0 ? "ok: ike rekey requested" : "error: refused");
     } else {
         snprintf(out, sizeof(out), "error: unknown command\n");
     }
@@ -963,6 +1005,28 @@ int main(int argc, char **argv)
     } else {
         weirdike_ts_any_ipv4(&wc.remote_ts);
     }
+
+    /* AP11: the proposal policy from the config's allow-lists, or the engine
+     * default when machinod wrote none. Checked here first for a diagnosable
+     * reason (weirdike_new would only return NULL). Fail closed: a policy
+     * this build cannot honour never becomes a narrower offer. */
+    weirdike_ike_policy_t ike_pol; weirdike_child_policy_t child_pol;
+    if (d.cfg.have_policy) {
+        policy_from_config(&d.cfg, &ike_pol, &child_pol);
+        int pc = weirdike_policy_check(&ike_pol, &child_pol);
+        if (pc != 0) {
+            static const char *lists[] = {"?", "ike_enc", "ike_hash (PRF)", "ike_hash (INTEG)", "ike_dh", "esp_enc", "esp_hash"};
+            wd_log(LOG_ERR, "proposal policy refused by this build: %s contains an algorithm it cannot negotiate (code %d)",
+                   lists[(pc >= -6 && pc <= -1) ? -pc : 0], pc);
+            goto fail;
+        }
+        wc.ike_policy = &ike_pol; wc.child_policy = &child_pol;
+    }
+    /* AP11: liveness / NAT-T / byte lifetime (0 = engine default). */
+    wc.dpd_disable       = d.cfg.dpd_disable;
+    wc.dpd_retries       = d.cfg.dpd_retries;
+    wc.natt_keepalive_s  = d.cfg.natt_keepalive_s;
+    wc.child_lifetime_kb = d.cfg.child_lifetime_kb;
 
     /* AP10: explicit identity types. The raw IPv4 buffers only have to live
      * until weirdike_new() has deep-copied the config, just below. */

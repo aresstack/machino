@@ -125,13 +125,13 @@ void test_config_roundtrip()
 void test_validate_names_the_problem()
 {
     IpsecConfig c = sample();
-    c.ike_enc = {"aes128cbc"};
+    c.ike_enc = {"chacha20"};                          // AP11: im Katalog, in diesem Build nicht implementiert
     std::string e = validate(c);
-    // Die Ablehnung nennt den fremden Algorithmus BEIM NAMEN.
-    ICHECK(e.find("aes128cbc") != std::string::npos);
+    // Die Ablehnung nennt den Algorithmus BEIM NAMEN.
+    ICHECK(e.find("chacha20") != std::string::npos);
     ICHECK(e.find("ikeEnc") != std::string::npos);
 
-    c = sample(); c.esp_hash = {"sha256", "sha1"};   // Menge != genau eins
+    c = sample(); c.esp_hash = {"sha256", "md5"};      // AP11: Liste erlaubt, aber md5 nicht implementiert
     ICHECK(!validate(c).empty());
 
     c = sample(); c.remote_subnet = "10.66.0.0/33";
@@ -776,6 +776,102 @@ void test_ap10_profile_parity()
     remove(MCONF); remove(DCONF);
 }
 
+// AP11: die LANCOM-Matrix -- Katalog, Allow-Listen, Ablehnung MIT NAMEN,
+// Config = Kabel (Daemon-Datei), PFS mit der kleinsten Gruppe, die
+// Liveness-Knoepfe, die ausgehandelten Suiten im Status, Rekey.
+void test_ap11_algorithm_grid()
+{
+    // Katalog: das komplette Raster, Vorgabe-Suite implementiert.
+    size_t n = 0;
+    const AlgoInfo* dh = algo_table(AlgoGroup::Dh, n);
+    ICHECK(n == 13 && std::string(dh[0].id) == "dh2" && std::string(dh[12].id) == "dh32");
+    ICHECK(algo_find(AlgoGroup::Dh, "dh14") && algo_find(AlgoGroup::Dh, "dh14")->implemented && algo_find(AlgoGroup::Dh, "dh14")->lancom_default);
+    ICHECK(algo_find(AlgoGroup::Dh, "dh2") && !algo_find(AlgoGroup::Dh, "dh2")->implemented);
+    ICHECK(algo_find(AlgoGroup::IkeEnc, "chacha20") && !algo_find(AlgoGroup::IkeEnc, "chacha20")->implemented);
+    ICHECK(algo_find(AlgoGroup::IkeHash, "sha512") && algo_find(AlgoGroup::IkeHash, "sha512")->implemented);
+    ICHECK(algo_find(AlgoGroup::EspEnc, "null") && !algo_find(AlgoGroup::EspEnc, "null")->implemented);
+    ICHECK(!algo_find(AlgoGroup::EspHash, "blake2"));
+    ICHECK(algo_smallest_dh({"dh19", "dh14", "dh31"}) == 14 && algo_smallest_dh({"dh31"}) == 31 && algo_smallest_dh({}) == 0);
+
+    // Listen: alles Implementierte geht, der Rest wird MIT NAMEN abgelehnt.
+    IpsecConfig c = sample();
+    c.ike_dh = {"dh14", "dh19", "dh31"}; c.ike_enc = {"aes128cbc", "aes256cbc"}; c.ike_hash = {"sha1", "sha256", "sha512"};
+    c.esp_enc = {"aes256cbc"}; c.esp_hash = {"sha1", "sha256"};
+    ICHECK(validate(c).empty());
+    c = sample(); c.ike_enc = {"chacha20"};
+    std::string e = validate(c);
+    ICHECK(e.find("ikeEnc") != std::string::npos && e.find("chacha20") != std::string::npos && e.find("nicht implementiert") != std::string::npos);
+    c = sample(); c.ike_dh = {"dh14", "dh2"};
+    ICHECK(validate(c).find("dh2") != std::string::npos);
+    c = sample(); c.esp_hash = {"sha256", "sha3"};
+    ICHECK(validate(c).find("unbekannt") != std::string::npos && validate(c).find("sha3") != std::string::npos);
+    c = sample(); c.ike_hash.clear();
+    ICHECK(validate(c).find("ikeHash") != std::string::npos && validate(c).find("leer") != std::string::npos);
+
+    // machino-Datei: Listen und Knoepfe hin und zurueck; alte Datei mit
+    // "ike ="/"esp =" liest sich weiter (Vorgaben).
+    c = sample();
+    c.ike_dh = {"dh14", "dh19"}; c.ike_hash = {"sha256", "sha1"};
+    c.dpd = false; c.dpd_retries = 8; c.natt_keepalive_s = 15; c.child_lifetime_mb = 512; c.mtu = 1300;
+    IpsecConfig back; std::string err;
+    ICHECK(from_machino_conf(to_machino_conf(c), back, err));
+    ICHECK(back.ike_dh == std::vector<std::string>({"dh14", "dh19"}) && back.ike_hash == std::vector<std::string>({"sha256", "sha1"}));
+    ICHECK(!back.dpd && back.dpd_retries == 8 && back.natt_keepalive_s == 15 && back.child_lifetime_mb == 512 && back.mtu == 1300);
+    ICHECK(from_machino_conf("enabled = false\ngateway = g\nike = aes256cbc,sha256,dh14\nesp = aes256cbc,sha256\n", back, err));
+    ICHECK(back.ike_dh == std::vector<std::string>({"dh14"}) && back.dpd && back.mtu == 1400 && back.child_lifetime_mb == 0);
+    c = sample(); c.mtu = 100;
+    ICHECK(validate(c).find("mtu") != std::string::npos);
+    c = sample(); c.natt_keepalive_s = 3;
+    ICHECK(validate(c).find("nattKeepaliveS") != std::string::npos);
+
+    // Daemon-Datei: Config = Kabel -- die Listen stehen IMMER drin, die
+    // Knoepfe nur, wenn nicht Vorgabe; PFS nimmt die kleinste Gruppe.
+    bool present = false;
+    std::string d = to_weirdike_conf(sample(), S("s3cret-psk"), "", &present);
+    ICHECK(d.find("ike_dh = dh14\n") != std::string::npos && d.find("ike_enc = aes256cbc\n") != std::string::npos);
+    ICHECK(d.find("ike_hash = sha256\n") != std::string::npos && d.find("esp_enc = aes256cbc\n") != std::string::npos && d.find("esp_hash = sha256\n") != std::string::npos);
+    ICHECK(d.find("dpd = no") == std::string::npos && d.find("dpd_retries") == std::string::npos);
+    ICHECK(d.find("mtu") == std::string::npos && d.find("child_lifetime_kb") == std::string::npos && d.find("natt_keepalive") == std::string::npos);
+    c = sample();
+    c.ike_dh = {"dh19", "dh14"}; c.ike_hash = {"sha256", "sha1"}; c.pfs = true;
+    c.dpd = false; c.dpd_retries = 8; c.natt_keepalive_s = 15; c.child_lifetime_mb = 2; c.mtu = 1300;
+    d = to_weirdike_conf(c, S("s3cret-psk"), "", &present);
+    ICHECK(d.find("ike_dh = dh19,dh14\n") != std::string::npos && d.find("ike_hash = sha256,sha1\n") != std::string::npos);
+    ICHECK(d.find("pfs_group = 14\n") != std::string::npos);      // kleinste erlaubte Gruppe
+    ICHECK(d.find("dpd = no\n") != std::string::npos && d.find("dpd_retries = 8\n") != std::string::npos);
+    ICHECK(d.find("natt_keepalive_s = 15\n") != std::string::npos && d.find("child_lifetime_kb = 2048\n") != std::string::npos);
+    ICHECK(d.find("mtu = 1300\n") != std::string::npos);
+    c.ike_dh = {"dh31"};
+    d = to_weirdike_conf(c, S("s3cret-psk"), "", &present);
+    ICHECK(d.find("pfs_group = 31\n") != std::string::npos);
+
+    // Status: die ausgehandelten Suiten.
+    VpnStatus st = parse_status("state=CHILD_SA_ESTABLISHED\nike_suite=aes256cbc/sha256/sha256/dh14\nchild_suite=aes256cbc/sha256\n", true, true);
+    ICHECK(st.ike_suite == "aes256cbc/sha256/sha256/dh14" && st.child_suite == "aes256cbc/sha256");
+
+    // Rekey: nur mit laufendem Daemon; die Backend-Antwort zaehlt.
+    remove(MCONF); remove(DCONF);
+    {
+        struct RekeyBackend : FakeBackend {
+            int rekeys = 0, ike_rekeys = 0; bool accept = true;
+            bool rekey(bool ike_sa, std::string& out) override {
+                (ike_sa ? ike_rekeys : rekeys)++;
+                out = accept ? "ok: requested\n" : "error: refused\n";
+                return accept;
+            }
+        } be;
+        IpsecService svc(be, MCONF, DCONF);
+        ICHECK(svc.set_config(sample(), S("s3cret-psk")).empty());
+        ICHECK(svc.rekey(false).find("kein Tunnel") != std::string::npos && be.rekeys == 0);
+        ICHECK(svc.connect().empty());
+        ICHECK(svc.rekey(false).empty() && be.rekeys == 1);
+        ICHECK(svc.rekey(true).empty() && be.ike_rekeys == 1);
+        be.accept = false;
+        ICHECK(svc.rekey(false) == "error: refused");
+    }
+    remove(MCONF); remove(DCONF);
+}
+
 void run_ipsec_tests()
 {
     test_review_findings();
@@ -792,4 +888,5 @@ void run_ipsec_tests()
     test_connect_disconnect();
     test_status_mapping();
     test_ap10_profile_parity();
+    test_ap11_algorithm_grid();
 }

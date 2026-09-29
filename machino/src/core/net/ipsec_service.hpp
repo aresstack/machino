@@ -93,6 +93,9 @@ struct VpnStatus {
     std::string cp_address;           // vom Gateway zugewiesen ("" = keine)
     uint32_t    pfs_group = 0;        // 0 = kein PFS
     std::string local_id_type, remote_id_type;
+    // AP11: die AUSGEHANDELTEN Suiten (Daemon aus der Engine-Diag):
+    // "aes256cbc/sha256/sha256/dh14" (enc/prf/integ/dh) bzw. "aes256cbc/sha256".
+    std::string ike_suite, child_suite;
 
     // AP7: der abgeleitete Runtime-Zustand + Reconnect-Sicht.
     VpnRuntimeState runtime = VpnRuntimeState::Disabled;
@@ -147,6 +150,10 @@ public:
     virtual bool del_peer_route(const std::string& peer_ip, const std::string& ifname,
                                 const std::string& gateway_ip, std::string& err) = 0;
 
+    // AP11: Rekey auf Zuruf (weirdikectl rekey | ikerekey). Vorgabe: kann
+    // das Backend nicht (Hosttests ohne Wiring). out = die ctl-Antwort.
+    virtual bool rekey(bool ike_sa, std::string& out) { (void)ike_sa; out.clear(); return false; }
+
     // AP9: ist ein System-CA-Store in DIESEM RootFS vorhanden? (Der Daemon
     // parst ihn; machinod fragt nur, um HOST_STORE in der UI auszugrauen und
     // NIE heimlich auf NONE zurueckzufallen.) Default: nein.
@@ -179,6 +186,10 @@ public:
 
     std::string connect();      // Underlay waehlen, aufloesen, Peer-Route, Daemon starten
     std::string disconnect();   // Daemon stoppen, Peer-Route entfernen
+    // AP11: Child-SA (ike_sa=false) oder IKE-SA jetzt neu schluesseln --
+    // Nachweis fuer PFS und die Rekey-Pfade gegen ein echtes Gateway. Leer =
+    // angefordert; sonst der Grund (kein Daemon, Engine hat abgelehnt).
+    std::string rekey(bool ike_sa);
     VpnStatus   status();
 
     // AP5 §9 / AP7 §9,§10: regelmaessig aus dem Hauptthread mit der Uhr des

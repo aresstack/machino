@@ -44,6 +44,12 @@ Json ipsec_config_json(const ipsec::IpsecConfig& c, bool psk_set)
     j.set("espEnc", algo_array(c.esp_enc));
     j.set("espHash", algo_array(c.esp_hash));
     j.set("pskSet", Json::boolean(psk_set));
+    // AP11: Liveness, Byte-Lifetime, MTU.
+    j.set("dpd", Json::boolean(c.dpd));
+    j.set("dpdRetries", Json::integer(c.dpd_retries));
+    j.set("nattKeepaliveS", Json::integer(c.natt_keepalive_s));
+    j.set("childLifetimeMb", Json::integer((long long)c.child_lifetime_mb));
+    j.set("mtu", Json::integer(c.mtu));
     // AP9: Auth-Modell (nur Presence, nie Secret-Werte).
     j.set("auth", Json::string(ipsec::auth_name(c.auth)));
     j.set("eapUser", Json::string(c.eap_user));
@@ -98,10 +104,36 @@ bool take_algos(const Json& o, const char* k, std::vector<std::string>& out, std
 
 } // namespace
 
+// AP11: der Katalog fuer UI und Konsole -- das LANCOM-Raster in Anzeige-
+// reihenfolge, je Eintrag ob DIESER Build ihn aushandeln kann. Die Seite
+// baut daraus ihre Kaestchen und graut, was nicht geht; nichts ist dort
+// hartkodiert.
+static Json algo_catalogue()
+{
+    Json cat = Json::object();
+    for (ipsec::AlgoGroup g : {ipsec::AlgoGroup::Dh, ipsec::AlgoGroup::IkeEnc, ipsec::AlgoGroup::IkeHash,
+                               ipsec::AlgoGroup::EspEnc, ipsec::AlgoGroup::EspHash}) {
+        size_t n = 0;
+        const ipsec::AlgoInfo* t = ipsec::algo_table(g, n);
+        Json arr = Json::array();
+        for (size_t i = 0; i < n; ++i) {
+            Json a = Json::object();
+            a.set("id", Json::string(t[i].id));
+            a.set("label", Json::string(t[i].label));
+            a.set("implemented", Json::boolean(t[i].implemented));
+            a.set("lancomDefault", Json::boolean(t[i].lancom_default));
+            arr.push(a);
+        }
+        cat.set(ipsec::algo_group_field(g), arr);
+    }
+    return cat;
+}
+
 Response ApiService::ipsec_get()
 {
     if (!ipsec_) return fail(404, "not_found", "/api/v1/ipsec", "ipsec ist auf dieser Plattform nicht verdrahtet");
     Json j = ipsec_config_json(ipsec_->config(), ipsec_->psk_set());
+    j.set("algorithms", algo_catalogue());
     // AP9: Presence + Host-Store-Verfuegbarkeit (fuer HOST_STORE-Ausgrauen).
     j.set("eapPasswordSet", Json::boolean(ipsec_->eap_password_set()));
     j.set("caPemSet", Json::boolean(ipsec_->ca_pem_set()));
@@ -129,7 +161,9 @@ Response ApiService::ipsec_put_config(const std::string& body)
                                   // AP9:
                                   "auth","eapUser","eapPassword","trustMode","caPem","extraPem",
                                   // AP10 (requestCp ist abgeleitet, nur GET):
-                                  "localIdType","remoteIdType","pfs","autoConnect"};
+                                  "localIdType","remoteIdType","pfs","autoConnect",
+                                  // AP11 (algorithms ist der Katalog, nur GET):
+                                  "dpd","dpdRetries","nattKeepaliveS","childLifetimeMb","mtu"};
     for (const auto& m : in.members()) {
         bool ok = false;
         for (const char* k : known) if (m.first == k) { ok = true; break; }
@@ -141,6 +175,7 @@ Response ApiService::ipsec_put_config(const std::string& body)
     ipsec::IpsecConfig c = ipsec_->config();
     long long port = c.port, dpd = c.dpd_interval_s;
     long long ikeLt = c.ike_lifetime_s, childLt = c.child_lifetime_s;
+    long long dpdRetries = c.dpd_retries, nattKa = c.natt_keepalive_s, childMb = c.child_lifetime_mb, mtu = c.mtu;
     std::string underlay = ipsec::underlay_name(c.underlay);
     std::string auth = ipsec::auth_name(c.auth), trust = ipsec::trust_mode_name(c.trust_mode);
     std::string lidt = ipsec::id_type_name(c.local_id_type), ridt = ipsec::id_type_name(c.remote_id_type);
@@ -175,8 +210,18 @@ Response ApiService::ipsec_put_config(const std::string& body)
         !take_string(in, "localIdType", lidt, err) ||
         !take_string(in, "remoteIdType", ridt, err) ||
         !take_bool(in, "pfs", c.pfs, err) ||
-        !take_bool(in, "autoConnect", c.auto_connect, err))
+        !take_bool(in, "autoConnect", c.auto_connect, err) ||
+        // AP11:
+        !take_bool(in, "dpd", c.dpd, err) ||
+        !take_int(in, "dpdRetries", 0, 20, dpdRetries, err) ||
+        !take_int(in, "nattKeepaliveS", 0, 600, nattKa, err) ||
+        !take_int(in, "childLifetimeMb", 0, 1048576, childMb, err) ||
+        !take_int(in, "mtu", 576, 9000, mtu, err))
         return fail(400, "invalid_value", path, err);
+    c.dpd_retries = (int)dpdRetries;
+    c.natt_keepalive_s = (int)nattKa;
+    c.child_lifetime_mb = (uint32_t)childMb;
+    c.mtu = (int)mtu;
 
     c.port = (uint16_t)port;
     c.dpd_interval_s = (int)dpd;
@@ -219,6 +264,16 @@ Response ApiService::ipsec_disconnect()
     const char* path = "/api/v1/ipsec/disconnect";
     if (!ipsec_) return fail(404, "not_found", path, "ipsec ist auf dieser Plattform nicht verdrahtet");
     const std::string e = ipsec_->disconnect();
+    if (!e.empty()) return fail(409, "conflict", path, e);
+    Json j = Json::object(); j.set("ok", Json::boolean(true));
+    return Response{200, j};
+}
+
+Response ApiService::ipsec_rekey(bool ike_sa)
+{
+    const char* path = ike_sa ? "/api/v1/ipsec/rekey-ike" : "/api/v1/ipsec/rekey";
+    if (!ipsec_) return fail(404, "not_found", path, "ipsec ist auf dieser Plattform nicht verdrahtet");
+    const std::string e = ipsec_->rekey(ike_sa);
     if (!e.empty()) return fail(409, "conflict", path, e);
     Json j = Json::object(); j.set("ok", Json::boolean(true));
     return Response{200, j};
@@ -268,6 +323,9 @@ Response ApiService::ipsec_status()
         j.set("pfsGroup", Json::integer((long long)st.pfs_group));
         if (!st.local_id_type.empty())  j.set("localIdType", Json::string(st.local_id_type));
         if (!st.remote_id_type.empty()) j.set("remoteIdType", Json::string(st.remote_id_type));
+        // AP11: die AUSGEHANDELTEN Suiten -- nicht die konfigurierten.
+        if (!st.ike_suite.empty())   j.set("ikeSuite", Json::string(st.ike_suite));
+        if (!st.child_suite.empty()) j.set("childSuite", Json::string(st.child_suite));
     }
     // AP6: die INSTALLIERTEN Routen (Daemon-Wahrheit), source tsr|cp getrennt.
     Json routes = Json::array();

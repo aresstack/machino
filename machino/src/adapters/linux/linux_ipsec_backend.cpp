@@ -104,6 +104,13 @@ bool LinuxIpsecBackend::ctl_status(std::string& out)
     return ctl_command("status", out);
 }
 
+bool LinuxIpsecBackend::rekey(bool ike_sa, std::string& out)
+{
+    // weirdikectl-Protokoll; der Daemon antwortet "ok: ..." oder "error: ...".
+    if (!ctl_command(ike_sa ? "ikerekey" : "rekey", out)) return false;
+    return out.compare(0, 3, "ok:") == 0;
+}
+
 bool LinuxIpsecBackend::resolve4(const std::string& host, std::string& ip_out)
 {
     addrinfo hints{};

@@ -244,10 +244,52 @@ static void t_profile_fields(void)
     CHECK(wd_parse_ipv4("10.0.0.1/32", ip) != 0, "no prefix on a plain address");
 }
 
+static void t_policy_lists(void)
+{
+    /* AP11: allow-lists as catalogue names -> IANA ids; all five or none;
+     * unknown names refused by name; liveness knobs. */
+    wd_config c; char err[256];
+    CHECK(parse("gateway=a.b\npsk=x\nike_dh = dh14, dh19\nike_enc=aes256cbc,aes128cbc\nike_hash=sha256,sha1\n"
+                "esp_enc=aes256cbc\nesp_hash=sha256\n", &c, err, sizeof(err)) == 0, "policy lists parse");
+    CHECK(c.have_policy, "have_policy");
+    CHECK(c.ike_dh.n == 2 && c.ike_dh.id[0] == 14 && c.ike_dh.id[1] == 19, "dh ids");
+    CHECK(c.ike_enc.n == 2 && c.ike_enc.id[0] == 12 && c.ike_enc.bits[0] == 256 && c.ike_enc.bits[1] == 128, "enc ids + bits");
+    CHECK(c.ike_hash.n == 2 && c.ike_hash.id[0] == 5 && c.ike_hash.id2[0] == 12 && c.ike_hash.id[1] == 2 && c.ike_hash.id2[1] == 2, "ike hash prf+integ");
+    CHECK(c.esp_hash.n == 1 && c.esp_hash.id[0] == 12, "esp integ");
+
+    CHECK(parse("gateway=a.b\npsk=x\n", &c, err, sizeof(err)) == 0 && !c.have_policy, "no lists = engine default");
+    CHECK(parse("gateway=a.b\npsk=x\nike_dh=dh14\n", &c, err, sizeof(err)) != 0, "partial policy refused");
+    CHECK(strstr(err, "all five") != NULL, "partial policy names the rule");
+    CHECK(parse("gateway=a.b\npsk=x\nike_dh=dh14\nike_enc=aes256cbc\nike_hash=sha256\nesp_enc=aes256cbc\nesp_hash=blake2\n",
+                &c, err, sizeof(err)) != 0, "unknown algorithm refused");
+    CHECK(strstr(err, "blake2") != NULL, "unknown algorithm named");
+    CHECK(parse("gateway=a.b\npsk=x\nike_dh=dh14\nike_enc=aes256cbc\nike_hash=sha256\nesp_enc=aes256cbc\nesp_hash= , \n",
+                &c, err, sizeof(err)) != 0, "empty list refused");
+    /* The LANCOM grid is KNOWN in full; whether the build can run it is the engine's call. */
+    CHECK(parse("gateway=a.b\npsk=x\nike_dh=dh2\nike_enc=chacha20\nike_hash=md5\nesp_enc=null\nesp_hash=null\n",
+                &c, err, sizeof(err)) == 0, "unimplemented names still parse (engine refuses at start)");
+    CHECK(c.ike_enc.id[0] == 28 && c.ike_hash.id[0] == 1 && c.esp_enc.id[0] == 11, "grid ids");
+
+    uint16_t id, id2, bits;
+    CHECK(wd_algo_lookup(2, "sha512", &id, &id2, &bits) == 0 && id == 7 && id2 == 14, "lookup ike hash");
+    CHECK(wd_algo_lookup(0, "dh99", &id, &id2, &bits) != 0, "lookup unknown");
+    CHECK(strcmp(wd_algo_name(1, 12, 256), "aes256cbc") == 0, "name enc");
+    CHECK(strcmp(wd_algo_name(4, 12, 0), "sha256") == 0, "name esp integ");
+    CHECK(strcmp(wd_algo_name(0, 99, 0), "?") == 0, "name unknown");
+
+    CHECK(parse("gateway=a.b\npsk=x\ndpd=no\ndpd_retries=8\nnatt_keepalive_s=15\nchild_lifetime_kb=1048576\n",
+                &c, err, sizeof(err)) == 0, "liveness keys");
+    CHECK(c.dpd_disable == 1 && c.dpd_retries == 8 && c.natt_keepalive_s == 15 && c.child_lifetime_kb == 1048576, "liveness parsed");
+    CHECK(parse("gateway=a.b\npsk=x\n", &c, err, sizeof(err)) == 0 && !c.dpd_disable && !c.dpd_retries && !c.natt_keepalive_s && !c.child_lifetime_kb, "liveness defaults");
+    CHECK(parse("gateway=a.b\npsk=x\ndpd_retries=21\n", &c, err, sizeof(err)) != 0, "dpd_retries range");
+    CHECK(parse("gateway=a.b\npsk=x\nnatt_keepalive_s=3\n", &c, err, sizeof(err)) != 0, "keepalive minimum");
+}
+
 int main(void)
 {
     t_minimal();
     t_profile_fields();
+    t_policy_lists();
     t_bind_underlay();
     t_multi_remote_subnet();
     t_eap_mschapv2();

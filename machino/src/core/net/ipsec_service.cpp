@@ -148,6 +148,9 @@ VpnStatus parse_status(const std::string& text, bool daemon_running, bool enable
         else if (k == "pfs_group")        st.pfs_group = (uint32_t)strtoul(v.c_str(), nullptr, 10);
         else if (k == "local_id_type")    st.local_id_type = v;
         else if (k == "remote_id_type")   st.remote_id_type = v;
+        // AP11:
+        else if (k == "ike_suite")        st.ike_suite = v;
+        else if (k == "child_suite")      st.child_suite = v;
         else if (k == "route") {
             // "prefix source device" (space-separated), vom Daemon.
             VpnStatus::Route r;
@@ -451,6 +454,16 @@ std::string IpsecService::disconnect()
     // eine Route zu einem toten Tunnel ist nur ein Blackhole mit Namen.
     teardown_session_(false);
     return out;
+}
+
+std::string IpsecService::rekey(bool ike_sa)
+{
+    if (!backend_.daemon_running()) return "kein Tunnel (Daemon laeuft nicht)";
+    std::string out;
+    if (!backend_.rekey(ike_sa, out))
+        return out.empty() ? std::string(ike_sa ? "IKE-SA-Rekey" : "Child-Rekey") + ": vom Daemon abgelehnt"
+                           : trim(out);
+    return {};
 }
 
 // AP7 §9,§10: die Reconnect-Schleife. Aufgerufen aus dem Hauptthread mit der

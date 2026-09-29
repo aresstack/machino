@@ -2,6 +2,7 @@
 // Konsole. Kein Socket, kein Terminal hier (das ist machinoctl_linux.cpp), damit
 // alles hier gegen einen Fake-HTTP-Client hosttestbar ist.
 #include "app/ctl/machinoctl.hpp"
+#include "core/net/ipsec_algos.hpp"
 
 #include <cerrno>
 #include <cstdio>
@@ -39,12 +40,17 @@ const Field kFields[] = {
     {"dpdIntervalS",   Kind::Int,    "0..3600",      "Dead-Peer-Detection in s (0 = aus)", 0, 3600},
     {"ikeLifetimeS",   Kind::Int,    "0..604800",    "IKE-SA-Lebensdauer in s (0 = Daemon-Vorgabe)", 0, 604800},
     {"childLifetimeS", Kind::Int,    "0..604800",    "Child-SA-Lebensdauer in s (0 = Daemon-Vorgabe)", 0, 604800},
-    {"ikeEnc",         Kind::Algos,  "aes256cbc",    "IKE-Verschluesselung (Liste, Komma)", 0, 0},
-    {"ikeHash",        Kind::Algos,  "sha256",       "IKE-Integritaet/PRF", 0, 0},
-    {"ikeDh",          Kind::Algos,  "dh14",         "IKE-DH-Gruppe", 0, 0},
-    {"espEnc",         Kind::Algos,  "aes256cbc",    "ESP-Verschluesselung", 0, 0},
-    {"espHash",        Kind::Algos,  "sha256",       "ESP-Integritaet", 0, 0},
-    {"pfs",            Kind::Bool,   "true|false",   "PFS beim Child-Rekey (neue DH-Gruppe = ikeDh)", 0, 0},
+    {"ikeDh",          Kind::Algos,  "siehe 'ipsec algos'", "DH-Gruppen (Allow-Liste, Komma)", 0, 0},
+    {"ikeEnc",         Kind::Algos,  "siehe 'ipsec algos'", "IKE-SA-Verschluesselung (Allow-Liste)", 0, 0},
+    {"ikeHash",        Kind::Algos,  "siehe 'ipsec algos'", "IKE-SA-Hash, PRF + Integritaet (Allow-Liste)", 0, 0},
+    {"espEnc",         Kind::Algos,  "siehe 'ipsec algos'", "Child-SA-Verschluesselung (Allow-Liste)", 0, 0},
+    {"espHash",        Kind::Algos,  "siehe 'ipsec algos'", "Child-SA-Integritaet (Allow-Liste)", 0, 0},
+    {"pfs",            Kind::Bool,   "true|false",   "PFS beim Child-Rekey (kleinste erlaubte DH-Gruppe)", 0, 0},
+    {"dpd",            Kind::Bool,   "true|false",   "eigene DPD-Proben (Peer-Proben werden immer beantwortet)", 0, 0},
+    {"dpdRetries",     Kind::Int,    "0..20",        "DPD: Wiederholungen bis der Peer als tot gilt (0 = Vorgabe 5)", 0, 20},
+    {"nattKeepaliveS", Kind::Int,    "0|5..600",     "NAT-T-Keepalive in s (0 = Vorgabe 20)", 0, 600},
+    {"childLifetimeMb",Kind::Int,    "0..1048576",   "Child-SA-Lebensdauer in MiB (0 = kein Byte-Limit)", 0, 1048576},
+    {"mtu",            Kind::Int,    "576..9000",    "ipsec0-MTU (Vorgabe 1400)", 576, 9000},
     {"auth",           Kind::Enum,   "psk|eap-mschapv2", "Authentifizierung", 0, 0},
     {"psk",            Kind::Secret, "",             "Pre-Shared Key, write-only ('ipsec psk' fragt verdeckt)", 0, 0},
     {"eapUser",        Kind::Str,    "",             "EAP-Benutzername (Identity, kein Secret)", 0, 0},
@@ -53,6 +59,23 @@ const Field kFields[] = {
     {"caPem",          Kind::Pem,    "",             "Trust-Anchor/CA als PEM ('ipsec ca-pem <datei>|-')", 0, 0},
     {"extraPem",       Kind::Pem,    "",             "zusaetzliches Kettenmaterial als PEM ('ipsec extra-pem <datei>|-')", 0, 0},
 };
+
+// AP11: Feldname -> Kataloggruppe; Listen lokal pruefen (derselbe Katalog wie
+// im Daemon-Prozess, also dieselbe Antwort, nur ohne Roundtrip).
+bool algo_group_of(const std::string& field, ipsec::AlgoGroup& g) {
+    if (field == "ikeDh") g = ipsec::AlgoGroup::Dh;
+    else if (field == "ikeEnc") g = ipsec::AlgoGroup::IkeEnc;
+    else if (field == "ikeHash") g = ipsec::AlgoGroup::IkeHash;
+    else if (field == "espEnc") g = ipsec::AlgoGroup::EspEnc;
+    else if (field == "espHash") g = ipsec::AlgoGroup::EspHash;
+    else return false;
+    return true;
+}
+std::string algo_check_local(const std::string& field, const std::vector<std::string>& ids) {
+    ipsec::AlgoGroup g;
+    if (!algo_group_of(field, g)) return {};
+    return ipsec::algo_list_check(g, ids);
+}
 
 std::string lower(std::string s) { for (auto& ch : s) if (ch >= 'A' && ch <= 'Z') ch = (char)(ch - 'A' + 'a'); return s; }
 
@@ -488,8 +511,8 @@ int ipsec_setup(Console& c) {
 }
 
 const char* kIpsecUsage =
-    "ipsec [status|config|fields|get <k>|set <k> <v> ...|enable|disable|psk|eap-password|"
-    "ca-pem <datei>|extra-pem <datei>|setup|connect|disconnect|reconnect]\n";
+    "ipsec [status|config|fields|algos|get <k>|set <k> <v> ...|enable|disable|psk|eap-password|"
+    "ca-pem <datei>|extra-pem <datei>|setup|connect|disconnect|reconnect|rekey [ike]|ping <ip>|fetch <ip[:port]>|log [n]]\n";
 
 int cmd_ipsec(Console& c, const std::vector<std::string>& a) {
     if (a.empty()) return ipsec_show_summary(c);
@@ -518,6 +541,44 @@ int cmd_ipsec(Console& c, const std::vector<std::string>& a) {
     if (op == "extra-pem")    return ipsec_pem(c, *find_field("extraPem"), rest, "extra-pem");
     if (op == "connect")      return ipsec_connect(c);
     if (op == "disconnect")   return ipsec_disconnect(c);
+    if (op == "algos") {
+        Call cfg;
+        if (!call(c, "GET", "/api/v1/ipsec", "", cfg)) return 1;
+        const Json* cat = cfg.json.get("algorithms");
+        if (!cat || !cat->is_object()) { c.err("die API liefert keinen Algorithmen-Katalog\n"); return 1; }
+        if (c.raw_json) { c.out(cat->dump() + "\n"); return 0; }
+        c.out(ipsec_algos_text(*cat, cfg.json));
+        return 0;
+    }
+    if (op == "rekey" || op == "ikerekey") {
+        const bool ike = (op == "ikerekey") || (rest.size() == 1 && lower(rest[0]) == "ike");
+        Call r;
+        if (!call(c, "POST", ike ? "/api/v1/ipsec/rekey-ike" : "/api/v1/ipsec/rekey", "", r)) return 1;
+        if (c.raw_json) { show(c, r); return 0; }
+        c.out(std::string(ike ? "IKE-SA-Rekey" : "Child-Rekey") + " angefordert -- 'ipsec' zeigt die Generation, 'ipsec log' den Verlauf.\n");
+        return 0;
+    }
+    if (op == "ping" || op == "fetch" || op == "log") {
+        if (!c.shell) { c.err("Diagnose braucht die Kamera-Shell (nicht in dieser Umgebung)\n"); return 2; }
+        std::string cmd, err;
+        if (op == "ping") {
+            if (rest.size() != 1) { c.err("erwartet: ipsec ping <ip>\n"); return 2; }
+            if (!ping_cmdline(rest[0], cmd, err)) { c.err(err + "\n"); return 2; }
+        } else if (op == "fetch") {
+            if (rest.size() != 1) { c.err("erwartet: ipsec fetch <ip>[:port]\n"); return 2; }
+            if (!fetch_cmdline(rest[0], cmd, err)) { c.err(err + "\n"); return 2; }
+        } else {
+            long long n = 40;
+            if (rest.size() > 1 || (rest.size() == 1 && (!parse_int(rest[0], n) || n < 1 || n > 1000))) { c.err("erwartet: ipsec log [<zeilen 1..1000>]\n"); return 2; }
+            cmd = log_cmdline((int)n);
+        }
+        std::string out;
+        const bool ok = c.shell(cmd, out);
+        c.out(out);
+        if (!out.empty() && out.back() != '\n') c.out("\n");
+        if (!ok) { c.err(std::string(op == "log" ? "logread" : op == "ping" ? "ping" : "curl") + ": fehlgeschlagen (Exit != 0)\n"); return 1; }
+        return 0;
+    }
     if (op == "reconnect") {
         // Trennen darf scheitern (nichts verbunden) -- der Aufbau zaehlt.
         Call r;
@@ -670,9 +731,13 @@ bool ipsec_set_body(const std::vector<std::string>& kv, Json& body, std::string&
             body.set(f->name, Json::string(v));
             break;
         case Kind::Algos: {
+            // AP11: gegen den Katalog -- unbekannt oder in diesem Build nicht
+            // implementiert wird VOR dem Request mit Namen abgelehnt.
+            const std::vector<std::string> ids = split_on(v, ',');
+            const std::string ae = algo_check_local(f->name, ids);
+            if (!ae.empty()) { err = ae; return false; }
             Json arr = Json::array();
-            for (const auto& s : split_on(v, ',')) arr.push(Json::string(s));
-            if (arr.size() == 0) { err = std::string(f->name) + ": mindestens ein Algorithmus (erlaubt: " + f->allowed + ")"; return false; }
+            for (const auto& s : ids) arr.push(Json::string(s));
             body.set(f->name, arr);
             break;
         }
@@ -787,6 +852,17 @@ std::string ipsec_summary(const Json& cfg, const Json& st) {
     if (st.get("pfsGroup") && st.get("pfsGroup")->is_number() && int_of(st, "pfsGroup")) s += " (dh" + std::to_string(int_of(st, "pfsGroup")) + ")";
     if (!str_of(st, "interface").empty())    s += "  if=" + str_of(st, "interface");
     s += "\n";
+    // AP11: konfiguriert (Allow-Listen) vs. AUSGEHANDELT (Daemon).
+    auto list_of = [&](const char* k) {
+        const Json* v = cfg.get(k); std::string o;
+        if (v && v->is_array()) for (size_t i = 0; i < v->size(); ++i) { if (i) o += ","; o += scalar_str(v->at(i)); }
+        return o.empty() ? std::string("?") : o;
+    };
+    s += "algos    : ike=" + list_of("ikeEnc") + "/" + list_of("ikeHash") + "/" + list_of("ikeDh")
+       + "  esp=" + list_of("espEnc") + "/" + list_of("espHash");
+    if (!str_of(st, "ikeSuite").empty() || !str_of(st, "childSuite").empty())
+        s += "\n         ausgehandelt: ike=" + str_of(st, "ikeSuite", "-") + "  esp=" + str_of(st, "childSuite", "-");
+    s += "\n";
     s += "secrets  : psk=" + std::string(bool_of(cfg, "pskSet") ? "gesetzt" : "nicht gesetzt")
        + "  eapPassword=" + (bool_of(cfg, "eapPasswordSet") ? "gesetzt" : "nicht gesetzt")
        + "  caPem=" + (bool_of(cfg, "caPemSet") ? "gesetzt" : "nicht gesetzt") + "\n";
@@ -825,6 +901,7 @@ const char* help_text() {
         "  ipsec status                  voller VPN-Status (/api/v1/ipsec/status)\n"
         "  ipsec config                  VPN-Konfiguration (Secrets nur als gesetzt/nicht gesetzt)\n"
         "  ipsec fields                  alle Schluessel mit Typ und erlaubten Werten\n"
+        "  ipsec algos                   Algorithmen-Katalog (LANCOM-Raster): gewaehlt, implementiert, Vorgabe\n"
         "  ipsec get <schluessel>        einen Wert lesen\n"
         "  ipsec set <schluessel> <wert> [<schluessel> <wert> ...]\n"
         "                                Werte speichern -- dieselbe Pruefung wie in der WebUI\n"
@@ -836,6 +913,10 @@ const char* help_text() {
         "  ipsec setup                   gefuehrte Einrichtung: fragt ab, speichert, verbindet\n"
         "  ipsec connect | disconnect    Tunnel aufbauen / trennen (wie die Web-Buttons)\n"
         "  ipsec reconnect               trennen + neu aufbauen (nach einer Aenderung)\n"
+        "  ipsec rekey [ike]             Child-SA (oder IKE-SA) jetzt neu schluesseln -- PFS-Nachweis\n"
+        "  ipsec ping <ip>               ICMP durch den Tunnel (ping -c 3)\n"
+        "  ipsec fetch <ip>[:port]       HTTP GET durch den Tunnel (curl): Status, Bytes, Zeit\n"
+        "  ipsec log [<n>]               die letzten n Zeilen des weirdiked-Logs (logread)\n"
         "  api get <pfad>                beliebige API-Route lesen, z.B. api get /api/v1/network\n"
         "  api put|post|patch|delete <pfad> [<json>|@datei|-]\n"
         "                                beliebige Route schreiben (Body als JSON)\n"
@@ -847,6 +928,70 @@ const char* help_text() {
         "  ipsec psk\n"
         "  ipsec enable\n"
         "  ipsec connect\n";
+}
+
+std::string ipsec_algos_text(const Json& cat, const Json& cfg) {
+    std::string s = "Algorithmen (Allow-Listen, 'ipsec set <feld> a,b,c'; x = in der Konfiguration; "
+                    "'-' = in diesem Build nicht implementiert, wird abgelehnt; * = LANCOM-DEFAULT):\n";
+    struct G { const char* field; const char* title; };
+    static const G groups[] = {
+        {"ikeDh", "DH-Gruppen (IKE_SA_INIT, PFS)"}, {"ikeEnc", "IKE-SA-Verschluesselung"},
+        {"ikeHash", "IKE-SA-Hash (PRF + Integritaet)"}, {"espEnc", "Child-SA-Verschluesselung (ESP)"},
+        {"espHash", "Child-SA-Hash (ESP-Integritaet)"},
+    };
+    for (const G& g : groups) {
+        const Json* list = cat.get(g.field);
+        if (!list || !list->is_array()) continue;
+        s += std::string("  ") + g.field + " -- " + g.title + "\n";
+        const Json* chosen = cfg.get(g.field);
+        for (size_t i = 0; i < list->size(); ++i) {
+            const Json& a = list->at(i);
+            const std::string id = str_of(a, "id");
+            bool on = false;
+            if (chosen && chosen->is_array())
+                for (size_t k = 0; k < chosen->size(); ++k) if (chosen->at(k).is_string() && chosen->at(k).as_string() == id) on = true;
+            const bool impl = bool_of(a, "implemented");
+            char line[160];
+            snprintf(line, sizeof line, "    [%c] %-10s %-32s%s\n",
+                     !impl ? '-' : on ? 'x' : ' ', id.c_str(), str_of(a, "label").c_str(),
+                     bool_of(a, "lancomDefault") ? " *" : "");
+            s += line;
+        }
+    }
+    return s;
+}
+
+// Nur ein IPv4-Literal darf in die Kommandozeile -- nichts, was die Shell
+// deuten koennte.
+static bool ipv4_ok(const std::string& s) {
+    unsigned a, b, c2, d; char extra;
+    if (sscanf(s.c_str(), "%u.%u.%u.%u%c", &a, &b, &c2, &d, &extra) != 4) return false;
+    for (char ch : s) if (!((ch >= '0' && ch <= '9') || ch == '.')) return false;
+    return a < 256 && b < 256 && c2 < 256 && d < 256;
+}
+
+bool ping_cmdline(const std::string& target, std::string& cmd, std::string& err) {
+    if (!ipv4_ok(target)) { err = "ipsec ping: IPv4-Adresse erwartet, nicht '" + target + "'"; return false; }
+    cmd = "ping -c 3 -W 2 " + target + " 2>&1";
+    return true;
+}
+
+bool fetch_cmdline(const std::string& target, std::string& cmd, std::string& err) {
+    std::string host = target; long long port = 80;
+    const size_t colon = target.find(':');
+    if (colon != std::string::npos) {
+        host = target.substr(0, colon);
+        if (!parse_int(target.substr(colon + 1), port) || port < 1 || port > 65535) { err = "ipsec fetch: Port 1..65535"; return false; }
+    }
+    if (!ipv4_ok(host)) { err = "ipsec fetch: IPv4-Adresse[:port] erwartet, nicht '" + target + "'"; return false; }
+    // curl ist im Image (DynDNS nutzt es); -w liefert Status, Bytes, Zeit.
+    cmd = "curl -s -m 5 -o /dev/null -w 'HTTP %{http_code}  %{size_download} B  %{time_total} s\\n' http://" + host + ":" + std::to_string(port) + "/ 2>&1";
+    return true;
+}
+
+std::string log_cmdline(int lines) {
+    // busybox syslogd: logread (Ringpuffer), sonst /var/log/messages.
+    return "{ logread 2>/dev/null || cat /var/log/messages 2>/dev/null; } | grep -i weirdike | tail -n " + std::to_string(lines);
 }
 
 std::string ipsec_fields_text() {

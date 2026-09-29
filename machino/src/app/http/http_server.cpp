@@ -694,6 +694,8 @@ bool HttpServer::handle_request(Client& c) {
     else if (path == "/api/v1/ipsec/config")     { r = (m == "PUT") ? api_.ipsec_put_config(req.body) : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/ipsec/connect")    { r = (m == "POST") ? api_.ipsec_connect() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/ipsec/disconnect") { r = (m == "POST") ? api_.ipsec_disconnect() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+    else if (path == "/api/v1/ipsec/rekey")      { r = (m == "POST") ? api_.ipsec_rekey(false) : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
+    else if (path == "/api/v1/ipsec/rekey-ike")  { r = (m == "POST") ? api_.ipsec_rekey(true)  : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/ipsec/status")     { r = (m == "GET") ? api_.ipsec_status() : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/audio/tone")       { r = (m == "POST") ? api_.audio_tone(req.body)    : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }
     else if (path == "/api/v1/audio/monitor")    { r = (m == "POST") ? api_.audio_monitor(req.body) : api::ApiService::fail(405, "unknown_field", path, "method not allowed"); }

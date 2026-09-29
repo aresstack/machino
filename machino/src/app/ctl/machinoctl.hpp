@@ -68,6 +68,11 @@ struct Console {
     std::function<void(const std::string&)>           err;          // stderr
     std::function<bool(std::string&)>                 read_line;    // false = EOF
     std::function<std::string(const std::string&)>    read_secret;  // verdeckt; "" = nichts
+    // AP11: ein Kommando der Kamera-Shell ausfuehren (ping, curl, logread)
+    // und seine Ausgabe liefern -- fuer die Tunnel-Diagnose. machinoctl ist
+    // ein eigener Prozess in der Shell des Bedienenden; die "machinod forkt
+    // nicht"-Regel ist davon unberuehrt. Null = nicht verfuegbar (Hosttests).
+    std::function<bool(const std::string& cmdline, std::string& out)> shell;
     bool raw_json = false;   // --json: Antworten unformatiert (fuer Skripte)
     bool interactive = true; // Konsole: Banner + Prompt (false bei Pipe/Skript)
 };
@@ -106,6 +111,12 @@ std::string pretty(const Json& j);
 std::string ipsec_summary(const Json& cfg, const Json& status);
 // Die Befehlsliste ('help').
 const char* help_text();
+// AP11: der Algorithmen-Katalog aus GET /api/v1/ipsec (algorithms) als Text.
+std::string ipsec_algos_text(const Json& catalogue, const Json& cfg);
+// AP11: Shell-Kommandozeilen der Diagnose (rein; Argumente werden geprueft).
+bool ping_cmdline(const std::string& target, std::string& cmd, std::string& err);
+bool fetch_cmdline(const std::string& target, std::string& cmd, std::string& err);
+std::string log_cmdline(int lines);
 // Die Feldtabelle ('ipsec fields').
 std::string ipsec_fields_text();
 

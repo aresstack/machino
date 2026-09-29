@@ -50,6 +50,84 @@ int wd_valid_ifname(const char *s)
 
 /* "a.b.c.d" or "a.b.c.d/p". Rejects leading zeros, out-of-range octets, a
  * prefix > 32, and anything with trailing garbage. */
+/* AP11: the catalogue. Same names as machino's ipsec_algos.cpp and WeirdOS'
+ * ipsec_crypto_caps.cpp -- the daemon only translates, it does not judge:
+ * every name of the LANCOM grid is KNOWN here, and weirdike_policy_check()
+ * decides at start what this build can honour. */
+typedef struct { const char *name; uint16_t id; uint16_t id2; uint16_t bits; } wd_algo_def;
+static const wd_algo_def kDh[] = {
+    {"dh2", 2, 0, 0}, {"dh5", 5, 0, 0}, {"dh14", 14, 0, 0}, {"dh15", 15, 0, 0}, {"dh16", 16, 0, 0},
+    {"dh19", 19, 0, 0}, {"dh20", 20, 0, 0}, {"dh21", 21, 0, 0}, {"dh28", 28, 0, 0}, {"dh29", 29, 0, 0},
+    {"dh30", 30, 0, 0}, {"dh31", 31, 0, 0}, {"dh32", 32, 0, 0},
+};
+static const wd_algo_def kEnc[] = {   /* IKE and ESP share the ENCR registry */
+    {"aes128cbc", 12, 0, 128}, {"aes192cbc", 12, 0, 192}, {"aes256cbc", 12, 0, 256},
+    {"aes128gcm", 20, 0, 128}, {"aes192gcm", 20, 0, 192}, {"aes256gcm", 20, 0, 256},
+    {"3des", 3, 0, 0}, {"chacha20", 28, 0, 0}, {"null", 11, 0, 0},
+};
+static const wd_algo_def kIkeHash[] = {   /* id = PRF, id2 = INTEG */
+    {"sha1", 2, 2, 0}, {"sha256", 5, 12, 0}, {"sha384", 6, 13, 0}, {"sha512", 7, 14, 0}, {"md5", 1, 1, 0},
+};
+static const wd_algo_def kEspHash[] = {   /* id = INTEG */
+    {"sha1", 2, 0, 0}, {"sha256", 12, 0, 0}, {"sha384", 13, 0, 0}, {"sha512", 14, 0, 0}, {"md5", 1, 0, 0}, {"null", 0, 0, 0},
+};
+static const wd_algo_def *algo_table(int group, size_t *n)
+{
+    switch (group) {
+    case 0: *n = sizeof(kDh) / sizeof(kDh[0]); return kDh;
+    case 1: case 3: *n = sizeof(kEnc) / sizeof(kEnc[0]); return kEnc;
+    case 2: *n = sizeof(kIkeHash) / sizeof(kIkeHash[0]); return kIkeHash;
+    case 4: *n = sizeof(kEspHash) / sizeof(kEspHash[0]); return kEspHash;
+    }
+    *n = 0; return NULL;
+}
+
+int wd_algo_lookup(int group, const char *name, uint16_t *id, uint16_t *id2, uint16_t *bits)
+{
+    size_t n = 0; const wd_algo_def *t = algo_table(group, &n);
+    for (size_t i = 0; i < n; i++) {
+        if (!strcmp(t[i].name, name)) {
+            if (id)   *id = t[i].id;
+            if (id2)  *id2 = t[i].id2;
+            if (bits) *bits = t[i].bits;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+const char *wd_algo_name(int group, uint16_t id, uint16_t bits)
+{
+    size_t n = 0; const wd_algo_def *t = algo_table(group, &n);
+    for (size_t i = 0; i < n; i++) if (t[i].id == id && t[i].bits == bits) return t[i].name;
+    return "?";
+}
+
+int wd_parse_algo_list(int group, const char *csv, wd_algo_list *out, char *err, size_t errcap)
+{
+    memset(out, 0, sizeof(*out));
+    const char *p = csv;
+    while (p && *p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        const char *e = p;
+        while (*e && *e != ',') e++;
+        const char *t = e;
+        while (t > p && (t[-1] == ' ' || t[-1] == '\t')) t--;
+        char name[24];
+        size_t len = (size_t)(t - p);
+        if (len == 0 || len >= sizeof(name)) { seterr(err, errcap, "bad algorithm name", NULL); return -1; }
+        memcpy(name, p, len); name[len] = 0;
+        uint16_t id, id2, bits;
+        if (wd_algo_lookup(group, name, &id, &id2, &bits)) { seterr(err, errcap, "unknown algorithm: %s", name); return -1; }
+        if (out->n >= WD_ALGO_MAX) { seterr(err, errcap, "too many algorithms in one list", NULL); return -1; }
+        out->id[out->n] = id; out->id2[out->n] = id2; out->bits[out->n] = bits; out->n++;
+        p = e;
+    }
+    if (out->n == 0) { seterr(err, errcap, "empty algorithm list", NULL); return -1; }
+    return 0;
+}
+
 int wd_parse_ipv4(const char *s, uint8_t out[4])
 {
     /* Strict: exactly four decimal octets, nothing before or after. */
@@ -224,6 +302,27 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
             else if (!strcmp(v, "keyid"))  t = WD_ID_KEYID;
             else { seterr(err, errcap, "bad %s (fqdn|rfc822|ipv4|keyid)", k); return -1; }
             if (k[0] == 'l') out->local_id_type = t; else out->remote_id_type = t;
+        } else if (!strcmp(k, "ike_dh") || !strcmp(k, "ike_enc") || !strcmp(k, "ike_hash") ||
+                   !strcmp(k, "esp_enc") || !strcmp(k, "esp_hash")) {
+            /* AP11: the policy lists. */
+            int group = !strcmp(k, "ike_dh") ? 0 : !strcmp(k, "ike_enc") ? 1 : !strcmp(k, "ike_hash") ? 2
+                      : !strcmp(k, "esp_enc") ? 3 : 4;
+            wd_algo_list *dst = group == 0 ? &out->ike_dh : group == 1 ? &out->ike_enc : group == 2 ? &out->ike_hash
+                              : group == 3 ? &out->esp_enc : &out->esp_hash;
+            char lerr[128];
+            if (wd_parse_algo_list(group, v, dst, lerr, sizeof(lerr))) { seterr(err, errcap, "%s", lerr); return -1; }
+        } else if (!strcmp(k, "dpd")) {
+            int on;
+            if (as_bool(v, &on)) { seterr(err, errcap, "bad dpd", NULL); return -1; }
+            out->dpd_disable = !on;
+        } else if (!strcmp(k, "dpd_retries")) {
+            if (as_uint(v, 20, &out->dpd_retries)) { seterr(err, errcap, "bad dpd_retries (0..20)", NULL); return -1; }
+        } else if (!strcmp(k, "natt_keepalive_s")) {
+            if (as_uint(v, 600, &out->natt_keepalive_s) || (out->natt_keepalive_s && out->natt_keepalive_s < 5)) {
+                seterr(err, errcap, "bad natt_keepalive_s (0 or 5..600)", NULL); return -1;
+            }
+        } else if (!strcmp(k, "child_lifetime_kb")) {
+            if (as_uint(v, 0xFFFFFFFFu, &out->child_lifetime_kb)) { seterr(err, errcap, "bad child_lifetime_kb", NULL); return -1; }
         } else if (!strcmp(k, "request_cp")) {
             if (as_bool(v, &out->request_cp)) { seterr(err, errcap, "bad request_cp", NULL); return -1; }
         } else if (!strcmp(k, "pfs_group")) {
@@ -293,6 +392,13 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
     }
 
     if (!out->gateway[0]) { seterr(err, errcap, "gateway is required", NULL); return -1; }
+    /* AP11: all five lists or none -- never a half policy. */
+    {
+        int given = (out->ike_dh.n > 0) + (out->ike_enc.n > 0) + (out->ike_hash.n > 0)
+                  + (out->esp_enc.n > 0) + (out->esp_hash.n > 0);
+        if (given == 5) out->have_policy = 1;
+        else if (given) { seterr(err, errcap, "proposal policy needs all five lists (ike_dh, ike_enc, ike_hash, esp_enc, esp_hash)", NULL); return -1; }
+    }
     /* AP10: an IPv4 identity is four bytes on the wire, so the value must be
      * a literal -- a name here would go out as garbage, not as an address. */
     {
