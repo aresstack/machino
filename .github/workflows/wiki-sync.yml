@@ -1,15 +1,17 @@
-# Mirror docs/wiki/ into the GitHub wiki.
+# Validate docs/wiki/ on pull requests and mirror it into the GitHub wiki from main.
 #
-# docs/wiki/ is the single source of truth. This job first validates the curated
-# navigation and then makes the GitHub wiki an exact copy, including deletions.
+# docs/wiki/ is the single source of truth. Documentation prose stays curated in
+# Git; CI validates structure but never generates or rewrites content.
 #
-# AUTH: no PAT. The wiki of THIS repository is reachable with the automatically
-# provided GITHUB_TOKEN as long as the job is granted `contents: write`.
-# actions/checkout wires that token into the checked-out wiki repo's origin, so
-# the final `git push` uses it.
+# AUTH: no PAT. The sync job uses the automatically provided GITHUB_TOKEN with
+# job-scoped `contents: write`. Pull-request validation stays read-only.
 name: Sync wiki
 
 on:
+  pull_request:
+    paths:
+      - 'docs/wiki/**'
+      - '.github/workflows/wiki-sync.yml'
   push:
     branches: [main]
     paths:
@@ -18,28 +20,28 @@ on:
   # Allow an explicit resync after infrastructure or wiki changes.
   workflow_dispatch:
 
-# Queue concurrent syncs instead of racing two pushes to the wiki repository.
+# Main pushes share one group so two wiki publications cannot race. PR refs use
+# separate groups and therefore do not block unrelated reviews.
 concurrency:
-  group: wiki-sync
+  group: wiki-sync-${{ github.ref }}
   cancel-in-progress: false
 
+# Default to the minimum permission. Only the publication job receives write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  sync:
+  validate:
+    name: Validate wiki structure
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          path: source
 
       # Keep navigation semantic and human-curated, but make structural drift a
       # CI error. Every public Markdown page must be reachable from _Sidebar.md,
       # and every wiki link in the sidebar must resolve to a real page.
       - name: Validate wiki structure
-        working-directory: source
         shell: bash
         run: |
           python3 - <<'PY'
@@ -102,6 +104,19 @@ jobs:
               % len(public_pages)
           )
           PY
+
+  sync:
+    name: Publish GitHub wiki
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: source
 
       # The wiki is a separate git repository (<repo>.wiki). checkout leaves it
       # in wiki/ with the GITHUB_TOKEN configured as its push credential.
