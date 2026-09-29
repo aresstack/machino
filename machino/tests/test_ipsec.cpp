@@ -631,6 +631,151 @@ void test_ap9_eap_mschapv2()
 
 } // namespace
 
+// AP10 (WeirdOS-Profilparitaet): ID-Typen, Tunnel-Adresse per CP, PFS,
+// Autostart -- Persistenz, Validierung, die Daemon-Datei (byteidentisch fuer
+// eine unveraenderte Konfiguration) und der Autostart am Fake-Backend.
+void test_ap10_profile_parity()
+{
+    // request_cp ist abgeleitet: PSK ohne local_subnet, EAP immer.
+    IpsecConfig c = sample();
+    ICHECK(!request_cp(c));                    // sample hat local_subnet
+    c.local_subnet.clear();
+    ICHECK(request_cp(c));
+    c = sample(); c.auth = Auth::EapMschapv2; c.eap_user = "u@x";
+    ICHECK(request_cp(c));
+
+    // Roundtrip der neuen Felder in der machino-Datei.
+    c = sample();
+    c.local_id = "NOTBETR_KA2@intern"; c.local_id_type = IdType::Rfc822;
+    c.remote_id = "203.0.113.5";       c.remote_id_type = IdType::Ipv4;
+    c.pfs = true; c.auto_connect = false;
+    ICHECK(validate(c).empty());
+    IpsecConfig back; std::string err;
+    ICHECK(from_machino_conf(to_machino_conf(c), back, err));
+    ICHECK(back.local_id_type == IdType::Rfc822 && back.remote_id_type == IdType::Ipv4);
+    ICHECK(back.pfs && !back.auto_connect);
+    // Eine ALTE machino-Datei ohne die Keys: Vorgaben = fqdn, kein PFS, Autostart an.
+    ICHECK(from_machino_conf("enabled = false\ngateway = g\nport = 500\n", back, err));
+    ICHECK(back.local_id_type == IdType::Fqdn && back.remote_id_type == IdType::Fqdn && !back.pfs && back.auto_connect);
+    ICHECK(!from_machino_conf("local_id_type = email\n", back, err) && err.find("local_id_type") != std::string::npos);
+
+    // Der Typ muss zum Wert passen.
+    c = sample(); c.local_id = "cam.example"; c.local_id_type = IdType::Ipv4;
+    ICHECK(validate(c).find("localId") != std::string::npos && validate(c).find("ipv4") != std::string::npos);
+    c.local_id = "10.0.0.7";
+    ICHECK(validate(c).empty());
+    c = sample(); c.remote_id = "vpn.test"; c.remote_id_type = IdType::Ipv4;
+    ICHECK(validate(c).find("remoteId") != std::string::npos);
+    IdType t;
+    ICHECK(id_type_from_name("keyid", t) && t == IdType::KeyId && !id_type_from_name("email", t));
+
+    // Daemon-Datei: unveraenderte Konfiguration -> KEINE neuen Zeilen (ein
+    // aelterer weirdiked liest sie weiterhin).
+    bool present = false;
+    std::string d = to_weirdike_conf(sample(), S("s3cret-psk"), "", &present);
+    ICHECK(d.find("_id_type") == std::string::npos);
+    ICHECK(d.find("request_cp") == std::string::npos);
+    ICHECK(d.find("pfs_group") == std::string::npos);
+    ICHECK(d.find("local_subnet = 10.77.0.2/32\n") != std::string::npos);
+
+    // Das WeirdOS-Profil: RFC822-ID, leere Tunnel-Adresse (CP), PFS.
+    c = sample();
+    c.local_id = "NOTBETR_KA2@intern"; c.local_id_type = IdType::Rfc822;
+    c.remote_id.clear();
+    c.local_subnet.clear();
+    c.pfs = true;
+    d = to_weirdike_conf(c, S("s3cret-psk"), "", &present);
+    ICHECK(d.find("local_id = NOTBETR_KA2@intern\n") != std::string::npos);
+    ICHECK(d.find("local_id_type = rfc822\n") != std::string::npos);
+    ICHECK(d.find("remote_id") == std::string::npos);          // leer = jede, keine Typzeile
+    ICHECK(d.find("local_subnet") == std::string::npos);
+    ICHECK(d.find("request_cp = yes\n") != std::string::npos);
+    ICHECK(d.find("pfs_group = 14\n") != std::string::npos);
+    ICHECK(d.find("s3cret-psk") != std::string::npos);
+    // EAP fordert CP immer an, auch mit local_subnet.
+    c = sample(); c.auth = Auth::EapMschapv2; c.eap_user = "u@x";
+    IpsecSecrets sec; sec.eap_password = "pw";
+    d = to_weirdike_conf(c, sec, "", &present);
+    ICHECK(d.find("request_cp = yes\n") != std::string::npos && d.find("local_subnet = 10.77.0.2/32\n") != std::string::npos);
+
+    // Status: die neuen Daemon-Zeilen.
+    VpnStatus st = parse_status("state=CHILD_SA_ESTABLISHED\ntunnel_ip=10.9.0.7\nrequest_cp=yes\ncp_address=10.9.0.7\n"
+                                "pfs_group=14\nlocal_id_type=rfc822\nremote_id_type=fqdn\n", true, true);
+    ICHECK(st.tunnel_ipv4 == "10.9.0.7" && st.request_cp && st.cp_address == "10.9.0.7");
+    ICHECK(st.pfs_group == 14 && st.local_id_type == "rfc822" && st.remote_id_type == "fqdn");
+    st = parse_status("state=IDLE\n", true, true);
+    ICHECK(st.tunnel_ipv4.empty() && !st.request_cp && st.pfs_group == 0);
+
+    // Autostart: enabled + auto_connect -> der erste tick verbindet.
+    remove(MCONF); remove(DCONF);
+    {
+        FakeBackend be;
+        IpsecService svc(be, MCONF, DCONF);
+        ICHECK(svc.set_config(sample(), S("s3cret-psk")).empty());
+        svc.tick(1000);
+        ICHECK(be.starts == 1 && be.running);
+        ICHECK(svc.status().runtime != VpnRuntimeState::Idle);
+        svc.tick(2000);
+        ICHECK(be.starts == 1);                       // genau einmal
+    }
+    // auto_connect=false: nichts passiert.
+    remove(MCONF); remove(DCONF);
+    {
+        FakeBackend be;
+        IpsecService svc(be, MCONF, DCONF);
+        IpsecConfig off = sample(); off.auto_connect = false;
+        ICHECK(svc.set_config(off, S("s3cret-psk")).empty());
+        svc.tick(1000); svc.tick(5000);
+        ICHECK(be.starts == 0);
+    }
+    // enabled=false: nichts passiert, auch mit auto_connect.
+    remove(MCONF); remove(DCONF);
+    {
+        FakeBackend be;
+        IpsecService svc(be, MCONF, DCONF);
+        IpsecConfig dis = sample(); dis.enabled = false;
+        ICHECK(svc.set_config(dis, S("s3cret-psk")).empty());
+        svc.tick(1000);
+        ICHECK(be.starts == 0);
+    }
+    // Kein PSK: kein Versuch (schedule_reconnect_ verlangt das Credential).
+    remove(MCONF); remove(DCONF);
+    {
+        FakeBackend be;
+        IpsecService svc(be, MCONF, DCONF);
+        IpsecConfig dis = sample(); dis.enabled = false;
+        ICHECK(svc.set_config(dis, S("")).empty());
+        svc.tick(1000);
+        ICHECK(be.starts == 0);
+    }
+    // Daemon laeuft schon (machinod-Neustart): nicht anfassen.
+    remove(MCONF); remove(DCONF);
+    {
+        FakeBackend be; be.running = true;
+        IpsecService svc(be, MCONF, DCONF);
+        ICHECK(svc.set_config(sample(), S("s3cret-psk")).empty());
+        svc.tick(1000);
+        ICHECK(be.starts == 0 && be.stops == 0);
+    }
+    // Der Start scheitert (Underlay noch nicht da): Backoff-Kette, kein Hammer.
+    remove(MCONF); remove(DCONF);
+    {
+        FakeBackend be; be.start_ok = false;
+        IpsecService svc(be, MCONF, DCONF);
+        ICHECK(svc.set_config(sample(), S("s3cret-psk")).empty());
+        svc.tick(1000);
+        ICHECK(be.starts == 1);
+        svc.tick(1500);
+        ICHECK(be.starts == 1);                       // Versuch 2 erst nach 2 s (+Jitter)
+        svc.tick(1000 + 2000 + 600);
+        ICHECK(be.starts == 2);
+        be.start_ok = true;
+        svc.tick(1000 + 2000 + 600 + 5000 + 1300);    // Versuch 3 nach 5 s (+Jitter)
+        ICHECK(be.starts == 3 && be.running);
+    }
+    remove(MCONF); remove(DCONF);
+}
+
 void run_ipsec_tests()
 {
     test_review_findings();
@@ -646,4 +791,5 @@ void run_ipsec_tests()
     test_service_persists_and_guards();
     test_connect_disconnect();
     test_status_mapping();
+    test_ap10_profile_parity();
 }

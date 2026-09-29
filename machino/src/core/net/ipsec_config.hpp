@@ -35,16 +35,37 @@ enum class TrustMode { AnchorPem, HostStore, HostStorePlusPem, None };
 const char* trust_mode_name(TrustMode t);
 bool trust_mode_from_name(const std::string& s, TrustMode& out);
 
+// AP10 (WeirdOS-Profilparitaet): der TYP einer IKE-Identitaet -- "Senden
+// als" / "Erwarten als". Explizit, keine Inhaltserkennung: der Bedienende
+// sagt, was das Gateway erwartet (LANCOM/FRITZ!Box pruefen Typ UND Wert).
+// Fqdn ist das Verhalten vor AP10. Nur wirksam, wenn die ID gesetzt ist;
+// eine leere ID bleibt NONE (eigene Quell-IP bzw. jede Server-ID).
+enum class IdType { Fqdn, Rfc822, Ipv4, KeyId };
+const char* id_type_name(IdType t);
+bool id_type_from_name(const std::string& s, IdType& out);
+
 struct IpsecConfig {
     bool        enabled = false;
     std::string gateway;              // Hostname oder IPv4-Literal
     uint16_t    port = 500;
     Underlay    underlay = Underlay::Auto;   // AP3: persistiert; Bindung ist AP5
-    std::string local_id;             // FQDN-artig (weirdiked: WEIRDIKE_ID_FQDN)
+    std::string local_id;             // Wert; Typ siehe local_id_type
     std::string remote_id;
-    std::string local_subnet;         // CIDR "a.b.c.d/n" — die innere Adresse
+    IdType      local_id_type  = IdType::Fqdn;   // AP10
+    IdType      remote_id_type = IdType::Fqdn;   // AP10
+    // Die innere Adresse (CIDR). AP10: LEER = die Tunnel-Adresse kommt vom
+    // Gateway (IKEv2 Configuration Payload) -- WeirdOS' "leer = automatisch".
+    // Siehe request_cp().
+    std::string local_subnet;
     std::string remote_subnet;        // CIDR — genau EIN Split-Netz (AP4-Scope)
     bool        nat_t = true;
+    // AP10: PFS beim Child-Rekey (neue D-H-Gruppe = ike_dh[0], also dh14).
+    // Aus = das heutige, im Namespace-CI bewiesene Verhalten.
+    bool        pfs = false;
+    // AP10: enabled + auto_connect -> machinod baut den Tunnel beim eigenen
+    // Start selbst auf (WeirdOS: "Automatisch verbinden beim Start"). Ein
+    // manueller disconnect gilt weiterhin bis zum naechsten connect.
+    bool        auto_connect = true;
     int         dpd_interval_s = 30;
     uint32_t    ike_lifetime_s = 0;   // 0 = weirdiked-Default
     uint32_t    child_lifetime_s = 0;
@@ -65,6 +86,11 @@ struct IpsecConfig {
     std::vector<std::string> esp_enc  {"aes256cbc"};
     std::vector<std::string> esp_hash {"sha256"};
 };
+
+// AP10: fordert diese Konfiguration eine Tunnel-Adresse per CP an? Abgeleitet,
+// nicht gespeichert -- wie in WeirdOS: EAP immer (der Daemon erzwingt es),
+// PSK genau dann, wenn keine local_subnet gesetzt ist.
+bool request_cp(const IpsecConfig& c);
 
 // Validierung: leerer Fehlerstring = ok; sonst benennt er das ERSTE Problem
 // konkret (Feld + Wert). Ein enabled=true ohne Gateway/PSK-Vorhandensein wird

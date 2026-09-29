@@ -86,6 +86,14 @@ struct VpnStatus {
     std::string esp_transport;        // "udp4500" (Daemon; NAT-T-only)
     std::string auth;                 // AP9: "psk" | "eap-mschapv2" (Daemon)
 
+    // AP10: was der Daemon TUT -- die Adresse auf ipsec0, ob eine per CP
+    // angefordert/zugewiesen wurde, die PFS-Gruppe, die ID-Typen in Kraft.
+    std::string tunnel_ipv4;          // "" solange ipsec0 nicht konfiguriert
+    bool        request_cp = false;
+    std::string cp_address;           // vom Gateway zugewiesen ("" = keine)
+    uint32_t    pfs_group = 0;        // 0 = kein PFS
+    std::string local_id_type, remote_id_type;
+
     // AP7: der abgeleitete Runtime-Zustand + Reconnect-Sicht.
     VpnRuntimeState runtime = VpnRuntimeState::Disabled;
     int         reconnect_attempt = 0;    // 0 = kein Reconnect anhaengig
@@ -174,7 +182,10 @@ public:
     VpnStatus   status();
 
     // AP5 §9 / AP7 §9,§10: regelmaessig aus dem Hauptthread mit der Uhr des
-    // Aufrufers. Faellt das SESSION-Underlay weg, wird abgebaut und
+    // Aufrufers. AP10: der ERSTE Aufruf plant bei enabled + auto_connect den
+    // Verbindungsaufbau (sofort; scheitert er, etwa weil das Mobilfunk-
+    // Underlay nach dem Boot noch fehlt, greift dieselbe Backoff-Kette wie
+    // beim Reconnect). Faellt das SESSION-Underlay weg, wird abgebaut und
     // Failed/UnderlayLost gemeldet (kein stiller Uplink-Wechsel). Nach einem
     // WIEDERHERSTELLBAREN Fehlschlag/Verlust plant tick() einen Reconnect mit
     // Backoff (1:sofort, 2:2s, 3:5s, 4:10s, dann 30s, +Jitter); manualStop,
@@ -213,6 +224,7 @@ private:
     uint32_t last_child_gen_ = 0;
     uint32_t rekey_until_ms_ = 0;         // kurzes Fenster fuer Runtime=Rekeying
     uint32_t rng_ = 0x9e3779b9u;          // Jitter-PRNG (kein Secret)
+    bool     boot_checked_ = false;       // AP10: Autostart genau einmal geprueft
     std::string cached_gateway_, cached_peer_ip_;  // AP7: DNS-Cache fuer Reconnect
 };
 

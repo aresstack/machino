@@ -1053,6 +1053,61 @@ void test_ap3_ipsec_api() {
     remove(MC); remove(DC);
 }
 
+// AP10: die Profil-Felder ueber die API -- Typen, PFS, Autostart hin und
+// zurueck, requestCp nur ABGELEITET (GET), die neuen Status-Fakten.
+void test_ap10_ipsec_api_fields() {
+    Rig r;
+    const char* MC = "test_api_ipsec10_m.conf";
+    const char* DC = "test_api_ipsec10_d.conf";
+    remove(MC); remove(DC);
+    ApiFakeIpsecBackend be;
+    machino::ipsec::IpsecService svc(be, MC, DC);
+    r.api.set_ipsec_service(&svc);
+
+    api::Response g0 = r.api.ipsec_get();
+    ACHECK(g0.status == 200);
+    ACHECK(g0.body.get("localIdType")->as_string() == "fqdn" && g0.body.get("remoteIdType")->as_string() == "fqdn");
+    ACHECK(!g0.body.get("pfs")->as_bool() && g0.body.get("autoConnect")->as_bool());
+    ACHECK(g0.body.get("requestCp")->as_bool());          // localSubnet leer -> CP
+
+    api::Response ok = r.api.ipsec_put_config(
+        "{\"enabled\":true,\"gateway\":\"94.79.137.81\",\"localId\":\"NOTBETR_KA2@intern\","
+        "\"localIdType\":\"rfc822\",\"remoteSubnet\":\"192.168.110.0/24\",\"pfs\":true,"
+        "\"autoConnect\":false,\"psk\":\"api-psk-geheim\"}");
+    ACHECK(ok.status == 200);
+    api::Response g1 = r.api.ipsec_get();
+    ACHECK(g1.body.get("localIdType")->as_string() == "rfc822" && g1.body.get("pfs")->as_bool());
+    ACHECK(!g1.body.get("autoConnect")->as_bool() && g1.body.get("requestCp")->as_bool());
+    ACHECK(g1.body.dump().find("api-psk-geheim") == std::string::npos);
+
+    // localSubnet gesetzt -> keine CP-Anforderung mehr (abgeleitet).
+    ACHECK(r.api.ipsec_put_config("{\"localSubnet\":\"10.77.0.2/32\"}").status == 200);
+    ACHECK(!r.api.ipsec_get().body.get("requestCp")->as_bool());
+
+    // requestCp ist nicht schreibbar -- MIT NAMEN abgelehnt.
+    api::Response bad = r.api.ipsec_put_config("{\"requestCp\":true}");
+    ACHECK(bad.status == 400 && bad.body.dump().find("requestCp") != std::string::npos);
+    bad = r.api.ipsec_put_config("{\"localIdType\":\"email\"}");
+    ACHECK(bad.status == 400 && bad.body.dump().find("localIdType") != std::string::npos);
+    bad = r.api.ipsec_put_config("{\"remoteId\":\"vpn.test\",\"remoteIdType\":\"ipv4\"}");
+    ACHECK(bad.status == 400 && bad.body.dump().find("remoteId") != std::string::npos);
+    bad = r.api.ipsec_put_config("{\"pfs\":\"ja\"}");
+    ACHECK(bad.status == 400 && bad.body.dump().find("pfs") != std::string::npos);
+
+    // Status traegt die Daemon-Fakten, nur bei laufendem Daemon.
+    api::Response st = r.api.ipsec_status();
+    ACHECK(st.status == 200 && !st.body.has("tunnelIpv4") && !st.body.has("pfsGroup"));
+    ACHECK(r.api.ipsec_connect().status == 200 && be.running);
+    be.status_text = "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\ntunnel_ip=10.9.0.7\nrequest_cp=yes\n"
+                     "cp_address=10.9.0.7\npfs_group=14\nlocal_id_type=rfc822\nremote_id_type=fqdn\n";
+    st = r.api.ipsec_status();
+    ACHECK(st.body.get("tunnelIpv4")->as_string() == "10.9.0.7" && st.body.get("cpAddress")->as_string() == "10.9.0.7");
+    ACHECK(st.body.get("requestCp")->as_bool() && st.body.get("pfsGroup")->as_int() == 14);
+    ACHECK(st.body.get("localIdType")->as_string() == "rfc822");
+    ACHECK(r.api.ipsec_disconnect().status == 200);
+    remove(MC); remove(DC);
+}
+
 // W2 (Day/Night): /night/*-Vertrag der Stock-Seite an Fake-GPIO + Rig.
 namespace {
 struct FakeNightGpio : IGpioController {
@@ -1427,6 +1482,7 @@ void run_api_tests() {
     test_night_auto();
     test_w2_night();
     test_ap3_ipsec_api();
+    test_ap10_ipsec_api_fields();
     test_get_documents();
     test_ai_detectors_route_and_person_config();
     test_patch_cold_and_partial();

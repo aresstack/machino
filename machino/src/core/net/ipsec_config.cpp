@@ -161,6 +161,41 @@ bool trust_mode_from_name(const std::string& s, TrustMode& out)
     return true;
 }
 
+const char* id_type_name(IdType t)
+{
+    switch (t) {
+        case IdType::Fqdn:   return "fqdn";
+        case IdType::Rfc822: return "rfc822";
+        case IdType::Ipv4:   return "ipv4";
+        case IdType::KeyId:  return "keyid";
+    }
+    return "fqdn";
+}
+bool id_type_from_name(const std::string& s, IdType& out)
+{
+    if (s == "fqdn") out = IdType::Fqdn;
+    else if (s == "rfc822") out = IdType::Rfc822;
+    else if (s == "ipv4") out = IdType::Ipv4;
+    else if (s == "keyid") out = IdType::KeyId;
+    else return false;
+    return true;
+}
+
+bool request_cp(const IpsecConfig& c)
+{
+    return c.auth == Auth::EapMschapv2 || c.local_subnet.empty();
+}
+
+// AP10: eine IPv4-Identitaet geht als vier Bytes aufs Kabel -- der Wert muss
+// ein Literal sein.
+static bool ipv4_literal_ok(const std::string& s)
+{
+    unsigned a, b, c, d; char extra;
+    if (::sscanf(s.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4) return false;
+    for (char ch : s) if (!(isdigit((unsigned char)ch) || ch == '.')) return false;
+    return a < 256 && b < 256 && c < 256 && d < 256;
+}
+
 // AP9: eine "key = ..."-Zeile aus dem alten Daemon-Conf woertlich holen
 // (write-only-Weitertragen von psk und eap_password). key wird exakt am
 // Zeilenanfang gematcht, damit "psk" nicht "psk_foo" trifft.
@@ -189,6 +224,11 @@ std::string validate(const IpsecConfig& c)
         return "port: 1..65535";
     if (!c.local_id.empty() && !id_ok(c.local_id)) return "localId: unzulaessige Zeichen";
     if (!c.remote_id.empty() && !id_ok(c.remote_id)) return "remoteId: unzulaessige Zeichen";
+    // AP10: der Typ muss zum Wert passen, sonst geht Unsinn aufs Kabel.
+    if (!c.local_id.empty() && c.local_id_type == IdType::Ipv4 && !ipv4_literal_ok(c.local_id))
+        return "localId: bei localIdType=ipv4 muss der Wert eine IPv4-Adresse sein";
+    if (!c.remote_id.empty() && c.remote_id_type == IdType::Ipv4 && !ipv4_literal_ok(c.remote_id))
+        return "remoteId: bei remoteIdType=ipv4 muss der Wert eine IPv4-Adresse sein";
     if (!c.local_subnet.empty() && !cidr_ok(c.local_subnet))
         return "localSubnet: kein gueltiges CIDR (a.b.c.d/n)";
     if (!c.remote_subnet.empty()) {
@@ -228,9 +268,13 @@ std::string to_machino_conf(const IpsecConfig& c)
     s += "underlay = " + std::string(underlay_name(c.underlay)) + "\n";
     s += "local_id = " + c.local_id + "\n";
     s += "remote_id = " + c.remote_id + "\n";
+    s += "local_id_type = " + std::string(id_type_name(c.local_id_type)) + "\n";     // AP10
+    s += "remote_id_type = " + std::string(id_type_name(c.remote_id_type)) + "\n";   // AP10
     s += "local_subnet = " + c.local_subnet + "\n";
     s += "remote_subnet = " + c.remote_subnet + "\n";
     s += "nat_t = " + std::string(c.nat_t ? "true" : "false") + "\n";
+    s += "pfs = " + std::string(c.pfs ? "true" : "false") + "\n";                     // AP10
+    s += "auto_connect = " + std::string(c.auto_connect ? "true" : "false") + "\n";   // AP10
     s += "dpd_interval_s = " + std::to_string(c.dpd_interval_s) + "\n";
     s += "ike_lifetime_s = " + std::to_string(c.ike_lifetime_s) + "\n";
     s += "child_lifetime_s = " + std::to_string(c.child_lifetime_s) + "\n";
@@ -263,6 +307,10 @@ bool from_machino_conf(const std::string& text, IpsecConfig& out, std::string& e
         else if (k == "underlay") { if (!underlay_from_name(v, c.underlay)) { err = "underlay: '" + v + "'"; return false; } }
         else if (k == "local_id") c.local_id = v;
         else if (k == "remote_id") c.remote_id = v;
+        else if (k == "local_id_type") { if (!id_type_from_name(v, c.local_id_type)) { err = "local_id_type: '" + v + "'"; return false; } }
+        else if (k == "remote_id_type") { if (!id_type_from_name(v, c.remote_id_type)) { err = "remote_id_type: '" + v + "'"; return false; } }
+        else if (k == "pfs") c.pfs = (v == "true");
+        else if (k == "auto_connect") c.auto_connect = (v == "true");
         else if (k == "local_subnet") c.local_subnet = v;
         else if (k == "remote_subnet") c.remote_subnet = v;
         else if (k == "nat_t") c.nat_t = (v == "true");
@@ -320,9 +368,22 @@ std::string to_weirdike_conf(const IpsecConfig& c, const IpsecSecrets& secrets,
     if (net && !net->bind_dev.empty()) s += "bind_dev = " + net->bind_dev + "\n";
     if (!c.local_id.empty())  s += "local_id = " + c.local_id + "\n";
     if (!c.remote_id.empty()) s += "remote_id = " + c.remote_id + "\n";
+    // AP10: Typ-Zeilen nur, wenn eine ID gesetzt ist und der Typ nicht der
+    // Vorgabe (fqdn) entspricht -- eine unveraenderte Konfiguration erzeugt
+    // dieselbe Daemon-Datei wie vor AP10.
+    if (!c.local_id.empty() && c.local_id_type != IdType::Fqdn)
+        s += "local_id_type = " + std::string(id_type_name(c.local_id_type)) + "\n";
+    if (!c.remote_id.empty() && c.remote_id_type != IdType::Fqdn)
+        s += "remote_id_type = " + std::string(id_type_name(c.remote_id_type)) + "\n";
     if (!c.local_subnet.empty())  s += "local_subnet = " + c.local_subnet + "\n";
+    // AP10: ohne local_subnet kommt die Tunnel-Adresse vom Gateway (CP). Bei
+    // EAP erzwingt der Daemon die Anforderung ohnehin; die Zeile steht dann
+    // nur der Lesbarkeit halber ebenfalls da.
+    if (request_cp(c)) s += "request_cp = yes\n";
     if (!c.remote_subnet.empty()) s += "remote_subnet = " + c.remote_subnet + "\n";
     s += "nat_t = " + std::string(c.nat_t ? "true" : "false") + "\n";
+    // AP10: PFS = Gruppe der (einzigen erlaubten) IKE-DH-Gruppe.
+    if (c.pfs) s += "pfs_group = 14\n";
     s += "dpd_interval_s = " + std::to_string(c.dpd_interval_s) + "\n";
     if (c.ike_lifetime_s)   s += "ike_lifetime_s = " + std::to_string(c.ike_lifetime_s) + "\n";
     if (c.child_lifetime_s) s += "child_lifetime_s = " + std::to_string(c.child_lifetime_s) + "\n";

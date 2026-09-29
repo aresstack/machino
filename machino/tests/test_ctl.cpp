@@ -82,7 +82,8 @@ const char* CFG_JSON =
     "\"childLifetimeS\":0,\"ikeEnc\":[\"aes256cbc\"],\"ikeHash\":[\"sha256\"],\"ikeDh\":[\"dh14\"],"
     "\"espEnc\":[\"aes256cbc\"],\"espHash\":[\"sha256\"],\"pskSet\":true,\"auth\":\"psk\","
     "\"eapUser\":\"\",\"trustMode\":\"host-store\",\"eapPasswordSet\":false,\"caPemSet\":false,"
-    "\"extraPemSet\":false,\"hostStoreAvailable\":true}";
+    "\"extraPemSet\":false,\"hostStoreAvailable\":true,"
+    "\"localIdType\":\"fqdn\",\"remoteIdType\":\"fqdn\",\"pfs\":false,\"autoConnect\":true,\"requestCp\":false}";
 
 const char* STATUS_JSON =
     "{\"daemonRunning\":true,\"state\":\"childEstablished\",\"runtimeState\":\"dataPlaneUp\","
@@ -93,7 +94,7 @@ const char* STATUS_JSON =
     "\"espTransport\":\"udp4500\",\"auth\":\"psk\","
     "\"routes\":[{\"prefix\":\"10.66.0.0/24\",\"source\":\"tsr\",\"device\":\"ipsec0\"}],"
     "\"childGeneration\":1,\"ikeGeneration\":1,\"uptimeS\":120,\"txPackets\":12,\"txBytes\":1024,"
-    "\"rxPackets\":10,\"rxBytes\":900}";
+    "\"rxPackets\":10,\"rxBytes\":900,\"tunnelIpv4\":\"10.77.0.2\",\"requestCp\":false,\"pfsGroup\":0}";
 
 void test_split_line() {
     std::vector<std::string> a = split_line("  ipsec set  gateway \"vpn example\" 'it''s' a\\b \"q\\\"x\"\t");
@@ -207,7 +208,9 @@ void test_commands_ipsec() {
     // die Kurzansicht zeigt nur Felder, die die API wirklich liefert.
     CCHECK(has(t.out, "vpn.example.org:500") && !has(t.out, "peer="));
     CCHECK(has(t.out, "cellular -> cellular (usb0)"));
-    CCHECK(has(t.out, "local=cam.test") && has(t.out, "remote=10.66.0.0/24") && has(t.out, "ausgehandelt=10.66.0.0/24"));
+    CCHECK(has(t.out, "local=cam.test (fqdn)") && has(t.out, "remote=vpn.test (fqdn)"));
+    CCHECK(has(t.out, "local=10.77.0.2/32") && has(t.out, "remote=10.66.0.0/24") && has(t.out, "ausgehandelt=10.66.0.0/24"));
+    CCHECK(has(t.out, "tunnel=10.77.0.2") && has(t.out, "pfs=nein") && has(t.out, "autoConnect=ja"));
     CCHECK(has(t.out, "10.66.0.0/24 (tsr, ipsec0)"));
     CCHECK(has(t.out, "ike=udp4500") && has(t.out, "natDetected=ja"));
     CCHECK(has(t.out, "psk=gesetzt") && has(t.out, "eapPassword=nicht gesetzt"));
@@ -231,6 +234,15 @@ void test_commands_ipsec() {
     CCHECK(t.run({"ipsec", "set", "gateay", "x"}) == 2 && has(t.err, "gateay") && t.http.reqs.size() == n);
     CCHECK(t.run({"ipsec", "set"}) == 2 && t.http.reqs.size() == n);
     CCHECK(t.run({"ipsec", "frobnicate"}) == 2 && has(t.err, "unbekannt: ipsec frobnicate") && t.http.reqs.size() == n);
+
+    // AP10-Felder, Schreibweise egal
+    CCHECK(t.run({"ipsec", "set", "local-id-type", "rfc822", "pfs", "ja", "auto-connect", "nein"}) == 0);
+    CCHECK(t.last().body == "{\"localIdType\":\"rfc822\",\"pfs\":true,\"autoConnect\":false}");
+    t.err.clear();
+    CCHECK(t.run({"ipsec", "set", "remoteIdType", "email"}) == 2 && has(t.err, "fqdn|rfc822|ipv4|keyid"));
+    CCHECK(t.run({"ipsec", "set", "requestCp", "true"}) == 2);   // abgeleitet, kein Feld
+    t.out.clear();
+    CCHECK(t.run({"ipsec", "fields"}) == 0 && has(t.out, "localIdType") && has(t.out, "pfs") && has(t.out, "autoConnect") && has(t.out, "Config Payload"));
 
     // enable/disable
     CCHECK(t.run({"ipsec", "disable"}) == 0 && t.last().body == "{\"enabled\":false}");
@@ -385,10 +397,14 @@ void test_setup_wizard() {
     t.http.reply("GET", "/api/v1/ipsec/status", 200, "{\"daemonRunning\":true,\"state\":\"connecting\",\"runtimeState\":\"ikeConnecting\"}");
     t.lines = {"vpn.example.org", "70000", "",            // Port: erst ungueltig, dann Vorgabe 500
                "lte", "cellular",                          // Underlay: erst ungueltig
-               "cam.example.org", "vpn.example.org", "10.77.0.2/32", "192.168.178.0/24",
+               "cam.example.org", "",                      // lokale ID + Typ (Vorgabe fqdn)
+               "vpn.example.org", "mail", "rfc822",        // Remote-ID + Typ (erst ungueltig)
+               "10.77.0.2/32", "192.168.178.0/24",
                "",                                         // auth: Vorgabe psk
                "nein",                                     // NAT-T
+               "ja",                                       // PFS
                "",                                         // enabled: Vorgabe ja
+               "nein",                                     // autoConnect
                "ja"};                                      // verbinden
     t.secrets = {"wizard-psk"};
     CCHECK(t.run({"ipsec", "setup"}) == 0);
@@ -404,9 +420,13 @@ void test_setup_wizard() {
         CCHECK(b.get("remoteSubnet")->as_string() == "192.168.178.0/24" && b.get("auth")->as_string() == "psk");
         CCHECK(b.get("psk")->as_string() == "wizard-psk" && !b.get("natT")->as_bool() && b.get("enabled")->as_bool());
         CCHECK(!b.has("eapUser") && !b.has("eapPassword") && !b.has("trustMode"));
+        CCHECK(b.get("localIdType")->as_string() == "fqdn" && b.get("remoteIdType")->as_string() == "rfc822");
+        CCHECK(b.get("pfs")->as_bool() && !b.get("autoConnect")->as_bool());
+        CCHECK(!b.has("requestCp"));                     // abgeleitet: leere localSubnet = CP
     }
     CCHECK(t.last().path == "/api/v1/ipsec/status" && t.http.reqs[t.http.reqs.size() - 2].path == "/api/v1/ipsec/connect");
-    CCHECK(has(t.out, "Ganzzahl 1..65535") && has(t.out, "auto, ethernet, wifi oder cellular"));
+    CCHECK(has(t.out, "Ganzzahl 1..65535") && has(t.out, "auto, ethernet, wifi oder cellular") && has(t.out, "fqdn, rfc822, ipv4 oder keyid"));
+    CCHECK(has(t.out, "leer = automatisch vom Gateway"));
     CCHECK(has(t.out, "gespeichert:") && has(t.out, "psk=(gesetzt)") && !has(t.out, "wizard-psk") && !has(t.err, "wizard-psk"));
     CCHECK(has(t.out, "Stand: ikeConnecting (connecting)"));
     CCHECK(t.prompts.size() == 1 && has(t.prompts[0], "PSK (leer = keiner"));
@@ -422,13 +442,17 @@ void test_setup_wizard() {
     Term e;
     e.http.reply("GET", "/api/v1/ipsec", 200, CFG_JSON);
     e.http.reply("PUT", "/api/v1/ipsec/config", 200, "{\"ok\":true}");
-    e.lines = {"", "", "", "", "", "", "", "eap-mschapv2", "alice", "none", "", "nein", "nein"};
+    // gateway, port, underlay, localId, localIdType, remoteId, remoteIdType, localSubnet, remoteSubnet,
+    // auth, eapUser, [secret], trust, natT, pfs, enabled, autoConnect
+    e.lines = {"", "", "", "", "", "", "", "-", "", "eap-mschapv2", "alice", "none", "", "", "nein", ""};
     e.secrets = {"eap-secret"};
     CCHECK(e.run({"ipsec", "setup"}) == 0);
     CCHECK(Json::parse(e.last().body, b, err));
     CCHECK(b.get("auth")->as_string() == "eap-mschapv2" && b.get("eapUser")->as_string() == "alice");
     CCHECK(b.get("eapPassword")->as_string() == "eap-secret" && b.get("trustMode")->as_string() == "none" && !b.has("psk"));
     CCHECK(!b.get("enabled")->as_bool());
+    CCHECK(b.get("localSubnet")->as_string().empty());   // '-' leert: Tunnel-Adresse vom Gateway
+    CCHECK(b.get("autoConnect")->as_bool() && !b.get("pfs")->as_bool());   // Vorgaben uebernommen
     CCHECK(!has(e.out, "eap-secret") && !has(e.err, "eap-secret"));
     for (const auto& r : e.http.reqs) CCHECK(r.method != "POST");   // enabled=nein -> keine Verbindungsfrage
 }
@@ -519,9 +543,15 @@ void test_against_real_api() {
         "localId", "cam.test", "remoteId", "vpn.test", "localSubnet", "10.77.0.2/32", "remoteSubnet", "10.66.0.0/24",
         "natT", "true", "dpdIntervalS", "20", "ikeLifetimeS", "0", "childLifetimeS", "0",
         "ikeEnc", "aes256cbc", "ikeHash", "sha256", "ikeDh", "dh14", "espEnc", "aes256cbc", "espHash", "sha256",
-        "auth", "psk", "eapUser", "", "trustMode", "host-store"}) == 0);
+        "auth", "psk", "eapUser", "", "trustMode", "host-store",
+        "localIdType", "rfc822", "remoteIdType", "fqdn", "pfs", "true", "autoConnect", "false"}) == 0);
     CCHECK(err.empty());
-    CCHECK(has(out, "gespeichert:") && has(out, "gateway=vpn.example.org"));
+    CCHECK(has(out, "gespeichert:") && has(out, "gateway=vpn.example.org") && has(out, "localIdType=rfc822"));
+    out.clear();
+    CCHECK(run_command(c, {"ipsec", "get", "local-id-type"}) == 0 && out == "localIdType: rfc822\n");
+    // Typ passt nicht zum Wert: die API lehnt MIT NAMEN ab, die Konsole reicht es durch.
+    out.clear(); err.clear();
+    CCHECK(run_command(c, {"ipsec", "set", "remoteIdType", "ipv4"}) == 1 && has(err, "remoteId"));
 
     // Die API lehnt einen fremden Algorithmus MIT NAMEN ab -- die Konsole reicht das durch.
     out.clear(); err.clear();
@@ -541,6 +571,7 @@ void test_against_real_api() {
     be.status_text = "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\nlast_notify=0\n";
     CCHECK(run_command(c, {"ipsec"}) == 0);
     CCHECK(has(out, "state=childEstablished") && has(out, "vpn.example.org:4500") && has(out, "psk=gesetzt"));
+    CCHECK(has(out, "cam.test (rfc822)") && has(out, "pfs=ja") && has(out, "autoConnect=nein"));
     CCHECK(run_command(c, {"ipsec", "config"}) == 0 && has(out, "pskSet: true"));
     CCHECK(!has(out, "real-psk-geheim") && !has(err, "real-psk-geheim"));
     CCHECK(run_command(c, {"ipsec", "disconnect"}) == 0 && !be.running);

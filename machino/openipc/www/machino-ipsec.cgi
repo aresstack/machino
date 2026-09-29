@@ -45,9 +45,13 @@ page_title="IPsec"
 <div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap">Configuration</h3><span class="mj-live-rule"></span></div>
 	<form id="ips-form" onsubmit="return false">
-	<div class="form-check mb-3">
+	<div class="form-check mb-1">
 		<input class="form-check-input" type="checkbox" id="cfg-enabled">
 		<label class="form-check-label" for="cfg-enabled">Enable IPsec</label>
+	</div>
+	<div class="form-check mb-3">
+		<input class="form-check-input" type="checkbox" id="cfg-autoconnect">
+		<label class="form-check-label" for="cfg-autoconnect">Connect automatically when Machino starts</label>
 	</div>
 	<div class="mb-2"><label class="form-label" for="cfg-gateway">Server / gateway</label>
 		<input class="form-control form-control-sm" id="cfg-gateway" placeholder="vpn.example.org"></div>
@@ -108,12 +112,32 @@ page_title="IPsec"
 <!-- Card 3: identities + remote networks -->
 <div class="col-12 col-lg-6"><div class="card h-100"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap">Identities &amp; remote networks</h3><span class="mj-live-rule"></span></div>
-	<div class="mb-2"><label class="form-label" for="cfg-localid">Local identity (FQDN)</label>
-		<input class="form-control form-control-sm" id="cfg-localid" placeholder="cam.example.org"></div>
-	<div class="mb-2"><label class="form-label" for="cfg-remoteid">Remote identity (FQDN)</label>
-		<input class="form-control form-control-sm" id="cfg-remoteid" placeholder="vpn.example.org"></div>
-	<div class="mb-2"><label class="form-label" for="cfg-localsubnet">Local subnet (this camera)</label>
-		<input class="form-control form-control-sm mj-mono" id="cfg-localsubnet" placeholder="10.77.0.2/32"></div>
+	<div class="mb-2"><label class="form-label" for="cfg-localid">Local identity <span class="text-secondary">(send as)</span></label>
+		<div class="input-group input-group-sm">
+			<select class="form-select" id="cfg-localidtype" style="max-width:11em">
+				<option value="fqdn">FQDN</option>
+				<option value="rfc822">E-mail (RFC822)</option>
+				<option value="ipv4">IPv4 address</option>
+				<option value="keyid">Key ID</option>
+			</select>
+			<input class="form-control" id="cfg-localid" placeholder="cam.example.org">
+		</div>
+		<div class="form-text">Empty = derived from the source IP. The gateway checks type <b>and</b> value.</div></div>
+	<div class="mb-2"><label class="form-label" for="cfg-remoteid">Remote identity <span class="text-secondary">(expect as)</span></label>
+		<div class="input-group input-group-sm">
+			<select class="form-select" id="cfg-remoteidtype" style="max-width:11em">
+				<option value="fqdn">FQDN</option>
+				<option value="rfc822">E-mail (RFC822)</option>
+				<option value="ipv4">IPv4 address</option>
+				<option value="keyid">Key ID</option>
+			</select>
+			<input class="form-control" id="cfg-remoteid" placeholder="vpn.example.org">
+		</div>
+		<div class="form-text">Empty = accept whatever identity the gateway presents.</div></div>
+	<div class="mb-2"><label class="form-label" for="cfg-localsubnet">Tunnel address / local subnet (this camera)</label>
+		<input class="form-control form-control-sm mj-mono" id="cfg-localsubnet" placeholder="empty = assigned by the gateway">
+		<div class="form-text">Leave empty to get the tunnel address from the gateway (IKEv2 Configuration Payload),
+		  or set the address this camera presents, e.g. <span class="mj-mono">10.77.0.2/32</span>.</div></div>
 	<div class="mb-2"><label class="form-label" for="cfg-remotesubnet">Remote networks (up to 4, comma-separated)</label>
 		<input class="form-control form-control-sm mj-mono" id="cfg-remotesubnet" placeholder="10.66.0.0/24, 192.168.178.0/24"></div>
 	<p class="mj-card-note">These are what the camera <b>requests</b>. The gateway may narrow
@@ -133,6 +157,13 @@ page_title="IPsec"
 		<dt class="col-6">ESP encryption</dt><dd class="col-6">AES-256-CBC</dd>
 		<dt class="col-6">ESP integrity</dt><dd class="col-6">SHA-256</dd>
 	</dl>
+	<div class="form-check mt-3 mb-2">
+		<input class="form-check-input" type="checkbox" id="cfg-pfs">
+		<label class="form-check-label" for="cfg-pfs">Perfect Forward Secrecy on Child rekeys (modp2048)</label>
+		<div class="form-text">A fresh Diffie-Hellman exchange in every CREATE_CHILD_SA. Off keeps the
+		  behaviour proven in the interop CI; on matches the LANCOM / FRITZ!Box default.</div>
+	</div>
+	<button id="cfg-save3" class="btn btn-sm btn-primary" type="button">Save</button>
 </div></div></div>
 
 <!-- Card 5: diagnostics -->
@@ -246,7 +277,11 @@ async function loadConfig() {
   $("cfg-underlay").value = c.underlay || "auto";
   $("cfg-localid").value = c.localId || "";
   $("cfg-remoteid").value = c.remoteId || "";
+  $("cfg-localidtype").value = c.localIdType || "fqdn";
+  $("cfg-remoteidtype").value = c.remoteIdType || "fqdn";
   $("cfg-localsubnet").value = c.localSubnet || "";
+  $("cfg-pfs").checked = !!c.pfs;
+  $("cfg-autoconnect").checked = c.autoConnect !== false;
   $("cfg-remotesubnet").value = c.remoteSubnet || "";
   $("cfg-auth").value = c.auth || "psk";
   $("cfg-eapuser").value = c.eapUser || "";
@@ -268,7 +303,11 @@ function buildBody() {
     underlay: $("cfg-underlay").value,
     localId: $("cfg-localid").value.trim(),
     remoteId: $("cfg-remoteid").value.trim(),
+    localIdType: $("cfg-localidtype").value,
+    remoteIdType: $("cfg-remoteidtype").value,
     localSubnet: $("cfg-localsubnet").value.trim(),
+    pfs: $("cfg-pfs").checked,
+    autoConnect: $("cfg-autoconnect").checked,
     remoteSubnet: $("cfg-remotesubnet").value.trim(),
     auth: $("cfg-auth").value,
     eapUser: $("cfg-eapuser").value.trim(),
@@ -333,6 +372,10 @@ async function loadStatus() {
   row(b, "Configured remote", $("cfg-remotesubnet").value || "–");
   row(b, "Negotiated TSr", s.remoteTs || "–");
   row(b, "Local TSi", s.localTs || "–");
+  row(b, "Tunnel address", s.tunnelIpv4 || "–");
+  if (s.requestCp !== undefined)
+    row(b, "Config payload", s.requestCp ? (s.cpAddress ? "assigned " + s.cpAddress : "requested, nothing assigned") : "not requested");
+  if (s.pfsGroup !== undefined) row(b, "PFS", s.pfsGroup ? "on (DH group " + s.pfsGroup + ")" : "off");
   if (s.failure) row(b, "Last failure", pill(s.failure.code || "failed", "bad"));
   if (s.fullTunnelRefused) row(b, "Full tunnel", pill("requested, refused (unsupported)", "warn"));
 
@@ -358,6 +401,7 @@ async function loadStatus() {
 
 $("cfg-save").addEventListener("click", save);
 $("cfg-save2").addEventListener("click", save);
+$("cfg-save3").addEventListener("click", save);
 $("cfg-auth").addEventListener("change", applyAuthVisibility);
 $("ips-connect").addEventListener("click", () => act("/api/v1/ipsec/connect", "Connect"));
 $("ips-disconnect").addEventListener("click", () => act("/api/v1/ipsec/disconnect", "Disconnect"));

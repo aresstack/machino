@@ -26,6 +26,13 @@ psk = change-me
 # peer", so set it if the gateway has a stable name.
 # remote_id = vpn.example.com
 
+# AP10: the TYPE of each identity, exactly as the gateway expects it ("send
+# as" / "expect as" in WeirdOS). fqdn (default) | rfc822 (e-mail address) |
+# ipv4 (the value must then be a dotted quad) | keyid. Only meaningful when
+# the identity itself is set.
+# local_id_type = rfc822
+# remote_id_type = fqdn
+
 # --- what the tunnel carries -------------------------------------------------
 
 # The network behind the gateway. Default: 0.0.0.0/0 (everything).
@@ -33,6 +40,17 @@ psk = change-me
 
 # The network we present as ours (TSi). Usually just the camera.
 # local_subnet = 192.168.1.10/32
+
+# AP10: ask the gateway for the tunnel address instead (IKEv2 Configuration
+# Payload, INTERNAL_IP4_ADDRESS/DNS/SUBNET) -- with PSK too. machinod sets
+# this whenever local_subnet is empty; EAP-MSCHAPv2 always requests it.
+# The assigned address becomes the ipsec0 address unless local_subnet is set.
+# request_cp = yes
+
+# AP10: Perfect Forward Secrecy on Child rekeys -- a fresh D-H exchange in
+# every CREATE_CHILD_SA. The number is the D-H group (14 = modp2048, the
+# only group this build negotiates). 0 = no PFS (the pre-AP10 behaviour).
+# pfs_group = 14
 
 # --- transport ---------------------------------------------------------------
 

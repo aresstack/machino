@@ -211,9 +211,43 @@ static void t_eap_mschapv2(void)
     CHECK(c.eap_password_len == 0, "wipe cleared eap_password_len");
 }
 
+static void t_profile_fields(void)
+{
+    /* AP10 (WeirdOS profile parity): explicit identity types, a Configuration
+     * Payload request with PSK, the PFS group. All optional; absent = the
+     * pre-AP10 behaviour, so an existing weirdike.conf keeps meaning the same. */
+    wd_config c; char err[256];
+    CHECK(parse("gateway=a.b\npsk=x\nlocal_id=cam@intern\nlocal_id_type=rfc822\n"
+                "remote_id=203.0.113.5\nremote_id_type=ipv4\nrequest_cp=1\npfs_group=14\n",
+                &c, err, sizeof(err)) == 0, "profile keys accepted");
+    CHECK(c.local_id_type == WD_ID_RFC822 && c.remote_id_type == WD_ID_IPV4, "id types parsed");
+    CHECK(c.request_cp == 1 && c.pfs_group == 14, "request_cp + pfs_group parsed");
+
+    CHECK(parse("gateway=a.b\npsk=x\nlocal_id=cam\nlocal_id_type=keyid\n", &c, err, sizeof(err)) == 0, "keyid accepted");
+    CHECK(c.local_id_type == WD_ID_KEYID, "keyid parsed");
+
+    CHECK(parse("gateway=a.b\npsk=x\n", &c, err, sizeof(err)) == 0, "profile keys optional");
+    CHECK(c.local_id_type == WD_ID_FQDN && c.remote_id_type == WD_ID_FQDN, "default id type = fqdn (pre-AP10)");
+    CHECK(c.request_cp == 0 && c.pfs_group == 0, "default: no CP request, no PFS (pre-AP10)");
+
+    CHECK(parse("gateway=a.b\npsk=x\nlocal_id_type=email\n", &c, err, sizeof(err)) != 0, "bad id type refused");
+    CHECK(strstr(err, "local_id_type") != NULL, "bad id type names the key");
+    CHECK(parse("gateway=a.b\npsk=x\nlocal_id=cam.example\nlocal_id_type=ipv4\n", &c, err, sizeof(err)) != 0, "ipv4 type needs a literal");
+    CHECK(parse("gateway=a.b\npsk=x\nremote_id=1.2.3\nremote_id_type=ipv4\n", &c, err, sizeof(err)) != 0, "three octets are not an address");
+    CHECK(parse("gateway=a.b\npsk=x\npfs_group=99\n", &c, err, sizeof(err)) != 0, "pfs_group out of range");
+    CHECK(parse("gateway=a.b\npsk=x\nrequest_cp=maybe\n", &c, err, sizeof(err)) != 0, "bad request_cp refused");
+
+    uint8_t ip[4];
+    CHECK(wd_parse_ipv4("10.0.0.1", ip) == 0 && ip[0] == 10 && ip[3] == 1, "ipv4 literal");
+    CHECK(wd_parse_ipv4("10.0.0.256", ip) != 0, "octet range");
+    CHECK(wd_parse_ipv4(" 10.0.0.1", ip) != 0, "no leading space");
+    CHECK(wd_parse_ipv4("10.0.0.1/32", ip) != 0, "no prefix on a plain address");
+}
+
 int main(void)
 {
     t_minimal();
+    t_profile_fields();
     t_bind_underlay();
     t_multi_remote_subnet();
     t_eap_mschapv2();
