@@ -45,7 +45,7 @@ ReconcileReport RouteManager::reconcile(const RoutePlan& plan)
             if (same_route(have, want)) { present = true; break; }
 
         if (!present) {
-            const Result rc = be_.add_default(want.ifname, want.gateway, want.metric);
+            const Result rc = be_.add_default(want.ifname, want.gateway, want.metric, want.onlink);
             if (rc.is_ok()) {
                 ++rep.added;
                 present = true;

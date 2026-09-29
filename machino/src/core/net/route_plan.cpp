@@ -104,6 +104,12 @@ RoutePlan plan_routes(const std::vector<UplinkStatus>& uplinks,
         r.ifname    = u.info.ifname;
         r.gateway   = u.info.gateway;
         r.active    = (!active_id.empty() && u.id == active_id);
+        // Mobilfunk ist Punkt-zu-Punkt: die Adresse steht als /32 auf dem
+        // Interface (udhcpc-cellular.script, machino-cellular-helper), damit
+        // die Maske des Modems -- gemessen ein /8, das jedes Ziel im selben
+        // Traegernetz als on-link behandelte und per ARP ins Leere schickte --
+        // keine Rolle mehr spielt. Dafuer muss die Default-Route onlink sein.
+        r.onlink    = (u.type == UplinkType::Cellular && !u.info.gateway.empty());
 
         const int rank = policy_rank(u, policy);
         r.metric = r.active ? kActiveRouteMetric

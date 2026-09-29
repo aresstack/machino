@@ -242,14 +242,20 @@ set_static() {
 	kill_pidfile "$(pidfile_for "$iface")"
 	ip link set "$iface" up 2>/dev/null
 	ip addr flush dev "$iface" 2>/dev/null
-	ip addr add "$ip4/$(mask_to_prefix "$mask")" dev "$iface" 2>/dev/null
+	# /32 statt der Maske des Modems -- dieselbe Regel wie im DHCP-Pfad
+	# (udhcpc-cellular.script): ein Mobilfunk-Link hat genau einen Nachbarn,
+	# und die vom Modem gemeldete Maske (gemessen ein /8) machte jedes Ziel
+	# im Traegernetz zum vermeintlichen Nachbarn. Die Maske bleibt in der
+	# State-Datei stehen, nur die Anzeige braucht sie noch.
+	ip addr add "$ip4/32" dev "$iface" 2>/dev/null
 	if [ -n "$gw" ]; then
 		del_own_default "$iface"
 		# Metrik 300: hoeher als Ethernet (0) und WLAN (200). Mobilfunk ist der
 		# teuerste Weg ins Netz und soll nicht ungefragt der bevorzugte sein --
 		# die Reihenfolge entscheidet spaeter machinos Uplink-Politik, aber
 		# solange sie das nicht tut, ist die vorsichtige Metrik die richtige.
-		ip route add default via "$gw" dev "$iface" metric 300 2>/dev/null
+		# onlink, weil das Gateway ausserhalb des /32 liegt.
+		ip route add default via "$gw" dev "$iface" onlink metric 300 2>/dev/null
 	fi
 	write_state "$iface" "$ip4" "$mask" "$gw" "$d1" "$d2"
 	log "$iface statisch: $ip4/$mask gw=$gw"

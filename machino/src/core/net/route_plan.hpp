@@ -57,6 +57,10 @@ struct RouteIntent {
     std::string gateway;    // "" is legal: a link-local (device) default route
     int         metric = 0;
     bool        active = false;
+    // The gateway is not on any prefix of the interface and the route has to
+    // be installed anyway (RTNH_F_ONLINK). True for a cellular uplink: its
+    // address is a /32 and the modem answers for the gateway on the link.
+    bool        onlink = false;
 };
 
 struct RoutePlan {

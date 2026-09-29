@@ -51,9 +51,11 @@ public:
         out = table;
         return true;
     }
-    Result add_default(const std::string& ifname, const std::string& gw, int metric) override
+    Result add_default(const std::string& ifname, const std::string& gw, int metric,
+                       bool onlink) override
     {
-        ops.push_back("add " + ifname + " " + (gw.empty() ? "-" : gw) + " " + std::to_string(metric));
+        ops.push_back("add " + ifname + " " + (gw.empty() ? "-" : gw) + " " + std::to_string(metric)
+                      + (onlink ? " onlink" : ""));
         if (add_fails) return Result::error();
         DefaultRoute r; r.ifname = ifname; r.gateway = gw; r.metric = metric;
         table.push_back(r);
@@ -711,6 +713,46 @@ void test_an_unreadable_resolv_conf_is_written_rather_than_assumed_correct()
 
 } // namespace
 
+void test_a_cellular_default_route_is_onlink_and_an_ethernet_one_is_not()
+{
+    // usb0 carries its address as a /32 (the modem's own mask was a /8 that
+    // made every host of the carrier's block look on-link). The gateway is
+    // therefore outside any prefix of the interface, and the route only
+    // installs with ONLINK. Ethernet keeps a normal route: its gateway really
+    // is on the subnet, and ONLINK there would only hide a misconfiguration.
+    std::vector<UplinkStatus> u = {
+        up("eth0", UplinkType::Ethernet, "eth0", "192.168.1.10", "192.168.1.1", "", false),
+        up("cellular", UplinkType::Cellular, "usb0", "37.85.117.0", "37.85.117.255", "", true),
+    };
+    const RoutePlan p = plan_routes(u, UplinkPolicy{}, "cellular");
+    const RouteIntent* cell = p.find("usb0");
+    const RouteIntent* eth  = p.find("eth0");
+    TCHECK(cell && cell->onlink);
+    TCHECK(eth && !eth->onlink);
+
+    // And the flag reaches the backend: the manager asks for exactly what the
+    // plan decided, per route.
+    FakeRouteBackend be;
+    RouteManager rm(be);
+    rm.reconcile(p);
+    bool cell_onlink = false, eth_plain = false;
+    for (const std::string& op : be.ops) {
+        if (op == "add usb0 37.85.117.255 10 onlink") cell_onlink = true;
+        if (op.rfind("add eth0 192.168.1.1 ", 0) == 0 && op.find("onlink") == std::string::npos) eth_plain = true;
+    }
+    TCHECK(cell_onlink);
+    TCHECK(eth_plain);
+
+    // A cellular uplink without a gateway gets a plain link route: there is
+    // nothing to be on-link to.
+    std::vector<UplinkStatus> ppp = {
+        up("ppp", UplinkType::Cellular, "ppp0", "10.0.0.2", "", "", true),
+    };
+    const RoutePlan p2 = plan_routes(ppp, UplinkPolicy{}, "ppp");
+    const RouteIntent* pr = p2.find("ppp0");
+    TCHECK(pr && !pr->onlink && pr->gateway.empty());
+}
+
 void run_route_plan_tests()
 {
     test_the_active_uplink_gets_the_lowest_metric();
@@ -737,6 +779,7 @@ void run_route_plan_tests()
     test_dns_is_not_rewritten_when_it_already_matches();
     test_split_dns_drops_rubbish_and_duplicates();
 
+    test_a_cellular_default_route_is_onlink_and_an_ethernet_one_is_not();
     test_two_default_routes_resolve_to_one_deterministic_winner();
     test_the_new_route_goes_in_before_the_old_one_comes_out();
     test_a_foreign_default_route_is_never_touched();

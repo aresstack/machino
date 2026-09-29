@@ -69,8 +69,22 @@ case "$1" in
 		;;
 
 	renew|bound)
-		ip addr flush dev "$interface" 2>/dev/null
-		ip addr add "$ip/$mask" ${broadcast:+broadcast $broadcast} dev "$interface"
+		# /32, NICHT die Maske des Modems. Das Modem liefert per DHCP ein /8
+		# (gemessen 2026-09-29: 37.85.117.0/8). Damit gilt jedes Ziel im
+		# gesamten Block des Traegers als direkt erreichbar, die Kamera fragt
+		# per ARP auf usb0 statt ueber das Gateway zu senden, und jeder Client
+		# mit einer Adresse aus 37.0.0.0/8 ist fuer sie unerreichbar. Ein
+		# Mobilfunk-Link ist Punkt-zu-Punkt: es gibt genau einen Nachbarn, das
+		# Gateway, und den erreicht die Route unten mit `onlink`.
+		#
+		# Eine Erneuerung mit unveraenderter Adresse fasst das Interface nicht
+		# an: das Flush wuerde jede laufende Verbindung fuer die Dauer des
+		# Neusetzens ohne Quelladresse dastehen lassen -- und Mobilfunk
+		# erneuert alle paar Minuten.
+		if ! ip -4 addr show dev "$interface" 2>/dev/null | grep -q "inet $ip/32 "; then
+			ip addr flush dev "$interface" 2>/dev/null
+			ip addr add "$ip/32" dev "$interface"
+		fi
 
 		if [ -n "$router" ]; then
 			# Nur die eigene loeschen, nicht jede: ein "ip route del default"
@@ -78,7 +92,10 @@ case "$1" in
 			# dieses Skript verhindern.
 			ip route del default dev "$interface" 2>/dev/null
 			for r in $router; do
-				ip route add default via "$r" dev "$interface" metric $CELL_METRIC 2>/dev/null
+				# onlink: das Gateway liegt in keinem Praefix des Interface
+				# (es gibt keins ausser dem /32), der Kernel wuerde die Route
+				# ohne das Flag mit "Network unreachable" ablehnen.
+				ip route add default via "$r" dev "$interface" onlink metric $CELL_METRIC 2>/dev/null
 			done
 		fi
 

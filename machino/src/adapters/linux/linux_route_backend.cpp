@@ -108,7 +108,7 @@ bool LinuxRouteBackend::default_routes(std::vector<net::DefaultRoute>& out) cons
 }
 
 Result LinuxRouteBackend::route_op(int nlmsg_type, int flags, const std::string& ifname,
-                                   const std::string& gateway, int metric)
+                                   const std::string& gateway, int metric, bool onlink)
 {
     const unsigned oif = if_nametoindex(ifname.c_str());
     if (oif == 0) {
@@ -136,12 +136,32 @@ Result LinuxRouteBackend::route_op(int nlmsg_type, int flags, const std::string&
     rtm->rtm_family   = AF_INET;
     rtm->rtm_dst_len  = 0;                 // 0.0.0.0/0 -- the default route
     rtm->rtm_table    = RT_TABLE_MAIN;
-    rtm->rtm_protocol = RTPROT_STATIC;
-    // A route with a gateway reaches beyond the link; one without is the link
-    // itself. Saying UNIVERSE for a gatewayless route makes the kernel refuse
-    // it with ENETUNREACH, which reads like the network is down.
-    rtm->rtm_scope    = have_gw ? RT_SCOPE_UNIVERSE : RT_SCOPE_LINK;
-    rtm->rtm_type     = RTN_UNICAST;
+    if (nlmsg_type == RTM_DELROUTE) {
+        // A delete identifies the route by destination, gateway, interface and
+        // metric -- and by NOTHING else. The kernel also matches protocol,
+        // scope and type when they are given, and this used to give
+        // RTPROT_STATIC. The route a DHCP hook installs with `ip route add`
+        // carries RTPROT_BOOT, so the delete never matched it: the kernel
+        // answered ESRCH, ESRCH was taken as "already gone", and the manager
+        // logged "1 removed" every two seconds for a route that stayed
+        // (measured 2026-09-29, usb0 metric 300 next to our metric 10).
+        // Wildcards, exactly as `ip route del` sends them.
+        rtm->rtm_protocol = RTPROT_UNSPEC;
+        rtm->rtm_scope    = RT_SCOPE_NOWHERE;
+        rtm->rtm_type     = RTN_UNSPEC;
+    } else {
+        rtm->rtm_protocol = RTPROT_STATIC;
+        // A route with a gateway reaches beyond the link; one without is the
+        // link itself. Saying UNIVERSE for a gatewayless route makes the kernel
+        // refuse it with ENETUNREACH, which reads like the network is down.
+        rtm->rtm_scope    = have_gw ? RT_SCOPE_UNIVERSE : RT_SCOPE_LINK;
+        rtm->rtm_type     = RTN_UNICAST;
+        // The gateway of a /32 point-to-point uplink is not inside any prefix
+        // on the interface. Without ONLINK the kernel rejects the route with
+        // ENETUNREACH; with it, it sends and lets the link answer for the
+        // gateway -- which is what a modem in ECM mode does.
+        if (have_gw && onlink) rtm->rtm_flags |= RTNH_F_ONLINK;
+    }
 
     if (have_gw && !put_attr(nh, sizeof buf, RTA_GATEWAY, &gw.s_addr, sizeof gw.s_addr))
         return Result::error();
@@ -199,15 +219,15 @@ Result LinuxRouteBackend::route_op(int nlmsg_type, int flags, const std::string&
 }
 
 Result LinuxRouteBackend::add_default(const std::string& ifname, const std::string& gateway,
-                                      int metric)
+                                      int metric, bool onlink)
 {
-    return route_op(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, ifname, gateway, metric);
+    return route_op(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, ifname, gateway, metric, onlink);
 }
 
 Result LinuxRouteBackend::del_default(const std::string& ifname, const std::string& gateway,
                                       int metric)
 {
-    return route_op(RTM_DELROUTE, 0, ifname, gateway, metric);
+    return route_op(RTM_DELROUTE, 0, ifname, gateway, metric, false);
 }
 
 bool LinuxRouteBackend::dns(std::vector<std::string>& out) const
