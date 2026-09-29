@@ -56,28 +56,156 @@ std::vector<uint8_t> annexb_to_avcc(const uint8_t* data, size_t len) {
     return out;
 }
 
-std::vector<uint8_t> init_segment(const std::vector<uint8_t>& sps, const std::vector<uint8_t>& pps,
-                                  int width, int height, uint32_t timescale) {
-    std::vector<uint8_t> b;
-    b.reserve(512 + sps.size() + pps.size());
+namespace {
 
+// A descriptor tag + its one-byte length (every descriptor here is < 128).
+void desc(std::vector<uint8_t>& b, uint8_t tagv, size_t len) { b.push_back(tagv); b.push_back((uint8_t)len); }
+
+void ftyp_box(std::vector<uint8_t>& b) {
     // ftyp: iso5 carries the movie-fragment defaults this stream relies on.
     size_t ftyp = open_box(b, "ftyp");
     tag(b, "iso5"); be32(b, 1);
     tag(b, "iso5"); tag(b, "iso6"); tag(b, "mp41");
     close_box(b, ftyp);
+}
+
+void mvhd_box(std::vector<uint8_t>& b, uint32_t timescale, uint32_t next_track) {
+    size_t mvhd = open_full(b, "mvhd", 0, 0);
+    be32(b, 0); be32(b, 0);              // creation, modification
+    be32(b, timescale); be32(b, 0);      // timescale, duration (live: 0)
+    be32(b, 0x00010000); be16(b, 0x0100); zeros(b, 2 + 8); // rate, volume, reserved
+    static const uint32_t unity[9] = {0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000};
+    for (uint32_t v : unity) be32(b, v);
+    zeros(b, 6 * 4);
+    be32(b, next_track);
+    close_box(b, mvhd);
+}
+
+void dinf_and_empty_tables_open(std::vector<uint8_t>& b) {
+    size_t dinf = open_box(b, "dinf");
+    size_t dref = open_full(b, "dref", 0, 0);
+    be32(b, 1);
+    size_t url = open_full(b, "url ", 0, 1);   // self-contained
+    close_box(b, url);
+    close_box(b, dref);
+    close_box(b, dinf);
+}
+
+void empty_tables(std::vector<uint8_t>& b) {
+    for (const char* t : {"stts", "stsc", "stsz", "stco"}) {
+        size_t s = open_full(b, t, 0, 0);
+        if (std::strcmp(t, "stsz") == 0) be32(b, 0);  // sample size field
+        be32(b, 0);                                    // entry count
+        close_box(b, s);
+    }
+}
+
+void audio_trak(std::vector<uint8_t>& b, const AudioTrack& a) {
+    size_t trak = open_box(b, "trak");
+    size_t tkhd = open_full(b, "tkhd", 0, 3);
+    be32(b, 0); be32(b, 0);
+    be32(b, a.track_id); be32(b, 0);
+    be32(b, 0); zeros(b, 8);
+    be16(b, 0); be16(b, 1);              // layer, alternate group (audio)
+    be16(b, 0x0100); be16(b, 0);         // volume 1.0
+    static const uint32_t unity[9] = {0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000};
+    for (uint32_t v : unity) be32(b, v);
+    be32(b, 0); be32(b, 0);              // no width/height
+    close_box(b, tkhd);
+
+    size_t mdia = open_box(b, "mdia");
+    size_t mdhd = open_full(b, "mdhd", 0, 0);
+    be32(b, 0); be32(b, 0);
+    be32(b, a.timescale()); be32(b, 0);
+    be16(b, 0x55c4); be16(b, 0);
+    close_box(b, mdhd);
+    size_t hdlr = open_full(b, "hdlr", 0, 0);
+    be32(b, 0); tag(b, "soun"); zeros(b, 12);
+    bytes(b, "MachinoAudio", 13);
+    close_box(b, hdlr);
+    size_t minf = open_box(b, "minf");
+    size_t smhd = open_full(b, "smhd", 0, 0);
+    be16(b, 0); be16(b, 0);              // balance, reserved
+    close_box(b, smhd);
+    dinf_and_empty_tables_open(b);
+    size_t stbl = open_box(b, "stbl");
+    size_t stsd = open_full(b, "stsd", 0, 0);
+    be32(b, 1);
+    size_t entry = open_box(b, a.codec == AudioTrack::Opus ? "Opus" : "mp4a");
+    zeros(b, 6); be16(b, 1);             // reserved, data ref index
+    zeros(b, 8);                         // version, revision, vendor
+    be16(b, (uint16_t)a.channels); be16(b, 16);
+    be16(b, 0); be16(b, 0);              // pre-defined, reserved
+    be32(b, (a.codec == AudioTrack::Opus ? 48000u : (uint32_t)a.sample_rate) << 16);
+    if (a.codec == AudioTrack::Opus) {
+        size_t dops = open_box(b, "dOps");
+        b.push_back(0);                  // version
+        b.push_back((uint8_t)a.channels);
+        be16(b, a.pre_skip);
+        be32(b, (uint32_t)a.sample_rate);
+        be16(b, 0);                      // output gain
+        b.push_back(0);                  // channel mapping family 0
+        close_box(b, dops);
+    } else {
+        size_t esds = open_full(b, "esds", 0, 0);
+        const size_t dsi = a.asc.size();
+        const size_t dcd = 13 + 2 + dsi;              // DecoderConfigDescriptor payload
+        const size_t esd = 3 + 2 + dcd + 2 + 1;       // ES_Descriptor payload
+        desc(b, 0x03, esd);
+        be16(b, 0); b.push_back(0);                   // ES_ID, flags
+        desc(b, 0x04, dcd);
+        b.push_back(0x40);                            // object type: MPEG-4 Audio
+        b.push_back(0x15);                            // stream type audio (5 << 2 | 1)
+        b.push_back(0); be16(b, 0);                   // buffer size DB
+        be32(b, 0); be32(b, 0);                       // max / avg bitrate (unstated)
+        desc(b, 0x05, dsi);
+        bytes(b, a.asc.data(), dsi);
+        desc(b, 0x06, 1);
+        b.push_back(0x02);                            // SLConfig predefined MP4
+        close_box(b, esds);
+    }
+    close_box(b, entry);
+    close_box(b, stsd);
+    empty_tables(b);
+    close_box(b, stbl);
+    close_box(b, minf);
+    close_box(b, mdia);
+    close_box(b, trak);
+}
+
+void trex_box(std::vector<uint8_t>& b, uint32_t track_id) {
+    size_t trex = open_full(b, "trex", 0, 0);
+    be32(b, track_id);
+    be32(b, 1);                          // default sample description
+    be32(b, 0); be32(b, 0); be32(b, 0);
+    close_box(b, trex);
+}
+
+} // namespace
+
+std::vector<uint8_t> audio_init_segment(const AudioTrack& a) {
+    std::vector<uint8_t> b;
+    ftyp_box(b);
+    size_t moov = open_box(b, "moov");
+    mvhd_box(b, a.timescale(), a.track_id + 1);
+    audio_trak(b, a);
+    size_t mvex = open_box(b, "mvex");
+    trex_box(b, a.track_id);
+    close_box(b, mvex);
+    close_box(b, moov);
+    return b;
+}
+
+std::vector<uint8_t> init_segment(const std::vector<uint8_t>& sps, const std::vector<uint8_t>& pps,
+                                  int width, int height, uint32_t timescale, const AudioTrack* audio) {
+    std::vector<uint8_t> b;
+    b.reserve(512 + sps.size() + pps.size());
+    const bool with_audio = audio && audio->codec != AudioTrack::None;
+    ftyp_box(b);
 
     size_t moov = open_box(b, "moov");
     {
-        size_t mvhd = open_full(b, "mvhd", 0, 0);
-        be32(b, 0); be32(b, 0);              // creation, modification
-        be32(b, timescale); be32(b, 0);      // timescale, duration (live: 0)
-        be32(b, 0x00010000); be16(b, 0x0100); zeros(b, 2 + 8); // rate, volume, reserved
-        static const uint32_t unity[9] = {0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000};
-        for (uint32_t v : unity) be32(b, v);
-        zeros(b, 6 * 4);
-        be32(b, 2);                          // next track id
-        close_box(b, mvhd);
+        mvhd_box(b, timescale, with_audio ? audio->track_id + 1 : 2);
 
         size_t trak = open_box(b, "trak");
         {
@@ -163,15 +291,11 @@ std::vector<uint8_t> init_segment(const std::vector<uint8_t>& sps, const std::ve
             close_box(b, mdia);
         }
         close_box(b, trak);
+        if (with_audio) audio_trak(b, *audio);
 
         size_t mvex = open_box(b, "mvex");
-        {
-            size_t trex = open_full(b, "trex", 0, 0);
-            be32(b, 1);                  // track id
-            be32(b, 1);                  // default sample description
-            be32(b, 0); be32(b, 0); be32(b, 0);
-            close_box(b, trex);
-        }
+        trex_box(b, 1);
+        if (with_audio) trex_box(b, audio->track_id);
         close_box(b, mvex);
     }
     close_box(b, moov);
@@ -214,7 +338,7 @@ std::vector<uint8_t> prft(uint32_t track_id, uint64_t ntp, uint64_t media_time) 
 }
 
 std::vector<uint8_t> fragment(uint32_t sequence, uint64_t decode_time, uint32_t duration,
-                              const std::vector<uint8_t>& sample, bool key) {
+                              const std::vector<uint8_t>& sample, bool key, uint32_t track_id) {
     std::vector<uint8_t> b;
     b.reserve(sample.size() + 128);
 
@@ -227,7 +351,7 @@ std::vector<uint8_t> fragment(uint32_t sequence, uint64_t decode_time, uint32_t 
         size_t traf = open_box(b, "traf");
         {
             size_t tfhd = open_full(b, "tfhd", 0, 0x020000);   // default-base-is-moof
-            be32(b, 1);                                         // track id
+            be32(b, track_id);
             close_box(b, tfhd);
 
             size_t tfdt = open_full(b, "tfdt", 1, 0);

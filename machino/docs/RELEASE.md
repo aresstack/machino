@@ -68,9 +68,10 @@ Jede davon ist gemessen und in einem eigenen Dokument belegt.
 * **Kein Recording, keine Analytics-Indizes, keine Peers.** Es steckt keine
   SD-Karte im vorhandenen Slot; der einzige beschreibbare Speicher sind 4,6 MB
   Flash. → `docs/ap19-recording-analytics-peers.md`
-* **Mikrofon ja, Lautsprecher noch nicht.** `/audio.pcm`, `/audio.alaw`,
-  `/audio.g711a`, `/audio.ulaw` (aus bis `audio.enabled = true`). Kein
-  `/play_audio`, kein Talkback, kein Opus/AAC. `spk_gpio = -1` heißt nicht
+* **Audio ohne Hardwareabnahme.** `/audio.pcm`, `/audio.alaw`, `/audio.g711a`,
+  `/audio.ulaw`, `/audio.opus`, `/audio.m4a`, Audio im WebUI-Player
+  (`/ws/video`), `/play_audio`, RTSP-/ONVIF-Backchannel und WebRTC-Talkback
+  (aus bis `audio.enabled = true`). `spk_gpio = -1` heißt nicht
   „kein Ausgang" — die Stock-Firmware spielt damit. Hardwareabnahme über
   `machino --audio-test`. → `docs/ap20-audio-talkback.md`
 * **Keine NNA.** Treiber vorhanden, aber kein `nmem=` reserviert, keine SDK-API,

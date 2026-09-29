@@ -1,5 +1,7 @@
 #include "app/http/http_server.hpp"
 #include "app/http/audio_stream.hpp"
+#include "app/http/ogg.hpp"
+#include "core/audio/audio_encoder.hpp"
 #include "app/compat/majestic_webui.hpp"
 #include "app/webrtc/peer.hpp"
 #include "app/http/fmp4.hpp"
@@ -188,6 +190,16 @@ struct HttpServer::Client {
     AudioFormat audio_fmt = AudioFormat::None;
     int         audio_rate = 0;     // capture rate the listener was opened at
     std::shared_ptr<Sink> audio_sink;
+    // /audio.m4a and /audio.opus: the encoder and its container state.
+    std::unique_ptr<audio::AudioEncoder> audio_enc;
+    std::unique_ptr<ogg::OpusWriter>     audio_ogg;
+    uint32_t    audio_seq = 1;
+    uint64_t    audio_dt = 0;
+    // /ws/video&audio=: the microphone as a second track of the same MSE stream.
+    std::shared_ptr<Sink>                ws_audio_sink;
+    std::unique_ptr<audio::AudioEncoder> ws_audio_enc;
+    uint64_t    ws_audio_dt = 0;
+    bool        ws_audio_started = false;
     bool ws_init_sent = false;
     bool ws_await_key = true;       // never hand the decoder a P-frame without its reference
     std::vector<uint8_t> ws_sps, ws_pps;
@@ -291,6 +303,7 @@ void HttpServer::stop() {
         if (c->rtc_sink) { StreamHub* h = c->rtc_hub ? c->rtc_hub : hub_; if (h) { c->rtc_sink->close(); h->unsubscribe(c->rtc_sink); } }
         if (c->audio_sink && audio_) audio_->unlisten(c->audio_sink);
         if (c->rtc_audio_sink && audio_) audio_->unlisten(c->rtc_audio_sink);
+        if (c->ws_audio_sink && audio_) audio_->unlisten(c->ws_audio_sink);
         if (c->relay_fd >= 0) close(c->relay_fd);
         // The upgrade child is NEVER killed here: once sysupgrade is flashing it
         // survives a disconnect on purpose ("Protected: flashing continues").
@@ -703,6 +716,26 @@ bool HttpServer::handle_request(Client& c) {
                 c.ws_demand = std::move(d);
                 c.ws_sink = h->subscribe();
                 c.ws_await_key = true;
+                // &audio=opus,mp4a.40.2: the codecs this browser can decode, in
+                // its order. The first one this build can encode wins; with the
+                // microphone off (or no encoder) the init names no audio codec
+                // and the player drops to muted by itself.
+                const std::string want = SessionGate::form_value(req.query, "audio");
+                if (!want.empty() && audio_ && audio_->config().enabled) {
+                    size_t at = 0;
+                    while (at <= want.size() && !c.ws_audio_enc) {
+                        const size_t comma = want.find(',', at);
+                        const std::string codec = want.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+                        c.ws_audio_enc = audio::make_encoder(codec, audio_->sample_rate());
+                        if (comma == std::string::npos) break;
+                        at = comma + 1;
+                    }
+                    if (c.ws_audio_enc) {
+                        std::string why;
+                        c.ws_audio_sink = audio_->listen(why);
+                        if (!c.ws_audio_sink) { c.ws_audio_enc.reset(); LOGW(MOD, "%s: /ws/video audio refused: %s", c.peer.c_str(), why.c_str()); }
+                    }
+                }
                 pipeline_->request_idr(unit);
                 LOGI(MOD, "%s: /ws/video session started (unit %d)", c.peer.c_str(), unit);
                 return true;
@@ -810,14 +843,31 @@ bool HttpServer::handle_request(Client& c) {
         else if (!audio_) { r = api::ApiService::fail(501, "unavailable", path, "this build has no audio path"); }
         else {
             std::string why;
-            std::shared_ptr<Sink> s = audio_->listen(why);
-            if (!s) { r = api::ApiService::fail(503, "unavailable", path, why); }
+            const AudioFormat f = audio_format_for_path(path);
+            std::unique_ptr<audio::AudioEncoder> enc;
+            if (*audio_codec_for(f)) enc = audio::make_encoder(audio_codec_for(f), audio_->sample_rate());
+            std::shared_ptr<Sink> s;
+            if (*audio_codec_for(f) && !enc)
+                why = audio::codecs_built() ? "the encoder refused this sample rate"
+                                            : "this build has no AAC/Opus encoder (built without CODECS)";
+            else s = audio_->listen(why);
+            if (!s) { r = api::ApiService::fail(*audio_codec_for(f) && !enc ? 501 : 503, "unavailable", path, why); }
             else {
-                const AudioFormat f = audio_format_for_path(path);
                 c.audio_fmt = f;
                 c.audio_rate = audio_->sample_rate();
                 c.audio_sink = std::move(s);
                 queue(c, audio_stream_headers(f, c.audio_rate));
+                if (f == AudioFormat::Aac) {
+                    fmp4::AudioTrack t;
+                    t.codec = fmp4::AudioTrack::Aac; t.track_id = 1;
+                    t.sample_rate = enc->sample_rate(); t.asc = enc->config();
+                    const std::vector<uint8_t> init = fmp4::audio_init_segment(t);
+                    c.out.append(reinterpret_cast<const char*>(init.data()), init.size());
+                } else if (f == AudioFormat::Opus) {
+                    c.audio_ogg.reset(new ogg::OpusWriter((uint32_t)now_ms() ^ 0x4f707573u, enc->sample_rate(), enc->pre_skip()));
+                    c.out += c.audio_ogg->headers();
+                }
+                c.audio_enc = std::move(enc);
                 LOGI(MOD, "%s: audio stream started (%s, %d Hz on the wire)", c.peer.c_str(),
                      audio_format_name(f), audio_wire_rate(f, c.audio_rate));
                 return true;
@@ -847,12 +897,6 @@ bool HttpServer::handle_request(Client& c) {
         bool ok = queue(c, response(status, "text/plain; charset=utf-8", text, req.keep_alive));
         if (!req.keep_alive) c.close_after_flush = true;
         return ok;
-    } else if (path == "/audio.opus" || path == "/audio.m4a") {
-        // Named, not relayed: a 404 from the busybox side would read as "this
-        // camera has no microphone", which is not what is missing.
-        r = api::ApiService::fail(501, "unavailable", path,
-                                  "Opus/AAC encoding is not built; the microphone is served as "
-                                  "/audio.pcm, /audio.alaw, /audio.g711a and /audio.ulaw");
     } else if (path == "/snapshot" || path == "/snapshot.jpg" || path == "/api/v1/snapshot" ||
                path == "/image.jpg") {
         // W3: /image.jpg ist majestics Name fuer dasselbe Standbild (Dashboard
@@ -1300,8 +1344,19 @@ void HttpServer::pump_ws_video(Client& c) {
                     info.set("codecString", Json::string(cs));
                     info.set("width", Json::integer(w));
                     info.set("height", Json::integer(h));
+                    fmp4::AudioTrack at;
+                    if (c.ws_audio_enc && c.ws_audio_sink) {
+                        at.codec = std::string(c.ws_audio_enc->codec()) == "opus" ? fmp4::AudioTrack::Opus : fmp4::AudioTrack::Aac;
+                        at.track_id = 2;
+                        at.sample_rate = c.ws_audio_enc->sample_rate();
+                        at.asc = c.ws_audio_enc->config();
+                        at.pre_skip = c.ws_audio_enc->pre_skip();
+                        info.set("audioCodec", Json::string(c.ws_audio_enc->codec()));
+                        info.set("mime", Json::string("video/mp4; codecs=\"" + cs + ", " + c.ws_audio_enc->codec() + "\""));
+                    }
                     const std::string init_json = info.dump();
-                    std::vector<uint8_t> init = fmp4::init_segment(sps, pps, w, h, 90000);
+                    std::vector<uint8_t> init = fmp4::init_segment(sps, pps, w, h, 90000,
+                                                                   at.codec == fmp4::AudioTrack::None ? nullptr : &at);
                     queue(c, ws::frame(true, init_json.data(), init_json.size()), soft_cap);
                     if (!queue(c, ws::frame(false, init.data(), init.size()), soft_cap)) { c.close_after_flush = true; return; }
                     c.ws_init_sent = true;
@@ -1352,8 +1407,61 @@ void HttpServer::pump_audio(Client& c) {
     for (int i = 0; i < 16; ++i) {
         AuPtr au;
         if (!c.audio_sink->pop(au, 0)) return;
-        if (!au || au->data.empty() || c.out.size() > cap) continue;
-        audio_encode(c.audio_fmt, c.audio_rate, au->data.data(), au->data.size(), c.out);
+        if (!au || au->data.empty()) continue;
+        if (!c.audio_enc) {
+            if (c.out.size() <= cap) audio_encode(c.audio_fmt, c.audio_rate, au->data.data(), au->data.size(), c.out);
+            continue;
+        }
+        // Compressed: always ENCODE (the encoder's state must see every
+        // frame), drop only what would not fit.
+        std::vector<audio::EncodedFrame> frames;
+        c.audio_enc->encode(reinterpret_cast<const int16_t*>(au->data.data()), au->data.size() / 2, frames);
+        for (const auto& fr : frames) {
+            if (c.audio_fmt == AudioFormat::Opus) {
+                const std::string page = c.audio_ogg->packet(fr.data, fr.duration);   // granule advances even when dropped
+                if (c.out.size() <= cap) c.out += page;
+            } else {
+                const std::vector<uint8_t> frag = fmp4::fragment(c.audio_seq++, c.audio_dt, fr.duration, fr.data, true, 1);
+                c.audio_dt += fr.duration;
+                if (c.out.size() <= cap) c.out.append(reinterpret_cast<const char*>(frag.data()), frag.size());
+            }
+        }
+    }
+}
+
+// /ws/video&audio=: the microphone into the SAME MSE stream, as track 2. Its
+// timeline starts at the video's decode time when the first audio frame is
+// sent and then advances by the codec's own frame durations.
+void HttpServer::pump_ws_audio(Client& c) {
+    if (!c.ws_audio_sink || !c.ws_audio_enc) return;
+    if (c.ws_audio_sink->closed()) {                       // microphone switched off: the video goes on
+        if (audio_) audio_->unlisten(c.ws_audio_sink);
+        c.ws_audio_sink.reset();
+        return;
+    }
+    const size_t soft_cap = cfg_.ws_out_cap;
+    for (int i = 0; i < 8; ++i) {
+        AuPtr au;
+        if (!c.ws_audio_sink->pop(au, 0)) return;
+        if (!au || au->data.empty()) continue;
+        std::vector<audio::EncodedFrame> frames;
+        c.ws_audio_enc->encode(reinterpret_cast<const int16_t*>(au->data.data()), au->data.size() / 2, frames);
+        if (!c.ws_init_sent) continue;                     // nothing to attach audio to yet
+        const uint32_t ts = c.ws_audio_enc->timescale();
+        if (!c.ws_audio_started) {
+            if (c.ws_await_key) continue;                   // anchor on a frame the player really has
+            c.ws_audio_dt = c.ws_dts * ts / 90000; c.ws_audio_started = true;
+        }
+        if (c.ws_await_key) {                               // video resyncing: keep the clock, send nothing
+            for (const auto& fr : frames) c.ws_audio_dt += fr.duration;
+            continue;
+        }
+        for (const auto& fr : frames) {
+            const std::vector<uint8_t> frag = fmp4::fragment(c.ws_seq++, c.ws_audio_dt, fr.duration, fr.data, true, 2);
+            c.ws_audio_dt += fr.duration;
+            if (c.out.size() > soft_cap / 2) continue;      // the video's backpressure rule; audio is dropped first
+            queue(c, ws::frame(false, frag.data(), frag.size()), soft_cap);
+        }
     }
 }
 
@@ -1784,7 +1892,7 @@ void HttpServer::loop() {
                 if (t - last_heartbeat_ms_ >= 15000) queue(c, ": keepalive\n\n");
             }
             if (ok && c.mjpeg && !c.close_after_flush) push_mjpeg(c);
-            if (ok && c.ws_video && !c.close_after_flush) pump_ws_video(c);
+            if (ok && c.ws_video && !c.close_after_flush) { pump_ws_video(c); pump_ws_audio(c); }
             if (ok && c.audio_sink && !c.close_after_flush) pump_audio(c);
             if (ok && c.rtc) {
                 if (ure & POLLIN) c.rtc->on_readable();
@@ -1810,6 +1918,7 @@ void HttpServer::loop() {
                 if (c.rtc_sink) { StreamHub* h = c.rtc_hub ? c.rtc_hub : hub_; if (h) { c.rtc_sink->close(); h->unsubscribe(c.rtc_sink); } }
                 if (c.audio_sink && audio_) { audio_->unlisten(c.audio_sink); c.audio_sink.reset(); }
                 if (c.rtc_audio_sink && audio_) { audio_->unlisten(c.rtc_audio_sink); c.rtc_audio_sink.reset(); }
+                if (c.ws_audio_sink && audio_) { audio_->unlisten(c.ws_audio_sink); c.ws_audio_sink.reset(); }
                 c.rtc.reset();                          // closes the UDP socket
                 // The two DemandHandles (ws_demand, rtc_demand) are NOT
                 // released here: they are Client members and their destructors

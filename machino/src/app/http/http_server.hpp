@@ -136,7 +136,8 @@ private:
     void drain_events(Client& c);
     void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
     void pump_ws_video(Client& c);  // fMP4-per-frame over WebSocket (majestic /ws/video)
-    void pump_audio(Client& c);     // raw PCM / G.711 bytes for an /audio.* client
+    void pump_audio(Client& c);     // an /audio.* client: PCM, G.711, AAC in fMP4, Opus in Ogg
+    void pump_ws_audio(Client& c);  // /ws/video&audio=: the microphone as track 2
     bool ws_video_input(Client& c); // client frames: {"request":"idr"}, ping, close
     bool rtc_ws_input(Client& c);   // /ws/webrtc signalling: offer -> answer/busy/error
     // /ws/upgrade: the JSON start frame spawns sysupgrade; pump_upgrade streams

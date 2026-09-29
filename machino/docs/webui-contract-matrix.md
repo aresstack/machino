@@ -69,7 +69,7 @@ switch. Those need the specific endpoints below, not schema fields.
 
 | UI feature | Endpoint | Method | Contract | Machino | Where | Tests | Next action |
 |---|---|---|---|---|---|---|---|
-| Live (MSE) | `/ws/video?stream=N` | WS | text `{"type":"init",...}` + fMP4 init, then moof+mdat per frame; client `{"request":"idr"}` | `NATIVE` main+sub | `http_server.cpp`, `fmp4.cpp` | `test_fmp4`, `test_sps`, hardware-accepted | — |
+| Live (MSE) | `/ws/video?stream=N` | WS | text `{"type":"init",...}` + fMP4 init, then moof+mdat per frame; client `{"request":"idr"}`; `&audio=opus,mp4a.40.2` adds track 2 (first buildable codec, `audioCodec`/`mime` in the init JSON) | `NATIVE` main+sub (+audio with `CODECS=`) | `http_server.cpp`, `fmp4.cpp` | `test_fmp4`, `test_sps`, hardware-accepted | — |
 | Live (WebRTC) | `/ws/webrtc?stream=N` | WS | `{req:offer/candidate}` -> `{reply:answer/candidate/stats/served/busy/error/closed}` | `NATIVE` main+sub | `webrtc/*`, `http_server.cpp` | `test_webrtc`, `test_dtls`, hardware-accepted | camera `stats` replies not sent yet (UI tolerates absence) |
 | MJPEG fallback | `/mjpeg` | GET | multipart JPEG | `MISSING` **and** `BLOCKED_HARDWARE` | Machino serves `/stream.mjpeg`, not `/mjpeg` | — | JPEG path wedges the T40NN (`jpeg.enabled=false`); URL alias is pointless until that is solved |
 | Snapshot | `/image.jpg` | GET | one JPEG | `MISSING` **and** `BLOCKED_HARDWARE` | Machino serves `/snapshot.jpg` | — | same blocker; consider `SetbufshareChn` instead of a second encoder |
@@ -126,7 +126,7 @@ switch. Those need the specific endpoints below, not schema fields.
 | Autofocus | `/autofocus`, `/autofocus/status` | POST/GET | lens AF | `NOT_APPLICABLE` | — | — | fixed lens |
 | Audio in | `/audio.pcm`, `/audio.alaw`, `/audio.g711a`, `/audio.ulaw` | GET | microphone streams | `NATIVE` | `AudioService`, `http/audio_stream` | `test_audio` | hardware acceptance with `machino --audio-test` |
 | Speaker | `/play_audio` | POST | raw s16le at audio.srate (or WAV) to the speaker | `NATIVE` | `audio::Speaker`, `http_server` | `test_audio` | — |
-| Encoded audio | `/audio.opus`, `/audio.m4a` | GET | Opus / AAC streams | `MISSING` (501 with the reason) | — | — | needs an encoder |
+| Encoded audio | `/audio.opus`, `/audio.m4a` | GET | Ogg Opus (48 kHz clock) / fragmented-MP4 AAC-LC at audio.srate | `NATIVE` with `CODECS=` (pinned libopus 1.5.2 + libfaac via `tools/fetch-codecs.sh`); 501 with the reason in a build without | `audio::AudioEncoder`, `http/ogg`, `http/fmp4` | `test_audio` (Opus decode round trip, Ogg CRC, esds/dOps) | — |
 | MJPEG | `/mjpeg`, `/mjpeg.html` | GET | multipart JPEG + viewer page | `NATIVE` (alias of `/stream.mjpeg`; 501 while `jpeg.enabled=false`) | `http_server` | — | — |
 | Other streams | `/video.mp4`, `/hls`, `/image.heif`, `/image.yuv420` | GET | progressive MP4, HLS, stills | `MISSING` (501 with the reason, never relayed) | `compat::majestic_unbuilt` | `test_audio` | build when someone needs them |
 | Multi-camera | `/api/v1/peers`, `/api/v1/calibration/*` | GET | camera roster / stereo calibration | `NOT_APPLICABLE` | — | — | single camera |

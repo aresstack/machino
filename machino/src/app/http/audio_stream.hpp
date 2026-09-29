@@ -18,14 +18,19 @@
 
 namespace machino { namespace http {
 
-enum class AudioFormat { None = 0, Pcm, Alaw, Ulaw };
+// Aac: /audio.m4a, fragmented MP4 (init + one moof/mdat per AAC frame).
+// Opus: /audio.opus, Ogg Opus. Both need the optional encoders (CODECS=).
+enum class AudioFormat { None = 0, Pcm, Alaw, Ulaw, Aac, Opus };
 
 AudioFormat audio_format_for_path(const std::string& path);
 const char* audio_format_name(AudioFormat f);
 // The rate the wire carries for a capture at `capture_rate`.
 int audio_wire_rate(AudioFormat f, int capture_rate);
 std::string audio_stream_headers(AudioFormat f, int capture_rate);
-// One captured frame (s16le mono at capture_rate) appended to `out` as wire bytes.
+// Compressed formats: the encoder's codec name ("mp4a.40.2" / "opus"), "" otherwise.
+const char* audio_codec_for(AudioFormat f);
+// One captured frame (s16le mono at capture_rate) appended to `out` as wire bytes
+// (PCM and G.711 only; the compressed formats go through an encoder).
 void audio_encode(AudioFormat f, int capture_rate, const uint8_t* s16le, size_t bytes, std::string& out);
 
 // /play_audio: the body is what the stock WebUI sends - raw s16le mono at the

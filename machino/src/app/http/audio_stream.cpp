@@ -9,6 +9,8 @@ AudioFormat audio_format_for_path(const std::string& path) {
     if (path == "/audio.pcm") return AudioFormat::Pcm;
     if (path == "/audio.alaw" || path == "/audio.g711a") return AudioFormat::Alaw;
     if (path == "/audio.ulaw") return AudioFormat::Ulaw;
+    if (path == "/audio.m4a") return AudioFormat::Aac;
+    if (path == "/audio.opus") return AudioFormat::Opus;
     return AudioFormat::None;
 }
 
@@ -17,13 +19,20 @@ const char* audio_format_name(AudioFormat f) {
         case AudioFormat::Pcm:  return "pcm";
         case AudioFormat::Alaw: return "alaw";
         case AudioFormat::Ulaw: return "ulaw";
+        case AudioFormat::Aac:  return "aac";
+        case AudioFormat::Opus: return "opus";
         case AudioFormat::None: break;
     }
     return "none";
 }
 
+const char* audio_codec_for(AudioFormat f) {
+    return f == AudioFormat::Aac ? "mp4a.40.2" : f == AudioFormat::Opus ? "opus" : "";
+}
+
 int audio_wire_rate(AudioFormat f, int capture_rate) {
-    return f == AudioFormat::Pcm ? capture_rate : 8000;
+    if (f == AudioFormat::Opus) return 48000;       // RFC 7845: Opus is always 48 kHz on the wire
+    return f == AudioFormat::Pcm || f == AudioFormat::Aac ? capture_rate : 8000;
 }
 
 std::string audio_stream_headers(AudioFormat f, int capture_rate) {
@@ -34,6 +43,8 @@ std::string audio_stream_headers(AudioFormat f, int capture_rate) {
         case AudioFormat::Pcm:  ct = "audio/pcm;rate=" + std::to_string(capture_rate) + ";channels=1;format=s16le"; break;
         case AudioFormat::Alaw: ct = "audio/PCMA"; break;       // IANA: 8 kHz implied
         case AudioFormat::Ulaw: ct = "audio/PCMU"; break;
+        case AudioFormat::Aac:  ct = "audio/mp4; codecs=\"mp4a.40.2\""; break;
+        case AudioFormat::Opus: ct = "audio/ogg; codecs=opus"; break;
         case AudioFormat::None: ct = "application/octet-stream"; break;
     }
     return "HTTP/1.1 200 OK\r\nContent-Type: " + ct +

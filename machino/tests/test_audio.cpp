@@ -5,6 +5,9 @@
 #include "app/compat/majestic_migrate.hpp"
 #include "app/compat/majestic_webui.hpp"
 #include "app/http/audio_stream.hpp"
+#include "app/http/fmp4.hpp"
+#include "app/http/ogg.hpp"
+#include "core/audio/audio_encoder.hpp"
 #include "app/rtsp/rtp_audio.hpp"
 #include "core/audio/audio_service.hpp"
 #include "core/audio/g711.hpp"
@@ -12,6 +15,10 @@
 #include "core/config.hpp"
 
 #include <atomic>
+#include <cmath>
+#ifdef MACHINO_CODECS
+#include <opus/opus.h>
+#endif
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -207,7 +214,8 @@ void test_http_audio_stream() {
     ACHECK(audio_format_for_path("/audio.alaw") == AudioFormat::Alaw);
     ACHECK(audio_format_for_path("/audio.g711a") == AudioFormat::Alaw);    // majestic's second name for the same stream
     ACHECK(audio_format_for_path("/audio.ulaw") == AudioFormat::Ulaw);
-    ACHECK(audio_format_for_path("/audio.opus") == AudioFormat::None);     // not built: answered 501 by the server, not here
+    ACHECK(audio_format_for_path("/audio.opus") == AudioFormat::Opus);
+    ACHECK(audio_format_for_path("/audio.m4a") == AudioFormat::Aac);
     ACHECK(audio_format_for_path("/audio.pcm.x") == AudioFormat::None);
 
     ACHECK(audio_wire_rate(AudioFormat::Pcm, 16000) == 16000);
@@ -527,9 +535,116 @@ void test_rtsp_audio_helpers() {
     ACHECK(pcma.size() == 320 && (uint8_t)pcma[0] == audio::alaw_encode((int16_t)1000));
 }
 
+bool contains(const std::vector<uint8_t>& b, const char* four) {
+    for (size_t i = 0; i + 4 <= b.size(); ++i) if (memcmp(&b[i], four, 4) == 0) return true;
+    return false;
+}
+int count(const std::vector<uint8_t>& b, const char* four) {
+    int n = 0;
+    for (size_t i = 0; i + 4 <= b.size(); ++i) if (memcmp(&b[i], four, 4) == 0) ++n;
+    return n;
+}
+uint32_t rd32(const std::vector<uint8_t>& b, size_t at) { return ((uint32_t)b[at] << 24) | ((uint32_t)b[at + 1] << 16) | ((uint32_t)b[at + 2] << 8) | b[at + 3]; }
+
+void test_ogg_opus() {
+    const char* v = "123456789";
+    ACHECK(ogg::crc(reinterpret_cast<const uint8_t*>(v), 9) == 0x89a1897fu);   // independent reference value
+    ogg::OpusWriter w(0x1234, 16000, 312);
+    const std::string h = w.headers();
+    ACHECK(h.compare(0, 4, "OggS") == 0 && (uint8_t)h[5] == 0x02);          // BOS
+    ACHECK(h.find("OpusHead") != std::string::npos && h.find("OpusTags") != std::string::npos);
+    const size_t head = h.find("OpusHead");
+    ACHECK((uint8_t)h[head + 8] == 1 && (uint8_t)h[head + 9] == 1);           // version 1, mono
+    ACHECK((uint8_t)h[head + 10] == (312 & 0xff) && (uint8_t)h[head + 11] == (312 >> 8));
+    // Every page's CRC checks out when recomputed with the field zeroed.
+    auto crc_ok = [](std::string page) {
+        uint32_t stored = 0;
+        for (int i = 0; i < 4; ++i) stored |= (uint32_t)(uint8_t)page[22 + i] << (8 * i);
+        for (int i = 0; i < 4; ++i) page[22 + i] = 0;
+        return ogg::crc(reinterpret_cast<const uint8_t*>(page.data()), page.size()) == stored;
+    };
+    const size_t second = h.find("OggS", 4);
+    ACHECK(second != std::string::npos && crc_ok(h.substr(0, second)) && crc_ok(h.substr(second)));
+    const std::string p1 = w.packet(std::vector<uint8_t>(40, 7), 960);
+    const std::string p2 = w.packet(std::vector<uint8_t>(300, 9), 960);   // > 255: two lacing values
+    ACHECK(crc_ok(p1) && crc_ok(p2));
+    auto granule = [](const std::string& pg) { uint64_t g = 0; for (int i = 0; i < 8; ++i) g |= (uint64_t)(uint8_t)pg[6 + i] << (8 * i); return g; };
+    ACHECK(granule(p1) == 960 && granule(p2) == 1920);
+    ACHECK((uint8_t)p2[26] == 2 && (uint8_t)p2[27] == 255 && (uint8_t)p2[28] == 45);
+    auto seqno = [](const std::string& pg) { return (uint32_t)(uint8_t)pg[18] | ((uint32_t)(uint8_t)pg[19] << 8); };
+    ACHECK(seqno(p1) == 2 && seqno(p2) == 3);                                  // after the two header pages
+}
+
+void test_fmp4_audio() {
+    fmp4::AudioTrack aac; aac.codec = fmp4::AudioTrack::Aac; aac.track_id = 1; aac.sample_rate = 16000; aac.asc = audio::aac_asc(16000, 1);
+    ACHECK(aac.asc.size() == 2 && aac.asc[0] == 0x14 && aac.asc[1] == 0x08);  // AAC-LC, 16 kHz, mono
+    const std::vector<uint8_t> a = fmp4::audio_init_segment(aac);
+    ACHECK(contains(a, "ftyp") && contains(a, "mp4a") && contains(a, "esds") && contains(a, "smhd") && contains(a, "soun"));
+    ACHECK(count(a, "trak") == 1 && count(a, "trex") == 1);
+    bool asc_found = false;
+    for (size_t i = 0; i + 3 < a.size(); ++i) if (a[i] == 0x05 && a[i + 1] == 2 && a[i + 2] == 0x14 && a[i + 3] == 0x08) asc_found = true;
+    ACHECK(asc_found);                                                         // DecoderSpecificInfo carries the ASC
+    fmp4::AudioTrack op; op.codec = fmp4::AudioTrack::Opus; op.sample_rate = 8000; op.pre_skip = 312;
+    ACHECK(op.timescale() == 48000 && aac.timescale() == 16000);
+    const std::vector<uint8_t> sps = {0x67, 0x64, 0x00, 0x28, 0xac}, pps = {0x68, 0xee, 0x3c, 0x80};
+    const std::vector<uint8_t> av = fmp4::init_segment(sps, pps, 1920, 1080, 90000, &op);
+    ACHECK(count(av, "trak") == 2 && count(av, "trex") == 2 && contains(av, "avc1") && contains(av, "Opus") && contains(av, "dOps"));
+    const std::vector<uint8_t> vo = fmp4::init_segment(sps, pps, 1920, 1080, 90000);
+    ACHECK(count(vo, "trak") == 1 && !contains(vo, "soun"));                  // unchanged without audio
+    const std::vector<uint8_t> f = fmp4::fragment(7, 4800, 960, std::vector<uint8_t>(20, 1), true, 2);
+    size_t tfhd = 0; for (size_t i = 0; i + 4 <= f.size(); ++i) if (memcmp(&f[i], "tfhd", 4) == 0) { tfhd = i; break; }
+    ACHECK(tfhd && rd32(f, tfhd + 8) == 2);                                    // track id 2
+}
+
+void test_encoders() {
+    ACHECK(!audio::make_encoder("vorbis", 16000));
+    if (!audio::codecs_built()) {                              // a build without CODECS says so
+        ACHECK(!audio::make_aac_encoder(16000) && !audio::make_opus_encoder(8000));
+        return;
+    }
+    std::vector<int16_t> tone(16000);
+    for (size_t i = 0; i < tone.size(); ++i) tone[i] = (int16_t)(8000 * std::sin(2 * M_PI * 440 * (double)i / 16000));
+    auto aac = audio::make_encoder("mp4a.40.2", 16000);
+    ACHECK(aac && std::string(aac->codec()) == "mp4a.40.2" && aac->timescale() == 16000);
+    std::vector<audio::EncodedFrame> fr;
+    for (size_t off = 0; aac && off < tone.size(); off += 640) aac->encode(tone.data() + off, 640, fr);   // 40 ms frames, as the microphone delivers
+    ACHECK(fr.size() >= 12 && fr.size() <= 16);                // 1 s = 15.6 frames of 1024, minus the encoder delay
+    bool dur_ok = true, nonempty = true;
+    for (const auto& e : fr) { dur_ok = dur_ok && e.duration == 1024; nonempty = nonempty && !e.data.empty() && e.data.size() < 1024; }
+    ACHECK(dur_ok && nonempty);
+    ACHECK(aac && aac->config().size() == 2 && aac->config()[0] == 0x14);
+
+    std::vector<int16_t> t8(8000);
+    for (size_t i = 0; i < t8.size(); ++i) t8[i] = (int16_t)(8000 * std::sin(2 * M_PI * 440 * (double)i / 8000));
+    auto op = audio::make_encoder("opus", 8000);
+    ACHECK(op && op->timescale() == 48000 && op->pre_skip() > 0);
+    std::vector<audio::EncodedFrame> of;
+    for (size_t off = 0; op && off < t8.size(); off += 320) op->encode(t8.data() + off, 320, of);
+    ACHECK(of.size() == 50);                                    // 1 s = 50 x 20 ms
+#ifdef MACHINO_CODECS
+    // Round trip through the real decoder: the tone comes back.
+    int err = 0;
+    OpusDecoder* d = opus_decoder_create(8000, 1, &err);
+    ACHECK(d && err == OPUS_OK);
+    double energy = 0; size_t n = 0;
+    for (size_t i = 0; d && i < of.size(); ++i) {
+        int16_t out[960];
+        const int got = opus_decode(d, of[i].data.data(), (opus_int32)of[i].data.size(), out, 960, 0);
+        if (got <= 0) { energy = -1; break; }
+        if (i >= 10) for (int k = 0; k < got; ++k) { energy += (double)out[k] * out[k]; ++n; }
+    }
+    const double rms = n ? std::sqrt(energy / (double)n) : 0;
+    ACHECK(rms > 3000 && rms < 8000);                           // a 8000-peak sine has rms ~5657
+    if (d) opus_decoder_destroy(d);
+#endif
+}
+
 } // namespace
 
 void run_audio_tests() {
+    test_ogg_opus();
+    test_fmp4_audio();
+    test_encoders();
     test_rtsp_backchannel_helpers();
     test_rtsp_audio_helpers();
     test_speaker();
