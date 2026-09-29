@@ -232,9 +232,11 @@ std::string relay_head_stream_close(const std::string& head) {
 
 std::string inject_machino_footer_brand(const std::string& html, bool& changed) {
     changed = false;
-    // Schon gebrandet (etwa eine frueher per Patch editierte footer.cgi, oder
-    // eine doppelt transformierte Seite): niemals doppeln.
-    if (html.find("Machino by AresStack") != std::string::npos)
+    // Schon gebrandet: niemals doppeln. ?ref=machino ist der eindeutige Marker
+    // der eigenen Zeile (analog zu OpenIPCs ?ref=webui); der Klartext faengt
+    // zusaetzlich eine footer.cgi ab, die der fruehere Cam-Tool-Patch editierte.
+    if (html.find("?ref=machino") != std::string::npos ||
+        html.find("Machino by AresStack") != std::string::npos)
         return html;
     // Der Anker ist die OpenIPC-Footerzeile: ihr Link traegt ?ref=webui, und
     // der kommt auf der Seite sonst nirgends vor (footer.cgi, #549). Seiten
@@ -246,7 +248,11 @@ std::string inject_machino_footer_brand(const std::string& html, bool& changed) 
     if (pEnd == std::string::npos)
         return html;   // nicht die bekannte Struktur: lieber gar nicht anfassen
     const size_t insertAt = pEnd + 4;
-    static const char add[] = "\n\t<p class=\"text-end\">Machino by AresStack</p>";
+    // Analog zur OpenIPC-Zeile verlinkt: Machino -> das Repo, AresStack -> die
+    // Site mit ?ref=machino (dasselbe zaehlbare, datenfreie Muster wie #549).
+    static const char add[] =
+        "\n\t<p class=\"text-end\"><a href=\"https://github.com/aresstack/machino\">Machino</a>"
+        " by <a href=\"https://aresstack.com/?ref=machino\">AresStack</a></p>";
     std::string out;
     out.reserve(html.size() + sizeof(add));
     out.append(html, 0, insertAt);

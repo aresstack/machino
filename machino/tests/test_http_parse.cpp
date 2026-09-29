@@ -368,14 +368,22 @@ void run_relay_head_end_tests() {
         const std::string out = inject_machino_footer_brand(page, changed);
         HCHECK(changed);
         const size_t oipc = out.find("?ref=webui");
-        const size_t brand = out.find("Machino by AresStack");
+        const size_t brand = out.find("?ref=machino");
         HCHECK(oipc != std::string::npos && brand != std::string::npos && brand > oipc);   // UNDER the OpenIPC line
-        HCHECK(out.find(">OpenIPC</a></p>\n\t<p class=\"text-end\">Machino by AresStack</p>") != std::string::npos);
+        // Verlinkt wie die OpenIPC-Zeile: Machino -> Repo, AresStack -> Site.
+        HCHECK(out.find(">OpenIPC</a></p>\n\t<p class=\"text-end\">"
+                        "<a href=\"https://github.com/aresstack/machino\">Machino</a>"
+                        " by <a href=\"https://aresstack.com/?ref=machino\">AresStack</a></p>") != std::string::npos);
         // Idempotent: a second pass (or a footer.cgi already patched on disk)
         // never doubles the line.
         bool again = false;
         const std::string twice = inject_machino_footer_brand(out, again);
         HCHECK(!again && twice == out);
+        // Legacy: eine footer.cgi, die der alte Cam-Tool-Patch bereits als
+        // Klartext editiert hatte, wird ebenfalls nicht gedoppelt.
+        bool lg = false;
+        const std::string legacy = page + "<p class=\"text-end\">Machino by AresStack</p>";
+        HCHECK(inject_machino_footer_brand(legacy, lg) == legacy && !lg);
         // full_bleed pages have no footer -> no anchor -> untouched.
         bool nb = false;
         const std::string plain = "<!DOCTYPE html><html><body><main>video</main></body></html>";
