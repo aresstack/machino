@@ -237,30 +237,6 @@ void test_service_disable_drops_listeners() {
     ACHECK(!svc.listen(why) && why == "shutting down");
 }
 
-// Loopback ("monitor"): one internal listener, every frame played straight
-// back on the speaker. It opens the microphone once and feeds the speaker;
-// off stops the pump and lets the codec close.
-void test_service_monitor() {
-    AudioConfig cfg; cfg.enabled = true; cfg.output_enabled = true; cfg.grace_ms = 30; cfg.srate = 8000;
-    FakeMicCounters mc; FakeSpkCounters sc;
-    audio::AudioService svc(cfg, fake_factory(mc), spk_factory(sc));
-    ACHECK(svc.available() && svc.output_available() && !svc.monitoring());
-
-    ACHECK(svc.set_monitor(true));
-    ACHECK(eventually([&] { return svc.monitoring() && mc.opens == 1 && sc.samples > 0; }));   // mic -> speaker
-    ACHECK(svc.stats().monitoring && svc.stats().listeners >= 1);
-    ACHECK(svc.set_monitor(true) && mc.opens == 1);                     // idempotent: no second listener, no reopen
-
-    ACHECK(svc.set_monitor(false) && !svc.monitoring());
-    ACHECK(eventually([&] { return mc.closes == 1; }));                 // the listener left, mic closed after the grace
-
-    // No speaker on this platform: the monitor is refused, not pretended.
-    FakeMicCounters mc2;
-    audio::AudioService nomouth(cfg, fake_factory(mc2));                // no out-factory
-    ACHECK(!nomouth.output_available());
-    ACHECK(nomouth.set_monitor(true).status == Status::Unsupported && !nomouth.monitoring());
-}
-
 void test_http_audio_stream() {
     using namespace http;
     ACHECK(audio_format_for_path("/audio.pcm") == AudioFormat::Pcm);
@@ -616,6 +592,31 @@ audio::Speaker::OutFactory spk_factory(FakeSpkCounters& c) {
         if (c.refuse) return nullptr;
         return std::unique_ptr<IAudioOut>(new FakeSpk(c, p));
     };
+}
+
+// Loopback ("monitor"): one internal listener, every frame played straight
+// back on the speaker. It opens the microphone once and feeds the speaker;
+// off stops the pump and lets the codec close. (Defined here, after
+// spk_factory/FakeSpkCounters, since it needs both a fake mic and a fake spk.)
+void test_service_monitor() {
+    AudioConfig cfg; cfg.enabled = true; cfg.output_enabled = true; cfg.grace_ms = 30; cfg.srate = 8000;
+    FakeMicCounters mc; FakeSpkCounters sc;
+    audio::AudioService svc(cfg, fake_factory(mc), spk_factory(sc));
+    ACHECK(svc.available() && svc.output_available() && !svc.monitoring());
+
+    ACHECK(svc.set_monitor(true));
+    ACHECK(eventually([&] { return svc.monitoring() && mc.opens == 1 && sc.samples > 0; }));   // mic -> speaker
+    ACHECK(svc.stats().monitoring && svc.stats().listeners >= 1);
+    ACHECK(svc.set_monitor(true) && mc.opens == 1);                     // idempotent: no second listener, no reopen
+
+    ACHECK(svc.set_monitor(false) && !svc.monitoring());
+    ACHECK(eventually([&] { return mc.closes == 1; }));                 // the listener left, mic closed after the grace
+
+    // No speaker on this platform: the monitor is refused, not pretended.
+    FakeMicCounters mc2;
+    audio::AudioService nomouth(cfg, fake_factory(mc2));                // no out-factory
+    ACHECK(!nomouth.output_available());
+    ACHECK(nomouth.set_monitor(true).status == Status::Unsupported && !nomouth.monitoring());
 }
 
 void test_speaker() {

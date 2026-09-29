@@ -813,9 +813,12 @@ Response ApiService::audio_tone(const std::string& body) {
         if (const Json* v = doc.get("ms"))  { if (v->is_number()) ms  = (int)v->as_number(); }
         if (const Json* v = doc.get("amp")) { if (v->is_number()) amp = v->as_number(); }
     }
-    if (hz < 100) hz = 100; if (hz > 3800) hz = 3800;      // below the 8 kHz Nyquist
-    if (ms < 50)  ms = 50;  if (ms > 3000) ms = 3000;      // bounded: the queue holds it
-    if (amp < 0.0) amp = 0.0; if (amp > 1.0) amp = 1.0;
+    if (hz < 100)  hz = 100;                               // below the 8 kHz Nyquist
+    if (hz > 3800) hz = 3800;
+    if (ms < 50)   ms = 50;                                // bounded: the queue holds it
+    if (ms > 3000) ms = 3000;
+    if (amp < 0.0) amp = 0.0;
+    if (amp > 1.0) amp = 1.0;
 
     const int rate = 8000;
     std::vector<int16_t> pcm; double phase = 0.0;
