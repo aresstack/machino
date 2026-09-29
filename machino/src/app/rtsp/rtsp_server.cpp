@@ -712,12 +712,16 @@ void RtspServer::on_backchannel(Session& s, const char* p, size_t n) {
     rtp::Header h;
     const uint8_t* u = reinterpret_cast<const uint8_t*>(p);
     if (!rtp::parse(u, n, h) || h.payload_len == 0) return;
-    // One talker per session: the SSRC first heard is the one played. A
-    // second source on the same connection is ignored until the first has
-    // been silent for two seconds (a client that restarted its sender).
-    const int64_t t = now_ms();
-    if (s.bc_ssrc_valid && h.ssrc != s.bc_ssrc && t - s.bc_last_ms < 2000) return;
-    s.bc_ssrc = h.ssrc; s.bc_ssrc_valid = true; s.bc_last_ms = t;
+    // UDP: one talker per session - the SSRC first heard is the one played,
+    // a second source is ignored until the first has been silent for two
+    // seconds (a client that restarted its sender). Interleaved on the
+    // connection the source IS the authenticated client: no lock needed,
+    // and a sender restart must not be muted.
+    if (!s.back.tcp) {
+        const int64_t t = now_ms();
+        if (s.bc_ssrc_valid && h.ssrc != s.bc_ssrc && t - s.bc_last_ms < 2000) return;
+        s.bc_ssrc = h.ssrc; s.bc_ssrc_valid = true; s.bc_last_ms = t;
+    }
     std::vector<int16_t> pcm;
     if (!rtp::decode_g711(h.pt, u + h.payload_at, h.payload_len, pcm)) return;   // only PCMU/PCMA are offered
     std::string why;
@@ -780,7 +784,10 @@ bool RtspServer::send_jpeg(Session& s) {
     s.jpeg_next_us = (s.jpeg_next_us == 0 ? now : s.jpeg_next_us) + 1000000 / fps;
     if (s.jpeg_next_us < now) s.jpeg_next_us = now + 1000000 / fps;     // fell behind: do not burst
     std::vector<uint8_t> jpg; std::string err, why; rtsp::JpegFrame jf;
-    if (!pipeline_.snapshot(jpg, err, 1000)) {
+    // A frame no older than this period: the snapshot cache (300 ms) is
+    // longer than the frame period at 5 fps, and the cached image would
+    // otherwise be sent twice.
+    if (!pipeline_.snapshot(jpg, err, 1000, 1000 / fps - 20)) {
         if (err != s.jpeg_last_why) LOGW(MOD, "%s: jpeg frame skipped: %s", s.peer.c_str(), err.c_str());
         s.jpeg_last_why = err;
         return true;

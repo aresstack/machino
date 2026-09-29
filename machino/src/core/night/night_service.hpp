@@ -118,6 +118,10 @@ public:
     std::string toggle_light();
 
     NightPins pins() const;               // live aus dem ConfigStore
+    // colorToGray geaendert: nur den ISP-RunningMode fuer den aktuellen Modus
+    // neu anwenden -- Filter und Licht stehen schon richtig und werden nicht
+    // erneut gepulst.
+    std::string reapply_running_mode();
 
     // Automatik-Takt (eigener Thread, alle zwei Sekunden). Liest den
     // Fotosensor und schaltet NUR bei einem Wechsel, der auto_*_delay_s
@@ -140,7 +144,9 @@ public:
       def_light_sensor_pin_ = light_sensor_pin; }
 
 private:
-    std::string set_night_locked_(bool on);
+    // `actuator_error`: the first IR-cut/light failure, separately - it
+    // does not undo the mode (the return value), but the automation retries.
+    std::string set_night_locked_(bool on, std::string* actuator_error = nullptr);
     std::string drive_ircut_(bool engaged);
     std::string drive_light_(bool on);
     // Pin-String (Nummer ODER Name) -> sysfs-Name fuer den GPIO-Aufruf.

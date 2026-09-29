@@ -49,6 +49,8 @@ static const size_t MAX_IN = 16 * 1024;
 // An /audio.* client whose output buffer has been over its bound for this long
 // is not reading at all (see pump_audio).
 static const int kAudioStallMs = 10000;
+// Still captures (/image.yuv420, /image.heif) running at once, see stills_in_flight.
+static const size_t kMaxStillJobs = 2;
 
 static size_t input_cap(const std::string& in) {
     static const char OSD_POST[] = "POST /api/v1/osd/image";
@@ -217,6 +219,7 @@ struct HttpServer::Client {
     bool        ws_audio_started = false;
     uint32_t    ws_audio_last_seq = 0;
     bool        ws_audio_seq_valid = false;
+    int64_t     ws_audio_skew_us = 0;      // the video timeline's skew the audio was anchored under
     // A still being captured for this client (see StillJob).
     std::shared_ptr<StillJob> still;
     // Waiting for something that is not the socket: a parked request whose
@@ -426,6 +429,15 @@ void HttpServer::release_client(Client& c) {
     if (c.fd >= 0) { close(c.fd); c.fd = -1; }
 }
 
+// Captures running right now, for clients still here and for ones that left.
+// Each holds a frame (3 MB at 1080p) and a thread; two at a time is what a
+// dashboard click plus one tool asks for, more is a loop or a flood.
+size_t HttpServer::stills_in_flight() const {
+    size_t n = still_orphans_.size();
+    for (const auto& c : clients_) if (c->still && !c->still->done.load(std::memory_order_acquire)) ++n;
+    return n;
+}
+
 // Orphaned capture threads: join the finished ones (`wait`: all of them).
 void HttpServer::reap_stills(bool wait) {
     for (auto it = still_orphans_.begin(); it != still_orphans_.end();) {
@@ -465,7 +477,10 @@ bool HttpServer::flush(Client& c) {
 // Dispatches one complete request; returns false to close the connection.
 bool HttpServer::pump_requests(Client& c) {
     bool ok = true;
-    while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && !c.parked() &&
+    // A handler that turned the connection into a stream (or parked it) ends
+    // the conversation: a second request pipelined behind it would otherwise
+    // replace the sink the first one holds without giving it back.
+    while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && !c.parked() && !c.streaming() &&
            c.in.find("\r\n\r\n") != std::string::npos) {
         const size_t before = c.in.size();
         ok = handle_request(c);
@@ -850,13 +865,14 @@ bool HttpServer::handle_request(Client& c) {
             return true;
         }
     } else if (path.rfind("/hls/", 0) == 0) {
-        std::string err; uint64_t seq = 0;
+        std::string err; uint64_t seq = 0; unsigned gen = 0;
         const std::string name = path.substr(5);
         std::vector<uint8_t> data;
-        const bool is_init = name == "init.mp4";
+        const bool is_init = hls::Segmenter::parse_init_name(name, gen);
         if (m != "GET") r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
         else if (!is_init && !hls::Segmenter::parse_segment_name(name, seq)) r = api::ApiService::fail(404, "unknown_field", path, "no such HLS resource");
         else if (!hls_touch(err)) r = api::ApiService::fail(503, "unavailable", path, err);
+        else if (is_init && gen != hls_->seg.init_generation()) r = api::ApiService::fail(404, "unknown_field", path, "that init segment is gone - reload the playlist");
         else if (is_init ? (data = hls_->seg.init()).empty() : !hls_->seg.segment(seq, data))
             r = api::ApiService::fail(404, "unknown_field", path, is_init ? "no key frame yet" : "segment no longer held");
         else {
@@ -978,6 +994,7 @@ bool HttpServer::handle_request(Client& c) {
         if (m != "GET") r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
         else if (!pipeline_) r = api::ApiService::fail(501, "unavailable", path, "no media wiring");
         else if (has_crop && !stills::parse_crop(cs, want)) r = api::ApiService::fail(400, "invalid_value", path, "crop is XxYxWxH");
+        else if (stills_in_flight() >= kMaxStillJobs) r = api::ApiService::fail(503, "unavailable", path, "another still is being captured");
         else {
             auto job = std::make_shared<StillJob>();
             job->keep_alive = req.keep_alive; job->path = path;
@@ -1011,6 +1028,7 @@ bool HttpServer::handle_request(Client& c) {
         // is up to a GOP away: its own thread, the request parked meanwhile.
         if (m != "GET") r = api::ApiService::fail(405, "unknown_field", path, "method not allowed");
         else if (!hub_ || !pipeline_) r = api::ApiService::fail(501, "unavailable", path, "no media wiring");
+        else if (stills_in_flight() >= kMaxStillJobs) r = api::ApiService::fail(503, "unavailable", path, "another still is being captured");
         else {
             auto job = std::make_shared<StillJob>();
             job->keep_alive = req.keep_alive; job->path = path;
@@ -1800,14 +1818,22 @@ void HttpServer::pump_ws_audio(Client& c) {
         c.ws_audio_enc->encode(reinterpret_cast<const int16_t*>(au->data.data()), au->data.size() / 2, frames);
         if (!c.ws_init_sent) continue;                     // nothing to attach audio to yet
         const uint32_t ts = c.ws_audio_enc->timescale();
+        // The video timeline absorbs a stall (>= 1 s without frames) into
+        // its skew instead of advancing; the audio must follow it there, or
+        // the two tracks drift apart by every stall. A skew change re-anchors
+        // the audio on the video's decode time.
+        if (c.ws_audio_started && c.ws_timeline.skew_us != c.ws_audio_skew_us) c.ws_audio_started = false;
         if (!c.ws_audio_started) {
             if (c.ws_await_key) continue;                   // anchor on a frame the player really has
             c.ws_audio_dt = c.ws_dts * ts / 90000; c.ws_audio_started = true;
+            c.ws_audio_skew_us = c.ws_timeline.skew_us;
+        } else if (missing) {
+            // Frames the sink dropped (a slow socket) still took their time:
+            // the audio clock skips them, or the track would run ahead of
+            // the video by every drop. (Not on the anchoring frame: the
+            // dropped ones are OLDER than the anchor.)
+            c.ws_audio_dt += (uint64_t)missing * ((uint64_t)(au->data.size() / 2) * ts / (uint64_t)(c.ws_audio_enc->sample_rate() > 0 ? c.ws_audio_enc->sample_rate() : 8000));
         }
-        // Frames the sink dropped (a slow socket) still took their time:
-        // the audio clock skips them, or the track would run ahead of the
-        // video by every drop.
-        if (missing) c.ws_audio_dt += (uint64_t)missing * ((uint64_t)(au->data.size() / 2) * ts / (uint64_t)(c.ws_audio_enc->sample_rate() > 0 ? c.ws_audio_enc->sample_rate() : 8000));
         for (const auto& fr : frames) {
             // The video's backpressure rule (audio is dropped first), and
             // while the video resyncs nothing is sent: the clock keeps
@@ -2203,7 +2229,7 @@ void HttpServer::loop() {
                 refs.push_back({c, 3});
             }
         }
-        for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc || c->audio_sink) { timeout_ms = 20; break; }   // tick fast enough for the frame rate
+        for (auto& c : clients_) if (c->mjpeg || c->ws_video || c->rtc || c->audio_sink || c->still) { timeout_ms = 20; break; }   // tick fast enough for the frame rate (a still: delivered within a tick of its capture)
         if (hls_) timeout_ms = 20;
         const size_t logs_idx = (logs_fd() >= 0) ? pfds.size() : (size_t)-1;
         if (logs_fd() >= 0) pfds.push_back({logs_fd(), POLLIN, 0});

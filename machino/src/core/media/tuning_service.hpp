@@ -68,7 +68,7 @@ public:
     void clear_image_override(ImageControl c);
 
 private:
-    power::ApplyResult apply_image(ImageControl c, int value, bool record_requested);
+    power::ApplyResult apply_image(ImageControl c, int value, bool record_requested, bool from_override);
 public:
     power::ApplyResult set_latency_profile(LatencyProfile p);
     power::ApplyResult set_gop(int frames);

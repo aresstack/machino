@@ -1131,6 +1131,23 @@ void test_night_auto() {
     ACHECK(running_mode() == -1 && saved_mode() == 0);
     ACHECK(ns.set_night(true).empty() && running_mode() == 1 && saved_mode() == 0);
 
+    // The point of the override: a camera that switched at night with nobody
+    // watching shows the night picture when a viewer opens it later. The
+    // pipeline start re-applies the override, not the user's saved day value.
+    {
+        r.mgr.on_grace_timeout();                                             // the viewer left long ago: cold
+        ACHECK(r.mgr.state() == State::ColdIdle);
+        auto& isp = r.platform.image_control.values[RM];
+        isp = 0;                                                              // whatever the ISP boots with
+        lifecycle::DemandHandle v = r.mgr.acquire(ConsumerType::Rtsp);
+        ACHECK(r.mgr.state() == State::Active && isp == 1);                   // override won over requested 0
+        ACHECK(running_mode() == 1 && saved_mode() == 0);
+        v.release(); r.mgr.on_grace_timeout();                                // cold again
+        r.tuning.clear_image_override(ImageControl::RunningMode);
+        lifecycle::DemandHandle v2 = r.mgr.acquire(ConsumerType::Rtsp);
+        ACHECK(r.mgr.state() == State::Active && isp == 0);                   // back to the saved value
+    }
+
     // A pin a driver holds is refused with the reason, and not retried every tick.
     FakeNightGpio held; held.refuse_input = true;
     night::NightService ns2(r.tuning, &held, r.store);

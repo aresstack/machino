@@ -181,7 +181,7 @@ std::string NightService::toggle_night(bool& out)
     return e;
 }
 
-std::string NightService::set_night_locked_(bool on)
+std::string NightService::set_night_locked_(bool on, std::string* actuator_error)
 {
     const NightPins p = pins();
     // Der ISP-Teil zuerst: RunningMode 0/1 -- Schwarzweiss nur, wenn
@@ -202,10 +202,22 @@ std::string NightService::set_night_locked_(bool on)
     // Filter und Licht folgen dem Modus NUR, wo die Config sie freigibt --
     // "an actuator told not to follow day/night does not move with it"
     // (Kommentar der Stock-Seite). Deren Fehler ueberschreiben den Erfolg
-    // des Modus nicht: die Seite liest alle drei Zustaende ohnehin neu.
-    if (p.ircut && !p.ircut_pin1.empty()) drive_ircut_(!on);   // Nacht = Filter raus
-    if (p.backlight && !p.backlight_pin.empty()) drive_light_(on);
+    // des Modus nicht (die Seite liest alle drei Zustaende ohnehin neu),
+    // aber die Automatik bekommt sie ueber `actuator_error` und schaltet
+    // beim naechsten Takt erneut.
+    std::string ae;
+    if (p.ircut && !p.ircut_pin1.empty()) ae = drive_ircut_(!on);   // Nacht = Filter raus
+    if (p.backlight && !p.backlight_pin.empty()) { const std::string le = drive_light_(on); if (ae.empty()) ae = le; }
+    if (actuator_error) *actuator_error = ae;
     return {};
+}
+
+std::string NightService::reapply_running_mode()
+{
+    std::lock_guard<std::mutex> lk(m_);
+    const NightPins p = pins();
+    const power::ApplyResult ar = tuning_.set_image_override(ImageControl::RunningMode, night_ && p.color_to_gray ? 1 : 0);
+    return ar.ok ? std::string() : (ar.message.empty() ? "running_mode could not be applied" : ar.message);
 }
 
 std::string NightService::toggle_ircut()
@@ -265,7 +277,9 @@ void NightService::tick(int64_t now_ms)
     // gerade belegt) wurde nie wiederholt -- eine ganze Nacht im Tagmodus.
     auto apply = [&](const char* how) {
         if (auto_.switch_error.empty()) LOGI("NIGHT", "automatic day/night%s: switching to %s", how, dark ? "night" : "day");
-        const std::string e = set_night_locked_(dark == 1);
+        std::string ae;
+        std::string e = set_night_locked_(dark == 1, &ae);
+        if (e.empty()) e = ae;                          // the mode switched, an actuator did not: try again too
         if (!e.empty()) {
             if (e != auto_.switch_error) LOGW("NIGHT", "automatic switch to %s failed: %s - retrying", dark ? "night" : "day", e.c_str());
             auto_.switch_error = e;

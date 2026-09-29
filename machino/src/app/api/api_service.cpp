@@ -1215,7 +1215,7 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         // its settings from the store.
         if (night_)
             for (const auto& c : changes)
-                if (c.r.ok && c.key == "night.color_to_gray") { if (night_->night()) night_->set_night(true); break; }
+                if (c.r.ok && c.key == "night.color_to_gray") { night_->reapply_running_mode(); break; }   // the ISP only: no second coil pulse
         Json ev = Json::object(); ev.set("revision", Json::integer(store_.revision()));
         Json paths = Json::array(); for (const auto& c : changes) if (c.r.ok) paths.push(Json::string(c.path)); ev.set("paths", paths);
         bus_.publish("config_changed", ev.dump());

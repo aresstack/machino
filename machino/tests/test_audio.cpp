@@ -297,6 +297,10 @@ void test_audio_test_helpers() {
     ACHECK(!app::wav_parse(stereo, rate, back, err) && err.find("mono") != std::string::npos);
     std::vector<uint8_t> junk(20, 0);
     ACHECK(!app::wav_parse(junk, rate, back, err) && err.find("RIFF") != std::string::npos);
+    // A chunk length near 2^32: on the 32-bit camera `body + len` wrapped
+    // past the check and the walk read outside the body.
+    std::vector<uint8_t> wrap = {'R','I','F','F', 0,0,0,0, 'W','A','V','E', 'f','m','t',' ', 0xF0,0xFF,0xFF,0xFF, 1,0};
+    ACHECK(!app::wav_parse(wrap, rate, back, err) && err.find("truncated") != std::string::npos);
     std::vector<uint8_t> cut(file.begin(), file.begin() + 60);
     ACHECK(!app::wav_parse(cut, rate, back, err) && err.find("truncated") != std::string::npos);
 
@@ -429,6 +433,10 @@ void test_rtp_jpeg() {
     ACHECK(!rtsp::parse_jpeg(prog.data(), prog.size(), f, why));
     const std::vector<uint8_t> s444 = synth_jpeg(320, 240, 0x11, 0, 0xc0, 10);
     ACHECK(!rtsp::parse_jpeg(s444.data(), s444.size(), f, why));
+    std::vector<uint8_t> badtq = synth_jpeg(320, 240, 0x22, 0, 0xc0, 10);          // a component naming table 9
+    { size_t sof = 0; for (size_t i = 0; i + 1 < badtq.size(); ++i) if (badtq[i] == 0xff && badtq[i + 1] == 0xc0) { sof = i; break; }
+      badtq[sof + 4 + 6 + 2] = 9; }
+    ACHECK(!rtsp::parse_jpeg(badtq.data(), badtq.size(), f, why) && why.find("selector") != std::string::npos);
     const uint8_t junk[] = {1, 2, 3, 4};
     ACHECK(!rtsp::parse_jpeg(junk, sizeof junk, f, why));
     ACHECK(rtsp::sdp_jpeg_section().find("a=rtpmap:26 JPEG/90000") != std::string::npos);
@@ -527,11 +535,22 @@ void test_hls_segmenter() {
     for (int i = 0; i < 10; ++i) { pts += 100000; s.feed(p_au().data(), p_au().size(), false, pts, 64, 48); }
     pts += 100000; s.feed(au2.data(), au2.size(), true, pts, 64, 48);
     ACHECK(s.ready() && s.playlist().find("#EXTINF") != std::string::npos);
+    // ...and the new init has a new name, the playlist says so, and the
+    // first segment after it carries the discontinuity.
+    ACHECK(s.init_generation() == 1 && s.init_name() == "init1.mp4");
+    ACHECK(s.playlist().find("#EXT-X-MAP:URI=\"init1.mp4\"") != std::string::npos);
+    ACHECK(s.playlist().find("#EXT-X-DISCONTINUITY-SEQUENCE:1\n") != std::string::npos);
+    ACHECK(s.playlist().find("#EXT-X-DISCONTINUITY\n#EXTINF") != std::string::npos);
+    unsigned g = 9;
+    ACHECK(hls::Segmenter::parse_init_name("init.mp4", g) && g == 0 && hls::Segmenter::parse_init_name("init7.mp4", g) && g == 7);
+    ACHECK(!hls::Segmenter::parse_init_name("init.m4s", g) && !hls::Segmenter::parse_init_name("initx.mp4", g));
     // Bounded in bytes: a small budget drops the oldest segments early.
-    hls::Segmenter::Limits tiny; tiny.target_ms = 100; tiny.max_bytes = 400;
+    hls::Segmenter::Limits tiny; tiny.target_ms = 100; tiny.max_bytes = 300;   // a segment is 116 bytes here: three do not fit, two do
     hls::Segmenter t(tiny);
     for (int g = 0; g < 4; ++g) { pts += 200000; const std::vector<uint8_t> au = idr_au((uint8_t)g); t.feed(au.data(), au.size(), true, pts, 64, 48); }
-    ACHECK(t.ready() && t.first_seq() >= 1 && t.held_bytes() <= 400);
+    ACHECK(t.ready() && t.first_seq() == 1);                                   // ...but never below two finished segments
+    { const std::string tp = t.playlist(); size_t n = 0; for (size_t at = tp.find("#EXTINF"); at != std::string::npos; at = tp.find("#EXTINF", at + 1)) ++n; ACHECK(n == 2); }
+    ACHECK(pl.find("#EXT-X-DISCONTINUITY-SEQUENCE") == std::string::npos);       // the first generation says nothing
 }
 
 struct FakeSpkCounters {
@@ -697,6 +716,12 @@ void test_rtsp_backchannel_helpers() {
     ACHECK(!rtp::parse(v1.data(), v1.size(), h));                       // not version 2
     std::vector<uint8_t> padbad = {0xA0, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 1, 9};   // padding count past the payload
     ACHECK(!rtp::parse(padbad.data(), padbad.size(), h));
+    std::vector<uint8_t> pad0 = {0xA0, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 1, 0};     // a padding count of zero is malformed
+    ACHECK(!rtp::parse(pad0.data(), pad0.size(), h));
+    std::vector<uint8_t> csrc = {0x82, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 9, 9, 9, 9, 8, 8, 8, 8, 0xFF};   // two CSRCs
+    ACHECK(rtp::parse(csrc.data(), csrc.size(), h) && h.payload_at == 20 && h.payload_len == 1);
+    std::vector<uint8_t> csrc_short = {0x8F, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 9};                          // 15 CSRCs announced, none there
+    ACHECK(!rtp::parse(csrc_short.data(), csrc_short.size(), h) && rtp::header_length(csrc_short.data(), csrc_short.size()) == 0);
 }
 
 void test_rtsp_audio_helpers() {

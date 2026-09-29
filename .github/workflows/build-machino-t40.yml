@@ -46,6 +46,7 @@ jobs:
           # the #ifdef MACHINO_CODECS seams in audio_encoder.cpp and the tests
           # must keep compiling and passing. This is the only place that
           # configuration is built.
+          set -o pipefail
           rm -f machino/tests/machino-tests
           make -C machino test MBEDTLS="$PWD/3p/mbedtls-3.6.7" 2>&1 | tail -5
       - name: "The make-free host runner must stay equivalent to `make test`"

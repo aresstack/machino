@@ -207,6 +207,7 @@ private:
     std::vector<std::shared_ptr<StillJob>> still_orphans_;
     void finish_still(Client& c);
     void reap_stills(bool wait);
+    size_t stills_in_flight() const;
     // Everything a client holds, given back - the one list stop() and the
     // poll loop's close path both use.
     void release_client(Client& c);

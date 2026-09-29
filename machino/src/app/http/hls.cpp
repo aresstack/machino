@@ -21,7 +21,11 @@ void Segmenter::close_current() {
 
 // The newest complete segment always stays: a player needs something.
 void Segmenter::trim() {
-    while (segs_.size() > lim_.max_segments || (segs_.size() > 1 && held_bytes() > lim_.max_bytes))
+    // By count, and by the bytes of the FINISHED segments: the one in
+    // progress is bounded on its own (feed), and counting it here shrank the
+    // window to a single segment with 2 s GOPs of a few MB. Never below two.
+    auto finished = [this] { size_t n = 0; for (const Seg& s : segs_) n += s.data.size(); return n; };
+    while (segs_.size() > lim_.max_segments || (segs_.size() > 2 && finished() > lim_.max_bytes))
         segs_.pop_front();
 }
 
@@ -37,7 +41,7 @@ void Segmenter::feed(const uint8_t* annexb, size_t n, bool key, int64_t pts_us, 
             (sps != sps_ || pps != pps_)) {
             // New parameter sets: a new init; everything held refers to the
             // old one, so the window restarts behind a discontinuity.
-            if (!init_.empty()) { segs_.clear(); cur_.clear(); cur_open_ = false; pending_disc_ = true; }
+            if (!init_.empty()) { segs_.clear(); cur_.clear(); cur_open_ = false; pending_disc_ = true; ++init_gen_; }
             sps_ = sps; pps_ = pps;
             init_ = fmp4::init_segment(sps_, pps_, width, height, 90000);
         }
@@ -59,8 +63,9 @@ void Segmenter::feed(const uint8_t* annexb, size_t n, bool key, int64_t pts_us, 
     cur_.insert(cur_.end(), f.begin(), f.end());
     cur_end_ = dts + dur;
     trim();
-    // A GOP far longer than the target must not grow without bound.
-    if (cur_.size() > lim_.max_bytes / 2) { cur_.clear(); cur_open_ = false; await_key_ = true; }
+    // A GOP far longer than the target must not grow without bound: one
+    // segment may take the whole byte budget, never more.
+    if (cur_.size() > lim_.max_bytes) { cur_.clear(); cur_open_ = false; await_key_ = true; }
 }
 
 std::string Segmenter::playlist(const std::string& prefix) const {
@@ -73,14 +78,34 @@ std::string Segmenter::playlist(const std::string& prefix) const {
              target ? target : 1, (unsigned long long)first_seq());
     p += b;
     p += "#EXT-X-INDEPENDENT-SEGMENTS\n";
-    p += "#EXT-X-MAP:URI=\"" + prefix + "init.mp4\"\n";
+    // A new init generation is a discontinuity: the segments before it were
+    // dropped with it, so it is the front segment that carries the tag, and
+    // the DISCONTINUITY-SEQUENCE tells a player which one it is looking at.
+    if (init_gen_) { snprintf(b, sizeof b, "#EXT-X-DISCONTINUITY-SEQUENCE:%u\n", init_gen_); p += b; }
+    p += "#EXT-X-MAP:URI=\"" + prefix + init_name() + "\"\n";
     for (const Seg& s : segs_) {
-        if (s.disc && &s != &segs_.front()) p += "#EXT-X-DISCONTINUITY\n";
+        if (s.disc) p += "#EXT-X-DISCONTINUITY\n";
         snprintf(b, sizeof b, "#EXTINF:%.3f,\n%sseg%llu.m4s\n", s.dur90k / 90000.0, prefix.c_str(),
                  (unsigned long long)s.seq);
         p += b;
     }
     return p;
+}
+
+std::string Segmenter::init_name() const {
+    return init_gen_ ? "init" + std::to_string(init_gen_) + ".mp4" : "init.mp4";
+}
+
+bool Segmenter::parse_init_name(const std::string& name, unsigned& gen) {
+    if (name == "init.mp4") { gen = 0; return true; }
+    if (name.size() < 9 || name.compare(0, 4, "init") != 0 || name.compare(name.size() - 4, 4, ".mp4") != 0) return false;
+    unsigned v = 0;
+    for (size_t i = 4; i < name.size() - 4; ++i) {
+        if (name[i] < '0' || name[i] > '9' || i > 12) return false;
+        v = v * 10 + (unsigned)(name[i] - '0');
+    }
+    gen = v;
+    return true;
 }
 
 bool Segmenter::segment(uint64_t seq, std::vector<uint8_t>& out) const {
