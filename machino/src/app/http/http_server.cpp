@@ -234,6 +234,11 @@ struct HttpServer::Client {
     // wird der GANZE Body gepuffert und erst am Upstream-EOF transformiert.
     // Ohne dieses Flag gilt das bewaehrte begrenzte Fenster fuer die Navbar.
     bool        relay_inject_cards = false;
+    // Dashboard mit Live-Vorschau (webui.dashboard_preview=live): wie die
+    // Karten eine Ganzseiten-Transformation am EOF, weil der Anker (das
+    // dashboard.js-Tag) am Seitenende steht.
+    bool        relay_inject_preview = false;
+    int         relay_preview_stream = 0;
     std::string relay_saved_head;   // original upstream head, kept until injection
     std::string relay_inject_buf;   // the html body, accumulated
 };
@@ -831,6 +836,11 @@ bool HttpServer::relay_upstream(Client& c, const Request& req) {
     // Nur fuer die eine bekannte Seite; alles andere behaelt den schnellen
     // Fenster-Pfad. Der Query-Teil ist egal (req.path ist ohne Query).
     c.relay_inject_cards = (c.relay_get && req.path == "/cgi-bin/network.cgi");
+    c.relay_inject_preview = false;
+    if (c.relay_get && req.path == "/cgi-bin/dashboard.cgi" && api_.dashboard_preview() == "live") {
+        c.relay_inject_preview = true;
+        c.relay_preview_stream = sub_available() ? 1 : 0;
+    }
     c.keep_alive_wanted = req.keep_alive;
     const int64_t now = now_ms();
     c.relay_idle_deadline_ms = now + cfg_.relay_timeout_ms;
@@ -889,7 +899,7 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
             // per request - only the expensive half is reused.
             c.relay_head.clear(); c.relay_head_done = false;
             c.relay_keep = false; c.relay_body_len = 0; c.relay_body_seen = 0;
-            c.relay_inject = false; c.relay_inject_cards = false;
+            c.relay_inject = false; c.relay_inject_cards = false; c.relay_inject_preview = false;
             c.relay_saved_head.clear(); c.relay_inject_buf.clear();
             c.relay_total = 0;
             return true;
@@ -988,12 +998,21 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
                         LOGW(MOD, "relay: %s: card anchor not found - page served without the machino card",
                              c.relay_what.c_str());
                 }
+                if (c.relay_inject_preview) {
+                    bool didPrev = false;
+                    std::string withPrev = http::inject_machino_dashboard_preview(emit, c.relay_preview_stream, didPrev);
+                    if (didPrev) emit = std::move(withPrev);
+                    else
+                        LOGW(MOD, "relay: %s: dashboard.js tag not found - page served without the live preview",
+                             c.relay_what.c_str());
+                }
                 if (!emit.empty() &&
                     !queue(c, emit, cfg_.max_page_transform_bytes + cfg_.max_out_buffer + sizeof buf))
                     return false;
                 c.relay_total += emit.size();
                 c.relay_inject = false;
                 c.relay_inject_cards = false;
+                c.relay_inject_preview = false;
                 c.relay_inject_buf.clear();
                 if (!did)
                     LOGW(MOD, "relay: %s: nav anchor not found - page served unchanged",
@@ -1049,7 +1068,7 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
                 // Try to inject from what we already have; otherwise keep reading.
                 // Im Karten-Modus wird NIE vorzeitig emittiert: der zweite
                 // Anker liegt tief in der Seite, alles laeuft bis zum EOF auf.
-                if (c.relay_inject && !c.relay_inject_cards) {
+                if (c.relay_inject && !c.relay_inject_cards && !c.relay_inject_preview) {
                     bool did = false;
                     std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
                     if (did || c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
@@ -1091,7 +1110,7 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
         // path below.
         if (c.relay_inject) {
             c.relay_inject_buf.append(buf, (size_t)rd);
-            if (c.relay_inject_cards) {
+            if (c.relay_inject_cards || c.relay_inject_preview) {
                 // Ganzseiten-Pufferung. Die Notbremse gibt die Seite
                 // UNVERAENDERT weiter, statt sie abzuschneiden.
                 if (c.relay_inject_buf.size() > cfg_.max_page_transform_bytes) {
@@ -1103,6 +1122,7 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
                     c.relay_total += c.relay_inject_buf.size();
                     c.relay_inject = false;
                     c.relay_inject_cards = false;
+                    c.relay_inject_preview = false;
                     c.relay_inject_buf.clear();
                 }
                 progress();

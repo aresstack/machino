@@ -613,6 +613,51 @@ void run_snapshot_gate_tests() {
         const Json* j = cfg.get("jpeg");
         CCHECK(j && j->get("enabled") && j->get("enabled")->as_bool());
     }
+    // webui.dashboard_preview=off: the majestic view reports the tile's gate
+    // as off even though the encoder is on; the native value is untouched.
+    {
+        Json native = Json::object();
+        Json jp = Json::object(); jp.set("enabled", Json::boolean(true));
+        native.set("jpeg", jp);
+        Json wb = Json::object(); wb.set("dashboard_preview", Json::string("off"));
+        native.set("webui", wb);
+        Json cfg = majestic_config(native, Json::object());
+        const Json* j = cfg.get("jpeg");
+        CCHECK(j && j->get("enabled") && !j->get("enabled")->as_bool());
+        CCHECK(cfg.get("webui") && cfg.get("webui")->get("dashboard_preview")->as_string() == "off");
+        CCHECK(native.get("jpeg")->get("enabled")->as_bool());
+    }
+    // ... and "live" leaves the JPEG gate alone (the tile gets its player on
+    // top of it, by injection, not by lying about the encoder).
+    {
+        Json native = Json::object();
+        Json jp = Json::object(); jp.set("enabled", Json::boolean(true));
+        native.set("jpeg", jp);
+        Json wb = Json::object(); wb.set("dashboard_preview", Json::string("live"));
+        native.set("webui", wb);
+        Json cfg = majestic_config(native, Json::object());
+        CCHECK(cfg.get("jpeg")->get("enabled")->as_bool());
+    }
+    // the settings page offers both switches, live, in the runtime group
+    {
+        Json caps = Json::object();
+        Json jc = Json::object(); jc.set("status", Json::string("supported")); caps.set("jpeg", jc);
+        Json schema = majestic_schema(caps);
+        const Json* props = schema.get("properties");
+        const Json* jf = props && props->get("jpeg") ? props->get("jpeg")->get("properties") : nullptr;
+        CCHECK(jf && jf->get("enabled") && jf->get("enabled")->get("x-reload")->as_string() == "live");
+        CCHECK(jf && jf->get("enabled")->get("title")->as_string().find("wedge") != std::string::npos);
+        const Json* wf = props && props->get("webui") ? props->get("webui")->get("properties") : nullptr;
+        CCHECK(wf && wf->get("dashboard_preview") && wf->get("dashboard_preview")->get("enum")->size() == 3);
+        // without a JPEG path there is no jpeg section, but the tile mode stays
+        Json none = majestic_schema(Json::object());
+        CCHECK(!none.get("properties")->get("jpeg"));
+        CCHECK(none.get("properties")->get("webui"));
+        // the stock POST passes both sections through to the native PATCH
+        MajesticTranslation t = majestic_post_to_native("{\"jpeg\":{\"enabled\":true},\"webui\":{\"dashboard_preview\":\"live\"}}");
+        CCHECK(t.ok);
+        CCHECK(t.patch.get("jpeg") && t.patch.get("webui"));
+    }
     // a native config with no jpeg section at all still yields an explicit
     // false rather than an absent key - the gate is never left to chance
     {

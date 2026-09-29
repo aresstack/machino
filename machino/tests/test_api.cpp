@@ -745,17 +745,36 @@ void test_ap14_jpeg_reported_not_writable() {
     ACHECK(j && j->is_object());
     ACHECK(j && j->get("enabled") && j->get("enabled")->is_bool());
     ACHECK(j && j->get("quality") && j->get("quality")->is_number());
-    const bool was = (j && j->get("enabled")) ? j->get("enabled")->as_bool() : true;
-    // and refused, with a reason and the right code
+    // The switch is the operator's, live, and persisted: on, off, and the
+    // pipeline's snapshot gate follows it without a restart (2026-09-29).
+    JpegParams jp; jp.quality = 80; r.mgr.configure_jpeg(jp, 300, 2000, &r.timer);
     api::Response p = r.api.patch_config("{\"jpeg\":{\"enabled\":true}}", "");
-    ACHECK(p.status == 403);
-    const Json* err = p.body.get("error");
-    ACHECK(err && err->get("code") && err->get("code")->as_string() == "unsupported_control");
-    ACHECK(err && err->get("message") && err->get("message")->as_string().find("wedge") != std::string::npos);
-    // nothing moved
+    ACHECK(p.status == 200);
+    ACHECK(r.store.get("jpeg.enabled") == "true");
+    ACHECK(r.mgr.jpeg_enabled());
+    ACHECK(r.mgr.unit_configured(lifecycle::UNIT_JPEG));
     api::Response after = r.api.config();
     const Json* ja = after.body.get("jpeg");
-    ACHECK(ja && ja->get("enabled") && ja->get("enabled")->as_bool() == was);
+    ACHECK(ja && ja->get("enabled") && ja->get("enabled")->as_bool());
+    api::Response p2 = r.api.patch_config("{\"jpeg\":{\"enabled\":false}}", "");
+    ACHECK(p2.status == 200);
+    ACHECK(!r.mgr.jpeg_enabled());
+    ACHECK(!r.mgr.unit_configured(lifecycle::UNIT_JPEG));
+    {
+        std::vector<uint8_t> out; std::string err;
+        Result sr = r.mgr.snapshot(out, err, 100);
+        ACHECK(sr.status == Status::Unsupported);       // off = never builds the encoder
+    }
+    // quality stays a conf-file matter (encoder rebuild)
+    ACHECK(r.api.patch_config("{\"jpeg\":{\"quality\":50}}", "").status == 400);
+
+    // The dashboard tile's mode: reported, validated, persisted.
+    ACHECK(path(r.api.config().body, "webui.dashboard_preview")->as_string() == "auto");
+    ACHECK(r.api.patch_config("{\"webui\":{\"dashboard_preview\":\"live\"}}", "").status == 200);
+    ACHECK(r.api.dashboard_preview() == "live");
+    ACHECK(r.store.get("webui.dashboard_preview") == "live");
+    ACHECK(r.api.patch_config("{\"webui\":{\"dashboard_preview\":\"jpeg\"}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"webui\":{\"dashboard_preview\":\"off\"}}", "").status == 200);
 }
 
 void test_ap10_live_image() {

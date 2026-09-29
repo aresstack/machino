@@ -332,6 +332,67 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     return out;
 }
 
+std::string inject_machino_dashboard_preview(const std::string& html, int stream, bool& changed) {
+    changed = false;
+    if (html.find("mch-prev") != std::string::npos) return html;
+    // Der Anker ist das Script-Tag der Stock-Seite. Unser Skript kommt
+    // DAHINTER: beide sind defer, laufen also in Dokumentreihenfolge, und
+    // der Player (/a/preview.js, die Datei der Live-Seite) davor.
+    static const char kAnchor[] = "<script src=\"/a/dashboard.js\" defer></script>";
+    const size_t at = html.find(kAnchor);
+    if (at == std::string::npos) return html;
+    const size_t end = at + sizeof(kAnchor) - 1;
+    const std::string s = stream == 1 ? "1" : "0";
+    // Die Kachel (#st-prev) ist position:relative mit overflow:hidden; das
+    // Video fuellt sie wie das Bild (object-fit: cover). Der Hinweis der
+    // Stock-Seite ("Snapshots are disabled") wird ausgeblendet, sobald der
+    // Player laeuft, und kommt zurueck, wenn er es nicht schafft -- die
+    // Seite bleibt sonst unveraendert (Play-Knopf, Chip, Leiste).
+    const std::string script =
+        "\n<script src=\"/a/preview.js\" defer></script>\n"
+        "<script id=\"mch-prev\" defer>\n"
+        "// machino: webui.dashboard_preview=live - stream player in the snapshot tile\n"
+        "(function () {\n"
+        "\t'use strict';\n"
+        "\tvar tile = document.getElementById('st-prev');\n"
+        "\tvar off = document.getElementById('st-prev-off');\n"
+        "\tvar note = document.getElementById('st-prev-note');\n"
+        "\tif (!tile || !window.MajesticVideo || !window.MajesticVideo.attach) return;\n"
+        "\tvar v = document.createElement('video');\n"
+        "\tv.id = 'mch-prev-video'; v.muted = true; v.autoplay = true; v.playsInline = true;\n"
+        "\tv.setAttribute('playsinline', ''); v.setAttribute('muted', '');\n"
+        "\tv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;background:#0d0f14';\n"
+        "\ttile.insertBefore(v, tile.firstChild);\n"
+        "\tvar img = document.getElementById('st-prev-img');\n"
+        "\tvar playing = false;\n"
+        "\tfunction show(on) {\n"
+        "\t\tplaying = on;\n"
+        "\t\tv.style.display = on ? 'block' : 'none';\n"
+        "\t\tif (img) img.style.display = on ? 'none' : '';\n"
+        "\t\tif (off) off.style.display = on ? 'none' : '';\n"
+        "\t\tif (note && on) note.textContent = 'live \\u00b7 " + (stream == 1 ? std::string("sub") : std::string("main")) + "';\n"
+        "\t}\n"
+        "\tv.addEventListener('playing', function () { show(true); });\n"
+        "\tv.addEventListener('pause', function () { if (playing && !document.hidden) v.play().catch(function () {}); });\n"
+        "\twindow.MajesticVideo.attach(v, { stream: " + s + ", onState: function (st) {\n"
+        "\t\tif (st === 'unreachable' || st === 'error' || st === 'unsupported') show(false);\n"
+        "\t} });\n"
+        "\t// Ein Tab im Hintergrund haelt keine Sitzung offen: Browser drosseln\n"
+        "\t// das Video ohnehin, und die Kamera hat nur wenige Slots.\n"
+        "\tdocument.addEventListener('visibilitychange', function () {\n"
+        "\t\tif (document.hidden) v.pause(); else v.play().catch(function () {});\n"
+        "\t});\n"
+        "})();\n"
+        "</script>";
+    std::string out;
+    out.reserve(html.size() + script.size());
+    out.append(html, 0, end);
+    out.append(script);
+    out.append(html, end, std::string::npos);
+    changed = true;
+    return out;
+}
+
 std::string inject_machino_network_cards(const std::string& html, bool& changed) {
     changed = false;
 

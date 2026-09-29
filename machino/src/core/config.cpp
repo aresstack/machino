@@ -183,6 +183,11 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
 
     BOOL  ("jpeg.enabled",       c.jpeg.enabled)
     INT   ("jpeg.quality",       c.jpeg.quality, 1, 99)
+    if (k == "webui.dashboard_preview") {
+        if (v == "auto" || v == "live" || v == "off") c.webui.dashboard_preview = v;
+        else LOGW(MOD, "line %d: webui.dashboard_preview=%s unknown (auto|live|off) - ignored", line, v.c_str());
+        return true;
+    }
     INT   ("snapshot.cache_ms",  c.snapshot.cache_ms, 0, 5000)
     INT   ("snapshot.grace_ms",  c.snapshot.grace_ms, 0, 30000)
     BOOL  ("ai.enabled",         c.ai.enabled)

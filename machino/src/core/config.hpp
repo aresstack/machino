@@ -66,6 +66,15 @@ struct JpegConfig {
     int quality = 80;              // 1..99
 };
 
+// What the stock dashboard's camera tile shows. OpenIPC's own way is a polled
+// /image.jpg, gated on jpeg.enabled ("auto" leaves exactly that). "live" has
+// machino put a muted MSE player of the sub stream (main if there is none)
+// into the tile -- no JPEG encoder involved, so it works where JPEG is off.
+// "off" keeps the tile dark even with JPEG on.
+struct WebuiConfig {
+    std::string dashboard_preview = "auto";   // auto | live | off
+};
+
 struct SnapshotConfig {
     int cache_ms = 300;            // serve the same JPEG to near-simultaneous requests
     int grace_ms = 2000;           // keep the hardware encoder warm this long after the last capture
@@ -229,6 +238,7 @@ struct AppConfig {
     SubStreamConfig   video1;
     JpegConfig        jpeg;
     SnapshotConfig    snapshot;
+    WebuiConfig       webui;
     RtspConfig        rtsp;
     PipelineConfig    pipeline;
     PerformanceConfig performance;
