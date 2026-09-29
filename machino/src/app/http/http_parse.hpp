@@ -99,6 +99,15 @@ std::string inject_machino_dashboard_preview(const std::string& html, int stream
 // only, never rewrites.
 bool relay_head_is_html(const std::string& head);
 
+// Whether the scan window holds the WHOLE navbar. inject_machino_nav() reports
+// "changed" as soon as the System anchor is in, but the Services entries
+// (DynDNS, IPsec) hang on the wireguard.cgi anchor 4 KB further down the
+// header; a window that ends between the two would be emitted with the
+// System block patched and Services untouched -- which is exactly why the
+// IPsec item showed on some pages and not on others (2026-09-29). The
+// relay therefore waits for </nav> (or the window limit) before it emits.
+bool relay_nav_complete(const std::string& window);
+
 // Rebuild a relayed head to declare exactly `body_len` bytes with the given
 // connection disposition. Drops any existing Content-Length and hop-by-hop
 // headers (Connection/Keep-Alive/Transfer-Encoding/Proxy-Connection). Used after

@@ -334,6 +334,26 @@ void run_relay_head_end_tests() {
         HCHECK(parse_request("GET /a/b?p=../x HTTP/1.1\r\nHost: h\r\n\r\n", used, r) == Parse::Ok);
     }
 
+    // relay_nav_complete: the relay must not emit the scan window between the
+    // System anchor and the Services anchor (4 KB apart in header.cgi). A
+    // window that holds network.cgi but no </nav> yet is NOT complete, even
+    // though inject_machino_nav already reports a change for it.
+    {
+        const std::string half =
+            "<nav><ul><li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li></ul>";
+        bool ch = false;
+        (void)inject_machino_nav(half, ch);
+        HCHECK(ch);                                  // System block would be patched ...
+        HCHECK(!relay_nav_complete(half));           // ... but the window must wait
+        const std::string full = half +
+            "<ul><li><a class=\"dropdown-item\" href=\"wireguard.cgi\">WireGuard</a></li></ul></nav><main>";
+        HCHECK(relay_nav_complete(full));
+        bool ch2 = false;
+        const std::string out = inject_machino_nav(full, ch2);
+        HCHECK(ch2 && out.find("machino-ipsec.cgi") != std::string::npos &&
+               out.find("machino-dyndns.cgi") != std::string::npos);
+    }
+
     // inject_machino_dashboard_preview: the stock dashboard's snapshot tile
     // gets a stream player when webui.dashboard_preview=live. Anchor is the
     // page's own dashboard.js tag; no anchor -> unchanged; never twice.

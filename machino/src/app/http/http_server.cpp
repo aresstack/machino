@@ -1070,8 +1070,11 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
                 // Anker liegt tief in der Seite, alles laeuft bis zum EOF auf.
                 if (c.relay_inject && !c.relay_inject_cards && !c.relay_inject_preview) {
                     bool did = false;
+                    // Erst emittieren, wenn die GANZE Navbar im Fenster liegt:
+                    // die Services-Eintraege haengen am zweiten Anker.
                     std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
-                    if (did || c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
+                    if ((did && http::relay_nav_complete(c.relay_inject_buf)) ||
+                        c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
                         const std::string& emit = did ? merged : c.relay_inject_buf;
                         if (!queue(c, emit, cfg_.max_out_buffer + sizeof buf)) return false;
                         c.relay_total += emit.size();
@@ -1130,7 +1133,8 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
             }
             bool did = false;
             std::string merged = http::inject_machino_nav(c.relay_inject_buf, did);
-            if (did || c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
+            if ((did && http::relay_nav_complete(c.relay_inject_buf)) ||
+                c.relay_inject_buf.size() >= cfg_.max_inject_bytes) {
                 const std::string& emit = did ? merged : c.relay_inject_buf;
                 if (!queue(c, emit, cfg_.max_out_buffer + sizeof buf)) return false;
                 c.relay_total += emit.size();
