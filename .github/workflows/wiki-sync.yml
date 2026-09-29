@@ -1,31 +1,24 @@
 # Mirror docs/wiki/ into the GitHub wiki.
 #
-# WHY THIS EXISTS: the wiki was populated once, by hand, in a single import
-# commit - and then never again. It drifted silently: a page added to
-# docs/wiki/ on main sat there for days while the wiki a visitor actually
-# reads had no such page and an index that did not list it. Nothing warns you,
-# because the wiki is a separate git repository that no normal push touches.
-#
-# docs/wiki/ is the single source of truth. This job makes the wiki a copy of
-# it, including deletions - see the --delete note below.
+# docs/wiki/ is the single source of truth. This job first validates the curated
+# navigation and then makes the GitHub wiki an exact copy, including deletions.
 #
 # AUTH: no PAT. The wiki of THIS repository is reachable with the automatically
 # provided GITHUB_TOKEN as long as the job is granted `contents: write`.
 # actions/checkout wires that token into the checked-out wiki repo's origin, so
-# the final `git push` uses it. (Confirmed working pattern, GitHub Community
-# Discussion #56893.)
+# the final `git push` uses it.
 name: Sync wiki
 
 on:
   push:
     branches: [main]
-    paths: ['docs/wiki/**']
-  # Manual run, for the first sync after a drift and for testing.
+    paths:
+      - 'docs/wiki/**'
+      - '.github/workflows/wiki-sync.yml'
+  # Allow an explicit resync after infrastructure or wiki changes.
   workflow_dispatch:
 
-# One sync at a time: two concurrent runs would race on the same wiki repo and
-# the loser would fail its push. Queue instead of cancelling, so the last
-# content state always wins rather than an arbitrary interrupted one.
+# Queue concurrent syncs instead of racing two pushes to the wiki repository.
 concurrency:
   group: wiki-sync
   cancel-in-progress: false
@@ -42,32 +35,98 @@ jobs:
         with:
           path: source
 
+      # Keep navigation semantic and human-curated, but make structural drift a
+      # CI error. Every public Markdown page must be reachable from _Sidebar.md,
+      # and every wiki link in the sidebar must resolve to a real page.
+      - name: Validate wiki structure
+        working-directory: source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          root = Path("docs/wiki")
+          required = [root / "Home.md", root / "_Sidebar.md"]
+          errors = []
+
+          for path in required:
+              if not path.is_file():
+                  errors.append("Missing required wiki file: %s" % path)
+
+          if errors:
+              for error in errors:
+                  print("ERROR: %s" % error)
+              sys.exit(1)
+
+          sidebar = (root / "_Sidebar.md").read_text(encoding="utf-8")
+          wiki_link_pattern = re.compile(r"\[\[([^\]]+)\]\]")
+          sidebar_targets = set()
+
+          for match in wiki_link_pattern.finditer(sidebar):
+              raw = match.group(1).strip()
+              target = raw.split("|", 1)[-1].strip()
+              target = target.split("#", 1)[0].strip()
+              if not target:
+                  errors.append("Empty wiki target in _Sidebar.md: [[%s]]" % raw)
+                  continue
+
+              target_path = root / (target + ".md")
+              if not target_path.is_file():
+                  errors.append(
+                      "Broken _Sidebar.md target [[%s]] -> %s" % (raw, target_path)
+                  )
+                  continue
+
+              sidebar_targets.add(target)
+
+          public_pages = {
+              path.stem
+              for path in root.glob("*.md")
+              if not path.name.startswith("_")
+          }
+          orphaned = sorted(public_pages - sidebar_targets)
+          if orphaned:
+              errors.append(
+                  "Wiki pages missing from _Sidebar.md: %s" % ", ".join(orphaned)
+              )
+
+          if errors:
+              for error in errors:
+                  print("ERROR: %s" % error)
+              sys.exit(1)
+
+          print(
+              "Wiki structure OK: %d public pages, all present in _Sidebar.md."
+              % len(public_pages)
+          )
+          PY
+
       # The wiki is a separate git repository (<repo>.wiki). checkout leaves it
-      # in wiki/ with the GITHUB_TOKEN configured as its push credential, which
-      # `contents: write` above authorises. Its default branch is master.
+      # in wiki/ with the GITHUB_TOKEN configured as its push credential.
       - name: Checkout wiki
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}.wiki
           path: wiki
 
-      # --delete makes docs/wiki/ authoritative: a page removed there is removed
-      # in the wiki, and a page edited through the wiki web UI is overwritten on
-      # the next sync. That is the intended contract - a mirror that only ever
-      # added would drift back into the state this workflow exists to prevent -
-      # but it does mean the web UI is read-only in practice. Edit docs/wiki/.
+      # --delete makes docs/wiki/ authoritative. Manual edits in the GitHub wiki
+      # are overwritten on the next sync; edit docs/wiki/ through normal commits.
       - name: Copy docs/wiki into the wiki working tree
         run: rsync -a --delete --exclude '.git' source/docs/wiki/ wiki/
 
       - name: Commit and push if anything changed
         working-directory: wiki
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           if [ -z "$(git status --porcelain)" ]; then
             echo "Wiki already matches docs/wiki - nothing to do."
             exit 0
           fi
+
           git add -A
           git commit -m "Sync wiki from docs/wiki (${GITHUB_SHA::7})"
           git push
