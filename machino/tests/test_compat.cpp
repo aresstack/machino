@@ -632,8 +632,10 @@ void run_snapshot_gate_tests() {
         CCHECK(cfg.get("webui") && cfg.get("webui")->get("dashboard_preview")->as_string() == "off");
         CCHECK(native.get("jpeg")->get("enabled")->as_bool());
     }
-    // ... and "live" leaves the JPEG gate alone (the tile gets its player on
-    // top of it, by injection, not by lying about the encoder).
+    // ... and "live" masks the gate too: the three preview modes are the
+    // operator's EXCLUSIVE choice. live means the injected stream player IS
+    // the preview - the page must not poll /image.jpg on the side (live
+    // replaces JPEG, it does not combine with it). The native value stays.
     {
         Json native = Json::object();
         Json jp = Json::object(); jp.set("enabled", Json::boolean(true));
@@ -641,7 +643,8 @@ void run_snapshot_gate_tests() {
         Json wb = Json::object(); wb.set("dashboard_preview", Json::string("live"));
         native.set("webui", wb);
         Json cfg = majestic_config(native, Json::object());
-        CCHECK(cfg.get("jpeg")->get("enabled")->as_bool());
+        CCHECK(cfg.get("jpeg")->get("enabled") && !cfg.get("jpeg")->get("enabled")->as_bool());
+        CCHECK(native.get("jpeg")->get("enabled")->as_bool());
     }
     // the settings page offers both switches, live, in the runtime group
     {

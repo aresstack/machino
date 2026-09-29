@@ -454,17 +454,24 @@ Json majestic_config(const Json& native_config, const Json& state) {
     // requesting a path this camera must not be asked for: the T40NN JPEG
     // encoder wedges the whole daemon (machino-t40nn-jpeg-wedge), which is why
     // jpeg.enabled defaults to false here.
-    // webui.dashboard_preview=off darkens the tile even with JPEG on: the
-    // page's own gate is jpeg.enabled, so the majestic-shaped view reports
-    // the switch the dashboard should act on, not the raw encoder state. The
-    // native /api/v1/config keeps the raw value.
+    // webui.dashboard_preview ist die EXKLUSIVE Wahl des Betreibers, wie das
+    // Dashboard-Tile seine Vorschau bekommt; das Gate der Seite ist
+    // jpeg.enabled, also meldet die majestic-Sicht den Schalter, auf den das
+    // Dashboard reagieren soll:
+    //   auto -> echter Wert (OpenIPCs eigener JPEG-Weg, der Default)
+    //   live -> false: der injizierte Stream-Player IST die Vorschau; die
+    //           Seite darf /image.jpg nicht zusaetzlich pollen (live ersetzt
+    //           JPEG, es kombiniert nicht)
+    //   off  -> false: Tile dunkel, auch bei JPEG an
+    // Das native /api/v1/config behaelt in allen Faellen den rohen Wert.
     copy_if(native_config, out, "webui");
     const Json* wb = native_config.get("webui");
     const Json* pv = wb && wb->is_object() ? wb->get("dashboard_preview") : nullptr;
-    const bool tile_off = pv && pv->is_string() && pv->as_string() == "off";
+    const std::string pvm = pv && pv->is_string() ? pv->as_string() : std::string("auto");
+    const bool tile_no_jpeg = (pvm == "off" || pvm == "live");
     if (const Json* j = native_config.get("jpeg"); j && j->is_object()) {
         Json jp = *j;
-        if (tile_off) jp.set("enabled", Json::boolean(false));
+        if (tile_no_jpeg) jp.set("enabled", Json::boolean(false));
         out.set("jpeg", jp);
     } else {
         Json jp = Json::object();
