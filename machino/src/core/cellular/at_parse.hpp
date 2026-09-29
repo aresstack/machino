@@ -169,6 +169,34 @@ struct PdpContextParams {
 };
 PdpContextParams parse_cgcontrdp(const std::string& raw);
 
+// +QENG: "neighbourcell intra","LTE",<earfcn>,<pci>,<rsrq>,<rsrp>,<rssi>,<sinr>,...
+// +QENG: "neighbourcell inter","LTE",<earfcn>,<pci>,<rsrq>,<rsrp>,<rssi>,<sinr>,...
+// +QENG: "neighbourcell","GSM",<arfcn>,<bsic>,<rssi>,...
+//
+// Die Reihenfolge RSRQ VOR RSRP ist die des Quectel-Handbuchs und anders als
+// bei "servingcell" -- wer die Indizes von dort kopiert, vertauscht die beiden.
+// Das Referenzprojekt zeigt die Antwort nur roh an; hier wird gelesen, was
+// sicher zu lesen ist, und der Rohtext bleibt daneben stehen. Fehlende oder
+// nicht numerische Felder sind abwesend, nie 0.
+struct NeighbourCell {
+    std::string kind;     // "intra" | "inter" | "" (GSM oder unbekannt)
+    std::string rat;      // "LTE" | "GSM"
+    MaybeInt earfcn, pci;
+    MaybeInt rsrq, rsrp, rssi, sinr;
+};
+std::vector<NeighbourCell> parse_qeng_neighbours(const std::string& raw);
+
+// +CLCK: <status> auf AT+CLCK="SC",2 -- ist die PIN-Abfrage der Karte aktiv?
+// Abwesend, wenn die Antwort keine solche Zeile traegt.
+MaybeInt parse_clck(const std::string& raw);
+
+// +QPINC: "SC",<pin_remaining>,<puk_remaining> (Quectel-Erweiterung).
+struct PinCounters {
+    MaybeInt pin_left;
+    MaybeInt puk_left;
+};
+PinCounters parse_qpinc(const std::string& raw);
+
 // Der Wert eines AT+QCFG="<name>"-Reports: +QCFG: "usbnet",1
 //
 // Abwesend, wenn die Antwort den Namen nicht nennt oder keine Zahl folgt. Ein

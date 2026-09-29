@@ -133,6 +133,24 @@ bool NetApiService::handle(const std::string& method, const std::string& path,
         if (method == "GET") { out = cellular_presets(); return true; }
         return wrong_method("GET");
     }
+    // POST, alle vier: Aktionen mit Nebenwirkung am Modem, keine davon
+    // idempotent. Ein GET liesse ein Browser-Prefetch einen Bandscan starten.
+    if (path == "/api/v1/network/cellular/bandscan") {
+        if (method == "POST") { out = cellular_bandscan(); return true; }
+        return wrong_method("POST");
+    }
+    if (path == "/api/v1/network/cellular/neighbours") {
+        if (method == "POST") { out = cellular_neighbours(); return true; }
+        return wrong_method("POST");
+    }
+    if (path == "/api/v1/network/cellular/restart") {
+        if (method == "POST") { out = cellular_restart(); return true; }
+        return wrong_method("POST");
+    }
+    if (path == "/api/v1/network/cellular/sim/lock") {
+        if (method == "POST") { out = cellular_sim_lock(body); return true; }
+        return wrong_method("POST");
+    }
     if (path == "/api/v1/network/change") {
         if (method == "GET") { out = change_get(); return true; }
         return wrong_method("GET");
@@ -427,11 +445,99 @@ Response NetApiService::cellular_get() const
 {
     const std::string path = "/api/v1/network/cellular";
     if (!d_.cellular) return not_wired(path, "cellular");
-    return ok(cellular_network_json(d_.cellular->modem_status(),
-                                    d_.cellular->config(),
-                                    d_.cellular->link_state(),
-                                    d_.cellular->state(),
-                                    d_.cellular->has_internet()));
+    Json j = cellular_network_json(d_.cellular->modem_status(),
+                                   d_.cellular->config(),
+                                   d_.cellular->link_state(),
+                                   d_.cellular->state(),
+                                   d_.cellular->has_internet());
+    // Nur hier, nicht in /api/v1/network: die Bandtabelle, Scanzeilen und
+    // Nachbarzellen sind Seiteninhalt der Mobilfunkseite, nicht Uplinkstatus.
+    j.set("bands", cellular_bands_json(d_.cellular->radio_state(), d_.cellular->config()));
+    j.set("neighbourCells", cellular_neighbours_json(d_.cellular->neighbour_cells()));
+    j.set("simLock", cellular_sim_lock_json(d_.cellular->sim_lock()));
+    return ok(j);
+}
+
+namespace {
+
+Response accepted(const char* note)
+{
+    Json j = Json::object();
+    j.set("accepted", Json::boolean(true));
+    j.set("note", Json::string(note));
+    return Response{202, j};
+}
+
+} // namespace
+
+Response NetApiService::cellular_bandscan()
+{
+    const std::string path = "/api/v1/network/cellular/bandscan";
+    if (!d_.cellular) return not_wired(path, "cellular");
+    // Nicht waehrend einer ausstehenden Netzaenderung: der Scan reisst den
+    // Datenlink fuer Minuten runter und faehrt Bandwechsel, waehrend der
+    // Rollback-Timer noch laeuft -- dieselbe Vorsicht wie bei sim/lock.
+    if (d_.txn && d_.txn->pending())
+        return ApiService::fail(409, "conflict", path,
+                                "a network change is waiting for confirmation - confirm it first");
+    std::string why;
+    if (!d_.cellular->request_band_scan(why))
+        return ApiService::fail(409, "conflict", path, why);
+    return accepted("the scan runs on the modem for a few minutes and takes the data "
+                    "link down meanwhile; poll /api/v1/network/cellular for bands.scan");
+}
+
+Response NetApiService::cellular_neighbours()
+{
+    const std::string path = "/api/v1/network/cellular/neighbours";
+    if (!d_.cellular) return not_wired(path, "cellular");
+    std::string why;
+    if (!d_.cellular->request_neighbour_cells(why))
+        return ApiService::fail(409, "conflict", path, why);
+    return accepted("the modem is asked on the next tick; read neighbourCells "
+                    "from /api/v1/network/cellular");
+}
+
+Response NetApiService::cellular_restart()
+{
+    const std::string path = "/api/v1/network/cellular/restart";
+    if (!d_.cellular) return not_wired(path, "cellular");
+    // Nicht waehrend einer ausstehenden Netzaenderung: AT+CFUN=1,1 re-enumeriert
+    // das Modem mitten im Rollback-Fenster. Erst bestaetigen. (neighbours bleibt
+    // frei: eine reine QENG-Abfrage aendert nichts und stoert den Rollback nicht.)
+    if (d_.txn && d_.txn->pending())
+        return ApiService::fail(409, "conflict", path,
+                                "a network change is waiting for confirmation - confirm it first");
+    std::string why;
+    if (!d_.cellular->request_modem_restart(why))
+        return ApiService::fail(409, "conflict", path, why);
+    return accepted("AT+CFUN=1,1 goes out on the next tick; the modem re-enumerates "
+                    "and the data link is rebuilt");
+}
+
+Response NetApiService::cellular_sim_lock(const std::string& body)
+{
+    const std::string path = "/api/v1/network/cellular/sim/lock";
+    if (!d_.cellular) return not_wired(path, "cellular");
+
+    Json j; Response err;
+    if (!parse_body(body, path, j, err)) return err;
+    cellular::SimLockRequest r;
+    std::string e;
+    if (!sim_lock_request_from_json(j, r, e))
+        return ApiService::fail(422, "invalid_value", path, e);
+
+    // Nicht waehrend einer ausstehenden Netzaenderung: ein Rollback stellte
+    // die gespeicherte Konfiguration wieder her, und die Karte hat inzwischen
+    // vielleicht eine andere PIN. Erst bestaetigen, dann die Karte anfassen.
+    if (d_.txn && d_.txn->pending())
+        return ApiService::fail(409, "conflict", path,
+                                "a network change is waiting for confirmation - confirm it first");
+
+    if (!d_.cellular->request_sim_lock(r, e))
+        return ApiService::fail(409, "conflict", path, e);
+    return accepted("sent to the card once on the next tick, never retried; read simLock "
+                    "from /api/v1/network/cellular");
 }
 
 Response NetApiService::cellular_presets() const

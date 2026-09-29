@@ -19,6 +19,8 @@
 // Beide stammen aus esp32-modem-host (TELEKOM-PUBLIC-IPV4.md bzw.
 // MODEM_APN_DEFAULT) und sind dort an echten SIM-Karten belegt.
 #pragma once
+#include "core/cellular/band_plan.hpp"
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -84,6 +86,18 @@ struct CellularConfig {
     // der Default der Referenz (MODEM_DIAL_DEFAULT); konfigurierbar, weil ein
     // paar Netze *99# oder eine kontextbezogene Variante wollen.
     std::string dial = "*99***1#";
+
+    // Funk: Netzmodus und LTE-Bandwahl (AT+QCFG="nwscanmode" / ="band").
+    //
+    // Portiert aus dem Referenzprojekt (modemNetMode, modemBandProfile,
+    // modemBandCustom). Beides ist im MODEM persistent; machino haelt hier die
+    // Absicht und gleicht sie ab -- siehe radio_tuner.hpp fuer die Regel, wann
+    // geschrieben wird. Ein Band-Lock kann an einem Ort ohne dieses Band den
+    // Empfang verhindern; deshalb laeuft die Aenderung wie jede andere
+    // Netzaenderung ueber das Bestaetigungsfenster und rollt sonst zurueck.
+    NetMode     net_mode = NetMode::Auto;
+    BandProfile band_profile = BandProfile::Auto;
+    uint64_t    band_mask = 0;          // nur bei Custom: bit(n-1) = Band n
 };
 
 struct ApnPreset {

@@ -172,6 +172,22 @@ void run_wwwpages_tests()
     // sein, wo sie zurueckrollen kann.
     TCHECK(has(cell, "loadPending"));
 
+    // Die Karten aus dem WeirdOS-ESP32-Stand (WAN > Modem > Frequenzen,
+    // Diagnose > Modem, SIM-PIN-Sperre): Frequenzen samt SINR-Scan,
+    // Nachbarzellen, PIN-Sperre der Karte, Einwahlnummer, Modem-Neustart.
+    TCHECK(has(cell, "/api/v1/network/cellular/bandscan"));
+    TCHECK(has(cell, "/api/v1/network/cellular/neighbours"));
+    TCHECK(has(cell, "/api/v1/network/cellular/sim/lock"));
+    TCHECK(has(cell, "/api/v1/network/cellular/restart"));
+    TCHECK(has(cell, "bandProfile"));
+    TCHECK(has(cell, "netMode"));
+    TCHECK(has(cell, "celldial"));
+    // Der Lock des besten Bandes ist ein EIGENER Schritt ueber das
+    // Bestaetigungsfenster, kein Automatismus des Scans.
+    TCHECK(has(cell, "Lock band"));
+    // Immer noch keine freie AT-Konsole.
+    TCHECK(!has(cell, "AT command"));
+
     // Station-WLAN gehoert OpenIPCs Netzwerkseite; die USB-Seite muss den
     // Weg dorthin NENNEN, sonst sucht jeder die SSID wieder bei machino.
     TCHECK(has(usb, "Wireless adapter"));

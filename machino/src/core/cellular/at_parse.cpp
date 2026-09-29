@@ -1,4 +1,5 @@
 #include "core/cellular/at_parse.hpp"
+#include "core/cellular/band_plan.hpp"
 
 #include <cstdlib>
 
@@ -40,14 +41,6 @@ MaybeInt as_int(const std::string& field)
         if (s[k] < '0' || s[k] > '9') return MaybeInt();
     return MaybeInt((int)::strtol(s.c_str(), nullptr, 10));
 }
-
-struct BandMhz { int band; int mhz; };
-// Aus LTE_BANDS (esp32-modem-host/ec200a_modem.cpp): die Baender, die dieses
-// Modul kann, nicht alle die es gibt.
-const BandMhz kBands[] = {
-    {  1, 2100 }, {  3, 1800 }, {  5,  850 }, {  7, 2600 }, {  8,  900 },
-    { 20,  800 }, { 28,  700 }, { 38, 2600 }, { 40, 2300 }, { 41, 2500 },
-};
 
 // Die erste Zahl in einem Feld wie "3" oder "LTE BAND 3".
 MaybeInt leading_number(const std::string& s)
@@ -102,8 +95,9 @@ std::string first_numeric_line(const std::string& raw)
 
 int lte_band_mhz(int band)
 {
-    for (const BandMhz& b : kBands) if (b.band == band) return b.mhz;
-    return 0;
+    // EINE Tabelle, in band_plan: dieselbe, die die Bandwahl schreibt.
+    const LteBand* b = lte_band_by_number(band);
+    return b ? b->mhz : 0;
 }
 
 // ------------------------------------------------------------------ ATI ---
@@ -348,6 +342,57 @@ PdpContextParams parse_cgcontrdp(const std::string& raw)
 }
 
 // ------------------------------------------------------------------ QCFG ---
+
+std::vector<NeighbourCell> parse_qeng_neighbours(const std::string& raw)
+{
+    std::vector<NeighbourCell> out;
+    for (const std::string& l : lines_of(raw)) {
+        if (l.compare(0, 6, "+QENG:") != 0) continue;
+        const std::string body = trim(l.substr(6));
+        const std::string what = csv_field(body, 0);
+        // "neighbourcell intra" / "neighbourcell inter" / "neighbourcell"
+        if (what.compare(0, 13, "neighbourcell") != 0) continue;
+        NeighbourCell c;
+        if (what.find("intra") != std::string::npos)      c.kind = "intra";
+        else if (what.find("inter") != std::string::npos) c.kind = "inter";
+        c.rat = csv_field(body, 1);
+        c.earfcn = as_int(csv_field(body, 2));
+        c.pci    = as_int(csv_field(body, 3));
+        if (c.rat == "LTE") {
+            c.rsrq = as_int(csv_field(body, 4));
+            c.rsrp = as_int(csv_field(body, 5));
+            c.rssi = as_int(csv_field(body, 6));
+            c.sinr = as_int(csv_field(body, 7));
+        } else {
+            // GSM: <arfcn>,<bsic>,<rssi>,... -- PCI gibt es dort nicht, das
+            // Feld ist der BSIC und bleibt hier bewusst leer.
+            c.pci  = MaybeInt();
+            c.rssi = as_int(csv_field(body, 4));
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+MaybeInt parse_clck(const std::string& raw)
+{
+    const std::string body = at_extract(raw, "+CLCK:");
+    if (body.empty()) return MaybeInt();
+    const MaybeInt v = as_int(csv_field(body, 0));
+    if (!v.has || (v.value != 0 && v.value != 1)) return MaybeInt();
+    return v;
+}
+
+PinCounters parse_qpinc(const std::string& raw)
+{
+    PinCounters c;
+    const std::string body = at_extract(raw, "+QPINC:");
+    if (body.empty()) return c;
+    if (csv_field(body, 0) != "SC") return c;
+    c.pin_left = as_int(csv_field(body, 1));
+    c.puk_left = as_int(csv_field(body, 2));
+    return c;
+}
 
 MaybeInt parse_qcfg_int(const std::string& raw, const std::string& name)
 {
