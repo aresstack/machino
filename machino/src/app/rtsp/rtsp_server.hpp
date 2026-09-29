@@ -85,6 +85,8 @@ private:
     bool send_rtp(Session& s, const uint8_t* payload, size_t len, uint32_t ts, bool marker);
     bool send_audio(Session& s, const std::string& pcma);
     bool audio_offered() const;
+    bool backchannel_offered() const;
+    void on_backchannel(Session& s, const char* rtp, size_t n);
     audio::AudioService* audio_ = nullptr;
 
     RtspConfig  cfg_;

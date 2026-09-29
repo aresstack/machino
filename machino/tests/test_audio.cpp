@@ -465,6 +465,39 @@ void test_play_body() {
     ACHECK(http::kMaxPlayBodyBytes / 2 <= (size_t)audio::Speaker::kMaxQueueSeconds * 8000);   // a maximal body fits the queue
 }
 
+void test_rtsp_backchannel_helpers() {
+    const std::string sdp = rtsp::sdp_backchannel_section();
+    ACHECK(sdp.rfind("m=audio 0 RTP/AVP 0 8\r\n", 0) == 0 && sdp.find("a=sendonly\r\n") != std::string::npos);
+    ACHECK(sdp.find("a=control:trackID=2\r\n") != std::string::npos);
+    ACHECK(rtsp::wants_backchannel("www.onvif.org/ver20/backchannel"));
+    ACHECK(rtsp::wants_backchannel("WWW.ONVIF.ORG/ver20/Backchannel, other"));
+    ACHECK(!rtsp::wants_backchannel("") && !rtsp::wants_backchannel("play.basic"));
+
+    // Interleaved frames are taken off the front, requests left alone.
+    std::string buf("$\x04\x00\x03" "abc" "$\x01\x00\x02" "zzOPTIONS rtsp://x RTSP/1.0\r\n\r\n", 4 + 3 + 4 + 2 + 34);
+    int ch = -1; std::string data;
+    ACHECK(rtsp::take_interleaved(buf, ch, data) == rtsp::Interleaved::Frame && ch == 4 && data == "abc");
+    ACHECK(rtsp::take_interleaved(buf, ch, data) == rtsp::Interleaved::Frame && ch == 1 && data == "zz");
+    ACHECK(rtsp::take_interleaved(buf, ch, data) == rtsp::Interleaved::NotOne && buf.rfind("OPTIONS", 0) == 0);
+    std::string partial("$\x00\x00\x10" "abc", 7);
+    ACHECK(rtsp::take_interleaved(partial, ch, data) == rtsp::Interleaved::Partial && partial.size() == 7);
+    std::string head("$\x00", 2);
+    ACHECK(rtsp::take_interleaved(head, ch, data) == rtsp::Interleaved::Partial);
+
+    // RTP payload location, then G.711 to PCM.
+    std::vector<uint8_t> rtp = {0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0xFF, 0x80, 0x00};
+    uint8_t pt = 99; size_t off = 0, len = 0;
+    ACHECK(rtsp::rtp_payload(rtp.data(), rtp.size(), pt, off, len) && pt == 0 && off == 12 && len == 3);
+    std::vector<int16_t> pcm;
+    ACHECK(rtsp::decode_g711(pt, rtp.data() + off, len, pcm) && pcm.size() == 3);
+    ACHECK(pcm[0] == 0 && pcm[1] == 32124 && pcm[2] == -32124);
+    std::vector<uint8_t> ext = {0xB0, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0xBE, 0xDE, 0, 1, 1, 2, 3, 4, 0xD5, 0xD5, 0, 2};
+    ACHECK(rtsp::rtp_payload(ext.data(), ext.size(), pt, off, len) && pt == 8 && off == 20 && len == 2);
+    ACHECK(!rtsp::decode_g711(96, ext.data(), 2, pcm));                // only G.711 is offered
+    std::vector<uint8_t> bad = {0x90, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0xBE, 0xDE, 0, 9};
+    ACHECK(!rtsp::rtp_payload(bad.data(), bad.size(), pt, off, len));
+}
+
 void test_rtsp_audio_helpers() {
     const std::string sdp = rtsp::sdp_audio_section();
     ACHECK(sdp.rfind("m=audio 0 RTP/AVP 8\r\n", 0) == 0);
@@ -497,6 +530,7 @@ void test_rtsp_audio_helpers() {
 } // namespace
 
 void run_audio_tests() {
+    test_rtsp_backchannel_helpers();
     test_rtsp_audio_helpers();
     test_speaker();
     test_play_body();

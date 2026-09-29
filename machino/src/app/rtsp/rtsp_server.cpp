@@ -71,6 +71,12 @@ struct RtspServer::Session {
     uint32_t    a_ts = 0;              // 8 kHz sample clock
     int         a_rate = 0;            // capture rate of the listener
     std::shared_ptr<Sink> a_sink;      // AudioService listener, only while PLAYing
+    // The ONVIF backchannel (trackID=2): the client talks, the speaker plays.
+    bool        bc_setup = false;
+    bool        bc_tcp = true;
+    int         bc_ch = 4;             // interleaved channel the client sends on
+    int         bc_udp_fd = -1;        // or the UDP port it sends to
+    bool        bc_refused_logged = false;
 };
 
 RtspServer::RtspServer(const RtspConfig& cfg, lifecycle::PipelineManager& pipeline, StreamHub& hub,
@@ -310,6 +316,28 @@ void RtspServer::client_loop(Client* c, std::string peer) {
             if (n < 0) { if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) break; }
             else {
                 s.inbuf.append(buf, (size_t)n);
+                // Interleaved binary frames ('$', RFC 2326 10.12) share this
+                // socket with the text requests: RTCP receiver reports from
+                // every TCP client, and the backchannel's RTP. They are taken
+                // off the front before any request parsing; before this, a
+                // client's RTCP piled up as "a request that never ends" and
+                // the client was dropped at MAX_RTSP_REQUEST.
+                for (;;) {
+                    int ich = -1; std::string idata;
+                    const rtsp::Interleaved st = rtsp::take_interleaved(s.inbuf, ich, idata);
+                    if (st == rtsp::Interleaved::Frame) {
+                        if (s.bc_setup && s.bc_tcp && ich == s.bc_ch) on_backchannel(s, idata.data(), idata.size());
+                        continue;                            // anything else on the wire is RTCP: ignored
+                    }
+                    if (st == rtsp::Interleaved::Partial) break;
+                    const size_t rend = s.inbuf.find("\r\n\r\n");
+                    if (rend == std::string::npos) break;
+                    // A frame after this request is picked up on the next pass.
+                    std::string req = s.inbuf.substr(0, rend + 4);
+                    s.inbuf.erase(0, rend + 4);
+                    if (!handle_request(s, req)) { alive = false; break; }
+                }
+                if (!alive) break;
                 // AP30: bound it. This loop only drains inbuf when it finds a
                 // blank line, so a client that connects and sends bytes
                 // without ever ending a request grew it without limit - before
@@ -322,16 +350,12 @@ void RtspServer::client_loop(Client* c, std::string peer) {
                 // 8 KiB is the same ceiling as the HTTP head: a real DESCRIBE
                 // or SETUP with Authorization and Transport is a few hundred
                 // bytes, so this refuses only what was never a request.
-                if (s.inbuf.size() > MAX_RTSP_REQUEST) {
+                // (An interleaved frame in progress is bounded by its 16-bit
+                // length and is not a request.)
+                if (!s.inbuf.empty() && s.inbuf[0] != '$' && s.inbuf.size() > MAX_RTSP_REQUEST) {
                     LOGW(MOD, "%s: request exceeded %zu bytes without ending - dropping",
                          s.peer.c_str(), (size_t)MAX_RTSP_REQUEST);
                     break;
-                }
-                size_t end;
-                while ((end = s.inbuf.find("\r\n\r\n")) != std::string::npos) {
-                    std::string req = s.inbuf.substr(0, end + 4);
-                    s.inbuf.erase(0, end + 4);
-                    if (!handle_request(s, req)) { alive = false; break; }
                 }
             }
         }
@@ -343,6 +367,14 @@ void RtspServer::client_loop(Client* c, std::string peer) {
                 s.wait_key = false;
                 if (!send_au(s, *au)) { LOGW(MOD, "%s: send stalled/failed - dropping client", peer.c_str()); alive = false; }
                 else if (au->fetched_us > 0) { if (StreamHub* h = hub_for(s.unit)) h->record_out_to_send(mono_us() - au->fetched_us); }
+            }
+        }
+        if (alive && s.bc_setup && !s.bc_tcp && s.bc_udp_fd >= 0) {
+            uint8_t ub[1600];
+            for (int k = 0; k < 16; ++k) {
+                const ssize_t un = recv(s.bc_udp_fd, ub, sizeof ub, MSG_DONTWAIT);
+                if (un <= 0) break;
+                on_backchannel(s, reinterpret_cast<const char*>(ub), (size_t)un);
             }
         }
         if (alive && s.playing && s.a_sink) {
@@ -363,6 +395,7 @@ void RtspServer::client_loop(Client* c, std::string peer) {
     }
     if (s.a_sink && audio_) audio_->unlisten(s.a_sink);
     if (s.a_udp_fd >= 0) close(s.a_udp_fd);
+    if (s.bc_udp_fd >= 0) close(s.bc_udp_fd);
     if (s.sink) { StreamHub* h = hub_for(s.unit); if (h) h->unsubscribe(s.sink); }
     if (s.playing) RuntimeStats::get().dec(&RuntimeCounters::rtsp_sessions);
     s.demand.release();                                     // explicit for readability; the dtor would do it too
@@ -468,6 +501,10 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
                ";sprop-parameter-sets=" + h264::base64(sps.data(), sps.size()) + "," + h264::base64(pps.data(), pps.size()) +
                "\r\na=control:trackID=0\r\n";
         if (audio_offered()) body += rtsp::sdp_audio_section();
+        // ONVIF talkback: only for a client that asks for it (Require header)
+        // and only while the speaker is switched on.
+        if (rtsp::wants_backchannel(header(req, "Require")) && backchannel_offered())
+            body += rtsp::sdp_backchannel_section();
         return reply("200 OK", "", body);
     }
 
@@ -475,6 +512,27 @@ bool RtspServer::handle_request(Session& s, const std::string& req) {
         std::string tr = header(req, "Transport");
         size_t ua = req.find(' '), ub = (ua == std::string::npos) ? std::string::npos : req.find(' ', ua + 1);
         const std::string surl = (ua != std::string::npos && ub != std::string::npos) ? req.substr(ua + 1, ub - ua - 1) : "";
+        if (rtsp::track_from_url(surl) == rtsp::kBackchannelTrack) {
+            if (!backchannel_offered()) return reply("404 Not Found", "", "");
+            if (tr.find("RTP/AVP/TCP") != std::string::npos || tr.find("interleaved") != std::string::npos) {
+                int rtcp = 0;
+                if (!rtsp::interleaved_channels(tr, s.bc_ch, rtcp)) { s.bc_ch = 4; rtcp = 5; }
+                s.bc_setup = true; s.bc_tcp = true;
+                char t[128]; snprintf(t, sizeof t, "Transport: RTP/AVP/TCP;unicast;interleaved=%d-%d\r\nSession: %s;timeout=60\r\n", s.bc_ch, rtcp, s.session_id.c_str());
+                return reply("200 OK", t, "");
+            }
+            size_t bp = tr.find("client_port=");
+            if (bp == std::string::npos) return reply("461 Unsupported Transport", "", "");
+            const int bcport = atoi(tr.c_str() + bp + 12);
+            if (s.bc_udp_fd < 0) s.bc_udp_fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+            sockaddr_in la{}; la.sin_family = AF_INET; la.sin_addr.s_addr = htonl(INADDR_ANY); la.sin_port = 0;
+            if (s.bc_udp_fd < 0 || bind(s.bc_udp_fd, (sockaddr*)&la, sizeof la) < 0) return reply("500 Internal Server Error", "", "");
+            socklen_t ll = sizeof la; getsockname(s.bc_udp_fd, (sockaddr*)&la, &ll);
+            s.bc_setup = true; s.bc_tcp = false;
+            char t[160]; snprintf(t, sizeof t, "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s;timeout=60\r\n",
+                                  bcport, bcport + 1, ntohs(la.sin_port), ntohs(la.sin_port) + 1, s.session_id.c_str());
+            return reply("200 OK", t, "");
+        }
         if (rtsp::track_from_url(surl) == rtsp::kAudioTrack) {
             if (!audio_offered()) return reply("404 Not Found", "", "");
             if (tr.find("RTP/AVP/TCP") != std::string::npos || tr.find("interleaved") != std::string::npos) {
@@ -570,6 +628,24 @@ bool RtspServer::send_rtp(Session& s, const uint8_t* payload, size_t len, uint32
     size_t total = off + 12 + len;
     if (s.tcp) return send_all(s.fd, pkt, total, cfg_.send_stall_ms);
     return sendto(s.udp_fd, pkt, total, MSG_NOSIGNAL, (sockaddr*)&s.udp_dst, sizeof s.udp_dst) == (ssize_t)total;
+}
+
+bool RtspServer::backchannel_offered() const {
+    return audio_ && audio_->output_available() && audio_->config().output_enabled;
+}
+
+void RtspServer::on_backchannel(Session& s, const char* p, size_t n) {
+    if (!audio_) return;
+    uint8_t pt = 0; size_t off = 0, len = 0;
+    const uint8_t* u = reinterpret_cast<const uint8_t*>(p);
+    if (!rtsp::rtp_payload(u, n, pt, off, len) || len == 0) return;
+    std::vector<int16_t> pcm;
+    if (!rtsp::decode_g711(pt, u + off, len, pcm)) return;             // only PCMU/PCMA are offered
+    std::string why;
+    if (!audio_->play(std::move(pcm), 8000, why)) {
+        if (!s.bc_refused_logged) LOGW(MOD, "%s: backchannel audio dropped: %s", s.peer.c_str(), why.c_str());
+        s.bc_refused_logged = true;
+    } else s.bc_refused_logged = false;
 }
 
 bool RtspServer::audio_offered() const {

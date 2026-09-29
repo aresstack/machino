@@ -409,9 +409,22 @@ WebRTC-Browser kann. Talkback laeuft dort ueber dieselbe Sitzung
   einmal vor dem Schliessen: Talkback kommt als Strom von 20–40-ms-Clips, und
   ein Flush dazwischen haette jede Luecke hoerbar gemacht.
 
+### ONVIF/RTSP-Backchannel (seit 2026-09-29)
+
+* Ein Client, der DESCRIBE mit `Require: www.onvif.org/ver20/backchannel`
+  schickt, bekommt bei eingeschaltetem Lautsprecher eine dritte Spur:
+  `m=audio 0 RTP/AVP 0 8` (PCMU/PCMA), `a=sendonly`, `trackID=2` (ONVIF
+  Streaming Spec 5.3). SETUP ueber TCP-interleaved oder UDP; die empfangenen
+  RTP-Pakete werden zu 8-kHz-PCM dekodiert und in die
+  Lautsprecher-Warteschlange gestellt.
+* Nebenbei behoben: Interleaved-Frames (`$`) auf der RTSP-Verbindung wurden
+  bisher als Text gelesen. Das RTCP jedes TCP-Clients sammelte sich als
+  "Anfrage ohne Ende" an, bis der Client bei 8 KiB rausflog. Frames werden
+  jetzt vorne abgenommen (`rtsp::take_interleaved`, host-getestet).
+
 ### Noch offen
 
-* ONVIF/RTSP-Backchannel, Audio in `/ws/video` (`&audio=`, braucht Opus oder
+* Audio in `/ws/video` (`&audio=`, braucht Opus oder
   AAC), `/audio.opus`, `/audio.m4a`.
 * Hardwareabnahme mit `machino --audio-test` (Daemon vorher stoppen):
 
