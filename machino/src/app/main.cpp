@@ -1117,6 +1117,7 @@ int main(int argc, char** argv) {
             // idle camera is a healthy camera: nothing here is coupled to
             // frames, sessions or encoders.
             const int loop_wait_ms = wdt_on ? 1000 : -1;
+            std::string uplink_addr_sig;            // "id=ipv4;..." as of the last net tick
 
             bool run = true;
             while (run) {
@@ -1209,6 +1210,25 @@ int main(int argc, char** argv) {
                         if (cell_uplink.enabled()) rediscover_modem_port();
                         cell_uplink.tick();
                         conn.evaluate();
+                        // An uplink whose ADDRESS changed without the active
+                        // uplink changing: a cellular redial with a new carrier
+                        // address (measured 2026-09-29, 37.82.116.133 ->
+                        // 37.85.117.0). evaluate() says nothing about that,
+                        // and every socket bound to the old address is dead
+                        // without knowing it. The transports are told so they
+                        // close exactly those clients.
+                        {
+                            std::string sig;
+                            for (const net::UplinkStatus& u : conn.status())
+                                sig += u.id + "=" + u.info.ipv4 + ";";
+                            if (sig != uplink_addr_sig) {
+                                if (!uplink_addr_sig.empty()) {
+                                    LOGI(MOD, "network: uplink addresses changed (%s)", sig.c_str());
+                                    httpd.on_address_change();
+                                }
+                                uplink_addr_sig = sig;
+                            }
+                        }
                         // Routes AFTER the selection, always -- not only when
                         // evaluate() reported a change. An uplink can get a new
                         // gateway from a DHCP renewal without the ACTIVE uplink

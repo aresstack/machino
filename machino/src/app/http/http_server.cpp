@@ -19,6 +19,7 @@
 #include <ctime>
 #include <time.h>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -1495,6 +1496,16 @@ bool HttpServer::rtc_ws_input(Client& c) {
 // Per tick: DTLS timers, PLI -> on-demand IDR, and the AU pump into RTP.
 void HttpServer::pump_rtc(Client& c) {
     if (!c.rtc) return;
+    if (c.rtc->stranded() && !c.close_after_flush) {
+        // The media socket cannot reach the browser any more (source address
+        // gone). Closing the signalling socket is what makes the page notice
+        // now instead of after its own minutes-long timeout.
+        LOGW(MOD, "%s: webrtc media path is gone (sends fail) - closing the session so the client reconnects",
+             c.peer.c_str());
+        c.close_after_flush = true;
+        c.out.clear();
+        return;
+    }
     c.rtc->tick();
     c.rtc->log_stats();
     if (c.rtc->take_pli() && pipeline_) pipeline_->request_idr(c.rtc_unit);
@@ -1573,6 +1584,34 @@ void HttpServer::logs_pump(short revents) {
     }
 }
 
+void HttpServer::drop_clients_on_vanished_addresses() {
+    // The addresses that exist right now. A client bound to anything else is
+    // stranded: its packets leave with a source the network no longer routes.
+    std::vector<uint32_t> present;
+    struct ifaddrs* ifa = nullptr;
+    if (getifaddrs(&ifa) != 0) return;            // cannot tell: touch nothing
+    for (struct ifaddrs* p = ifa; p; p = p->ifa_next) {
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
+        present.push_back(((sockaddr_in*)p->ifa_addr)->sin_addr.s_addr);
+    }
+    freeifaddrs(ifa);
+    if (present.empty()) return;                   // mid-reconfiguration: touch nothing
+
+    int dropped = 0;
+    for (auto& cp : clients_) {
+        Client& c = *cp;
+        if (c.fd < 0 || c.close_after_flush) continue;
+        sockaddr_in la{}; socklen_t ll = sizeof la;
+        if (getsockname(c.fd, (sockaddr*)&la, &ll) != 0) continue;
+        if (std::find(present.begin(), present.end(), la.sin_addr.s_addr) != present.end()) continue;
+        c.close_after_flush = true;
+        c.out.clear();
+        ++dropped;
+    }
+    if (dropped)
+        LOGI(MOD, "address change: closed %d client(s) bound to an address that no longer exists", dropped);
+}
+
 void HttpServer::loop() {
     std::vector<pollfd> pfds;
     // pfds[k+1] belongs to refs[k]: an explicit fd->client map, because
@@ -1614,6 +1653,10 @@ void HttpServer::loop() {
         int n = poll(pfds.data(), pfds.size(), timeout_ms);
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)
+        {
+            const unsigned e = addr_epoch_.load(std::memory_order_acquire);
+            if (e != seen_addr_epoch_) { seen_addr_epoch_ = e; drop_clients_on_vanished_addresses(); }
+        }
         for (size_t i = 0; i < clients_.size(); ++i) {
             Client& c = *clients_[i];
             short re = 0, rre = 0, ure = 0, uge = 0;

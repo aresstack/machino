@@ -49,6 +49,19 @@ public:
     // Compact media-plane fault localisation, logged ~every 2 s by the caller.
     void log_stats();
 
+    // The media socket can no longer reach the browser and will not recover
+    // on its own: every recent send failed with an errno that says the PATH
+    // is gone, not the buffer. Measured 2026-09-29: the cellular uplink got a
+    // new carrier address, the UDP socket stayed bound to the old one, and
+    // sendto() answered EINVAL for every packet -- 959 times before anybody
+    // looked. The browser only noticed minutes later. A session that reads
+    // stranded() is closed by the owner so the client reconnects at once.
+    bool stranded() const { return fatal_send_streak_ >= kStrandedAfter; }
+    // Errnos that mean "the socket's source address or route is gone" rather
+    // than "the buffer is full". Pure, so the host tests can pin the list.
+    static bool is_fatal_send_errno(int e);
+    static const unsigned kStrandedAfter = 25;
+
 private:
     void flush_dtls();
     bool send_udp(const uint8_t* p, size_t n);
@@ -73,6 +86,7 @@ private:
     uint64_t    au_count_ = 0, rtp_count_ = 0, rtp_bytes_ = 0;
     uint64_t    send_ok_ = 0, send_err_ = 0;
     int         last_send_errno_ = 0;
+    unsigned    fatal_send_streak_ = 0;  // consecutive sends failing with a fatal errno
     uint64_t    rtcp_in_ = 0, pli_in_ = 0;
     int64_t     last_stat_ms_ = 0;
 };
