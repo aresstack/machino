@@ -70,6 +70,12 @@ void StreamHub::publish(const AuPtr& au) {
     for (auto& s : sinks_) s->push(au);
 }
 
+void StreamHub::close_all() {
+    std::vector<std::shared_ptr<Sink>> gone;
+    { std::lock_guard<std::mutex> lk(m_); gone.swap(sinks_); }
+    for (auto& s : gone) s->close();
+}
+
 size_t StreamHub::consumers() const { std::lock_guard<std::mutex> lk(m_); return sinks_.size(); }
 
 void StreamHub::roll_window_locked(int64_t now) {

@@ -39,9 +39,32 @@ eine bewusste Nutzerentscheidung).
 
 Das ist der Tag/Nacht-Fotosensor, den Stocks „Automatic day/night" abfragt
 (BoardSys.json `DayNight`: `NightToDayThreshold: 35`, `DayToNightThreshold:
-20`, `Delay: 3`, `ircutOutTrig: 1`). Machinos Schema laesst die Automatik-
-Felder weiterhin ABSICHTLICH weg, bis eine Automatik implementiert ist —
-mit PB17 + diesen Schwellen ist der Bauplan jetzt aber dokumentiert.
+20`, `Delay: 3`, `ircutOutTrig: 1`).
+
+**Seit 2026-09-29 implementiert** (Fotosensor-Automatik):
+
+* `nightMode.lightMonitor` (nativ `night.light_monitor`) schaltet sie ein. Der
+  NightService liest PB17 im 2-s-Takt der Hauptschleife als EINGANG und
+  schaltet erst, wenn ein Wechsel `autoNightDelay`/`autoDayDelay` Sekunden
+  stabil war (Default 3, wie Stocks `Delay`). Umgeschaltet wird nur bei einem
+  Wechsel: ein manueller `/night/*`-Knopf bleibt stehen, bis sich das Licht
+  wirklich aendert. Beim Einschalten wird der aktuelle Zustand einmal
+  angewendet.
+* Polaritaet: HIGH = dunkel (die gaengige Fotozelle mit Komparator). Fuer
+  dieses Board **nicht gemessen** — liegt der Sensor andersherum,
+  `lightSensorInvert` setzen. Pruefen: `cat /sys/class/gpio/gpio49/value` bei
+  Licht und abgedecktem Sensor; die Telemetrie zeigt `night.auto.dark`.
+* `nightMode.colorToGray` (nativ `night.color_to_gray`, Default an wie in der
+  `majestic.yaml` dieser Kamera): nur dann bringt der Nachtmodus das
+  Schwarzweissbild (ISP-RunningMode). Aus = nachts Filter raus, Bild farbig.
+  Stock macht dasselbe (`libisp_imx307.so`: `SetISPRunningMode` beim
+  day->night-Wechsel, `ColorMode` getrennt).
+* Der Nachtmodus wird im TuningService VORGEMERKT und nach jedem
+  Pipeline-Start neu angewendet; vorher ging er verloren, wenn das Video beim
+  Umschalten kalt war.
+* Nicht gebaut: die Automatik aus der Sensorverstaerkung
+  (`minThreshold`/`maxThreshold`, `autoNightGain`/`autoDayGain`) — diese
+  Felder bleiben aus dem Schema.
 
 ## IR-Licht (Lampe): PWM-basiert
 

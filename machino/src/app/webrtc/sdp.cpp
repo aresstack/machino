@@ -179,6 +179,8 @@ Offer parse_offer(const std::string& sdp, const std::string& prefer_profile) {
             cur = (int)o.media.size() - 1;
         } else if (starts(l, "a=mid:")) {
             if (cur >= 0) o.media[cur].mid = l.substr(6);
+        } else if (l == "a=sendrecv" || l == "a=sendonly" || l == "a=recvonly" || l == "a=inactive") {
+            if (cur >= 0) o.media[cur].direction = l.substr(2);
         } else if (starts(l, "a=ice-ufrag:")) {
             if (o.ice_ufrag.empty()) o.ice_ufrag = l.substr(12);
         } else if (starts(l, "a=ice-pwd:")) {
@@ -197,6 +199,10 @@ Offer parse_offer(const std::string& sdp, const std::string& prefer_profile) {
             if (sscanf(l.c_str() + 9, "%d %63[^/]", &pt, codec) == 2 && pt >= 0) {
                 const std::string name(codec);
                 if (ieq(name, "H264")) h264_pt[pt] = true;
+                if (cur >= 0 && o.media[cur].kind == "audio" && strstr(l.c_str(), "/8000")) {
+                    if (ieq(name, "PCMA") && o.media[cur].pcma_pt < 0) o.media[cur].pcma_pt = pt;
+                    if (ieq(name, "PCMU") && o.media[cur].pcmu_pt < 0) o.media[cur].pcmu_pt = pt;
+                }
                 // Remember every video codec the browser offered, so a refusal
                 // can say what it DID offer. "no H264 packetization-mode=1" on
                 // its own does not distinguish a browser with no H264 at all
@@ -219,6 +225,8 @@ Offer parse_offer(const std::string& sdp, const std::string& prefer_profile) {
         }
     }
     settle_video(cur);
+    for (size_t i = 0; i < o.media.size(); ++i)
+        if (o.media[i].kind == "audio" && (o.media[i].pcma_pt >= 0 || o.media[i].pcmu_pt >= 0)) { o.audio_index = (int)i; break; }
     if (o.video_index < 0) {
         // Name what the browser DID offer. Without this the log line is the
         // same whether the browser has no H264 at all (a build or platform
@@ -237,9 +245,21 @@ Offer parse_offer(const std::string& sdp, const std::string& prefer_profile) {
     return o;
 }
 
+AudioPlan plan_audio(const Offer& offer, bool camera_can_send, bool camera_can_recv) {
+    AudioPlan a;
+    if (offer.audio_index < 0) return a;
+    const OfferMedia& m = offer.media[(size_t)offer.audio_index];
+    const bool browser_recv = m.direction == "sendrecv" || m.direction == "recvonly";
+    const bool browser_send = m.direction == "sendrecv" || m.direction == "sendonly";
+    a.send = camera_can_send && browser_recv;
+    a.recv = camera_can_recv && browser_send;
+    if (!a.send && !a.recv) return AudioPlan{};
+    a.pt = m.pcma_pt >= 0 ? m.pcma_pt : m.pcmu_pt;
+    return a;
+}
+
 std::string build_answer(const Offer& offer, const AnswerParams& p) {
     if (!offer.ok || offer.video_index < 0) return "";
-    const OfferMedia& v = offer.media[(size_t)offer.video_index];
     char buf[256];
     std::string s;
     s += "v=0\r\n";
@@ -247,11 +267,36 @@ std::string build_answer(const Offer& offer, const AnswerParams& p) {
     s += "s=-\r\n";
     s += "t=0 0\r\n";
     s += "a=ice-lite\r\n";
-    // BUNDLE names only the m-line we accept; rejected m-lines stay out of the group.
-    if (!v.mid.empty()) s += "a=group:BUNDLE " + v.mid + "\r\n";
+    const bool audio = p.audio_pt >= 0 && offer.audio_index >= 0 && (p.audio_send || p.audio_recv);
+    // BUNDLE names only the m-lines we accept; rejected m-lines stay out of the group.
+    {
+        std::string group;
+        for (size_t i = 0; i < offer.media.size(); ++i) {
+            const bool acc = (int)i == offer.video_index || (audio && (int)i == offer.audio_index);
+            if (acc && !offer.media[i].mid.empty()) group += " " + offer.media[i].mid;
+        }
+        if (!group.empty()) s += "a=group:BUNDLE" + group + "\r\n";
+    }
     s += "a=msid-semantic: WMS *\r\n";
     for (size_t i = 0; i < offer.media.size(); ++i) {
         const OfferMedia& m = offer.media[i];
+        if (audio && (int)i == offer.audio_index) {
+            snprintf(buf, sizeof buf, "m=audio %u UDP/TLS/RTP/SAVPF %d\r\n", (unsigned)p.port, p.audio_pt); s += buf;
+            s += "c=IN IP4 " + p.host_ip + "\r\n";
+            if (!m.mid.empty()) s += "a=mid:" + m.mid + "\r\n";
+            s += "a=ice-ufrag:" + p.ice_ufrag + "\r\n";
+            s += "a=ice-pwd:" + p.ice_pwd + "\r\n";
+            s += "a=fingerprint:sha-256 " + p.fingerprint + "\r\n";
+            s += "a=setup:passive\r\n";
+            s += p.audio_send && p.audio_recv ? "a=sendrecv\r\n" : p.audio_send ? "a=sendonly\r\n" : "a=recvonly\r\n";
+            s += "a=rtcp-mux\r\n";
+            snprintf(buf, sizeof buf, "a=rtpmap:%d %s/8000\r\n", p.audio_pt, p.audio_pt == m.pcma_pt ? "PCMA" : "PCMU"); s += buf;
+            if (p.audio_send) { snprintf(buf, sizeof buf, "a=ssrc:%u cname:%s\r\n", p.audio_ssrc, p.cname.c_str()); s += buf; }
+            snprintf(buf, sizeof buf, "a=candidate:1 1 udp 2130706431 %s %u typ host\r\n",
+                     p.host_ip.c_str(), (unsigned)p.port); s += buf;
+            s += "a=end-of-candidates\r\n";
+            continue;
+        }
         const bool take = (int)i == offer.video_index;
         const int pt = take ? m.h264_pt : 0;
         snprintf(buf, sizeof buf, "m=%s %u UDP/TLS/RTP/SAVPF %d\r\n",

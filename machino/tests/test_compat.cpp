@@ -70,7 +70,7 @@ void test_migrate_core() {
     CCHECK(disp_is(r, "video0.enabled", Disposition::Ignored));   // demand-driven
     CCHECK(disp_is(r, "video0.size", Disposition::Converted));
     CCHECK(disp_is(r, "video0.gop", Disposition::Converted));
-    CCHECK(disp_is(r, "audio.enabled", Disposition::Unsupported));
+    CCHECK(disp_is(r, "audio.enabled", Disposition::Mapped));      // the microphone switch migrates now
     CCHECK(disp_is(r, "motionDetect.enabled", Disposition::Converted));
     // the conf body carries only mapped+converted keys, with a header
     std::string conf = to_machino_conf(r);
@@ -352,14 +352,19 @@ void test_unoffered_subsystems() {
         CCHECK(r.patch.get("night")->get("ircut_pin1")->as_string() == "PB18");
     }
 
-    // AP20: audio is reported too (two switches), so it gets a reason as well.
+    // Audio is a real section since the microphone path exists: the POST
+    // translates majestic's camelCase speaker keys and passes the rest on for
+    // the native validation to accept or name.
     {
-        MajesticTranslation r = majestic_post_to_native("{\"audio\":{\"enabled\":\"true\"}}");
-        CCHECK(!r.ok);
-        CCHECK(r.status == 403);
-        CCHECK(r.code == "unsupported_control");
-        CCHECK(r.path == "audio");
-        CCHECK(r.message.find("spk_gpio=-1") != std::string::npos);
+        MajesticTranslation r = majestic_post_to_native(
+            "{\"audio\":{\"enabled\":\"true\",\"srate\":\"16000\",\"outputEnabled\":\"false\",\"outputVolume\":\"40\"}}");
+        CCHECK(r.ok);
+        const Json* a = r.patch.get("audio");
+        CCHECK(a && a->get("enabled") && a->get("enabled")->as_bool());
+        CCHECK(a && a->get("srate") && a->get("srate")->as_int() == 16000);
+        CCHECK(a && a->get("output_enabled") && !a->get("output_enabled")->as_bool());
+        CCHECK(a && a->get("output_volume") && a->get("output_volume")->as_int() == 40);
+        CCHECK(a && !a->get("outputEnabled"));
     }
 
     // A MIXED body is the case worth stating rather than implying: a POST that
@@ -370,16 +375,16 @@ void test_unoffered_subsystems() {
     // three possible answers.
     {
         MajesticTranslation r = majestic_post_to_native(
-            "{\"video0\":{\"bitrate\":\"2000\"},\"audio\":{\"enabled\":\"true\"}}");
+            "{\"video0\":{\"bitrate\":\"2000\"},\"records\":{\"enabled\":\"true\"}}");
         CCHECK(!r.ok);
-        CCHECK(r.status == 403 && r.path == "audio");
+        CCHECK(r.code == "unknown_field" && r.path == "records");
         CCHECK(r.patch.members().empty());
     }
 
     // And none of them leaks into a patch: a refusal that still translated
     // something would be worse than either answer. (nightMode ist seit W2
     // eine echte Sektion und gehoert nicht mehr in diese Liste.)
-    for (const char* s : { "records", "analytics", "peers", "audio" }) {
+    for (const char* s : { "records", "analytics", "peers" }) {
         const std::string body = std::string("{\"") + s + "\":{\"enabled\":\"true\"}}";
         MajesticTranslation r = majestic_post_to_native(body);
         CCHECK(r.patch.members().empty());

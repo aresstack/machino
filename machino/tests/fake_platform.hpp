@@ -63,6 +63,16 @@ public:
     Result enable() override  { log_.add("fs.enable");  return Result::ok(); }
     Result disable() override { log_.add("fs.disable"); return Result::ok(); }
     int channel() const override { return chn_; }
+    // A gradient: luma = (x + y) & 0xff, chroma U = x, V = y (per 2x2 block),
+    // so a crop test can tell exactly which pixels came back.
+    Result snap_nv12(std::vector<uint8_t>& out, int w, int h) override {
+        log_.add("fs.snap");
+        out.assign((size_t)w * h * 3 / 2, 0);
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) out[(size_t)y * w + x] = (uint8_t)(x + y);
+        uint8_t* uv = out.data() + (size_t)w * h;
+        for (int y = 0; y < h / 2; ++y) for (int x = 0; x < w / 2; ++x) { uv[(size_t)y * w + 2 * x] = (uint8_t)x; uv[(size_t)y * w + 2 * x + 1] = (uint8_t)y; }
+        return Result::ok();
+    }
 private:
     CallLog& log_; int chn_;
 };

@@ -30,6 +30,8 @@ public:
     std::unique_ptr<IEncoder>     create_encoder(int chn, const EffectiveStream& sc) override;
     std::unique_ptr<IJpegEncoder> create_jpeg(int chn, const JpegParams& p) override;
     std::unique_ptr<IDetector>    create_detector(int chn, const DetectorParams& p) override;
+    std::unique_ptr<IAudioIn>     create_audio_in(const AudioParams& p) override;
+    std::unique_ptr<IAudioOut>    create_audio_out(const AudioParams& p) override;
     // Der Availability-Vertrag (AP-NNA5): dieselbe Bewertung, die auch die
     // Fabrik gated -- fuer die API/UI, mit vollstaendigen Reason-Codes.
     std::vector<detection::DetectorStatus> detector_status(const std::string& model_path) const;

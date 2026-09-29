@@ -48,16 +48,25 @@ endif
 .PHONY: check-mbedtls
 .DEFAULT_GOAL := all   # check-mbedtls above must not become the default goal
 
+# Audio encoders (libfaac AAC-LC, libopus), built by tools/fetch-codecs.sh <dir>
+# <cc> <ar>. Optional: without CODECS the AAC/Opus endpoints answer 501 and
+# say that this build has no encoder; everything else is unaffected.
+CODECS ?=
+ifneq ($(CODECS),)
+CXXFLAGS += -DMACHINO_CODECS -isystem $(CODECS)/include
+LIBS += $(CODECS)/libfaac-$(notdir $(CROSS_COMPILE)gcc).a $(CODECS)/libopus-$(notdir $(CROSS_COMPILE)gcc).a
+endif
+
 CORE_SRC := src/core/random.cpp src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp src/core/runtime_stats.cpp src/core/log_file.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp \
             src/core/lifecycle/pipeline_manager.cpp src/core/power/performance_service.cpp src/core/media/tuning_service.cpp \
-            src/core/detection/detection_service.cpp src/core/detection/nna_detector.cpp src/core/detection/nna_manifest.cpp src/core/detection/detector_availability.cpp src/core/usb/usb_host_service.cpp src/core/net/connectivity.cpp src/core/hw/pin_resolver.cpp src/core/state_store.cpp src/core/net/network_txn.cpp src/app/api/net_views.cpp src/app/api/net_api.cpp src/core/devices/device_package.cpp src/core/devices/device_manifest.cpp src/core/devices/aic8800_package.cpp src/core/net/wpa_parse.cpp src/core/net/proc_net.cpp src/core/net/hostapd_conf.cpp src/core/cellular/modem_ports.cpp src/core/cellular/at_framing.cpp src/core/cellular/at_parse.cpp src/core/cellular/sim_manager.cpp src/core/cellular/cellular_config.cpp src/core/cellular/cellular_service.cpp src/core/cellular/ecm_link.cpp src/core/cellular/ppp_link.cpp src/core/net/cellular_uplink.cpp src/core/net/route_plan.cpp src/core/net/route_manager.cpp src/core/net/ipsec_config.cpp src/core/net/ipsec_service.cpp src/core/night/night_service.cpp src/profiles/usb_profiles.cpp \
+            src/core/detection/detection_service.cpp src/core/detection/nna_detector.cpp src/core/detection/nna_manifest.cpp src/core/detection/detector_availability.cpp src/core/usb/usb_host_service.cpp src/core/net/connectivity.cpp src/core/hw/pin_resolver.cpp src/core/state_store.cpp src/core/net/network_txn.cpp src/app/api/net_views.cpp src/app/api/net_api.cpp src/core/devices/device_package.cpp src/core/devices/device_manifest.cpp src/core/devices/aic8800_package.cpp src/core/net/wpa_parse.cpp src/core/net/proc_net.cpp src/core/net/hostapd_conf.cpp src/core/cellular/modem_ports.cpp src/core/cellular/at_framing.cpp src/core/cellular/at_parse.cpp src/core/cellular/sim_manager.cpp src/core/cellular/cellular_config.cpp src/core/cellular/cellular_service.cpp src/core/cellular/ecm_link.cpp src/core/cellular/ppp_link.cpp src/core/net/cellular_uplink.cpp src/core/net/route_plan.cpp src/core/net/route_manager.cpp src/core/net/ipsec_config.cpp src/core/net/ipsec_service.cpp src/core/night/night_service.cpp src/core/audio/g711.cpp src/core/audio/audio_service.cpp src/core/audio/speaker.cpp src/core/audio/audio_encoder.cpp src/profiles/usb_profiles.cpp \
             src/profiles/builtin_profiles.cpp
 SRC := src/core/log.cpp $(CORE_SRC) \
-       src/app/log_reader.cpp src/app/osd/osd_service.cpp src/app/onvif/soap.cpp src/app/onvif/discovery.cpp src/app/onvif/discovery_server.cpp src/app/onvif/onvif_service.cpp src/app/api/api_service.cpp src/app/api/ipsec_api.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/http/setup.cpp src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/http/http_server.cpp \
+       src/app/log_reader.cpp src/app/audio_test.cpp src/app/osd/osd_service.cpp src/app/onvif/soap.cpp src/app/onvif/discovery.cpp src/app/onvif/discovery_server.cpp src/app/onvif/onvif_service.cpp src/app/api/api_service.cpp src/app/api/ipsec_api.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/http/setup.cpp src/app/http/fmp4.cpp src/app/http/audio_stream.cpp src/app/http/ogg.cpp src/app/http/stills.cpp src/app/http/hls.cpp src/app/http/websocket.cpp src/app/http/http_server.cpp \
        src/app/linux_grace_timer.cpp src/app/linux_system_stats.cpp \
        src/app/watchdog.cpp src/app/linux_watchdog.cpp \
-       src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp src/app/rtsp/rtsp_server.cpp src/app/main.cpp \
+       src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp src/app/rtsp/rtp_audio.cpp src/app/rtsp/rtp_jpeg.cpp src/app/rtsp/rtsp_server.cpp src/app/main.cpp \
        src/app/webrtc/sdp.cpp src/app/webrtc/stun.cpp src/app/webrtc/rtp.cpp src/app/webrtc/aes.cpp src/app/webrtc/srtp.cpp src/app/webrtc/dtls.cpp src/app/webrtc/peer.cpp \
        src/adapters/linux/sysfs_gpio.cpp src/adapters/linux/linux_usb_host.cpp src/adapters/linux/wpa_ctrl.cpp src/adapters/linux/linux_netif.cpp src/adapters/linux/linux_ethernet_uplink.cpp src/adapters/linux/wpa_supplicant_wifi.cpp src/adapters/linux/hostapd_ap.cpp src/adapters/linux/wifi_station_uplink.cpp src/adapters/linux/linux_route_backend.cpp src/adapters/linux/linux_ppp_backend.cpp src/adapters/linux/linux_ipsec_backend.cpp \
        src/adapters/linux/linux_serial_scan.cpp src/adapters/linux/at_transport.cpp src/adapters/linux/linux_ecm_backend.cpp \
@@ -65,7 +74,7 @@ SRC := src/core/log.cpp $(CORE_SRC) \
        src/adapters/ingenic/ingenic_power_control.cpp \
        src/adapters/ingenic/ingenic_image_control.cpp \
        src/adapters/ingenic/ingenic_platform.cpp src/adapters/ingenic/ingenic_framesource.cpp \
-       src/adapters/ingenic/ingenic_encoder.cpp src/adapters/ingenic/ingenic_jpeg.cpp \
+       src/adapters/ingenic/ingenic_encoder.cpp src/adapters/ingenic/ingenic_jpeg.cpp src/adapters/ingenic/ingenic_audio.cpp \
        src/adapters/ingenic/detection/ivs_motion.cpp src/adapters/ingenic/detection/nna_source.cpp \
        src/adapters/linux/linux_nna_process.cpp
 OBJ := $(SRC:.cpp=.o)
@@ -76,17 +85,21 @@ HOST_CXXFLAGS ?= -std=c++17 -O1 -fno-exceptions -fno-rtti -Wall -Wextra -Wno-unu
 HOST_CXXFLAGS += -DMBEDTLS_SSL_DTLS_SRTP -isystem $(MBEDTLS)/include
 HOST_MBEDTLS_LIB := $(MBEDTLS)/libmbedall-$(notdir $(HOST_CXX:g++=gcc)).a
 HOST_LIBS ?= $(HOST_MBEDTLS_LIB)
+ifneq ($(CODECS),)
+HOST_CXXFLAGS += -DMACHINO_CODECS -isystem $(CODECS)/include
+HOST_LIBS += $(CODECS)/libfaac-$(notdir $(HOST_CXX:g++=gcc)).a $(CODECS)/libopus-$(notdir $(HOST_CXX:g++=gcc)).a -lm
+endif
 ifeq ($(OS),Windows_NT)
 HOST_LIBS += -lbcrypt -lws2_32
 endif
 TEST_SRC := tests/test_main.cpp tests/test_lifecycle.cpp tests/test_power.cpp tests/test_json.cpp tests/test_events.cpp \
-            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_webrtc.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/test_schema_contract.cpp tests/test_logging.cpp tests/test_osd.cpp tests/test_setup.cpp tests/test_onvif.cpp tests/test_discovery.cpp tests/test_onvif_digest.cpp tests/test_random.cpp tests/test_watchdog.cpp tests/test_usb.cpp tests/test_connectivity.cpp tests/test_pin_resolver.cpp tests/test_network_txn.cpp tests/test_state_store.cpp tests/test_net_views.cpp tests/test_net_api.cpp tests/test_wpa_parse.cpp tests/test_wwwpages.cpp tests/test_proc_net.cpp tests/test_hostapd_conf.cpp tests/test_adapter_wiring.cpp tests/test_cellular_ports.cpp tests/test_cellular.cpp tests/test_ecm_link.cpp tests/test_cellular_uplink.cpp tests/test_ppp_link.cpp tests/test_route_plan.cpp tests/test_devices.cpp tests/test_nna_detector.cpp tests/test_ipsec.cpp tests/log_stub.cpp \
+            tests/test_http_parse.cpp tests/test_session.cpp tests/test_fmp4.cpp tests/test_sps.cpp tests/test_webrtc.cpp tests/test_websocket.cpp tests/test_api.cpp tests/test_tuning.cpp tests/test_multistream.cpp tests/test_detection.cpp tests/test_compat.cpp tests/test_schema_contract.cpp tests/test_logging.cpp tests/test_osd.cpp tests/test_setup.cpp tests/test_onvif.cpp tests/test_discovery.cpp tests/test_onvif_digest.cpp tests/test_random.cpp tests/test_watchdog.cpp tests/test_usb.cpp tests/test_connectivity.cpp tests/test_pin_resolver.cpp tests/test_network_txn.cpp tests/test_state_store.cpp tests/test_net_views.cpp tests/test_net_api.cpp tests/test_wpa_parse.cpp tests/test_wwwpages.cpp tests/test_proc_net.cpp tests/test_hostapd_conf.cpp tests/test_adapter_wiring.cpp tests/test_cellular_ports.cpp tests/test_cellular.cpp tests/test_ecm_link.cpp tests/test_cellular_uplink.cpp tests/test_ppp_link.cpp tests/test_route_plan.cpp tests/test_devices.cpp tests/test_nna_detector.cpp tests/test_ipsec.cpp tests/test_audio.cpp tests/log_stub.cpp \
             src/core/random.cpp src/core/config.cpp src/core/config_store.cpp src/core/events.cpp src/core/json.cpp src/core/stream_hub.cpp src/core/runtime_stats.cpp src/core/log_file.cpp \
             src/core/hw/board_profile_parser.cpp src/core/hw/resolve.cpp src/core/lifecycle/pipeline_manager.cpp \
-            src/core/power/performance_service.cpp src/core/media/tuning_service.cpp src/core/detection/detection_service.cpp src/core/detection/nna_detector.cpp src/core/detection/nna_manifest.cpp src/core/detection/detector_availability.cpp src/core/usb/usb_host_service.cpp src/core/net/connectivity.cpp src/core/hw/pin_resolver.cpp src/core/state_store.cpp src/core/net/network_txn.cpp src/app/api/net_views.cpp src/app/api/net_api.cpp src/core/devices/device_package.cpp src/core/devices/device_manifest.cpp src/core/devices/aic8800_package.cpp src/core/net/wpa_parse.cpp src/core/net/proc_net.cpp src/core/net/hostapd_conf.cpp src/core/cellular/modem_ports.cpp src/core/cellular/at_framing.cpp src/core/cellular/at_parse.cpp src/core/cellular/sim_manager.cpp src/core/cellular/cellular_config.cpp src/core/cellular/cellular_service.cpp src/core/cellular/ecm_link.cpp src/core/cellular/ppp_link.cpp src/core/net/cellular_uplink.cpp src/core/net/route_plan.cpp src/core/net/route_manager.cpp src/core/net/ipsec_config.cpp src/core/net/ipsec_service.cpp src/core/night/night_service.cpp src/profiles/usb_profiles.cpp \
-            src/app/osd/osd_service.cpp src/app/watchdog.cpp \
+            src/core/power/performance_service.cpp src/core/media/tuning_service.cpp src/core/detection/detection_service.cpp src/core/detection/nna_detector.cpp src/core/detection/nna_manifest.cpp src/core/detection/detector_availability.cpp src/core/usb/usb_host_service.cpp src/core/net/connectivity.cpp src/core/hw/pin_resolver.cpp src/core/state_store.cpp src/core/net/network_txn.cpp src/app/api/net_views.cpp src/app/api/net_api.cpp src/core/devices/device_package.cpp src/core/devices/device_manifest.cpp src/core/devices/aic8800_package.cpp src/core/net/wpa_parse.cpp src/core/net/proc_net.cpp src/core/net/hostapd_conf.cpp src/core/cellular/modem_ports.cpp src/core/cellular/at_framing.cpp src/core/cellular/at_parse.cpp src/core/cellular/sim_manager.cpp src/core/cellular/cellular_config.cpp src/core/cellular/cellular_service.cpp src/core/cellular/ecm_link.cpp src/core/cellular/ppp_link.cpp src/core/net/cellular_uplink.cpp src/core/net/route_plan.cpp src/core/net/route_manager.cpp src/core/net/ipsec_config.cpp src/core/net/ipsec_service.cpp src/core/night/night_service.cpp src/core/audio/g711.cpp src/core/audio/audio_service.cpp src/core/audio/speaker.cpp src/core/audio/audio_encoder.cpp src/profiles/usb_profiles.cpp \
+            src/app/osd/osd_service.cpp src/app/audio_test.cpp src/app/watchdog.cpp \
             src/app/api/api_service.cpp src/app/api/ipsec_api.cpp src/app/compat/majestic_webui.cpp src/app/compat/majestic_migrate.cpp src/app/http/http_parse.cpp src/app/http/session.cpp src/app/onvif/soap.cpp src/app/onvif/discovery.cpp src/app/onvif/onvif_service.cpp src/app/http/setup.cpp \
-            src/app/http/fmp4.cpp src/app/http/websocket.cpp src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp tests/test_rtsp_auth.cpp tests/test_rtsp_claim.cpp \
+            src/app/http/fmp4.cpp src/app/http/audio_stream.cpp src/app/http/ogg.cpp src/app/http/stills.cpp src/app/http/hls.cpp src/app/http/websocket.cpp src/app/rtsp/h264_nal.cpp src/app/rtsp/rtsp_auth.cpp src/app/rtsp/rtp_audio.cpp src/app/rtsp/rtp_jpeg.cpp tests/test_rtsp_auth.cpp tests/test_rtsp_claim.cpp \
             src/app/webrtc/sdp.cpp src/app/webrtc/stun.cpp src/app/webrtc/rtp.cpp src/app/webrtc/aes.cpp src/app/webrtc/srtp.cpp src/app/webrtc/dtls.cpp tests/test_dtls.cpp \
             src/profiles/builtin_profiles.cpp src/adapters/ingenic/sensor_params.cpp
 

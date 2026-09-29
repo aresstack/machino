@@ -1,4 +1,5 @@
 #include "core/night/night_service.hpp"
+#include "core/log.hpp"
 
 #include <chrono>
 #include <thread>
@@ -51,6 +52,16 @@ NightPins NightService::pins() const
     p.backlight_pin       = store_.get("night.backlight_pin");
     p.light_sensor_pin    = store_.get("night.light_sensor_pin");
     p.light_sensor_invert = store_.get("night.light_sensor_invert") == "true";
+    p.light_monitor       = store_.get("night.light_monitor") == "true";
+    p.color_to_gray       = store_.get("night.color_to_gray") != "false";   // abwesend = an
+    auto secs = [this](const char* key, int def) {
+        const std::string v = store_.get(key);
+        if (v.empty()) return def;
+        const int n = atoi(v.c_str());
+        return n >= 0 && n <= 3600 ? n : def;
+    };
+    p.auto_night_delay_s  = secs("night.auto_night_delay", p.auto_night_delay_s);
+    p.auto_day_delay_s    = secs("night.auto_day_delay", p.auto_day_delay_s);
     // W2b: Board-Profil-Defaults, wenn die UI (Store) nichts gesetzt hat --
     // dieselbe Rangfolge wie beim USB-Port: Profil-Vorgabe, Nutzer gewinnt.
     if (p.ircut_pin1.empty() && p.ircut_pin2.empty()) {
@@ -127,9 +138,30 @@ std::string NightService::drive_light_(bool on)
 
 std::string NightService::set_night(bool on)
 {
-    // Der ISP-Teil zuerst: RunningMode 0/1. Ein unsupported RunningMode
-    // (Plattform ohne den Regler) ist ein ehrlicher Fehler.
-    const power::ApplyResult ar = tuning_.set_image_live(ImageControl::RunningMode, on ? 1 : 0);
+    std::lock_guard<std::mutex> lk(m_);
+    return set_night_locked_(on);
+}
+
+std::string NightService::toggle_night(bool& out)
+{
+    std::lock_guard<std::mutex> lk(m_);
+    const std::string e = set_night_locked_(!night_);
+    out = night_;
+    return e;
+}
+
+std::string NightService::set_night_locked_(bool on)
+{
+    const NightPins p = pins();
+    // Der ISP-Teil zuerst: RunningMode 0/1 -- Schwarzweiss nur, wenn
+    // colorToGray es will. Ein unsupported RunningMode (Plattform ohne den
+    // Regler) ist ein ehrlicher Fehler.
+    //
+    // set_image, nicht set_image_live: der Wert wird VORGEMERKT und nach
+    // jedem Pipeline-Start wieder angewendet. Mit _live ging er verloren,
+    // wenn das Video gerade kalt war -- eine Kamera, die nachts ohne
+    // Zuschauer umschaltet und spaeter geoeffnet wird, zeigte dann Tagmodus.
+    const power::ApplyResult ar = tuning_.set_image(ImageControl::RunningMode, on && p.color_to_gray ? 1 : 0);
     if (!ar.ok) return ar.message.empty() ? "running_mode could not be applied" : ar.message;
     night_ = on;
 
@@ -137,7 +169,6 @@ std::string NightService::set_night(bool on)
     // "an actuator told not to follow day/night does not move with it"
     // (Kommentar der Stock-Seite). Deren Fehler ueberschreiben den Erfolg
     // des Modus nicht: die Seite liest alle drei Zustaende ohnehin neu.
-    const NightPins p = pins();
     if (p.ircut && !p.ircut_pin1.empty()) drive_ircut_(!on);   // Nacht = Filter raus
     if (p.backlight && !p.backlight_pin.empty()) drive_light_(on);
     return {};
@@ -145,12 +176,83 @@ std::string NightService::set_night(bool on)
 
 std::string NightService::toggle_ircut()
 {
+    std::lock_guard<std::mutex> lk(m_);
     return drive_ircut_(!ircut_);
 }
 
 std::string NightService::toggle_light()
 {
+    std::lock_guard<std::mutex> lk(m_);
     return drive_light_(!light_);
+}
+
+void NightService::tick(int64_t now_ms)
+{
+    std::lock_guard<std::mutex> lk(m_);
+    const NightPins p = pins();
+    if (!p.light_monitor) {
+        // Aus: vergessen, was gereift ist. Beim naechsten Einschalten wird der
+        // dann aktuelle Zustand wieder einmal angewendet.
+        auto_.committed = auto_.candidate = auto_.raw = auto_.pending_s = -1;
+        auto_.error.clear();
+        return;
+    }
+    auto fail = [&](const std::string& why) {
+        if (why != auto_.error) LOGW("NIGHT", "automatic day/night idle: %s", why.c_str());
+        auto_.error = why;
+        auto_.raw = auto_.pending_s = -1;
+    };
+    if (!gpio_ || !gpio_->available()) return fail("no GPIO on this platform");
+    if (p.light_sensor_pin.empty()) return fail("no daylight sensor pin configured in Day / Night settings");
+    const std::string name = pin_name_(p.light_sensor_pin);
+    if (name.empty()) return fail("daylight sensor pin '" + p.light_sensor_pin + "': not a valid pin");
+
+    if (auto_.input_pin != name) {
+        if (now_ms < auto_.retry_at_ms) return;
+        const Result r = gpio_->configure_input(name);
+        if (!r) { auto_.retry_at_ms = now_ms + 60000; return fail(gpio_err("daylight sensor", name, r)); }
+        auto_.input_pin = name;
+    }
+    bool level = false;
+    const Result r = gpio_->read(name, level);
+    if (!r) { auto_.input_pin.clear(); auto_.retry_at_ms = now_ms + 60000; return fail(gpio_err("daylight sensor", name, r)); }
+    auto_.error.clear();
+
+    // Konvention: HIGH = dunkel (so melden die gaengigen Fotozellen-Module
+    // mit Komparator); ein Sensor, der andersherum liegt, wird mit
+    // lightSensorInvert gedreht.
+    const int dark = (level != p.light_sensor_invert) ? 1 : 0;
+    auto_.raw = dark;
+
+    if (auto_.committed < 0) {                  // gerade eingeschaltet: einmal anwenden
+        auto_.committed = dark;
+        auto_.candidate = auto_.pending_s = -1;
+        LOGI("NIGHT", "automatic day/night on: sensor says %s", dark ? "dark" : "light");
+        set_night_locked_(dark == 1);
+        return;
+    }
+    if (dark == auto_.committed) { auto_.candidate = auto_.pending_s = -1; return; }
+    if (auto_.candidate != dark) { auto_.candidate = dark; auto_.candidate_since_ms = now_ms; }
+    const int64_t need_ms = (int64_t)(dark ? p.auto_night_delay_s : p.auto_day_delay_s) * 1000;
+    const int64_t left_ms = need_ms - (now_ms - auto_.candidate_since_ms);
+    if (left_ms > 0) { auto_.pending_s = (int)((left_ms + 999) / 1000); return; }
+    auto_.committed = dark;
+    auto_.candidate = auto_.pending_s = -1;
+    LOGI("NIGHT", "automatic day/night: switching to %s", dark ? "night" : "day");
+    const std::string e = set_night_locked_(dark == 1);
+    if (!e.empty()) LOGW("NIGHT", "automatic switch to %s failed: %s", dark ? "night" : "day", e.c_str());
+}
+
+AutoState NightService::auto_state() const
+{
+    std::lock_guard<std::mutex> lk(m_);
+    AutoState a;
+    a.enabled = pins().light_monitor;
+    a.sensing = a.enabled && !auto_.input_pin.empty() && auto_.error.empty();
+    a.dark = auto_.raw;
+    a.pending_s = auto_.pending_s;
+    a.error = auto_.error;
+    return a;
 }
 
 // Pin-String -> GPIO-Nummer (-1 = leer/ungueltig).

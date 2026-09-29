@@ -1,7 +1,11 @@
 // SRTP/SRTCP (RFC 3711), profile SRTP_AES128_CM_HMAC_SHA1_80 only - exactly
-// what DTLS-SRTP negotiates with every browser. The camera SENDS RTP (protect)
-// and RECEIVES RTCP (unprotect, for PLI), plus protects its own sender
-// reports. Keys come exclusively from the DTLS exporter (never from SDP).
+// what DTLS-SRTP negotiates with every browser. The camera SENDS RTP (protect:
+// video, and the microphone when the session carries audio), RECEIVES RTCP
+// (unprotect, for PLI) and RTP (unprotect: talkback audio), and protects its
+// own sender reports. Keys come exclusively from the DTLS exporter (never
+// from SDP). The rollover counter is kept PER SSRC in both directions: video
+// and audio are separate sequence spaces, and one shared counter would count
+// the other stream's numbers as a wrap.
 // Pure: AES via aes.hpp, HMAC via stun.hpp; KDF and counter mode are pinned
 // to independently computed RFC 3711 vectors in the tests.
 #pragma once
@@ -36,6 +40,12 @@ public:
     // auth, replay or malformed input. On success `pkt` is the plain RTCP.
     bool unprotect_rtcp(std::vector<uint8_t>& pkt);
 
+    // Verifies and decrypts one incoming SRTP packet in place (RFC 3711 3.3:
+    // index estimation, 64-packet replay window per SSRC). On success `pkt` is
+    // the plain RTP packet without tag and padding, and `payload_at` is where
+    // the payload starts (after CSRCs and a header extension).
+    bool unprotect_rtp(std::vector<uint8_t>& pkt, size_t& payload_at);
+
 private:
     struct Dir {
         Aes128  cipher;           // session encryption key
@@ -43,10 +53,13 @@ private:
         uint8_t auth[20];         // session auth key
         explicit Dir(const SrtpKey& mk, bool rtcp);
     };
-    Dir  rtp_out_, rtcp_out_, rtcp_in_;
-    uint32_t roc_ = 0;            // sender rollover counter
-    uint16_t last_seq_ = 0;
-    bool     seq_seen_ = false;
+    Dir  rtp_out_, rtcp_out_, rtcp_in_, rtp_in_;
+    struct OutSeq { uint32_t ssrc = 0; uint32_t roc = 0; uint16_t last = 0; bool seen = false; };
+    struct InSeq  { uint32_t ssrc = 0; uint32_t roc = 0; uint16_t high = 0; bool seen = false;
+                    uint64_t win_high = 0, win_mask = 0; };
+    static const size_t kStreams = 4;     // per direction; a WebRTC session has one or two
+    OutSeq out_[kStreams];
+    InSeq  in_[kStreams];
     uint32_t rtcp_index_ = 0;     // our SRTCP index
     uint64_t in_replay_high_ = 0; // highest accepted incoming SRTCP index
     uint64_t in_replay_mask_ = 0; // 64-wide replay window below it

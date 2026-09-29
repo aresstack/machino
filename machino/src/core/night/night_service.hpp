@@ -21,6 +21,8 @@
 #include "core/media/tuning_service.hpp"
 #include "ports/igpio.hpp"
 
+#include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -36,6 +38,28 @@ struct NightPins {
     // Automatik ihn abfragt -- eine gesetzte Pin schaltet nichts von selbst.
     std::string light_sensor_pin;
     bool        light_sensor_invert = false;
+    // Automatik (majestic nightMode.lightMonitor): der Fotosensor schaltet
+    // den Nachtmodus -- und mit ihm IR-Cut/Licht, soweit freigegeben. Aus =
+    // es bleibt bei den manuellen /night/*-Knoepfen.
+    bool        light_monitor = false;
+    // majestic nightMode.colorToGray: bringt der Nachtmodus auch das
+    // Schwarzweissbild (ISP RunningMode Nacht)? Default an, wie majestic auf
+    // dieser Kamera und wie die Stock-Firmware. Aus = nachts Filter raus,
+    // Bild bleibt farbig.
+    bool        color_to_gray = true;
+    // Wie lange der Sensor dunkel (hell) melden muss, bevor umgeschaltet
+    // wird (majestic autoNightDelay/autoDayDelay, Sekunden). Stock: Delay 3.
+    int         auto_night_delay_s = 3;
+    int         auto_day_delay_s = 3;
+};
+
+// Was die Automatik gerade weiss -- fuer Telemetrie und die Stock-Seite.
+struct AutoState {
+    bool        enabled = false;          // lightMonitor an
+    bool        sensing = false;          // der Sensor wird gelesen
+    int         dark = -1;                // letzter Rohwert: 1 dunkel, 0 hell, -1 unbekannt
+    int         pending_s = -1;           // Sekunden bis zum Umschalten, -1 = nichts steht an
+    std::string error;                    // warum sie gerade nicht arbeitet
 };
 
 class NightService {
@@ -65,20 +89,28 @@ public:
     // Zustand (Boot: Tag, Filter drin, Licht aus -- und der erste Wechsel
     // stellt den Filter AKTIV auf den gewuenschten Zustand, statt einem
     // unbekannten Boot-Zustand zu vertrauen).
-    bool night() const { return night_; }
-    bool ircut() const { return ircut_; }
-    bool light() const { return light_; }
+    bool night() const { std::lock_guard<std::mutex> lk(m_); return night_; }
+    bool ircut() const { std::lock_guard<std::mutex> lk(m_); return ircut_; }
+    bool light() const { std::lock_guard<std::mutex> lk(m_); return light_; }
 
     // Aktionen. Rueckgabe leer = ok (neuer Zustand via Getter); sonst der
     // konkrete Grund (kein Pin, GPIO belegt, ...). set_night zieht Filter
     // und Licht mit, WENN sie in der Config freigegeben sind -- die Seite
     // fragt danach ohnehin alle drei Zustaende neu ab.
     std::string set_night(bool on);
-    std::string toggle_night(bool& out) { const std::string e = set_night(!night_); out = night_; return e; }
+    std::string toggle_night(bool& out);
     std::string toggle_ircut();
     std::string toggle_light();
 
     NightPins pins() const;               // live aus dem ConfigStore
+
+    // Automatik-Takt (Hauptschleife, alle paar Sekunden). Liest den
+    // Fotosensor und schaltet NUR bei einem Wechsel, der auto_*_delay_s
+    // lang stabil war -- ein manueller Knopfdruck bleibt also stehen, bis
+    // sich das Licht wirklich aendert. Beim Einschalten der Automatik wird
+    // der aktuelle Zustand einmal angewendet.
+    void tick(int64_t now_ms);
+    AutoState auto_state() const;
 
     // W2b: Board-Profil-Defaults (USB-Muster): das Profil kennt die
     // Stock-Belegung, der Store (UI) ueberschreibt. Nur die PINS werden
@@ -90,6 +122,7 @@ public:
       def_light_sensor_pin_ = light_sensor_pin; }
 
 private:
+    std::string set_night_locked_(bool on);
     std::string drive_ircut_(bool engaged);
     std::string drive_light_(bool on);
     // Pin-String (Nummer ODER Name) -> sysfs-Name fuer den GPIO-Aufruf.
@@ -106,6 +139,19 @@ private:
     bool light_ = false;
     std::string def_ircut_pin1_, def_ircut_pin2_;   // Board-Profil-Vorgaben
     std::string def_light_sensor_pin_;              // dto., Lichtsensor
+    // Aktionen kommen aus dem HTTP-Thread (/night/*) UND aus der
+    // Hauptschleife (tick): ein Mutex serialisiert beide.
+    mutable std::mutex m_;
+    struct Auto {
+        std::string input_pin;            // als Eingang konfiguriert (sysfs-Name), leer = noch nicht
+        int64_t     retry_at_ms = 0;      // nach einem Fehler nicht jede Runde neu exportieren
+        int         committed = -1;       // entprellter Zustand: 1 dunkel, 0 hell
+        int         candidate = -1;       // Wechsel, der gerade reift
+        int64_t     candidate_since_ms = 0;
+        int         raw = -1;
+        int         pending_s = -1;
+        std::string error;
+    } auto_;
 };
 
 }} // namespace machino::night

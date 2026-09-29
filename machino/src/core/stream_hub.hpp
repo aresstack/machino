@@ -56,6 +56,9 @@ public:
     std::shared_ptr<Sink> subscribe(size_t depth = 0);      // 0 = current default depth
     void unsubscribe(const std::shared_ptr<Sink>& s);
     void publish(const AuPtr& au);
+    // Closes and drops every consumer at once (their owners' later
+    // unsubscribe is a no-op). A pop() on a closed sink returns false.
+    void close_all();
     size_t consumers() const;
 
     void   set_default_depth(size_t d) { std::lock_guard<std::mutex> lk(m_); default_depth_ = d ? d : 1; }

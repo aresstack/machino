@@ -1025,10 +1025,115 @@ struct FakeNightGpio : IGpioController {
     bool holder_of(const std::string&, GpioPinInfo&) const override { return false; }
     Result configure_output(const std::string&, bool) override { return Result::ok(); }
     Result write(const std::string& p, bool l) override { writes.push_back({p, l}); return Result::ok(); }
-    Result read(const std::string&, bool& l) const override { l = false; return Result::ok(); }
+    Result read(const std::string&, bool& l) const override { l = level; return Result::ok(); }
+    Result configure_input(const std::string& p) override { inputs.push_back(p); return refuse_input ? Result::busy() : Result::ok(); }
     void release(const std::string&) override {}
+    bool level = false;                 // what the photocell pin reads
+    bool refuse_input = false;
+    std::vector<std::string> inputs;
 };
 } // namespace
+
+// Automatic day/night from the photocell: off does nothing, a missing pin is
+// named, the first reading is applied once, a change switches only after its
+// delay held, a flicker shorter than the delay does not, a manual switch
+// stays until the light really changes, and colorToGray decides whether the
+// night picture is grayscale.
+void test_night_auto() {
+    Rig r;
+    FakeNightGpio gpio;
+    night::NightService ns(r.tuning, &gpio, r.store);
+    std::string err;
+    const int RM = (int)ImageControl::RunningMode;
+    auto running_mode = [&] { return r.tuning.state().image_requested[RM]; };
+
+    ns.tick(0);
+    ACHECK(!ns.auto_state().enabled && !ns.night() && gpio.inputs.empty());   // lightMonitor off: nothing
+
+    r.store.commit({{"night.light_monitor", "true"}}, err);
+    ns.tick(1000);
+    ACHECK(ns.auto_state().enabled && !ns.auto_state().sensing);
+    ACHECK(ns.auto_state().error.find("daylight sensor pin") != std::string::npos && !ns.night());
+
+    r.store.commit({{"night.light_sensor_pin", "PB17"}, {"night.auto_night_delay", "3"}, {"night.auto_day_delay", "5"}}, err);
+    gpio.level = false;                                                       // light
+    ns.tick(2000);
+    ACHECK(gpio.inputs.size() == 1 && gpio.inputs[0] == "PB17");              // taken as an INPUT
+    ACHECK(ns.auto_state().sensing && ns.auto_state().dark == 0 && !ns.night());
+
+    gpio.level = true;                                                        // it gets dark
+    ns.tick(3000);
+    ACHECK(!ns.night() && ns.auto_state().pending_s == 3);
+    ns.tick(5000);
+    ACHECK(!ns.night() && ns.auto_state().pending_s == 1);
+    ns.tick(6000);
+    ACHECK(ns.night() && ns.auto_state().pending_s == -1);
+    ACHECK(running_mode() == 1);                                              // colorToGray default on: grayscale
+    ACHECK(gpio.inputs.size() == 1);                                          // configured once, not every tick
+
+    gpio.level = false; ns.tick(7000);                                        // headlights for two seconds
+    gpio.level = true;  ns.tick(9000);
+    ACHECK(ns.night());                                                       // shorter than autoDayDelay: no flap
+
+    ACHECK(ns.set_night(false).empty());                                      // manual override
+    ns.tick(10000); ns.tick(60000);
+    ACHECK(!ns.night());                                                      // stays until the light changes
+    gpio.level = false; ns.tick(61000); ns.tick(67000);                       // day comes (no switch needed)
+    gpio.level = true;  ns.tick(68000); ns.tick(71000);                       // and night again
+    ACHECK(ns.night());
+
+    // colorToGray off: night opens the filter but keeps the colour picture.
+    r.store.commit({{"night.color_to_gray", "false"}}, err);
+    ACHECK(ns.set_night(true).empty() && running_mode() == 0);
+    r.store.commit({{"night.color_to_gray", "true"}}, err);
+
+    // An inverted sensor: HIGH now means light.
+    r.store.commit({{"night.light_sensor_invert", "true"}}, err);
+    gpio.level = true; ns.tick(72000); ns.tick(78000);
+    ACHECK(ns.auto_state().dark == 0 && !ns.night());
+
+    // Switching the automatic off forgets it; switching it on applies the
+    // current reading once, immediately.
+    r.store.commit({{"night.light_monitor", "false"}}, err);
+    ns.tick(79000);
+    ACHECK(ns.auto_state().dark == -1);
+    gpio.level = false;                                                       // inverted: dark
+    r.store.commit({{"night.light_monitor", "true"}}, err);
+    ns.tick(80000);
+    ACHECK(ns.night());
+
+    // A pin a driver holds is refused with the reason, and not retried every tick.
+    FakeNightGpio held; held.refuse_input = true;
+    night::NightService ns2(r.tuning, &held, r.store);
+    ns2.tick(100000);
+    ACHECK(ns2.auto_state().error.find("held by another driver") != std::string::npos);
+    ns2.tick(102000);
+    ACHECK(held.inputs.size() == 1);                                          // backs off (60 s)
+    ns2.tick(161000);
+    ACHECK(held.inputs.size() == 2);
+
+    // API: config, PATCH validation, telemetry, majestic view.
+    r.api.set_night_service(&ns);
+    api::Response c = r.api.config();
+    ACHECK(path(c.body, "night.light_monitor")->as_bool() && path(c.body, "night.auto_day_delay")->as_int() == 5);
+    ACHECK(path(c.body, "night.color_to_gray")->as_bool());
+    ACHECK(r.api.patch_config("{\"night\":{\"auto_night_delay\":-1}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"night\":{\"light_monitor\":\"yes\"}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"night\":{\"color_to_gray\":false}}", "").status == 200);
+    ACHECK(running_mode() == 0);                                              // applied to the CURRENT night at once
+    api::Response t = r.api.telemetry();
+    ACHECK(path(t.body, "night.auto.enabled")->as_bool() && path(t.body, "night.night")->as_bool());
+    Json mc = compat::majestic_config(r.api.config().body, Json::object());
+    ACHECK(path(mc, "nightMode.lightMonitor")->as_bool() && !path(mc, "nightMode.colorToGray")->as_bool());
+    ACHECK(path(mc, "nightMode.autoNightDelay")->as_int() == 3);
+    compat::MajesticTranslation tr = compat::majestic_post_to_native("{\"nightMode\":{\"lightMonitor\":\"false\",\"colorToGray\":\"true\",\"autoDayDelay\":\"10\"}}");
+    ACHECK(tr.ok && !path(tr.patch, "night.light_monitor")->as_bool() && path(tr.patch, "night.color_to_gray")->as_bool());
+    ACHECK(path(tr.patch, "night.auto_day_delay")->as_int() == 10);
+    Json schema = compat::majestic_schema(r.api.capabilities().body);
+    ACHECK(path(schema, "properties.nightMode.properties.lightMonitor") != nullptr);
+    ACHECK(path(schema, "properties.nightMode.properties.colorToGray") != nullptr);
+    ACHECK(path(schema, "properties.nightMode.properties.minThreshold") == nullptr);   // gain automatic: not built
+}
 
 void test_w2_night() {
     Rig r;
@@ -1149,7 +1254,54 @@ void test_w2_night() {
     r.api.set_night_service(nullptr);
 }
 
+// Audio: the section exists only when the service is wired, PATCH applies
+// through the service and persists, bad values are named, and no API read or
+// write ever opens the microphone (only a listener does).
+void test_audio_api() {
+    Rig r;
+    ACHECK(!r.api.config().body.get("audio"));
+    api::Response p0 = r.api.patch_config("{\"audio\":{\"enabled\":true}}", "");
+    ACHECK(p0.status == 422 && p0.body.get("error"));
+
+    AudioConfig ac;
+    int opens = 0;
+    audio::AudioService svc(ac, [&opens](const AudioParams&) -> std::unique_ptr<IAudioIn> { ++opens; return nullptr; });
+    r.api.set_audio_service(&svc);
+    api::Response c = r.api.config();
+    ACHECK(path(c.body, "audio.enabled") && !path(c.body, "audio.enabled")->as_bool());
+    ACHECK(path(c.body, "audio.srate") && path(c.body, "audio.srate")->as_int() == 8000);
+    api::Response cap = r.api.capabilities();
+    ACHECK(path(cap.body, "audio.input") && path(cap.body, "audio.input")->as_bool());
+    ACHECK(path(cap.body, "audio.output") && !path(cap.body, "audio.output")->as_bool());
+
+    api::Response p = r.api.patch_config("{\"audio\":{\"enabled\":true,\"volume\":70,\"srate\":16000,\"gain\":20}}", "");
+    ACHECK(p.status == 200);
+    const AudioConfig now = svc.config();
+    ACHECK(now.enabled && now.volume == 70 && now.srate == 16000 && now.gain == 20);
+    ACHECK(r.store.get("audio.enabled") == "true" && r.store.get("audio.srate") == "16000" && r.store.get("audio.volume") == "70");
+    ACHECK(path(r.api.config().body, "audio.volume")->as_int() == 70);
+
+    // The speaker half is stored and says it does nothing yet.
+    api::Response po = r.api.patch_config("{\"audio\":{\"output_enabled\":true,\"output_volume\":40}}", "");
+    ACHECK(po.status == 200 && r.store.get("audio.output_enabled") == "true" && svc.config().output_volume == 40);
+
+    ACHECK(r.api.patch_config("{\"audio\":{\"srate\":44100}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"audio\":{\"volume\":101}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"audio\":{\"gain\":32}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"audio\":{\"enabled\":\"yes\"}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"audio\":{\"codec\":\"opus\"}}", "").status == 400);
+    ACHECK(svc.config().srate == 16000);                      // a refused PATCH changed nothing
+
+    api::Response t = r.api.telemetry();
+    ACHECK(path(t.body, "audio.capturing") && !path(t.body, "audio.capturing")->as_bool());
+    ACHECK(path(t.body, "audio.listeners")->as_int() == 0 && path(t.body, "audio.error")->is_null());
+    ACHECK(opens == 0);                                        // reads and writes never open the microphone
+    svc.shutdown();
+}
+
 void run_api_tests() {
+    test_audio_api();
+    test_night_auto();
     test_w2_night();
     test_ap3_ipsec_api();
     test_get_documents();

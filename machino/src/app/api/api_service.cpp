@@ -153,6 +153,14 @@ Json ApiService::capabilities_json() const {
     Json nightcap = Json::object();
     nightcap.set("available", Json::boolean(night_ != nullptr));
     j.set("night", nightcap);
+    // Audio: microphone and speaker, each when the platform has it.
+    Json audiocap = Json::object();
+    audiocap.set("input", Json::boolean(audio_ != nullptr && audio_->available()));
+    audiocap.set("output", Json::boolean(audio_ != nullptr && audio_->output_available()));
+    Json rates = Json::array(); rates.push(Json::integer(8000)); rates.push(Json::integer(16000));
+    audiocap.set("sample_rates", rates);
+    audiocap.set("streams", Json::string("/audio.pcm /audio.alaw /audio.g711a /audio.ulaw"));
+    j.set("audio", audiocap);
     Json ctl = Json::object();
     ctl.set("sensor_fps", range_control(c.sensor.fps));
     ctl.set("stream_fps", range_control(c.video.fps));
@@ -350,6 +358,10 @@ Json ApiService::config_json() {
         n.set("backlight_pin", Json::string(np.backlight_pin));
         n.set("light_sensor_pin", Json::string(np.light_sensor_pin));
         n.set("light_sensor_invert", Json::boolean(np.light_sensor_invert));
+        n.set("light_monitor", Json::boolean(np.light_monitor));
+        n.set("color_to_gray", Json::boolean(np.color_to_gray));
+        n.set("auto_night_delay", Json::integer(np.auto_night_delay_s));
+        n.set("auto_day_delay", Json::integer(np.auto_day_delay_s));
         j.set("night", n);
     }
     Json sen = Json::object(); sen.set("fps", Json::integer(e.sensor_fps_requested)); j.set("sensor", sen);
@@ -416,6 +428,17 @@ Json ApiService::config_json() {
         ai.set("inference_fps", Json::integer(cfg_.ai.inference_fps));
     }
     j.set("ai", ai);
+    if (audio_) {
+        const AudioConfig ac = audio_->config();
+        Json au = Json::object();
+        au.set("enabled", Json::boolean(ac.enabled));
+        au.set("srate", Json::integer(ac.srate));
+        au.set("volume", Json::integer(ac.volume));
+        au.set("gain", Json::integer(ac.gain));
+        au.set("output_enabled", Json::boolean(ac.output_enabled));
+        au.set("output_volume", Json::integer(ac.output_volume));
+        j.set("audio", au);
+    }
     return j;
 }
 Response ApiService::config() { return Response{200, config_json()}; }
@@ -566,6 +589,44 @@ Json ApiService::telemetry_json() {
             }
         }
         j.set("ai", a);
+    }
+    if (night_) {
+        const night::AutoState a = night_->auto_state();
+        Json n = Json::object();
+        n.set("night", Json::boolean(night_->night()));
+        n.set("ircut", Json::boolean(night_->ircut()));
+        n.set("light", Json::boolean(night_->light()));
+        Json au = Json::object();
+        au.set("enabled", Json::boolean(a.enabled));
+        au.set("sensing", Json::boolean(a.sensing));
+        au.set("dark", a.dark < 0 ? Json::null() : Json::boolean(a.dark == 1));
+        au.set("switch_in_s", a.pending_s < 0 ? Json::null() : Json::integer(a.pending_s));
+        au.set("error", a.error.empty() ? Json::null() : Json::string(a.error));
+        n.set("auto", au);
+        j.set("night", n);
+    }
+    if (audio_) {
+        const audio::AudioStats as = audio_->stats();
+        Json au = Json::object();
+        au.set("enabled", Json::boolean(as.enabled));
+        au.set("capturing", Json::boolean(as.capturing));
+        au.set("listeners", Json::integer(as.listeners));
+        au.set("sample_rate", Json::integer(as.sample_rate));
+        au.set("opens", Json::integer(as.starts));
+        au.set("frames", Json::integer(as.frames));
+        au.set("read_errors", Json::integer(as.read_errors));
+        au.set("error", as.last_error.empty() ? Json::null() : Json::string(as.last_error));
+        const audio::SpeakerStats sp = audio_->speaker_stats();
+        Json spk = Json::object();
+        spk.set("enabled", Json::boolean(sp.enabled));
+        spk.set("open", Json::boolean(sp.open));
+        spk.set("playing", Json::boolean(sp.playing));
+        spk.set("queued_ms", Json::integer(sp.queued_ms));
+        spk.set("clips", Json::integer(sp.clips));
+        spk.set("dropped", Json::integer(sp.dropped));
+        spk.set("error", sp.last_error.empty() ? Json::null() : Json::string(sp.last_error));
+        au.set("speaker", spk);
+        j.set("audio", au);
     }
     return j;
 }
@@ -978,9 +1039,12 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                 // Schalten (IGpioController::resolve), hier nur die Form.
                 if (!night_) return bad(422, "unsupported_control", path, "day/night is not wired on this platform");
                 if (kv.first == "ircut" || kv.first == "ircut_single_invert" || kv.first == "backlight"
-                    || kv.first == "light_sensor_invert") {
+                    || kv.first == "light_sensor_invert" || kv.first == "light_monitor" || kv.first == "color_to_gray") {
                     if (!val.is_bool()) return bad(422, "invalid_value", path, kv.first + " must be a boolean");
                     c.key = "night." + kv.first; c.value = val.as_bool() ? "true" : "false";
+                } else if (kv.first == "auto_night_delay" || kv.first == "auto_day_delay") {
+                    long long n; if (!get_int(val, n) || n < 0 || n > 3600) return bad(422, "invalid_value", path, kv.first + " must be seconds in 0..3600");
+                    c.key = "night." + kv.first; c.value = std::to_string(n);
                 } else if (kv.first == "ircut_pin1" || kv.first == "ircut_pin2" || kv.first == "backlight_pin"
                            || kv.first == "light_sensor_pin") {
                     if (!val.is_string()) return bad(422, "invalid_value", path, kv.first + " must be a string pin name (e.g. PB18) or empty");
@@ -990,6 +1054,22 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                         if (!(isalnum((unsigned char)ch) || ch == '_'))
                             return bad(422, "invalid_value", path, "pin name may hold letters, digits and _ only");
                     c.key = "night." + kv.first; c.value = pv;
+                } else return bad(400, "unknown_field", path, "unknown field");
+            } else if (s == "audio") {
+                if (!audio_) return bad(422, "unsupported_control", path, "audio is not wired in this build");
+                long long n;
+                if (kv.first == "enabled" || kv.first == "output_enabled") {
+                    if (!val.is_bool()) return bad(422, "invalid_value", path, kv.first + " must be a boolean");
+                    c.key = "audio." + kv.first; c.value = val.as_bool() ? "true" : "false";
+                } else if (kv.first == "srate") {
+                    if (!get_int(val, n) || (n != 8000 && n != 16000)) return bad(422, "invalid_value", path, "srate must be 8000 or 16000 (the rates the codec runs)");
+                    c.key = "audio.srate"; c.value = std::to_string(n);
+                } else if (kv.first == "volume" || kv.first == "output_volume") {
+                    if (!get_int(val, n) || n < 0 || n > 100) return bad(422, "invalid_value", path, kv.first + " must be an integer in 0..100");
+                    c.key = "audio." + kv.first; c.value = std::to_string(n);
+                } else if (kv.first == "gain") {
+                    if (!get_int(val, n) || n < -1 || n > 31) return bad(422, "invalid_value", path, "gain must be an integer in 0..31, or -1 for the driver default");
+                    c.key = "audio.gain"; c.value = std::to_string(n);
                 } else return bad(400, "unknown_field", path, "unknown field");
             } else if (s == "jpeg") {
                 // AP14: reported by /api/v1/config, deliberately NOT writable.
@@ -1078,6 +1158,20 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         else if (c.key == "power.isp_performance")     { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_isp_performance(l); }
         else if (c.key == "power.encoder_performance") { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_encoder_performance(l); }
         else if (c.key == "power.cpu_performance")     { PerfLevel l; power::parse_perf_level(c.value, l); c.r = perf_.set_cpu_performance(l); }
+        else if (c.key.rfind("audio.", 0) == 0) {
+            const int iv = atoi(c.value.c_str());
+            if (c.key == "audio.enabled") { audio_->set_enabled(c.value == "true"); c.r = ApplyResult::applied(ApplyMode::Live, c.value == "true", c.value == "true"); }
+            else if (c.key == "audio.volume") { Result ar = audio_->set_volume(iv);
+                c.r = ar ? ApplyResult::applied(ApplyMode::Live, iv, iv) : ApplyResult::rejected(ApplyMode::Live, iv, "platform rejected the microphone volume"); }
+            else if (c.key == "audio.gain") { Result ar = audio_->set_gain(iv);
+                c.r = ar ? ApplyResult::applied(ApplyMode::Live, iv, iv) : ApplyResult::rejected(ApplyMode::Live, iv, "platform rejected the microphone gain"); }
+            else if (c.key == "audio.srate") { audio_->set_sample_rate(iv);
+                c.r = ApplyResult::stored(ApplyMode::PipelineRestart, iv, "stored; used the next time the microphone opens"); }
+            else if (c.key == "audio.output_enabled") { audio_->set_output_enabled(c.value == "true");
+                c.r = ApplyResult::applied(ApplyMode::Live, c.value == "true", c.value == "true"); }
+            else if (c.key == "audio.output_volume") { audio_->set_output_volume(iv);
+                c.r = ApplyResult::applied(ApplyMode::Live, iv, iv); }
+        }
         else if (c.key == "ai.enabled")       { c.r = ai_apply(detection_->set_enabled(c.value == "true"), c.value == "true" ? 1 : 0); }
         else if (c.key == "ai.detector")      { c.r = ai_apply(detection_->set_detector(c.value), -1); }
         else if (c.key == "ai.inference_fps") { int n2 = atoi(c.value.c_str()); c.r = ai_apply(detection_->set_inference_fps(n2), n2); }
@@ -1109,6 +1203,12 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
             Json ch = Json::array(); for (const auto& c : changes) ch.push(change_json(c)); r.body.set("changes", ch);
             return r;
         }
+        // colorToGray decides what the CURRENT night looks like, so a change
+        // to it is applied now - after the commit, because the service reads
+        // its settings from the store.
+        if (night_)
+            for (const auto& c : changes)
+                if (c.r.ok && c.key == "night.color_to_gray") { if (night_->night()) night_->set_night(true); break; }
         Json ev = Json::object(); ev.set("revision", Json::integer(store_.revision()));
         Json paths = Json::array(); for (const auto& c : changes) if (c.r.ok) paths.push(Json::string(c.path)); ev.set("paths", paths);
         bus_.publish("config_changed", ev.dump());

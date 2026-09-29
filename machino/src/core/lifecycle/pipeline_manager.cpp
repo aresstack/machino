@@ -408,6 +408,34 @@ void PipelineManager::request_idr(int unit) {
     if ((state_ == State::Active || state_ == State::GraceIdle) && u.enc) u.enc->request_idr();
 }
 
+// ---- raw frame ---------------------------------------------------------------
+Result PipelineManager::snap_nv12(int unit, std::vector<uint8_t>& out, int& w, int& h, std::string& err, int timeout_ms) {
+    if (unit != UNIT_MAIN && unit != UNIT_SUB) { err = "no such unit"; return Result::unsupported(); }
+    Result ar;
+    DemandHandle d = acquire_unit(unit, ConsumerType::Snapshot, &ar);   // released on return: the unit grace keeps it warm
+    if (!d.active()) { err = ar.status == Status::Unsupported ? "stream not configured" : "pipeline start failed"; return ar ? Result::error() : ar; }
+    // Right after a cold start the channel has no frame yet: SnapFrame fails
+    // until the ISP delivers one, so retry within the budget. Under the
+    // manager lock (the channel cannot be torn down mid-copy); one copy is a
+    // frame interval at most.
+    const int64_t until = mono_us() + (int64_t)timeout_ms * 1000;
+    Result r = Result::timeout();
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            Unit& u = units_[unit];
+            if (!u.fs || !u.running) { err = "stream stopped"; return Result::busy(); }
+            w = u.stream.width; h = u.stream.height;
+            r = u.fs->snap_nv12(out, w, h);
+        }
+        if (r || r.status == Status::Unsupported) break;
+        if (mono_us() >= until) break;
+        struct timespec ts{0, 50 * 1000000}; nanosleep(&ts, nullptr);
+    }
+    if (!r) err = r.status == Status::Unsupported ? "this platform cannot hand out raw frames" : "frame capture failed";
+    return r;
+}
+
 // ---- snapshot ----------------------------------------------------------------
 Result PipelineManager::snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms) {
     {

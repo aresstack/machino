@@ -6,6 +6,7 @@
 #include "core/capabilities.hpp"
 #include "core/config.hpp"
 #include "core/result.hpp"
+#include "ports/iaudio.hpp"
 #include "ports/iencoder.hpp"
 #include "ports/iframesource.hpp"
 #include "ports/idetector.hpp"
@@ -34,6 +35,11 @@ public:
     // M9: a detector bound to a logical source (or frame-driven). nullptr =
     // unsupported / the requested backend is unavailable on this platform.
     virtual std::unique_ptr<IDetector> create_detector(int chn, const DetectorParams& p) { (void)chn; (void)p; return nullptr; }
+    // Audio in/out on the SoC codec. Independent of bring_up(): neither
+    // direction needs the sensor or the ISP. nullptr = unsupported here, or
+    // the device refused `p` (the adapter logs why).
+    virtual std::unique_ptr<IAudioIn>  create_audio_in(const AudioParams& p)  { (void)p; return nullptr; }
+    virtual std::unique_ptr<IAudioOut> create_audio_out(const AudioParams& p) { (void)p; return nullptr; }
 
     virtual Result bind(IFrameSource& fs, IEncoder& enc)   = 0;
     virtual Result unbind(IFrameSource& fs, IEncoder& enc) = 0;

@@ -104,6 +104,7 @@ struct RtspConfig {
     int         send_buffer_bytes = 65536; // bounded kernel backlog per socket
     int         send_stall_ms = 750;       // disconnect, never accumulate seconds of stale live video
     int         max_clients = 4;           // concurrent connections (each costs a thread); refused, not queued
+    int         mjpeg_fps = 5;             // /stream=2 (MJPEG over RTP) frame rate, pulled from the JPEG unit
     RtspAuthConfig auth;
 };
 
@@ -128,6 +129,21 @@ struct AiConfig {
     std::string detector = "motion";   // backend selector; "motion" = IMP_IVS move
     int         inference_fps = 5;      // analysis cadence, independent of video fps
     std::string model_path;            // only for model-based backends
+};
+
+// Audio (microphone). Names and defaults are majestic's `audio` section as it
+// ships in /etc/majestic.yaml (enabled false, volume 30, srate 8000). Off by
+// default like upstream: turning on a microphone is the owner's decision.
+// The capture path only runs while somebody listens (grace_ms after the last
+// listener leaves), exactly like the video units.
+struct AudioConfig {
+    bool enabled = false;          // audio.enabled
+    int  srate = 8000;             // audio.srate - 8000|16000 on the T40 inner codec
+    int  volume = 30;              // audio.volume, 0..100 (0 = mute), mapped onto the vendor scale
+    int  gain = -1;                // audio.gain, analog 0..31; -1 = driver default (machino key)
+    bool output_enabled = false;   // audio.outputEnabled
+    int  output_volume = 30;       // audio.outputVolume, 0..100
+    int  grace_ms = 2000;          // audio.grace_ms: keep the codec input up this long after the last listener
 };
 
 struct TelemetryConfig {
@@ -235,6 +251,7 @@ struct AppConfig {
     media::ImageSettings image;
     media::LatencySettings latency;
     AiConfig          ai;
+    AudioConfig       audio;
     OsdConfig         osd;
     SystemConfig      system;
     WatchdogConfig    watchdog;

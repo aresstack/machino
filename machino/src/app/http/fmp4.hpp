@@ -18,10 +18,29 @@ namespace machino { namespace fmp4 {
 // "avc1.PPCCLL" from the raw SPS NAL (payload including the NAL header byte).
 std::string codec_string(const std::vector<uint8_t>& sps);
 
+// An audio track next to (or instead of) the video: AAC-LC ("mp4a" + esds
+// carrying the AudioSpecificConfig) or Opus ("Opus" + dOps, ISO/IEC 23003-5 /
+// the Opus-in-ISOBMFF mapping). Its timescale is the sample rate for AAC and
+// 48000 for Opus.
+struct AudioTrack {
+    enum Codec { None, Aac, Opus } codec = None;
+    uint32_t track_id = 2;
+    int      sample_rate = 8000;          // input rate (Opus: what dOps names as the input rate)
+    int      channels = 1;
+    std::vector<uint8_t> asc;             // AAC only
+    uint16_t pre_skip = 0;                // Opus only, 48 kHz samples
+    uint32_t timescale() const { return codec == Opus ? 48000u : (uint32_t)sample_rate; }
+};
+
 // ftyp + moov. width/height are the coded dimensions (from the encoder
-// configuration); timescale is the media timescale used by fragments.
+// configuration); timescale is the media timescale used by fragments. With
+// `audio` the movie carries a second track (its own trex); the fragments of
+// both tracks then go into the same SourceBuffer.
 std::vector<uint8_t> init_segment(const std::vector<uint8_t>& sps, const std::vector<uint8_t>& pps,
-                                  int width, int height, uint32_t timescale);
+                                  int width, int height, uint32_t timescale,
+                                  const AudioTrack* audio = nullptr);
+// An audio-only movie (track id taken from `audio`): /audio.m4a.
+std::vector<uint8_t> audio_init_segment(const AudioTrack& audio);
 
 // AP15: a ProducerReferenceTime box (ISO 14496-12), 32 bytes, version 1.
 // Prepended to a fragment it tells the player the wall-clock instant the frame
@@ -69,7 +88,16 @@ struct Timeline {
 // One frame: moof + mdat. `decode_time` and `duration` are in the init
 // segment's timescale; `sample` is the AVCC-converted access unit.
 std::vector<uint8_t> fragment(uint32_t sequence, uint64_t decode_time, uint32_t duration,
-                              const std::vector<uint8_t>& sample, bool key);
+                              const std::vector<uint8_t>& sample, bool key, uint32_t track_id = 1);
+
+// A HEIF still (ISO/IEC 23008-12) holding one H.264 IDR as a coded image
+// item: ftyp 'avci' (the AVC brand of HEIF) + meta (hdlr pict, pitm, iloc,
+// iinf with one 'avc1' item, iprp with avcC + ispe) + mdat. The encoder here
+// makes H.264, not HEVC, so this is the honest HEIF of what the camera
+// encodes; libheif/ImageMagick/GIMP open it. `sample` is AVCC as for
+// fragment().
+std::vector<uint8_t> heif_avc_still(const std::vector<uint8_t>& sps, const std::vector<uint8_t>& pps,
+                                    int width, int height, const std::vector<uint8_t>& sample);
 
 // Annex-B access unit -> AVCC (4-byte big-endian lengths). SPS/PPS/AUD NALs
 // are dropped - parameter sets live in the init segment's avcC, and repeating

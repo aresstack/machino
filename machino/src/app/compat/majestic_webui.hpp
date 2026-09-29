@@ -117,4 +117,5 @@ struct UpgradePlan {
 };
 UpgradePlan upgrade_plan(const std::string& params_json);
 
+
 }} // namespace machino::compat

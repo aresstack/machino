@@ -290,7 +290,22 @@ private:
             if (leaf_l == "timeout") return mapped(key, val, "watchdog.timeout", val);
             return unsupported(key, val, "machino's watchdog takes only enabled and timeout");
         }
-        if (sec_l == "audio")    return unsupported(key, val, "machino has no audio path");
+        if (sec_l == "audio") {
+            if (leaf_l == "enabled")       return mapped(key, val, "audio.enabled", val);
+            if (leaf_l == "outputenabled") return mapped(key, val, "audio.output_enabled", val);
+            if (leaf_l == "volume" || leaf_l == "outputvolume") {
+                long long v; if (!to_int(val, v) || v < 0 || v > 100) return invalid(key, val, "volume must be an integer in 0..100");
+                return mapped(key, val, leaf_l == "volume" ? "audio.volume" : "audio.output_volume", val);
+            }
+            if (leaf_l == "srate") {
+                long long v; if (!to_int(val, v)) return invalid(key, val, "srate must be an integer");
+                if (v == 8000 || v == 16000) return mapped(key, val, "audio.srate", val);
+                return converted(key, val, "audio.srate", v > 8000 ? "16000" : "8000",
+                                 "the T40 inner codec runs 8000 or 16000 Hz; nearest rate taken");
+            }
+            if (leaf_l == "codec") return unsupported(key, val, "machino serves PCM and G.711 (/audio.pcm, .alaw, .ulaw); Opus/AAC are not built");
+            return unsupported(key, val, "machino's audio takes enabled, volume, srate, outputEnabled and outputVolume");
+        }
         if (sec_l == "records" || sec_l == "record") return unsupported(key, val, "no on-device recording");
         if (sec_l == "mqtt")     return unsupported(key, val, "no MQTT integration");
         if (sec_l == "outgoing") return unsupported(key, val, "no outgoing/stream-push integration");
