@@ -1,5 +1,6 @@
 #include "core/audio/audio_service.hpp"
 #include "core/log.hpp"
+#include <cstring>
 #include <ctime>
 #include <unistd.h>
 
@@ -209,6 +210,52 @@ Result AudioService::set_output_volume(int percent) {
     return Result::ok();
 }
 
+// The loopback pump: one listener, every frame played straight back. It uses
+// the public API (listen/unlisten/play), so it takes no service lock itself and
+// mon_m_ is never held while it runs - set_monitor(false) can join it safely.
+void AudioService::monitor_loop() {
+    std::string why;
+    std::shared_ptr<Sink> sink = listen(why);
+    if (!sink) { LOGW(MOD, "monitor: %s", why.c_str()); mon_running_ = false; return; }
+    LOGI(MOD, "monitor (loopback) on");
+    std::vector<int16_t> pcm;
+    while (!mon_quit_.load()) {
+        AuPtr au;
+        if (!sink->pop(au, 200, nullptr)) {
+            if (sink->closed()) break;             // audio.enabled went false under us
+            continue;
+        }
+        if (!au || au->data.empty()) continue;
+        const size_t n = au->data.size() / sizeof(int16_t);
+        pcm.resize(n);
+        std::memcpy(pcm.data(), au->data.data(), n * sizeof(int16_t));
+        std::string w;
+        speaker_.play(std::move(pcm), sample_rate(), w);   // best effort: a full queue drops one frame
+        pcm.clear();
+    }
+    unlisten(sink);
+    mon_running_ = false;
+    LOGI(MOD, "monitor (loopback) off");
+}
+
+Result AudioService::set_monitor(bool on) {
+    std::lock_guard<std::mutex> lk(mon_m_);
+    if (on) {
+        if (!in_factory_)          return Result::unsupported();   // no microphone
+        if (!speaker_.available()) return Result::unsupported();   // no speaker
+        if (mon_running_.load()) return Result::ok();              // already monitoring
+        if (mon_thread_.joinable()) mon_thread_.join();            // a prior run that stopped on its own
+        mon_quit_ = false;
+        mon_running_ = true;                                        // optimistic; the thread clears it if listen() fails
+        mon_thread_ = std::thread(&AudioService::monitor_loop, this);
+        return Result::ok();
+    }
+    mon_quit_ = true;
+    if (mon_thread_.joinable()) mon_thread_.join();
+    mon_running_ = false;
+    return Result::ok();
+}
+
 AudioStats AudioService::stats() const {
     std::lock_guard<std::mutex> lk(m_);
     AudioStats s;
@@ -219,11 +266,19 @@ AudioStats AudioService::stats() const {
     s.starts = starts_;
     s.frames = frames_;
     s.read_errors = read_errors_;
+    s.monitoring = mon_running_.load();
     s.last_error = last_error_;
     return s;
 }
 
 void AudioService::shutdown() {
+    // Stop the loopback pump first: it feeds the speaker and holds a listener.
+    {
+        std::lock_guard<std::mutex> lk(mon_m_);
+        mon_quit_ = true;
+        if (mon_thread_.joinable()) mon_thread_.join();
+        mon_running_ = false;
+    }
     speaker_.shutdown();
     std::thread t;
     {

@@ -1380,8 +1380,46 @@ void test_audio_api() {
     api::Response t = r.api.telemetry();
     ACHECK(path(t.body, "audio.capturing") && !path(t.body, "audio.capturing")->as_bool());
     ACHECK(path(t.body, "audio.listeners")->as_int() == 0 && path(t.body, "audio.error")->is_null());
+    ACHECK(path(t.body, "audio.monitoring") && !path(t.body, "audio.monitoring")->as_bool());
     ACHECK(opens == 0);                                        // reads and writes never open the microphone
+
+    // ---- POST /audio/tone and /audio/monitor (the test buttons) ----
+    // svc has no output: both refuse cleanly, naming the missing hardware.
+    ACHECK(r.api.audio_tone("{}").status == 422);
+    ACHECK(r.api.audio_monitor("{\"on\":true}").status == 422);
     svc.shutdown();
+
+    // A service with a microphone (refuses to open) and a speaker.
+    struct FakeOut final : IAudioOut {
+        int rate_; explicit FakeOut(int rr) : rate_(rr) {}
+        Result write(const int16_t*, size_t) override { return Result::ok(); }
+        Result drain(int) override { return Result::ok(); }
+        Result set_volume(int) override { return Result::ok(); }
+        int sample_rate() const override { return rate_; }
+    };
+    AudioConfig ac2;                                           // enabled = false, output_enabled = false
+    audio::AudioService svc2(ac2,
+        [](const AudioParams&) -> std::unique_ptr<IAudioIn> { return nullptr; },
+        [](const AudioParams& p) -> std::unique_ptr<IAudioOut> { return std::unique_ptr<IAudioOut>(new FakeOut(p.sample_rate)); });
+    r.api.set_audio_service(&svc2);
+
+    // Tone: the speaker is off -> 409 and the reason names the switch.
+    api::Response tn_off = r.api.audio_tone("{\"hz\":1000,\"ms\":100}");
+    ACHECK(tn_off.status == 409);
+    svc2.set_output_enabled(true);
+    api::Response tn = r.api.audio_tone("{\"hz\":1000,\"ms\":100}");
+    ACHECK(tn.status == 200 && path(tn.body, "played")->as_bool() && path(tn.body, "hz")->as_int() == 1000);
+    // Out-of-range hz/ms are clamped, never refused.
+    api::Response tc = r.api.audio_tone("{\"hz\":10,\"ms\":1}");
+    ACHECK(tc.status == 200 && path(tc.body, "hz")->as_int() == 100 && path(tc.body, "ms")->as_int() == 50);
+
+    // Monitor guards: no body / bad body -> 400; mic disabled -> 409.
+    ACHECK(r.api.audio_monitor("{}").status == 400);
+    ACHECK(r.api.audio_monitor("{\"on\":true}").status == 409);       // audio.enabled is false
+    svc2.set_enabled(true);
+    ACHECK(r.api.audio_monitor("{\"on\":true}").status == 200);       // preconditions met (the mic just refuses to open)
+    ACHECK(r.api.audio_monitor("{\"on\":false}").status == 200);      // stops cleanly
+    svc2.shutdown();
 }
 
 void run_api_tests() {

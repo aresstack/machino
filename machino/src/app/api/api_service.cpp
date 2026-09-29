@@ -1,4 +1,5 @@
 #include "app/api/api_service.hpp"
+#include "app/audio_test.hpp"               // app::sine (the /audio/tone beep)
 #include "app/compat/majestic_webui.hpp"   // W1: majestic-Image-Aliasse (live push)
 #include "core/log.hpp"
 #include "core/runtime_stats.hpp"
@@ -632,6 +633,7 @@ Json ApiService::telemetry_json() {
         au.set("opens", Json::integer(as.starts));
         au.set("frames", Json::integer(as.frames));
         au.set("read_errors", Json::integer(as.read_errors));
+        au.set("monitoring", Json::boolean(as.monitoring));
         au.set("error", as.last_error.empty() ? Json::null() : Json::string(as.last_error));
         const audio::SpeakerStats sp = audio_->speaker_stats();
         Json spk = Json::object();
@@ -793,6 +795,69 @@ Response ApiService::night_action(const std::string& cmd) {
     if (!err.empty()) return fail(409, "conflict", path, err);
     Response r; r.status = 200; r.body = Json::boolean(state);
     return r;
+}
+
+// POST /api/v1/audio/tone -- play a short sine on the speaker (the "beep" test).
+// Body (all optional): {"hz":1000,"ms":800,"amp":0.4}. The speaker must be on;
+// a switched-off speaker answers 409 with the reason.
+Response ApiService::audio_tone(const std::string& body) {
+    const char* path = "/api/v1/audio/tone";
+    if (!audio_)                      return fail(422, "unsupported_control", path, "audio is not wired in this build");
+    if (!audio_->output_available())  return fail(422, "unsupported_control", path, "this platform has no audio output");
+
+    int hz = 1000, ms = 800; double amp = 0.4;
+    if (!body.empty()) {
+        Json doc; std::string perr;
+        if (!Json::parse(body, doc, perr)) return fail(400, "invalid_json", path, perr);
+        if (const Json* v = doc.get("hz"))  { if (v->is_number()) hz  = (int)v->as_number(); }
+        if (const Json* v = doc.get("ms"))  { if (v->is_number()) ms  = (int)v->as_number(); }
+        if (const Json* v = doc.get("amp")) { if (v->is_number()) amp = v->as_number(); }
+    }
+    if (hz < 100) hz = 100; if (hz > 3800) hz = 3800;      // below the 8 kHz Nyquist
+    if (ms < 50)  ms = 50;  if (ms > 3000) ms = 3000;      // bounded: the queue holds it
+    if (amp < 0.0) amp = 0.0; if (amp > 1.0) amp = 1.0;
+
+    const int rate = 8000;
+    std::vector<int16_t> pcm; double phase = 0.0;
+    app::sine(pcm, (size_t)rate * ms / 1000, rate, hz, amp, phase);
+    std::string why;
+    if (!audio_->play(std::move(pcm), rate, why))
+        return fail(409, "conflict", path, why.empty() ? "the speaker refused the clip" : why);
+
+    Json j = Json::object();
+    j.set("played", Json::boolean(true));
+    j.set("hz", Json::integer(hz));
+    j.set("ms", Json::integer(ms));
+    return Response{200, j};
+}
+
+// POST /api/v1/audio/monitor -- start/stop loopback (mic -> speaker). Body:
+// {"on":true|false}. Both microphone and speaker must be enabled; feedback is
+// the operator's risk (no echo canceller), warned in the UI.
+Response ApiService::audio_monitor(const std::string& body) {
+    const char* path = "/api/v1/audio/monitor";
+    if (!audio_) return fail(422, "unsupported_control", path, "audio is not wired in this build");
+
+    bool on = false;
+    {
+        Json doc; std::string perr;
+        if (body.empty() || !Json::parse(body, doc, perr)) return fail(400, "invalid_json", path, "expected {\"on\": true|false}");
+        const Json* v = doc.get("on");
+        if (!v || !v->is_bool()) return fail(400, "invalid_json", path, "expected {\"on\": true|false}");
+        on = v->as_bool();
+    }
+    if (on) {
+        if (!audio_->available())         return fail(422, "unsupported_control", path, "this platform has no microphone");
+        if (!audio_->output_available())  return fail(422, "unsupported_control", path, "this platform has no audio output");
+        const AudioConfig ac = audio_->config();
+        if (!ac.enabled)        return fail(409, "conflict", path, "enable the microphone first (audio.enabled)");
+        if (!ac.output_enabled) return fail(409, "conflict", path, "enable the speaker first (audio.outputEnabled)");
+    }
+    if (!audio_->set_monitor(on)) return fail(409, "conflict", path, "the monitor could not be started");
+
+    Json j = Json::object();
+    j.set("monitoring", Json::boolean(audio_->monitoring()));
+    return Response{200, j};
 }
 
 Response ApiService::gpio_map() {

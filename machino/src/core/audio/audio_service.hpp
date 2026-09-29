@@ -41,6 +41,7 @@ struct AudioStats {
     unsigned    starts = 0;            // device opens since boot
     unsigned    frames = 0;            // frames published since boot
     unsigned    read_errors = 0;
+    bool        monitoring = false;    // loopback (mic -> speaker) is running
     std::string last_error;
 };
 
@@ -83,11 +84,21 @@ public:
     Result set_output_enabled(bool on);
     Result set_output_volume(int percent);
 
+    // Loopback ("monitor"): one internal listener whose every frame is played
+    // straight back on the speaker, so an operator hears the live microphone.
+    // Needs both a microphone and a speaker; the caller enables audio.enabled
+    // and audio.outputEnabled first. There is no echo canceller - with an open
+    // speaker near the microphone this will feed back; that is the operator's
+    // call, warned in the UI. off stops the pump and lets the codec close.
+    Result set_monitor(bool on);
+    bool   monitoring() const { return mon_running_.load(); }
+
     AudioStats stats() const;
     void shutdown();
 
 private:
     void capture_loop();
+    void monitor_loop();
     AudioParams params_locked() const;
     void join_stopped_locked();
 
@@ -104,6 +115,12 @@ private:
     std::string            last_error_;
     std::atomic<unsigned>  frames_{0}, read_errors_{0};
     std::atomic<bool>      quit_{false};
+    // Loopback pump, guarded by its own mutex (never taken with m_): the thread
+    // uses the public listen()/unlisten()/play(), each of which takes m_ itself.
+    std::mutex             mon_m_;
+    std::thread            mon_thread_;
+    std::atomic<bool>      mon_quit_{false};
+    std::atomic<bool>      mon_running_{false};
     Speaker                speaker_;    // last: its thread stops first on destruction
 };
 

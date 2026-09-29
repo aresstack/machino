@@ -280,6 +280,10 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
         // besitzt den Unterbau -- und den Backup-Purge, der den Platz fuer
         // Modelle freimacht.
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-ai.cgi\">AI</a></li>"
+        // Audio: Mikrofon/Lautsprecher-Test (Testton, Pegel, Abhoeren) + die
+        // Einstellungen. machinod besitzt den Codec (IMP_AI/AO); der Kernel-
+        // treiber audio.ko gehoert OpenIPC -- die Seite sagt das ehrlich.
+        "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-audio.cgi\">Audio</a></li>"
         // Storage: das Aufraeum-Menue. Findet die Overlay-Platzfresser
         // (Backups, Staging-Binaries, alte Payloads, KI-Modelle), macht jede
         // Datei vor dem Loeschen herunterladbar, und zeigt majestic ehrlich als

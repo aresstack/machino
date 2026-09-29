@@ -76,6 +76,8 @@ public:
     // W4: GET /api/v1/gpio -- die Pin-Landkarte, aus der die Day/Night-Seite
     // ihren Chip zeichnet (Baenke, gehaltene Pins, Rollen-Zuordnung).
     Response gpio_map();
+    Response audio_tone(const std::string& body);      // POST /api/v1/audio/tone
+    Response audio_monitor(const std::string& body);   // POST /api/v1/audio/monitor
     Response ipsec_get();                              // GET  /api/v1/ipsec
     Response ipsec_put_config(const std::string& body);// PUT  /api/v1/ipsec/config
     Response ipsec_connect();                          // POST /api/v1/ipsec/connect
