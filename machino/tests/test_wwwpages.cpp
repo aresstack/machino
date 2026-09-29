@@ -129,6 +129,18 @@ void run_wwwpages_tests()
     // AP8: die native IPsec-Seite -- gleiche OpenIPC-Vertraege wie die anderen.
     check_page("openipc/www/machino-ipsec.cgi", "IPsec",
                "/cgi-bin/machino-ipsec.cgi");
+    // Die KI-Seite: seit sie machinos API spricht (Detectors-Karte, "Use"
+    // neben dem Modell), gelten dieselben Vertraege wie fuer die anderen.
+    check_page("openipc/www/machino-ai.cgi", "AI",
+               "/cgi-bin/machino-ai.cgi");
+    const std::string aip = slurp("openipc/www/machino-ai.cgi");
+    TCHECK(has(aip, "/api/v1/ai/detectors"));
+    TCHECK(has(aip, "\"/api/v1/config\""));
+    TCHECK(has(aip, "model_path"));
+    TCHECK(has(aip, "machino-ai-upload.cgi"));
+    // Die SDK-Anleitung steht AUF der Seite, mit dem Toolkit-Pin der CI.
+    TCHECK(has(aip, "magik-transform-tools"));
+    TCHECK(has(aip, "e511d370dd7ff84664c9140e0590c354947c7eac"));
 
     // Die Funktionsflaeche ist vollstaendig auf die Seiten verteilt -- die
     // Zerlegung war UI-Architektur, kein Funktionsabbau.

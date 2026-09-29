@@ -151,3 +151,19 @@ jobs:
         with:
           name: machino-nna-model
           path: /tmp/model/
+
+      # Das UPLOAD-FERTIGE Buendel: die KI-Seite der Kamera nimmt genau EIN
+      # .tgz mit Modell-.bin + manifest.json (+ provenance.txt) entgegen
+      # (machino-ai-upload.cgi). Das Verzeichnis-Artefakt oben kommt von
+      # GitHub als .zip -- das musste bisher jeder von Hand umpacken.
+      - name: "Bundle for the AI page upload (.tgz)"
+        run: |
+          set -e
+          ID=$(sed -n 's/.*"id": *"\([^"]*\)".*/\1/p' /tmp/model/manifest.json | head -1)
+          mkdir -p /tmp/bundle
+          tar -C /tmp/model -czf "/tmp/bundle/${ID:-model}-t40.tgz" .
+          ls -la /tmp/bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: machino-nna-model-bundle
+          path: /tmp/bundle/

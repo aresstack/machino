@@ -792,8 +792,10 @@ if [ "$WITH_NNA_PAYLOAD" = "1" ]; then
     [ "$_nmods" -gt 0 ] && say "installed $_nmods detection model(s) into /etc/machino/models"
     # Der Kerneltreiber (soc-nna.ko) ist bewusst NICHT im Bundle: seine Quelle
     # ist oeffentlich noch nicht gefunden (OpenIPC #2031), und Binaermodule
-    # gehoeren erst nach der Hardware-Abnahme hinein. Die KI-Seite zeigt den
-    # Zustand ehrlich an.
+    # gehoeren erst nach der Hardware-Abnahme hinein. Das OpenIPC-Image bringt
+    # ihn aber selbst mit (/lib/modules/<ver>/ingenic/soc-nna.ko, AP23);
+    # init/machino laedt ihn beim Start, sobald nmem= auf der Cmdline steht.
+    # Die KI-Seite zeigt den Zustand ehrlich an.
 fi
 
 # ------------------------------------------------------ IPsec (WeirdIKE) ---

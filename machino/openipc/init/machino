@@ -27,9 +27,30 @@ running() {
 	pgrep -f "$DAEMON_PATH" >/dev/null 2>&1
 }
 
+# The NNA kernel driver. The OpenIPC image ships soc-nna.ko but nothing loads
+# it; without it there is no /dev/soc-nna and the person detector reports
+# NNA_DEVICE_MISSING forever. Loaded ONLY when the boot reserved the NNA
+# window (nmem= on the kernel command line, set from the Cam-Tool): the
+# driver's probe needs that memory, and a probe without it is noise at best.
+# Runs here, before machinod: forking while IMP is live is the documented
+# OOM trigger, so the daemon never insmods anything itself.
+load_nna_driver() {
+	grep -q 'nmem=' /proc/cmdline 2>/dev/null || return 0
+	[ -c /dev/soc-nna ] && return 0
+	grep -q '^soc_nna ' /proc/modules 2>/dev/null && return 0
+	_ko=$(find /lib/modules -name 'soc-nna.ko' 2>/dev/null | head -1)
+	[ -n "$_ko" ] || { echo "nna: nmem reserved but no soc-nna.ko in /lib/modules" >>"$LOGFILE"; return 0; }
+	if insmod "$_ko" 2>>"$LOGFILE"; then
+		echo "nna: loaded $_ko" >>"$LOGFILE"
+	else
+		echo "nna: insmod $_ko failed" >>"$LOGFILE"
+	fi
+}
+
 start() {
 	echo -n "Starting $DAEMON: "
 	if running; then echo "OK (already running)"; return 0; fi
+	load_nna_driver
 	if [ ! -x "$DAEMON_PATH" ]; then echo "FAIL (no $DAEMON_PATH)"; return 1; fi
 	if [ ! -r "$CONF" ]; then echo "FAIL (no $CONF)"; return 1; fi
 	# busybox start-stop-daemon -b redirects the daemon's stdio to /dev/null,

@@ -68,6 +68,7 @@ availability) and links to the deeper `docs/sdk-feature-gaps.md` and
 | [Configuration Reference](Configuration-Reference.md) | Every `timps.conf` key, grouped by section, with type/default/range and live-vs-restart-only classification |
 | [HTTP /control API Reference](HTTP-Control-API.md) | The `/control` GET/POST JSON API, authentication, the `caps` capability object, and the `/events` SSE stream |
 | [Streaming Protocols](Streaming-Protocols.md) | RTSP, HTTP fMP4, MJPEG, snapshot and SRT — ports, transports, codecs, and client-compatibility notes |
+| [AI & Person Detection](AI-Person-Detection.md) | The T40 NNA chain (nmem, soc-nna, machino-nna helper, Magik models), getting a model onto the camera from the AI page, and building one with Ingenic's TransformKit |
 | [Motion Detection](Motion-Detection.md) | The IVS grid model, sensitivity mapping, the `on_motion` hook, and the T23 software-rotation coordinate caveat |
 | [Recording & Timelapse](Recording-Timelapse.md) | Continuous/motion-triggered SD recording with pre/post-roll, segment rotation, and periodic JPEG timelapse capture |
 | [Rate Control and Bandwidth: T23 vs T31](Rate-Control-Bandwidth.md) | Why the classic and new-generation encoder rate controllers use such different bandwidth for the same settings — a rate target vs. scene-content-adaptive quality |
