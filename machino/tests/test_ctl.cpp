@@ -90,7 +90,7 @@ const char* STATUS_JSON =
     "\"manualStop\":false,\"rawState\":\"CHILD_SA_ESTABLISHED\",\"gateway\":\"203.0.113.5:4500\","
     "\"interface\":\"ipsec0\",\"remoteTs\":\"10.66.0.0/24\",\"natT\":true,\"natDetected\":true,"
     "\"requestedUnderlay\":\"cellular\",\"actualUnderlay\":\"cellular\",\"underlayInterface\":\"usb0\","
-    "\"ikeTransport\":\"udp4500\","
+    "\"underlayIpv4\":\"100.71.3.9\",\"peerIpv4\":\"203.0.113.5\",\"ikeTransport\":\"udp4500\","
     "\"espTransport\":\"udp4500\",\"auth\":\"psk\","
     "\"routes\":[{\"prefix\":\"10.66.0.0/24\",\"source\":\"tsr\",\"device\":\"ipsec0\"}],"
     "\"childGeneration\":1,\"ikeGeneration\":1,\"uptimeS\":120,\"txPackets\":12,\"txBytes\":1024,"
@@ -204,10 +204,11 @@ void test_commands_ipsec() {
     // Kurzansicht
     CCHECK(t.run({"ipsec"}) == 0);
     CCHECK(has(t.out, "state=childEstablished") && has(t.out, "runtime=dataPlaneUp") && has(t.out, "daemon=laeuft"));
-    // peerIpv4/underlayIpv4 gibt es im echten /api/v1/ipsec/status nicht --
-    // die Kurzansicht zeigt nur Felder, die die API wirklich liefert.
-    CCHECK(has(t.out, "vpn.example.org:500") && !has(t.out, "peer="));
-    CCHECK(has(t.out, "cellular -> cellular (usb0)"));
+    // peerIpv4/underlayIpv4 emittiert der Status, sobald die Session steht
+    // (ipsec_api.cpp:238f; die Review-Runde 8a7ba3b hatte das faelschlich
+    // verneint) -- die Kurzansicht zeigt beide, wenn sie da sind.
+    CCHECK(has(t.out, "vpn.example.org:500") && has(t.out, "peer=203.0.113.5"));
+    CCHECK(has(t.out, "cellular -> cellular (usb0 100.71.3.9)"));
     CCHECK(has(t.out, "local=cam.test (fqdn)") && has(t.out, "remote=vpn.test (fqdn)"));
     CCHECK(has(t.out, "local=10.77.0.2/32") && has(t.out, "remote=10.66.0.0/24") && has(t.out, "ausgehandelt=10.66.0.0/24"));
     CCHECK(has(t.out, "tunnel=10.77.0.2") && has(t.out, "pfs=nein") && has(t.out, "autoConnect=ja"));

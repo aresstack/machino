@@ -741,13 +741,20 @@ std::string ipsec_summary(const Json& cfg, const Json& st) {
         s += "\n";
     }
     s += "gateway  : " + str_of(cfg, "gateway", "(keins)") + ":" + std::to_string(int_of(cfg, "port"));
+    // peerIpv4/underlayIpv4 emittiert der Status, sobald eine Session steht
+    // (ipsec_api.cpp; das Review 8a7ba3b hatte das faelschlich verneint).
+    if (!str_of(st, "peerIpv4").empty()) s += "  peer=" + str_of(st, "peerIpv4");
     s += "  auth=" + str_of(cfg, "auth", "psk");
     if (str_of(cfg, "auth") == "eap-mschapv2") s += " (" + str_of(cfg, "eapUser", "?") + ", trust=" + str_of(cfg, "trustMode", "?") + ")";
     s += "\n";
     s += "underlay : " + str_of(cfg, "underlay", "auto");
     if (!str_of(st, "actualUnderlay").empty()) {
         s += " -> " + str_of(st, "actualUnderlay");
-        if (!str_of(st, "underlayInterface").empty()) s += " (" + str_of(st, "underlayInterface") + ")";
+        if (!str_of(st, "underlayInterface").empty()) {
+            s += " (" + str_of(st, "underlayInterface");
+            if (!str_of(st, "underlayIpv4").empty()) s += " " + str_of(st, "underlayIpv4");
+            s += ")";
+        }
     }
     s += "\n";
     // AP10: Typ neben dem Wert -- ein Gateway prueft beides.
