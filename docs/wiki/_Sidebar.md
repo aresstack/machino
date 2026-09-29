@@ -1,6 +1,7 @@
 ## Machino
 
 - [[Home]]
+- [[Getting Started|Getting-Started]]
 - [[Design Principles|Design-Principles]]
 - [[OpenIPC Integration|OpenIPC-Integration]]
 - [[Documentation Sources|Documentation-Sources]]
@@ -9,6 +10,7 @@
 
 - [[T40NN OpenIPC Enablement|T40NN-OpenIPC-Enablement]]
 - [[OpenIPC Patch & Upstream Catalog|OpenIPC-Patch-Catalog]]
+- [[T40NN Research & Recovery|T40NN-Research-Recovery]]
 - [[Platform & SDK Support|Platform-SDK-Support]]
 - [[AI & Person Detection|AI-Person-Detection]]
 - [[USB & Modem Connectivity|USB-Modem-Connectivity]]
