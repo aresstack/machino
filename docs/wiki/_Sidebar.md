@@ -2,6 +2,7 @@
 
 - [[Home]]
 - [[Getting Started|Getting-Started]]
+- [[Current C++ Runtime|Current-Runtime]]
 - [[Design Principles|Design-Principles]]
 - [[OpenIPC Integration|OpenIPC-Integration]]
 - [[Documentation Sources|Documentation-Sources]]
@@ -15,9 +16,9 @@
 - [[AI & Person Detection|AI-Person-Detection]]
 - [[USB & Modem Connectivity|USB-Modem-Connectivity]]
 
-## Media Runtime
+## Prototype Runtime Reference
 
-The pages in this section primarily document the current **timps-derived validation runtime**. They preserve tested implementation knowledge while Machino transitions toward its target C++ ports-and-adapters architecture.
+The pages in this section document the **timps-derived C validation runtime**. They preserve tested implementation knowledge and known-good Ingenic IMP behaviour, but new Machino architecture work belongs in the active C++ runtime above.
 
 - [[Prototype Runtime Architecture|Architecture]]
 - [[Configuration Reference|Configuration-Reference]]
@@ -34,8 +35,8 @@ The pages in this section primarily document the current **timps-derived validat
 
 ## Development
 
-- [[Building the current prototype|Building]]
-- [[Testing / QA|Testing-QA]]
+- [[Building the C prototype|Building]]
+- [[Testing / QA (prototype)|Testing-QA]]
 
 ---
 
