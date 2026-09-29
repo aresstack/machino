@@ -351,8 +351,12 @@ void run_relay_head_end_tests() {
         HCHECK(out.find("/a/preview.js") != std::string::npos);
         HCHECK(out.find("id=\"mch-prev\"") != std::string::npos);
         HCHECK(out.find("stream: 1") != std::string::npos);
-        // the player script comes AFTER dashboard.js (defer order = document order)
+        // the player script comes AFTER dashboard.js (so preview.js loads before)
         HCHECK(out.find("/a/dashboard.js") < out.find("/a/preview.js"));
+        // the bootstrap must NOT run at parse time: an inline <script> ignores
+        // `defer`, so it would run before the deferred preview.js defines
+        // window.MajesticVideo. It starts on DOMContentLoaded instead.
+        HCHECK(out.find("DOMContentLoaded") != std::string::npos);
         // the page's own tile markup is untouched
         HCHECK(out.find("id=\"st-prev-off\"") != std::string::npos);
         bool again = true;
@@ -364,6 +368,14 @@ void run_relay_head_end_tests() {
         bool nc = true;
         const std::string other = "<html><body><script src=\"/a/network.js\" defer></script></body></html>";
         HCHECK(inject_machino_dashboard_preview(other, 1, nc) == other && !nc);
+        // the anchor matches by src, not exact tag spelling: attribute order or
+        // spacing may differ in the stock page without silently no-op'ing.
+        bool cr = false;
+        const std::string swapped =
+            "<html><body><a id=\"st-prev\"></a>"
+            "<script  defer  src=\"/a/dashboard.js\"></script></body></html>";
+        const std::string sout = inject_machino_dashboard_preview(swapped, 1, cr);
+        HCHECK(cr && sout.find("id=\"mch-prev\"") != std::string::npos);
     }
 
     // inject_machino_nav: add the two links into a relayed OpenIPC page without
