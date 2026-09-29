@@ -63,7 +63,9 @@ bool LoopbackHttpClient::request(const std::string& method, const std::string& p
 
         std::string req = method + " " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n"
                           "User-Agent: machinoctl\r\nAccept: application/json\r\nConnection: close\r\n";
-        if (method != "GET") {
+        // Auch ein GET mit Body (`api get <pfad> <json>`) traegt Content-Length:
+        // ohne ihn staenden die Body-Bytes als Muell hinter dem Request.
+        if (method != "GET" || !body.empty()) {
             req += "Content-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
         }
         req += "\r\n";

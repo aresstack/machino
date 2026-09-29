@@ -707,14 +707,13 @@ std::string ipsec_summary(const Json& cfg, const Json& st) {
         s += "\n";
     }
     s += "gateway  : " + str_of(cfg, "gateway", "(keins)") + ":" + std::to_string(int_of(cfg, "port"));
-    if (!str_of(st, "peerIpv4").empty()) s += "  peer=" + str_of(st, "peerIpv4");
     s += "  auth=" + str_of(cfg, "auth", "psk");
     if (str_of(cfg, "auth") == "eap-mschapv2") s += " (" + str_of(cfg, "eapUser", "?") + ", trust=" + str_of(cfg, "trustMode", "?") + ")";
     s += "\n";
     s += "underlay : " + str_of(cfg, "underlay", "auto");
     if (!str_of(st, "actualUnderlay").empty()) {
         s += " -> " + str_of(st, "actualUnderlay");
-        if (!str_of(st, "underlayInterface").empty()) s += " (" + str_of(st, "underlayInterface") + " " + str_of(st, "underlayIpv4") + ")";
+        if (!str_of(st, "underlayInterface").empty()) s += " (" + str_of(st, "underlayInterface") + ")";
     }
     s += "\n";
     s += "ids      : local=" + str_of(cfg, "localId", "(leer)") + "  remote=" + str_of(cfg, "remoteId", "(leer)") + "\n";
