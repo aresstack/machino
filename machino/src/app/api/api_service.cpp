@@ -989,9 +989,28 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     // a path may be set before the model is copied on.
                     if (!val.is_string()) return bad(422, "invalid_value", path, "model_path must be a string");
                     const std::string& mp = val.as_string();
-                    if (mp.size() > 255 || (!mp.empty() && mp[0] != '/') || mp.find("/../") != std::string::npos ||
-                        mp.find('\n') != std::string::npos || (mp.size() >= 3 && mp.compare(mp.size() - 3, 3, "/..") == 0))
-                        return bad(422, "invalid_value", path, "model_path must be an absolute path without '..'");
+                    // "" clears it. Otherwise: confined to the model directories
+                    // (the overlay install dir and the /tmp test dir the docs
+                    // use), no "..", and a conservative filename charset. The
+                    // charset is the important part: this value is echoed by the
+                    // AI page and passed to `machino-nna --model`, so anything
+                    // outside [A-Za-z0-9/._-] (< > " ' ; | $ ...) is refused at
+                    // the source rather than escaped downstream.
+                    if (!mp.empty()) {
+                        const bool rooted = mp.rfind("/etc/machino/models/", 0) == 0 ||
+                                            mp.rfind("/tmp/models/", 0) == 0;
+                        if (!rooted || mp.size() > 255 || mp.find("/../") != std::string::npos ||
+                            (mp.size() >= 3 && mp.compare(mp.size() - 3, 3, "/..") == 0))
+                            return bad(422, "invalid_value", path,
+                                       "model_path must be under /etc/machino/models or /tmp/models, without '..'");
+                        for (char ch : mp) {
+                            const bool okc = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                                             (ch >= '0' && ch <= '9') || ch == '/' || ch == '.' ||
+                                             ch == '-' || ch == '_';
+                            if (!okc) return bad(422, "invalid_value", path,
+                                                 "model_path may contain only letters, digits, and / . - _");
+                        }
+                    }
                     c.key = "ai.model_path"; c.value = mp;
                 } else return bad(400, "unknown_field", path, "unknown field");
             } else if (s == "night") {

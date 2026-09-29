@@ -960,6 +960,12 @@ void test_ai_detectors_route_and_person_config() {
     ACHECK(path(d2.body, "detectors")->at(1).get("reasons")->size() == 4);   // Datei fehlt weiterhin
     ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"models/x.bin\"}}", "").status == 422);
     ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/etc/machino/models/../../shadow\"}}", "").status == 422);
+    // Der Testpfad /tmp/models ist erlaubt (Modell zu gross fuers Overlay).
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/tmp/models/y.bin\"}}", "").status == 200);
+    // Ausserhalb der Modell-Verzeichnisse: abgelehnt (kein /etc/shadow o.ae.).
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/etc/shadow\"}}", "").status == 422);
+    // XSS-/Injection-Zeichen: an der Quelle abgelehnt, nicht erst beim Rendern.
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/etc/machino/models/a<script>.bin\"}}", "").status == 422);
     // Leer = kein Modell: erlaubt, damit ein Fehlgriff zuruecknehmbar ist.
     ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"\"}}", "").status == 200);
 }

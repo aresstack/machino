@@ -258,7 +258,13 @@ async function patchAi(fields, okText) {
 
 async function refresh() {
   const tb = $("ai-detlist");
-  const d = await api("GET", "/api/v1/ai/detectors");
+  // The three reads are independent -- fire them together, one round-trip
+  // instead of three on the camera's slow HTTP path.
+  const [d, t, c] = await Promise.all([
+    api("GET", "/api/v1/ai/detectors"),
+    api("GET", "/api/v1/telemetry"),
+    api("GET", "/api/v1/config"),
+  ]);
   tb.innerHTML = "";
   if (d.status !== 200 || !d.body || !d.body.detectors) {
     const tr = document.createElement("tr"); td(tr, reason(d, "machino API not reachable"), "mj-card-note").colSpan = 4; tb.appendChild(tr);
@@ -288,14 +294,14 @@ async function refresh() {
       tb.appendChild(tr);
     }
   }
-  const t = await api("GET", "/api/v1/telemetry");
   const ai = t.body && t.body.ai;
   $("ai-state").textContent = ai ? (ai.state + (ai.backend ? " (" + ai.backend + ")" : "")) : "\u2014";
-  const c = await api("GET", "/api/v1/config");
   const cfg = c.body && c.body.ai;
   $("ai-cfg").textContent = cfg ? (cfg.detector + " / " + (cfg.model_path || "(no model path)")) : "\u2014";
-  const err = ai && ai.last_error ? ai.last_error : null;
-  $("ai-err").textContent = err ? err : "\u2014";
+  // The Error-state reason rides in telemetry's ai.error {code,message}
+  // (see telemetry_json) -- there is no ai.last_error field there.
+  const e = ai && ai.error ? ((ai.error.code || "") + " " + (ai.error.message || "")).trim() : "";
+  $("ai-err").textContent = e || "\u2014";
 }
 
 document.querySelectorAll(".ai-use").forEach((b) => {
