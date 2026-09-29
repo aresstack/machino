@@ -98,14 +98,28 @@ Neue Konfigurationsschluessel: `cellular.net_mode`, `cellular.band_profile`,
 `cellular.band_mask` (Hex wie im Modem). Eine Datei ohne sie bedeutet
 auto/auto.
 
-## Offen an der Hardware
+## An der Hardware bestaetigt (2026-09-29)
 
-Das Format der Rueckmeldung `AT+QCFG="band"` ist im Referenzprojekt nicht
-aufgezeichnet (dort wird nie zurueckgelesen). Der Parser nimmt
-`+QCFG: "band",<gsm>,<lte>[,<tds>]` mit Hex mit oder ohne `0x`. Meldet die
-Firmware etwas anderes, zeigt die Karte `sync = unverified` mit dem Hinweis
-"band report not readable"; geschrieben wird trotzdem, wenn der Benutzer
-etwas aendert. Dann bitte die Rohantwort melden.
+Direkt am AT-Port eines echten EC200A (Firmware `EC200AEUV1HAR02A07M16`)
+gemessen -- der frueher offene Format-Vorbehalt ist damit fuer diese Firmware
+aufgeloest:
+
+    AT+QCFG="band"        -> +QCFG: "band",0xd3,0x1a0080800d5   (0x-praefigierter Hex)
+    AT+QCFG="nwscanmode"  -> +QCFG: "nwscanmode",0
+    AT+CFUN?              -> +CFUN: 1
+    AT+QENG="servingcell" -> +QENG: "servingcell",...,7,...,-99,-11,-68,12,...  (Band 7, RSRP -99, RSRQ -11, SINR 12)
+    AT+CSQ               -> +CSQ: 23,99
+    AT+QPINC="SC"        -> +QPINC: "SC",3,10   (PIN-/PUK-Restversuche)
+
+Der GSM-Parameter `0xd3` deckt sich mit dem `d3`, das der Tuner schreibt.
+`parse_mask_hex` strippt ein fuehrendes `0x`, also wird der Readback auf dieser
+Firmware gelesen (kein `sync = unverified`). Meldet eine ANDERE Firmware ein
+abweichendes Format, faellt die Karte weiterhin sauber auf `sync = unverified`
+mit "band report not readable" zurueck, und geschrieben wird trotzdem.
+
+Noch nicht an der Hardware: `AT+QENG="neighbourcell"` mit tatsaechlich
+vorhandenen Nachbarzellen (die Testumgebung hatte keine; der Leerfall meldet
+nur `OK`).
 
 ## Bewusst nicht portiert
 

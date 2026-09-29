@@ -474,6 +474,12 @@ Response NetApiService::cellular_bandscan()
 {
     const std::string path = "/api/v1/network/cellular/bandscan";
     if (!d_.cellular) return not_wired(path, "cellular");
+    // Nicht waehrend einer ausstehenden Netzaenderung: der Scan reisst den
+    // Datenlink fuer Minuten runter und faehrt Bandwechsel, waehrend der
+    // Rollback-Timer noch laeuft -- dieselbe Vorsicht wie bei sim/lock.
+    if (d_.txn && d_.txn->pending())
+        return ApiService::fail(409, "conflict", path,
+                                "a network change is waiting for confirmation - confirm it first");
     std::string why;
     if (!d_.cellular->request_band_scan(why))
         return ApiService::fail(409, "conflict", path, why);
@@ -496,6 +502,12 @@ Response NetApiService::cellular_restart()
 {
     const std::string path = "/api/v1/network/cellular/restart";
     if (!d_.cellular) return not_wired(path, "cellular");
+    // Nicht waehrend einer ausstehenden Netzaenderung: AT+CFUN=1,1 re-enumeriert
+    // das Modem mitten im Rollback-Fenster. Erst bestaetigen. (neighbours bleibt
+    // frei: eine reine QENG-Abfrage aendert nichts und stoert den Rollback nicht.)
+    if (d_.txn && d_.txn->pending())
+        return ApiService::fail(409, "conflict", path,
+                                "a network change is waiting for confirmation - confirm it first");
     std::string why;
     if (!d_.cellular->request_modem_restart(why))
         return ApiService::fail(409, "conflict", path, why);

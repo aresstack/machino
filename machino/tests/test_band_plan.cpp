@@ -84,6 +84,13 @@ void test_qcfg_band_readback_accepts_both_hex_spellings_and_nothing_else()
     QcfgBand q = parse_qcfg_band("+QCFG: \"band\",d3,1a0080800d5\r\nOK\r\n");
     TCHECK(q.lte.has && q.lte.value == all_supported_mask());
     TCHECK(q.gsm.has && q.gsm.value == 0xd3);
+    // Exakt die Antwort eines echten EC200A (Firmware EC200AEUV1HAR02A07M16),
+    // direkt am AT-Port gemessen 2026-09-29: 0x-praefigierter Hex. Der frueher
+    // offene Hardware-Vorbehalt ("band-report not readable") ist damit fuer
+    // diese Firmware widerlegt.
+    q = parse_qcfg_band("+QCFG: \"band\",0xd3,0x1a0080800d5\r\nOK\r\n");
+    TCHECK(q.lte.has && q.lte.value == all_supported_mask());
+    TCHECK(q.gsm.has && q.gsm.value == 0xd3);
     q = parse_qcfg_band("+QCFG: \"band\",0xf,0x80004,0x0\r\nOK\r\n");
     TCHECK(q.lte.has && q.lte.value == 0x80004);
     // Nicht lesbar heisst abwesend -- nicht 0.
@@ -227,6 +234,30 @@ void test_a_rejected_mask_is_reported_and_not_retried_and_rf_comes_back()
     TCHECK(r.at.count_sent("AT+QCFG=\"band\",d3,4") == 1);      // genau einmal
     TCHECK(r.at.count_sent("AT+CFUN=1") == 1);                   // RF wieder an
     TCHECK(r.at.count_sent("AT+CFUN=0") == 1);
+}
+
+void test_a_radio_that_stays_off_is_reported_failed_not_in_sync()
+{
+    // R2/R1: Band und Modus nehmen an, aber AT+CFUN=1 wird abgelehnt -- der
+    // Funk bleibt aus. Der Readback vergleicht nur die Maske; frueher wurde das
+    // deshalb als InSync gemeldet, obwohl das Modem kein Netz hatte. Jetzt:
+    // nie faelschlich InSync, der RF-Zyklus wird gebuendelt wiederholt (nicht
+    // ein Versuch und Schluss), und am Ende steht ein ehrliches Failed.
+    TunerRig r;
+    arm_modem_reports(r.at, "1a0080800d5", 0);
+    r.tuner.set_config(cfg_with(BandProfile::Auto, NetMode::Auto));
+    r.ticks(2);
+    TCHECK(r.tuner.state().sync == RadioSync::InSync);
+
+    r.at.set_reply("AT+QCFG=\"band\",d3,8080090", "OK\r\n");
+    r.at.set_reply("AT+QCFG=\"nwscanmode\",3,1", "OK\r\n");
+    r.at.set_reply("AT+CFUN=1", "ERROR\r\n");      // der Funk kommt nicht zurueck
+    r.tuner.set_config(cfg_with(BandProfile::Low, NetMode::LteOnly));
+    r.ticks(20);
+
+    TCHECK(r.tuner.state().sync != RadioSync::InSync);
+    TCHECK(r.tuner.state().sync == RadioSync::Failed);
+    TCHECK(r.at.count_sent("AT+CFUN=1") >= 2);     // gebuendelter Retry, nicht einmal
 }
 
 void test_an_unreadable_report_writes_nothing_at_boot_but_a_change_still_does()
@@ -746,6 +777,7 @@ void run_band_plan_tests()
     test_auto_accepts_a_factory_mask_that_is_a_superset();
     test_a_change_is_written_once_with_the_reference_sequence();
     test_a_rejected_mask_is_reported_and_not_retried_and_rf_comes_back();
+    test_a_radio_that_stays_off_is_reported_failed_not_in_sync();
     test_an_unreadable_report_writes_nothing_at_boot_but_a_change_still_does();
     test_a_modem_from_elsewhere_is_brought_in_line_once();
     test_a_rollback_rewrites_the_old_values();

@@ -113,6 +113,13 @@ void RadioTuner::on_modem_gone()
     // neu, und die Rueckmeldung wird wieder gelesen, sobald es antwortet.
     alive_ = false;
     verified_ = false;
+    // Wurde der Funk gerade fuer einen Schreibvorgang abgeschaltet (RfOff) und
+    // das Modem verstummte, bevor CFUN=1 raus war, ist der Funk aus und die
+    // Maske unveraendert -- der Readback saehe "in sync" und liesse den Funk
+    // aus. Beim Wiederkommen die volle Sequenz neu fahren. (radio_reenable_owed_
+    // steht in diesem Fall schon und bleibt bewusst stehen.)
+    if (phase_ == Phase::RfOff) restore_pending_ = true;
+    radio_reenable_tries_ = 0;
     phase_ = Phase::Idle;
     st_.writes = 0;
     st_.modem_mask = Maybe<uint64_t>();
@@ -166,6 +173,13 @@ bool RadioTuner::tick(IAtTransport& at, const CellularStatus& s)
         return false;
     }
 
+    // Der Funk wurde fuer einen Schreibvorgang abgeschaltet und nie bestaetigt
+    // wieder an (ein kurz stummes Modem brach den Takt ab, oder CFUN=1 wurde
+    // abgelehnt). Der Readback unten vergleicht nur die Maske -- die stimmt --
+    // und wuerde einen toten Funk "in sync" nennen. Also den Schreibzyklus
+    // erzwingen, der mit CFUN=1 endet.
+    if (radio_reenable_owed_) { apply_pending_ = true; verified_ = false; }
+
     if (!apply_pending_ && verified_) return false;
 
     // ---- zurueckLESEN -----------------------------------------------------
@@ -175,7 +189,9 @@ bool RadioTuner::tick(IAtTransport& at, const CellularStatus& s)
     st_.modem_nwscanmode = nw;
 
     const bool readable = qb.lte.has && nw.has;
-    const bool in_sync  = readable && mask_in_sync(qb.lte.value) &&
+    // radio_reenable_owed_: die Maske kann stimmen, aber der Funk ist aus --
+    // dann ist das Modem NICHT in-sync, sondern muss den Zyklus neu fahren.
+    const bool in_sync  = readable && !radio_reenable_owed_ && mask_in_sync(qb.lte.value) &&
                           nw.value == net_mode_nwscanmode(st_.desired_mode);
     if (in_sync) {
         verified_ = true;
@@ -215,6 +231,7 @@ bool RadioTuner::tick(IAtTransport& at, const CellularStatus& s)
         st_.detail = "AT+CFUN=0 rejected - nothing written";
         return false;
     }
+    radio_reenable_owed_ = true;   // Funk ist jetzt aus; wir schulden ein bestaetigtes CFUN=1
     phase_ = Phase::RfOff;
     st_.sync = RadioSync::Pending;
     st_.detail = "radio off, writing bands and network mode";
@@ -229,16 +246,40 @@ void RadioTuner::write_step(IAtTransport& at)
     const AtExchange b = at.command("AT+QCFG=\"band\",d3," + hex);
     const AtExchange n = at.command("AT+QCFG=\"nwscanmode\"," +
                                     std::to_string(net_mode_nwscanmode(st_.desired_mode)) + ",1");
-    // RF IMMER wieder an -- auch nach einer Ablehnung. Ein Modem mit RF aus
-    // ist ein Modem ohne Netz, und das waere die schlechteste Art zu
-    // scheitern.
-    at.command("AT+CFUN=1", 10000);
-    phase_ = Phase::Idle;
+    // RF IMMER wieder an -- auch nach einer Band-Ablehnung. Und das Ergebnis
+    // wird geprueft: ein Modem mit RF aus ist ein Modem ohne Netz, und das darf
+    // NICHT als Erfolg durchgehen (frueher wurde der Rueckgabewert verworfen).
+    const AtExchange on = at.command("AT+CFUN=1", 10000);
     ++st_.writes;
 
+    if (on.ok()) {
+        radio_reenable_owed_ = false;
+        radio_reenable_tries_ = 0;
+    } else if (++radio_reenable_tries_ <= kMaxRadioReenable) {
+        // Band/Modus mag geschrieben sein, aber der Funk kam nicht zurueck.
+        // Als "Pending" zu melden hiesse, dass der naechste Readback die
+        // passende Maske sieht und einen toten Funk "in sync" nennt. Statt-
+        // dessen den RF-Zyklus ueber die Takte erneut fahren (watchdog-sicher);
+        // radio_reenable_owed_ bleibt gesetzt und haelt den Readback davon ab.
+        phase_ = Phase::RfOff;
+        st_.sync = RadioSync::Pending;
+        st_.detail = "the radio did not confirm back on - retrying";
+        return;
+    } else {
+        radio_reenable_owed_ = false;
+        radio_reenable_tries_ = 0;
+        phase_ = Phase::Idle;
+        verified_ = true;
+        st_.sync = RadioSync::Failed;
+        st_.detail = "AT+CFUN=1 did not confirm after retries - the radio may be off";
+        return;
+    }
+
+    phase_ = Phase::Idle;
+
     if (!b.ok() || !n.ok()) {
-        // Kein zweiter Versuch. Die zuletzt gelesene Maske bleibt stehen --
-        // sie IST der Stand des Modems, weil nichts davon angenommen wurde.
+        // Kein zweiter Versuch fuer die Maske selbst. Die zuletzt gelesene
+        // Maske bleibt stehen -- sie IST der Stand des Modems.
         verified_ = true;
         st_.sync = RadioSync::Failed;
         st_.detail = !b.ok()

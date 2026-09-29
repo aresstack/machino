@@ -152,6 +152,16 @@ private:
     bool restore_pending_ = false; // Scan abgebrochen: Maske wiederherstellen
     Phase phase_ = Phase::Idle;
 
+    // Wir haben den Funk fuer einen Schreibvorgang abgeschaltet (CFUN=0) und
+    // schulden ein BESTAETIGTES CFUN=1. Solange das offen ist, darf der Readback
+    // -- der nur die Bandmaske vergleicht, nicht den Funkzustand -- das Modem
+    // NICHT "in sync" nennen, sonst bliebe der Funk aus. Ueberlebt on_modem_gone
+    // (ein kurz stummes Modem zwischen den beiden RF-Takten darf den Funk nicht
+    // aus lassen).
+    bool radio_reenable_owed_ = false;
+    int  radio_reenable_tries_ = 0;
+    static const int kMaxRadioReenable = 3;
+
     std::vector<int>      scan_bands_;
     size_t                scan_idx_ = 0;
     ScanPhase             scan_phase_ = ScanPhase::Lock;
