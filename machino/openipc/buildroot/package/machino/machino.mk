@@ -45,6 +45,7 @@ define MACHINO_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/machino/machinod                     $(TARGET_DIR)/usr/bin/machino
 	$(INSTALL) -D -m 0755 $(@D)/machino/openipc/sbin/streamerctl     $(TARGET_DIR)/usr/sbin/streamerctl
 	$(INSTALL) -D -m 0755 $(@D)/machino/openipc/sbin/machino-manager $(TARGET_DIR)/usr/sbin/machino-manager
+	$(INSTALL) -D -m 0755 $(@D)/machino/openipc/sbin/machinoctl      $(TARGET_DIR)/usr/sbin/machinoctl
 	$(INSTALL) -D -m 0755 $(@D)/machino/openipc/init/machino         $(TARGET_DIR)/etc/init.d/machino
 	$(INSTALL) -D -m 0755 $(@D)/machino/openipc/init/S95streamer     $(TARGET_DIR)/etc/init.d/S95streamer
 	$(INSTALL) -D -m 0644 $(@D)/machino/machino.conf.example         $(TARGET_DIR)/etc/machino/machino.conf

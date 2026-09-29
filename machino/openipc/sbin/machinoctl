@@ -1,0 +1,26 @@
+#!/bin/sh
+# machinoctl -- die Terminal-Bedienung von Machino (UART / SSH).
+#
+# WeirdOS (esp32-modem-host) hat fuer alles Konsolenbefehle, weil ein ESP32
+# keine Shell hat. Die Kamera hat eine -- UART und SSH landen in busybox ash --
+# also ist das Machino-Gegenstueck ein Kommando in dieser Shell:
+#
+#   machinoctl                      Konsole (help, exit) -- wie am WeirdOS-UART
+#   machinoctl ipsec                VPN-Kurzansicht
+#   machinoctl ipsec setup          gefuehrte VPN-Einrichtung
+#   machinoctl ipsec set gateway vpn.example.org remoteSubnet 192.168.178.0/24
+#   machinoctl ipsec psk            PSK verdeckt eingeben
+#   machinoctl ipsec connect
+#   machinoctl status | config | api get /api/v1/network
+#
+# Es ist ein Modus des machino-Binaries (kein zweites Binary auf dem knappen
+# Overlay) und ein reiner CLIENT der lokalen API auf 127.0.0.1: es laeuft
+# NEBEN dem Daemon, nie statt seiner, und schreibt nichts an ihm vorbei.
+# Kamera-lokale Aufrufer braucht die API nicht anzumelden (wie bei Majestic).
+#
+#   --port N          API-Port (Vorgabe 80, dann 8080; auch MACHINOCTL_PORT)
+#   --json            Antworten roh als JSON (fuer Skripte)
+#
+# Ohne laufenden Daemon (Majestic ist der Streamer) sagt es das und verweist
+# auf `streamerctl status`.
+exec /usr/bin/machino --ctl "$@"

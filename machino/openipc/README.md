@@ -36,6 +36,8 @@ machino.conf       default configuration
 install.sh         installer
 uninstall.sh       uninstaller, restores the state recorded at install time
 sbin/streamerctl   the selector - the only thing that switches media owners
+sbin/machinoctl    terminal front end (UART/SSH): a client of the local API,
+                   e.g. `machinoctl ipsec setup`; wraps `machino --ctl`
 init/S95streamer   boot script: starts the selected service
 init/machino       start/stop for the Machino daemon
 init/S42usb        boot: brings up the stack selected by usb.mode

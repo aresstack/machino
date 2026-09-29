@@ -43,6 +43,7 @@ is unchanged and documented in [../../docs/install-openipc.md](../../docs/instal
 | `/usr/bin/machino` | the daemon (`machinod`, installed as `machino`) |
 | `/usr/sbin/streamerctl` | boot-time streamer selection |
 | `/usr/sbin/machino-manager` | idempotent install/uninstall/status control surface |
+| `/usr/sbin/machinoctl` | terminal front end (UART/SSH): `machinoctl ipsec setup`, `machinoctl help` — a client of the local API, wraps `machino --ctl` |
 | `/etc/init.d/machino`, `/etc/init.d/S95streamer` | service + boot selector |
 | `/etc/machino/machino.conf` | default config (canonical path; persisted edits belong on the overlay) |
 

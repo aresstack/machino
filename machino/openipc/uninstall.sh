@@ -268,7 +268,7 @@ if [ -r "$ROOT/var/run/machino-httpd.pid" ]; then
 fi
 
 # ----------------------------------------------------------------- files ---
-rm -f "$ROOT/usr/bin/machino" "$ROOT/usr/sbin/streamerctl" "$ROOT/usr/sbin/machino-manager" "$INITD/machino"
+rm -f "$ROOT/usr/bin/machino" "$ROOT/usr/sbin/streamerctl" "$ROOT/usr/sbin/machino-manager" "$ROOT/usr/sbin/machinoctl" "$INITD/machino"
 if [ "$KEEP_CONFIG" = "1" ]; then
     say "keeping $STATE_DIR (configuration and board profiles)"
 else
