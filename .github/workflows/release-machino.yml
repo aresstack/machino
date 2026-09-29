@@ -57,6 +57,28 @@ jobs:
           done
           find wifi-payload -type f
 
+      - name: "NNA model -- SEPARATE release asset, never inside the install bundle"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          # The detection model is an AGPL-3.0 yolov5s derivative. It ships as
+          # its OWN release asset (machino-nna-model-t40nn.tgz) so an operator
+          # can upload it through the WebUI, and is deliberately kept OUT of
+          # machino-openipc-t40nn.tar.gz (a bundle is not the place to hand out
+          # an AGPL model, and it would bloat /tmp past what the camera has).
+          mkdir -p nna-model
+          id=$(gh run list --workflow build-nna-t40.yml --status success --limit 1 --json databaseId -q ".[0].databaseId")
+          [ -n "${id:-}" ] && [ "$id" != "null" ] ||
+            { echo "::error::no successful run of build-nna-t40 -- a release must ship the model asset (re-run that workflow)"; exit 1; }
+          gh run download "$id" --name machino-nna-model -D nna-model ||
+            { echo "::error::machino-nna-model artifact of run $id is not downloadable (expired?); re-run build-nna-t40"; exit 1; }
+          [ -n "$(find nna-model -name '*_magik.bin' -print -quit)" ] ||
+            { echo "::error::the model artifact carries no *_magik.bin"; exit 1; }
+          # Model + its manifest/provenance into one standalone, upload-ready tgz.
+          tar czf machino-nna-model-t40nn.tgz -C nna-model .
+          echo "nna model asset:"; ls -l machino-nna-model-t40nn.tgz; tar tzf machino-nna-model-t40nn.tgz
+
       - name: "Fetch and build mbedTLS"
         run: sh machino/tools/fetch-mbedtls.sh "$PWD/3p" gcc ar
       - name: "Fetch and build libfaac + libopus (pinned; /audio.m4a, /audio.opus, audio in /ws/video)"
@@ -251,4 +273,5 @@ jobs:
             bundle/machino-openipc-t40nn.tar.gz
             bundle/machino-openipc-t40nn/SHA256SUMS
             bundle/machino-openipc-t40nn/BUILDINFO
+            machino-nna-model-t40nn.tgz
           fail_on_unmatched_files: true
