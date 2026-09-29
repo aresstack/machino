@@ -539,8 +539,18 @@ void test_hls_segmenter() {
     // first segment after it carries the discontinuity.
     ACHECK(s.init_generation() == 1 && s.init_name() == "init1.mp4");
     ACHECK(s.playlist().find("#EXT-X-MAP:URI=\"init1.mp4\"") != std::string::npos);
-    ACHECK(s.playlist().find("#EXT-X-DISCONTINUITY-SEQUENCE:1\n") != std::string::npos);
+    // RFC 8216: while the discontinuity is still IN the window it is marked on
+    // its segment, and EXT-X-DISCONTINUITY-SEQUENCE stays absent (0). The
+    // sequence counts only discontinuities that have SCROLLED OFF, so a
+    // segment's number never DECREASES across a reload - the earlier
+    // init_gen_-based value did, which broke hls.js/Safari timelines.
     ACHECK(s.playlist().find("#EXT-X-DISCONTINUITY\n#EXTINF") != std::string::npos);
+    ACHECK(s.playlist().find("#EXT-X-DISCONTINUITY-SEQUENCE") == std::string::npos);
+    // Push the tagged segment out of the window (target 1000 ms, max 3): the
+    // sequence increments to 1 and the tag is gone.
+    for (int i = 0; i < 5; ++i) { pts += 1100000; const std::vector<uint8_t> au = idr_au((uint8_t)(20 + i)); s.feed(au.data(), au.size(), true, pts, 64, 48); }
+    ACHECK(s.playlist().find("#EXT-X-DISCONTINUITY-SEQUENCE:1\n") != std::string::npos);
+    ACHECK(s.playlist().find("#EXT-X-DISCONTINUITY\n") == std::string::npos);
     unsigned g = 9;
     ACHECK(hls::Segmenter::parse_init_name("init.mp4", g) && g == 0 && hls::Segmenter::parse_init_name("init7.mp4", g) && g == 7);
     ACHECK(!hls::Segmenter::parse_init_name("init.m4s", g) && !hls::Segmenter::parse_init_name("initx.mp4", g));
