@@ -1,92 +1,177 @@
-# timps wiki
+# Machino Wiki
 
-**timps** ("Tiny IMP Streamer") is a lightweight, dependency-light RTSP /
-fragmented-MP4 / MJPEG streaming daemon for Ingenic T-series SoC IP cameras.
-It is built directly on the vendor `libimp` SDK — no live555, libconfig,
-libwebsockets or libschrift — and is designed as a drop-in alternative to
-[prudynt-t](https://github.com/themactep/prudynt-t) / raptor within the
-[thingino](https://github.com/themactep/thingino-firmware) firmware
-ecosystem.
+**Machino** is a lightweight media runtime and extension layer for embedded IP cameras.
+It is designed to fit naturally into **OpenIPC** while keeping platform-specific work,
+optional services and WebUI integration loosely coupled.
 
-This wiki is a curated, evergreen reference for developers and operators. It
-is distinct from `docs/*.md` at the repository root, which are historical
-investigation notes, build-hardening logs and one-off code audits — those are
-linked from here where they contain relevant deep-dive detail, but this wiki
-is the place to start.
+Machino started from a practical gap: the existing OpenIPC media stack around
+**Majestic did not provide a usable path for the Ingenic T40NN hardware being tested**.
+The project therefore began by validating the camera directly, using the
+MIT-licensed [Lu-Fi/timps](https://github.com/Lu-Fi/timps) codebase as a known-good
+Ingenic IMP reference. That ancestry is still visible in parts of the repository and
+in several detailed runtime pages in this wiki, but it does **not** define the target
+architecture.
 
-> Every page in this wiki is written against, and verified against, the
-> actual source in `src/` on `main`.
+The target is broader:
 
-## What timps does
+> **Provide the media/runtime capabilities an OpenIPC camera needs, add capabilities
+> OpenIPC/Majestic do not provide, and do so without requiring invasive changes to
+> OpenIPC itself.**
 
-- **RTSP** (port 554, TCP interleaved or UDP transport; RTSPS on port 322
-  when built with `USE_TLS`) — H.264 always, H.265 where the SoC/SDK
-  supports it, AAC or G.711 (µ-law/A-law) audio.
-- **Browser preview over fragmented MP4** (`/stream.mp4`, `/`) — MSE-compatible
-  fMP4 muxing for `ffplay`/VLC and `<video>`/MSE in a browser, with audio.
-- **MJPEG** (`/stream.mjpeg`) and **JPEG snapshot** (`/snapshot.jpg`).
-- **SRT output** (`USE_SRT`) — MPEG-TS over SRT, as a listener
-  (`srt.mode=listener`, the default; e.g. `ffplay srt://<ip>:9000`) or as a
-  caller dialling out to `srt.host` (`srt.mode=caller`).
-- **On-demand encoding** — a stream's encoder only runs while at least one
-  client is subscribed; idle streams cost ~0% CPU.
-- **Live control API** (`/control`, `USE_CONTROL`) — read and change ISP
-  image tuning, audio, OSD, motion and more without a restart, with changes
-  persisted back to the config file.
-- **Event push** (`/events`, Server-Sent Events) — subscribe to motion,
-  day/night and stats updates instead of polling.
-- **Grid-based motion detection** built on the Ingenic IVS ("Intelligent
-  Video System") hardware move-detection API.
-- **Automatic day/night switching**, replacing thingino's separate
-  `daynightd` daemon: an `auto` sensor automaton (four independent
-  day/probe/heartbeat/boot paths) with an optional calendar, or a
-  calendar-only `schedule` mode. See [Day/Night](Day-Night.md).
-- **Local recording** (continuous or motion-triggered fMP4 segments to SD)
-  and **timelapse** (periodic JPEG capture).
-- **Native speaker output** (`IMP_AO`) for an ONVIF-style two-way audio
-  backchannel and a system-sound play queue — no external `/bin/iac`/`play`
-  helper needed.
-- **Privacy masks**, **per-stream TrueType OSD overlays**, and **image
-  rotation** (hardware 90/270/180 on some SoCs, software 90/270 on others).
-- **Authentication**: RTSP Digest, HTTP Basic, and a token mechanism for the
-  HTTP media/API endpoints, with a localhost bypass for on-device UIs.
+Machino is not a firmware distribution. It is intended to run *on top of* OpenIPC and
+to feel like a native part of the system.
 
-## Supported platforms
+## Why Machino exists
 
-T10 · T20 · T21 · T23 · T30 · T31 · T40 · T41 · C100 (Ingenic SoC families).
-See [Platform & SDK Support](Platform-SDK-Support.md) for the capability
-matrix (two encoder-API generations, per-SoC rotation tiers, ISP tuning
-availability) and links to the deeper `docs/sdk-feature-gaps.md` and
-`docs/rotation.md` investigations.
+The first concrete target is **Ingenic T40/T40NN**, with T40NN currently requiring
+additional engineering work around the platform, PHY/network setup and vendor SDK.
+That work uncovered information that is useful beyond Machino itself: register values,
+boot-time state, PHY setup, warm-reboot behaviour and other hardware facts can form the
+basis for future upstream OpenIPC support.
 
-## Page index
+Machino therefore has two related roles:
 
-| Page | Covers |
-| --- | --- |
-| [Architecture](Architecture.md) | Process/thread model, the HAL abstraction, the hub pub/sub mechanism, fan-out queues, and the end-to-end data flow from sensor to client |
-| [Building](Building.md) | `make sim`, cross-compiling for a real camera, every `USE_*` build flag, and the thingino-firmware packaging integration |
-| [Configuration Reference](Configuration-Reference.md) | Every `timps.conf` key, grouped by section, with type/default/range and live-vs-restart-only classification |
-| [HTTP /control API Reference](HTTP-Control-API.md) | The `/control` GET/POST JSON API, authentication, the `caps` capability object, and the `/events` SSE stream |
-| [Streaming Protocols](Streaming-Protocols.md) | RTSP, HTTP fMP4, MJPEG, snapshot and SRT — ports, transports, codecs, and client-compatibility notes |
-| [AI & Person Detection](AI-Person-Detection.md) | The T40 NNA chain (nmem, soc-nna, machino-nna helper, Magik models), getting a model onto the camera from the AI page, and building one with Ingenic's TransformKit |
-| [Motion Detection](Motion-Detection.md) | The IVS grid model, sensitivity mapping, the `on_motion` hook, and the T23 software-rotation coordinate caveat |
-| [Recording & Timelapse](Recording-Timelapse.md) | Continuous/motion-triggered SD recording with pre/post-roll, segment rotation, and periodic JPEG timelapse capture |
-| [Rate Control and Bandwidth: T23 vs T31](Rate-Control-Bandwidth.md) | Why the classic and new-generation encoder rate controllers use such different bandwidth for the same settings — a rate target vs. scene-content-adaptive quality |
-| [Rate Control Parameters](Rate-Control-Parameters.md) | Every rate-control field (`bitrate`, `rc_mode`, `quality_lvl`, `change_pos`, `i_bias_lvl`, ...): range, per-SoC support, and cost — measured vs. header-derived |
-| [Day/Night](Day-Night.md) | Automatic day/night switching, decision modes, and the ISP running-mode latch fix |
-| [Day/Night Design Notes](Day-Night-Design-Notes.md) | Historical: why the day/night subsystem kept needing fixing — the incident record, the restart-equivalence invariant, and the replay-harness plan that made the 2026-08-17 redesign possible |
-| [Audio](Audio.md) | Capture codecs, the ONVIF-style two-way backchannel, and the system-sound play queue |
-| [Platform & SDK Support](Platform-SDK-Support.md) | Per-SoC capability summary; links to `docs/sdk-feature-gaps.md` and `docs/rotation.md` |
-| [Testing / QA](Testing-QA.md) | `scripts/timps-qa.sh` — what it checks and how to run it against a real camera |
-| [Logging](Logging.md) | Log levels, the per-module `debug_modules` switch, the module-tag table, and the machine-readable `switching to` / `probe:` / `stats:` lines |
+1. **Media runtime** — sensor/ISP ownership, hardware encoding, RTSP/HTTP/WebRTC,
+   snapshots, audio, AI/detection, recording and control.
+2. **Extension platform** — optional camera capabilities that do not naturally belong
+   in a traditional media streamer, such as USB host support, LTE modems, additional
+   networking/VPN components and hardware-specific enablement.
 
-## Quick links
+## Core design decisions
 
-- Top-level `README.md` — condensed feature tour and quick-start.
-- `docs/rotation.md` — full rotation deep-dive (direction conventions,
-  per-SoC constraints, OSD-on-rotated-stream limitations).
-- `docs/sdk-feature-gaps.md` — an independent audit of every `IMP_*` SDK
-  call available per platform vs. what timps currently uses, with a
-  prioritized list of unused capabilities.
-- `docs/backchannel.md` — a stub kept for old links; the audio backchannel
-  is documented in [Audio](Audio.md).
+These are not implementation details; they are architectural constraints.
+
+### 1. Extend OpenIPC, do not fork it into a different product
+
+Machino should integrate through stable boundaries: services, files, APIs, capability
+metadata and small WebUI hooks. A feature should not require broad edits throughout
+OpenIPC or a private long-lived fork of the WebUI.
+
+The desired result is **native-feeling integration with loose coupling underneath**.
+To an operator, a Machino capability should simply look like another OpenIPC feature.
+To a developer, it should remain possible to identify, update or remove the Machino
+part without untangling it from unrelated OpenIPC code.
+
+See [Design Principles](Design-Principles.md) and
+[OpenIPC Integration](OpenIPC-Integration.md).
+
+### 2. Extensibility is a first-class feature
+
+Hardware support and optional services are adapters/modules, not reasons to put
+vendor-specific conditionals everywhere. New SoCs, PHY quirks, AI accelerators,
+USB devices or network services should enter through explicit capability boundaries.
+
+### 3. Compatibility belongs at the edge
+
+Machino aims to become a practical replacement for Majestic where useful, but it does
+not reproduce Majestic internals. Compatibility with OpenIPC expectations is provided
+at the boundary while the internal architecture remains independent.
+
+### 4. Hardware knowledge should be reusable upstream
+
+Runtime workarounds are valuable for getting hardware usable today, but a verified
+root cause should also be documented in a form that can support a clean upstream fix.
+The T40NN/YT8512B Ethernet investigation is the model: preserve the evidence, exact
+register state, failure mode and validation result instead of keeping only a shell
+script that happens to work.
+
+See [T40NN OpenIPC Enablement](T40NN-OpenIPC-Enablement.md).
+
+### 5. Do not make the WebUI own the architecture
+
+The WebUI should discover capabilities and call stable APIs. It should not contain
+camera-model-specific business logic or become the place where platform support is
+implemented. New controls should be small additions that appear only when the runtime
+reports the corresponding capability.
+
+## Architecture direction
+
+```text
+                         OpenIPC
+
+      existing services / WebUI / system integration
+                         |
+              small, stable integration points
+                         |
++-----------------------------------------------------------+
+|                        Machino                            |
+|                                                           |
+| Application / compatibility                               |
+| RTSP | HTTP | WebRTC | Control API | AI | Recording      |
+|                                                           |
+| Platform-neutral media & capability core                  |
+| Streams | Frames | Sensors | Events | Power | Telemetry   |
+|                                                           |
+| Ports                                                     |
+| ISP | Encoder | Audio | AI | USB | Network | Platform     |
+|                                                           |
+| Adapters / optional capabilities                          |
+| Ingenic | future SoCs | T40NN enablement | LTE | VPN ...  |
++-----------------------------------------------------------+
+                         |
+               Linux + vendor hardware
+```
+
+The production direction is a lightweight C++ runtime with ports-and-adapters
+boundaries, bounded resources and hardware acceleration. The repository still
+contains a substantial timps-derived C implementation because it is valuable as a
+working hardware-validation baseline and as documentation of known-good Ingenic IMP
+call sequences.
+
+For the current runtime internals, see [Prototype Runtime Architecture](Architecture.md).
+For the target integration model, see [OpenIPC Integration](OpenIPC-Integration.md).
+
+## Main documentation areas
+
+### Runtime and media
+
+- [Prototype Runtime Architecture](Architecture.md) — current timps-derived process,
+  HAL, hub and media pipeline internals.
+- [Streaming Protocols](Streaming-Protocols.md) — RTSP, HTTP/fMP4, MJPEG and related
+  protocol behaviour.
+- [HTTP /control API](HTTP-Control-API.md) — runtime control and capability API.
+- [Audio](Audio.md) — capture and speaker/backchannel paths.
+- [AI & Person Detection](AI-Person-Detection.md) — T40 NNA/JZDL work and models.
+- [Motion Detection](Motion-Detection.md), [Day/Night](Day-Night.md),
+  [Recording & Timelapse](Recording-Timelapse.md).
+
+### OpenIPC and hardware enablement
+
+- [OpenIPC Integration](OpenIPC-Integration.md) — how Machino should extend OpenIPC
+  without deep core or WebUI modifications.
+- [T40NN OpenIPC Enablement](T40NN-OpenIPC-Enablement.md) — verified hardware findings,
+  Ethernet/PHY state and upstream candidates.
+- [Platform & SDK Support](Platform-SDK-Support.md) — vendor SDK capability matrix.
+
+### Extensions beyond a traditional media streamer
+
+- [USB & Modem Connectivity](USB-Modem-Connectivity.md) — USB host direction,
+  Quectel EC200A-EU, PPP/USB networking and how such services fit beside the media
+  runtime rather than inside its core.
+
+### Engineering and provenance
+
+- [Building](Building.md) and [Testing / QA](Testing-QA.md).
+- [Documentation Sources](Documentation-Sources.md) — which repository owns which
+  evidence, how raw dumps/PDFs relate to curated wiki pages, and what should be
+  upstreamed rather than duplicated.
+
+## Project lineage and license
+
+Machino's repository history includes work derived from
+[Lu-Fi/timps](https://github.com/Lu-Fi/timps), which is MIT-licensed. Machino retains
+that permissive lineage for project code; third-party SDKs, binary libraries and vendor
+documents retain their own terms.
+
+The timps-derived implementation remains important evidence and a validation baseline,
+but **Machino is the project; timps is its technical ancestry**.
+
+## Documentation policy
+
+`docs/wiki/` is the canonical source for this GitHub Wiki. The Wiki sync action mirrors
+these files to GitHub; it should remain deterministic and should **not generate prose
+with an LLM during CI**.
+
+Curated knowledge belongs here. Raw boot logs, dumps, vendor PDFs, experiments and
+one-off research remain in their source repositories and are linked from the relevant
+wiki page. This keeps the wiki readable while preserving the evidence behind it.
