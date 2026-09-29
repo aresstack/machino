@@ -268,3 +268,14 @@ werden uebernommen, aber hostseitig nur unter den AP6-Routing-/Selector-
 Regeln (CP-Netz muss ganz in einem akzeptierten TSr liegen).
 
 Hardware-Abnahme (Cellular-Underlay, echter EAP-Peer): PENDING_PHYSICAL.
+
+## Terminal: machinoctl
+
+Dieselben Routen sind vom Terminal aus bedienbar — UART wie SSH — ueber
+`machinoctl` (`docs/cli.md`): `ipsec setup` (gefuehrt), `ipsec set <k> <v>
+...`, `ipsec psk` (verdeckt), `ipsec connect|disconnect|reconnect`, `ipsec`
+(Kurzansicht mit Fehlerklasse). Es ist ein Client von `/api/v1/ipsec*` auf
+127.0.0.1, kein zweiter Konfigurationspfad: die Feldtabelle der Konsole ist
+exakt die `known[]`-Menge von `PUT /api/v1/ipsec/config`, und
+`tests/test_ctl.cpp` beweist das gegen die echte ApiService. Der PSK bleibt
+write-only — auch die Konsole gibt ihn nie aus.

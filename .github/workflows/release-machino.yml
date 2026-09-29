@@ -143,6 +143,7 @@ jobs:
           cp -f machino/openipc/uninstall.sh           "$O/uninstall.sh"
           cp -f machino/openipc/sbin/streamerctl       "$O/sbin/streamerctl"
           cp -f machino/openipc/sbin/machino-manager   "$O/sbin/machino-manager"
+          cp -f machino/openipc/sbin/machinoctl        "$O/sbin/machinoctl"
           cp -f machino/openipc/init/S95streamer       "$O/init/S95streamer"
           cp -f machino/openipc/init/machino           "$O/init/machino"
           cp -f machino/openipc/init/S42usb            "$O/init/S42usb"

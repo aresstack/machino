@@ -164,6 +164,7 @@ selbst ein Programm.
 |---|---|
 | `/usr/bin/machino` | the daemon |
 | `/usr/sbin/streamerctl` | the selector — the only thing that switches services |
+| `/usr/sbin/machinoctl` | terminal front end (UART/SSH): VPN and the rest of the API from a shell, `machinoctl help` — see `docs/cli.md` |
 | `/usr/sbin/machino-usb-helper` | reads `usb.mode` at boot and brings up the selected stack |
 | `/usr/sbin/machino-wifi-role` | runs the access-point role (hostapd); station Wi-Fi belongs to OpenIPC's own network page |
 | `/usr/sbin/machino-cellular-helper` | starts the modem's data path (DHCP or pppd) |

@@ -10,6 +10,7 @@
 #include "adapters/ingenic/ingenic_platform.hpp"
 #include "adapters/ingenic/ingenic_audio.hpp"
 #include "app/audio_test.hpp"
+#include "app/ctl/machinoctl.hpp"
 #include "core/audio/audio_service.hpp"
 #include "app/api/api_service.hpp"
 #include "app/api/net_api.hpp"
@@ -270,8 +271,9 @@ static void usage(const char* argv0) {
     fprintf(stderr, "usage: %s [-c machino.conf] [-v]\n"
                     "       %s --version\n"
                     "       %s --migrate-majestic <majestic.yaml> [-o machino.conf]\n"
-                    "       %s --audio-test [--rate 8000|16000] [--volume 0..100] [--gain 0..31] bias|record|tone|play ...\n",
-            argv0, argv0, argv0, argv0);
+                    "       %s --audio-test [--rate 8000|16000] [--volume 0..100] [--gain 0..31] bias|record|tone|play ...\n"
+                    "       %s --ctl [--port N] [--json] [befehl ...]     (machinoctl: Terminal-Bedienung, 'help')\n",
+            argv0, argv0, argv0, argv0, argv0);
 }
 
 // One-way import of an existing OpenIPC majestic.yaml. Prints a full
@@ -354,6 +356,9 @@ static const char* lc_lower(lifecycle::State s) {
 int main(int argc, char** argv) {
     if (argc >= 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-V"))) { printf("machino %s\n", MACHINO_VERSION); return 0; }
     if (argc >= 2 && !strcmp(argv[1], "--migrate-majestic")) return run_migration(argc, argv);
+    // machinoctl: die Terminal-Bedienung (UART/SSH). Ein Client der lokalen
+    // API, kein zweiter Daemon -- laeuft neben machinod, nie statt seiner.
+    if (argc >= 2 && !strcmp(argv[1], "--ctl")) return ctl::run_ctl(argc, argv, 2);
     // Hardware bring-up aid for the audio connector (docs/ap20-audio-talkback.md):
     // the codec straight through the adapter, no config, no daemon.
     if (argc >= 2 && !strcmp(argv[1], "--audio-test"))

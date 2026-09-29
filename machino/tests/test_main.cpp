@@ -44,6 +44,7 @@ void run_detection_tests();
 void run_nna_detector_tests();
 void run_ipsec_tests();
 void run_audio_tests();
+void run_ctl_tests();
 void run_compat_tests();
 void run_substream_schema_tests();
 void run_snapshot_gate_tests();
@@ -390,6 +391,7 @@ int main() {
     run_nna_detector_tests();
     run_ipsec_tests();
     run_audio_tests();
+    run_ctl_tests();
     run_compat_tests();
     run_substream_schema_tests();
     run_snapshot_gate_tests();

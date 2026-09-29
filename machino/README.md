@@ -153,3 +153,22 @@ machino -c machino.conf [-v]        # rtsp://<camera>:554/ch0
 kill -USR1 <pid>                    # stop_pipeline
 kill -USR2 <pid>                    # start_pipeline
 ```
+
+## Terminal (UART / SSH): machinoctl
+
+The WeirdOS reference (esp32-modem-host) is operated through a serial command
+console. On the camera the shell already exists, so Machino's equivalent is a
+command in that shell: `machinoctl` (`machino --ctl`, `src/app/ctl/`), a
+client of the local `/api/v1` API on 127.0.0.1 -- no second configuration
+path, the same validation and write-only secrets as the WebUI.
+
+```
+machinoctl ipsec setup                                  # guided VPN setup
+machinoctl ipsec set gateway vpn.example.org remoteSubnet 192.168.178.0/24
+machinoctl ipsec psk && machinoctl ipsec enable && machinoctl ipsec connect
+machinoctl ipsec                                        # state, underlay, routes, failure class
+machinoctl status | config | api get /api/v1/network    # the rest of the API
+machinoctl                                              # interactive console, like the WeirdOS UART
+```
+
+Details: `docs/cli.md`.

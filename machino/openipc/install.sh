@@ -509,6 +509,11 @@ put 0755 "$HERE/sbin/streamerctl" "$ROOT/usr/sbin/streamerctl" || die "cannot in
 # The Cam-Tool's control surface + a stored uninstaller, so status/uninstall
 # work on the camera later without redeploying the bundle.
 put 0755 "$HERE/sbin/machino-manager" "$ROOT/usr/sbin/machino-manager" || die "cannot install machino-manager"
+# The terminal front end (UART/SSH): a client of the local API, so VPN and the
+# rest can be set up from a shell without the WebUI. A wrapper around
+# `machino --ctl`, hence no second binary on the overlay.
+[ -r "$HERE/sbin/machinoctl" ] || die "the bundle has no sbin/machinoctl"
+put 0755 "$HERE/sbin/machinoctl" "$ROOT/usr/sbin/machinoctl" || die "cannot install machinoctl"
 [ -r "$HERE/uninstall.sh" ] && put 0755 "$HERE/uninstall.sh" "$STATE_DIR/uninstall.sh"
 # A webui.passwd from an older bundle would only confuse a reader - the Basic
 # auth layer it fed is gone (Machino's session login owns authentication now).
