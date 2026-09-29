@@ -37,9 +37,9 @@ void Sink::push(const AuPtr& au) {
         if (closed_) return;
         if (q_.size() >= depth_) {
             // stale-frame policy: never grow, drop the oldest; a key frame
-            // supersedes everything queued before it
-            if (au->key) { dropped_ += (unsigned)q_.size(); q_.clear(); }
-            else { q_.pop_front(); ++dropped_; disc_ = true; }
+            // supersedes everything queued before it (video only - see Sink)
+            if (au->key && key_supersedes_) { dropped_ += (unsigned)q_.size(); q_.clear(); }
+            else { q_.pop_front(); ++dropped_; disc_ = !key_supersedes_ ? disc_ : true; }
         }
         q_.push_back(au);
     }
@@ -53,7 +53,7 @@ void Sink::close() {
 
 std::shared_ptr<Sink> StreamHub::subscribe(size_t depth) {
     std::lock_guard<std::mutex> lk(m_);
-    auto s = std::make_shared<Sink>(depth ? depth : default_depth_);
+    auto s = std::make_shared<Sink>(depth ? depth : default_depth_, key_supersedes_);
     sinks_.push_back(s);
     return s;
 }

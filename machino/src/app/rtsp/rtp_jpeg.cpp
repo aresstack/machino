@@ -33,7 +33,7 @@ bool parse_jpeg(const uint8_t* p, size_t n, JpegFrame& out, std::string& why) {
             comps = s[5];
             if (comps != 3 || sl < 6 + 3u * comps) { why = "not 3-component YCbCr"; return false; }
             samp0 = s[7];
-            for (int c = 0; c < 3; ++c) comp_q[c] = s[6 + 3 * c + 2];
+            for (int c = 0; c < 3; ++c) { comp_q[c] = s[6 + 3 * c + 2]; if (comp_q[c] > 3) { why = "bad quantisation table selector"; return false; } }
             if (s[6 + 3 + 1] != 0x11 || s[6 + 6 + 1] != 0x11) { why = "unsupported chroma sampling"; return false; }
             sof = true;
         } else if (m >= 0xc1 && m <= 0xcf && m != 0xc4 && m != 0xc8 && m != 0xcc) {

@@ -37,7 +37,9 @@ int output_volume_to_vendor(int percent) {
 
 AudioService::AudioService(const AudioConfig& cfg, InFactory in, OutFactory out)
     : in_factory_(std::move(in)), cfg_(cfg),
-      speaker_(std::move(out), cfg.output_enabled, cfg.output_volume, cfg.grace_ms) {}
+      speaker_(std::move(out), cfg.output_enabled, cfg.output_volume, cfg.grace_ms) {
+    hub_.set_key_supersedes(false);        // audio overflow drops one frame, never the whole queue
+}
 
 AudioService::~AudioService() { shutdown(); }
 
@@ -100,7 +102,11 @@ void AudioService::capture_loop() {
         grace_ms = cfg_.grace_ms;
     }
     const size_t frame_bytes = (size_t)rate_ * 40 / 1000 * sizeof(int16_t);
-    AuPool pool(kListenerDepth + 4, frame_bytes);
+    // Every listener may hold kListenerDepth frames, and the pool is shared:
+    // it is sized for a handful of listeners, and when more are behind at
+    // once a frame is allocated instead of dropped for EVERYONE. The sinks
+    // are bounded, so this cannot grow past listeners x depth frames.
+    AuPool pool(kListenerDepth * 4 + 4, frame_bytes);
     std::vector<int16_t> pcm;
     uint32_t seq = 0;
     unsigned misses = 0;
@@ -110,7 +116,9 @@ void AudioService::capture_loop() {
         const Result r = dev->read(pcm, pts, 100);
         if (r && !pcm.empty()) {
             misses = 0;
-            if (auto au = pool.acquire()) {
+            std::shared_ptr<AccessUnit> au = pool.acquire();
+            if (!au) { au = std::make_shared<AccessUnit>(); au->data.reserve(frame_bytes); }
+            {
                 const uint8_t* b = reinterpret_cast<const uint8_t*>(pcm.data());
                 au->data.assign(b, b + pcm.size() * sizeof(int16_t));   // s16le: the target is little-endian
                 au->pts_us = pts;

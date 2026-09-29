@@ -39,3 +39,5 @@ private/
 
 # host test objects from tools/host-test.sh (the make path builds in place)
 machino/build/
+# the cross-built daemon (make in machino/)
+machino/machinod

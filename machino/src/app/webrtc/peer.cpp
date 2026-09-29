@@ -1,6 +1,6 @@
 #include "app/webrtc/peer.hpp"
 #include "app/webrtc/stun.hpp"
-#include "core/audio/g711.hpp"
+#include "app/rtp/rtp_packet.hpp"
 #include "core/log.hpp"
 #include "core/runtime_stats.hpp"
 
@@ -195,10 +195,7 @@ void PeerSession::on_readable() {
                 ++audio_in_pkts_;
                 const size_t len = pkt.size() - at;
                 if (audio_in_.size() + len > 8000) continue;     // nobody drained 1 s: drop, never grow
-                const size_t base = audio_in_.size();
-                audio_in_.resize(base + len);
-                for (size_t i = 0; i < len; ++i)
-                    audio_in_[base + i] = audio_pcma_ ? audio::alaw_decode(pkt[at + i]) : audio::ulaw_decode(pkt[at + i]);
+                rtp::decode_g711(audio_pcma_ ? rtp::kPayloadPcma : rtp::kPayloadPcmu, pkt.data() + at, len, audio_in_);
             }
         }
     }
@@ -211,16 +208,18 @@ void PeerSession::tick() {
     }
 }
 
-void PeerSession::send_audio(const uint8_t* g711, size_t n) {
+void PeerSession::send_audio(const uint8_t* g711, size_t n, uint32_t skip_samples) {
     if (!srtp_ || !have_peer_ || !audio_.send || n == 0) return;
+    // Frames the sink dropped still took their time: advance the RTP clock
+    // over the gap so the browser's jitter buffer keeps audio aligned with
+    // video (the RTSP and HTTP audio paths do the same). Without this every
+    // backpressure drop shifts the timeline earlier and the offset accrues.
+    audio_ts_ += skip_samples;
     for (size_t off = 0; off < n; ) {
         const size_t len = n - off < 1000 ? n - off : 1000;
-        std::vector<uint8_t> pkt(12 + len);
-        pkt[0] = 0x80; pkt[1] = (uint8_t)(audio_.pt & 0x7f);
-        pkt[2] = (uint8_t)(audio_seq_ >> 8); pkt[3] = (uint8_t)audio_seq_; ++audio_seq_;
-        pkt[4] = (uint8_t)(audio_ts_ >> 24); pkt[5] = (uint8_t)(audio_ts_ >> 16); pkt[6] = (uint8_t)(audio_ts_ >> 8); pkt[7] = (uint8_t)audio_ts_;
-        pkt[8] = (uint8_t)(audio_ssrc_ >> 24); pkt[9] = (uint8_t)(audio_ssrc_ >> 16); pkt[10] = (uint8_t)(audio_ssrc_ >> 8); pkt[11] = (uint8_t)audio_ssrc_;
-        memcpy(pkt.data() + 12, g711 + off, len);
+        std::vector<uint8_t> pkt(rtp::kHeaderBytes + len);
+        rtp::write_header(pkt.data(), (uint8_t)audio_.pt, false, audio_seq_++, audio_ts_, audio_ssrc_);
+        memcpy(pkt.data() + rtp::kHeaderBytes, g711 + off, len);
         audio_ts_ += (uint32_t)len;                             // one byte per 8 kHz sample
         off += len;
         if (!srtp_->protect_rtp(pkt)) return;

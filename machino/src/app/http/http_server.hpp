@@ -146,7 +146,7 @@ private:
     void drain_events(Client& c);
     void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
     void pump_ws_video(Client& c);  // fMP4-per-frame over WebSocket (majestic /ws/video)
-    void pump_audio(Client& c);     // an /audio.* client: PCM, G.711, AAC in fMP4, Opus in Ogg
+    bool pump_audio(Client& c);          // false: drop the client now     // an /audio.* client: PCM, G.711, AAC in fMP4, Opus in Ogg
     void pump_ws_audio(Client& c);  // /ws/video&audio=: the microphone as track 2
     bool ws_video_input(Client& c); // client frames: {"request":"idr"}, ping, close
     bool rtc_ws_input(Client& c);   // /ws/webrtc signalling: offer -> answer/busy/error
@@ -214,6 +214,20 @@ private:
     void hls_pump(int64_t t);
     void hls_stop();
     bool hls_answer_playlist(Client& c);
+    // /image.yuv420 and /image.heif: one capture thread per request (a frame
+    // is up to a GOP away, and the poll loop must not wait for it); the
+    // request is parked until the thread is done. A client that leaves first
+    // orphans its job, which is joined once it finishes.
+    struct StillJob;
+    std::vector<std::shared_ptr<StillJob>> still_orphans_;
+    void finish_still(Client& c);
+    void reap_stills(bool wait);
+    size_t stills_in_flight() const;
+    // Everything a client holds, given back - the one list stop() and the
+    // poll loop's close path both use.
+    void release_client(Client& c);
+    // A response whose body is appended once, never copied through a string.
+    bool queue_bytes(Client& c, const std::string& head, const uint8_t* body, size_t n, size_t cap);
     int64_t           last_telemetry_ms_ = 0;
     int64_t           last_heartbeat_ms_ = 0;
 };

@@ -143,6 +143,11 @@ void Speaker::loop() {
             LOGI(MOD, "speaker opened (%d Hz)", c.rate);
         }
 
+        if (!enabled_) {              // switched off while the device was opening: not played
+            ++dropped_;
+            cv_.notify_all();
+            continue;
+        }
         playing_ = true;
         cut_ = false;
         lk.unlock();

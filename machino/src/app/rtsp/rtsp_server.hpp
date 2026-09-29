@@ -81,12 +81,15 @@ private:
     StreamHub* hub_for(int unit) const;
     const std::string& path_for(int unit) const;
     bool obtain_params(int unit, std::vector<uint8_t>& sps, std::vector<uint8_t>& pps);
+    struct Track;
+    const char* setup_transport(Session& s, Track& t, const std::string& transport, std::string& headers);
     bool send_au(Session& s, const AccessUnit& au);
-    bool send_rtp(Session& s, const uint8_t* payload, size_t len, uint32_t ts, bool marker);
+    bool send_rtp(Session& s, Track& t, uint8_t pt, const uint8_t* payload, size_t len, uint32_t ts, bool marker);
     bool send_audio(Session& s, const std::string& pcma);
     bool send_jpeg(Session& s);
     bool audio_offered() const;
     bool backchannel_offered() const;
+    void pump_backchannel_udp(Session& s);
     void on_backchannel(Session& s, const char* rtp, size_t n);
     audio::AudioService* audio_ = nullptr;
 

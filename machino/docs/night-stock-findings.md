@@ -44,12 +44,24 @@ Das ist der Tag/Nacht-Fotosensor, den Stocks „Automatic day/night" abfragt
 **Seit 2026-09-29 implementiert** (Fotosensor-Automatik):
 
 * `nightMode.lightMonitor` (nativ `night.light_monitor`) schaltet sie ein. Der
-  NightService liest PB17 im 2-s-Takt der Hauptschleife als EINGANG und
-  schaltet erst, wenn ein Wechsel `autoNightDelay`/`autoDayDelay` Sekunden
-  stabil war (Default 3, wie Stocks `Delay`). Umgeschaltet wird nur bei einem
-  Wechsel: ein manueller `/night/*`-Knopf bleibt stehen, bis sich das Licht
-  wirklich aendert. Beim Einschalten wird der aktuelle Zustand einmal
-  angewendet.
+  NightService liest PB17 in einem EIGENEN Thread im 2-s-Takt als EINGANG
+  (nicht in der Hauptschleife: ein IR-Cut-Puls haelt den Thread 150 ms, und
+  die Automatik darf nicht am Netzwerk-Timer haengen — Review-Fixes M4/M6)
+  und schaltet erst, wenn ein Wechsel `autoNightDelay`/`autoDayDelay`
+  Sekunden stabil war (Default 3, wie Stocks `Delay`). Umgeschaltet wird nur
+  bei einem Wechsel: ein manueller `/night/*`-Knopf bleibt stehen, bis sich
+  das Licht wirklich aendert. Beim Einschalten wird der aktuelle Zustand
+  einmal angewendet.
+* Ein Wechsel gilt erst als vollzogen, wenn das Schalten GELUNGEN ist.
+  Schlaegt es fehl (ISP beim Boot noch nicht da, GPIO belegt), wird beim
+  naechsten Takt erneut geschaltet — nicht erst beim naechsten Lichtwechsel
+  (Review-Fix H1); die Telemetrie zeigt solange `pending_s: 0` und den
+  Grund in `night.auto.error`.
+* Der Nachtmodus ist ein Laufzeit-OVERRIDE des ISP-RunningMode
+  (`TuningService::set_image_override`): nach jedem Pipeline-Start wieder
+  angewendet, aber nie der Wert, den `/api/v1/config` meldet — eine nachts
+  gespeicherte Image-Seite schreibt das Graubild nicht in den Tag
+  (Review-Fix M1).
 * Polaritaet: HIGH = dunkel (die gaengige Fotozelle mit Komparator). Fuer
   dieses Board **nicht gemessen** — liegt der Sensor andersherum,
   `lightSensorInvert` setzen. Pruefen: `cat /sys/class/gpio/gpio49/value` bei

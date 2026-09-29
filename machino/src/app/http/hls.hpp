@@ -34,8 +34,15 @@ public:
     bool ready() const { return !segs_.empty(); }
     // The live playlist; `prefix` is prepended to every URI ("" = relative).
     std::string playlist(const std::string& prefix = "") const;
-    // init.mp4 (current parameter sets); empty before the first key frame.
+    // The current init segment; empty before the first key frame. Every
+    // parameter-set change is a new one, under a NEW name ("init.mp4", then
+    // "init1.mp4", ...): a player caches the map by URI, so the same name
+    // would keep the old avcC in front of the new stream.
     const std::vector<uint8_t>& init() const { return init_; }
+    unsigned init_generation() const { return init_gen_; }
+    std::string init_name() const;
+    // "init.mp4" / "init<N>.mp4" -> N; false for any other name.
+    static bool parse_init_name(const std::string& name, unsigned& gen);
     // "seg<N>.m4s" -> the bytes, while still held.
     bool segment(uint64_t seq, std::vector<uint8_t>& out) const;
     // Parses "seg<N>.m4s"; false for any other name.
@@ -57,6 +64,12 @@ private:
     bool     cur_open_ = false;
     bool     await_key_ = true;
     bool     pending_disc_ = false;   // the next segment follows a new init
+    unsigned init_gen_ = 0;
+    // RFC 8216: EXT-X-DISCONTINUITY-SEQUENCE zaehlt Discontinuities, die aus
+    // der Playlist ENTFERNT wurden (MUST increment beim Trimmen eines
+    // getaggten Segments) -- nicht die Init-Generation. Solange das getaggte
+    // Segment im Fenster ist, traegt ES den Tag und die Sequence steht still.
+    unsigned disc_seq_ = 0;
     uint64_t next_seq_ = 0;
     uint32_t frag_seq_ = 1;
     fmp4::Timeline tl_;

@@ -31,7 +31,7 @@ bool wav_parse(const std::vector<uint8_t>& f, int& rate, std::vector<int16_t>& p
     for (size_t p = 12; p + 8 <= f.size(); ) {
         const uint32_t len = get32(&f[p + 4]);
         const size_t body = p + 8;
-        if (body + len > f.size()) { err = "truncated chunk"; return false; }
+        if (len > f.size() - body) { err = "truncated chunk"; return false; }   // never body + len: size_t is 32 bit on the camera
         if (!memcmp(&f[p], "fmt ", 4)) {
             if (len < 16) { err = "short fmt chunk"; return false; }
             if (get16(&f[body]) != 1 || get16(&f[body + 2]) != 1 || get16(&f[body + 14]) != 16) {

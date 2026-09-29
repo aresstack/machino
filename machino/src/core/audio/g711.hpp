@@ -15,5 +15,7 @@ int16_t alaw_decode(uint8_t a);
 
 void ulaw_encode(const int16_t* pcm, size_t n, uint8_t* out);
 void alaw_encode(const int16_t* pcm, size_t n, uint8_t* out);
+void ulaw_decode(const uint8_t* in, size_t n, int16_t* out);
+void alaw_decode(const uint8_t* in, size_t n, int16_t* out);
 
 }} // namespace machino::audio

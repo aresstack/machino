@@ -1,4 +1,5 @@
 #include "app/webrtc/rtp.hpp"
+#include "app/rtp/rtp_packet.hpp"
 #include "app/rtsp/h264_nal.hpp"
 
 namespace machino { namespace webrtc {
@@ -6,12 +7,8 @@ namespace machino { namespace webrtc {
 namespace {
 
 std::vector<uint8_t> header(const RtpParams& p, uint16_t seq, uint32_t ts, bool marker) {
-    std::vector<uint8_t> h(12);
-    h[0] = 0x80;                                       // v=2, no padding/ext/csrc
-    h[1] = (uint8_t)((marker ? 0x80 : 0) | (p.payload_type & 0x7f));
-    h[2] = (uint8_t)(seq >> 8); h[3] = (uint8_t)seq;
-    h[4] = (uint8_t)(ts >> 24); h[5] = (uint8_t)(ts >> 16); h[6] = (uint8_t)(ts >> 8); h[7] = (uint8_t)ts;
-    h[8] = (uint8_t)(p.ssrc >> 24); h[9] = (uint8_t)(p.ssrc >> 16); h[10] = (uint8_t)(p.ssrc >> 8); h[11] = (uint8_t)p.ssrc;
+    std::vector<uint8_t> h(rtp::kHeaderBytes);
+    rtp::write_header(h.data(), p.payload_type, marker, seq, ts, p.ssrc);
     return h;
 }
 

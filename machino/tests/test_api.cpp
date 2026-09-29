@@ -1084,7 +1084,10 @@ void test_night_auto() {
     night::NightService ns(r.tuning, &gpio, r.store);
     std::string err;
     const int RM = (int)ImageControl::RunningMode;
-    auto running_mode = [&] { return r.tuning.state().image_requested[RM]; };
+    // The night mode is a runtime OVERRIDE of RunningMode: applied and
+    // re-applied after every pipeline start, but never the config's value.
+    auto running_mode = [&] { return r.tuning.state().image_override[RM]; };
+    auto saved_mode   = [&] { return r.tuning.state().image_requested[RM]; };
 
     ns.tick(0);
     ACHECK(!ns.auto_state().enabled && !ns.night() && gpio.inputs.empty());   // lightMonitor off: nothing
@@ -1108,6 +1111,7 @@ void test_night_auto() {
     ns.tick(6000);
     ACHECK(ns.night() && ns.auto_state().pending_s == -1);
     ACHECK(running_mode() == 1);                                              // colorToGray default on: grayscale
+    ACHECK(saved_mode() == -1);                                               // ...and NOT what the Image page would save
     ACHECK(gpio.inputs.size() == 1);                                          // configured once, not every tick
 
     gpio.level = false; ns.tick(7000);                                        // headlights for two seconds
@@ -1140,6 +1144,48 @@ void test_night_auto() {
     r.store.commit({{"night.light_monitor", "true"}}, err);
     ns.tick(80000);
     ACHECK(ns.night());
+
+    // A switch that fails (the ISP refuses once, as it does while the
+    // pipeline is coming up) is retried on the next tick, not at the next
+    // change of light: `committed` follows the SUCCESSFUL switch.
+    r.store.commit({{"night.light_sensor_invert", "false"}}, err);
+    gpio.level = false; ns.tick(90000); ns.tick(96000);                       // day, applied
+    ACHECK(!ns.night());
+    lifecycle::DemandHandle warm = r.mgr.acquire(ConsumerType::Manual);       // a running ISP: set() is really called
+    r.platform.image_control.fail_sets = 1;
+    gpio.level = true; ns.tick(97000); ns.tick(100000);                       // dusk: delay over, the switch fails
+    ACHECK(!ns.night() && ns.auto_state().pending_s == 0);
+    ACHECK(ns.auto_state().error.find("ISP") != std::string::npos);
+    ns.tick(102000);                                                          // next tick: retried, succeeds
+    ACHECK(ns.night() && ns.auto_state().pending_s == -1 && ns.auto_state().error.empty());
+    ns.tick(104000);
+    ACHECK(ns.night());                                                       // and stays: committed once it worked
+    warm.release();
+
+    // The override never becomes the saved value, and giving it back
+    // restores what the user saved.
+    ACHECK(r.tuning.set_image(ImageControl::RunningMode, 0).ok);              // the Image page: day picture saved
+    ACHECK(running_mode() == 1 && saved_mode() == 0);                         // night still holds the ISP
+    r.tuning.clear_image_override(ImageControl::RunningMode);
+    ACHECK(running_mode() == -1 && saved_mode() == 0);
+    ACHECK(ns.set_night(true).empty() && running_mode() == 1 && saved_mode() == 0);
+
+    // The point of the override: a camera that switched at night with nobody
+    // watching shows the night picture when a viewer opens it later. The
+    // pipeline start re-applies the override, not the user's saved day value.
+    {
+        r.mgr.on_grace_timeout();                                             // the viewer left long ago: cold
+        ACHECK(r.mgr.state() == State::ColdIdle);
+        auto& isp = r.platform.image_control.values[RM];
+        isp = 0;                                                              // whatever the ISP boots with
+        lifecycle::DemandHandle v = r.mgr.acquire(ConsumerType::Rtsp);
+        ACHECK(r.mgr.state() == State::Active && isp == 1);                   // override won over requested 0
+        ACHECK(running_mode() == 1 && saved_mode() == 0);
+        v.release(); r.mgr.on_grace_timeout();                                // cold again
+        r.tuning.clear_image_override(ImageControl::RunningMode);
+        lifecycle::DemandHandle v2 = r.mgr.acquire(ConsumerType::Rtsp);
+        ACHECK(r.mgr.state() == State::Active && isp == 0);                   // back to the saved value
+    }
 
     // A pin a driver holds is refused with the reason, and not retried every tick.
     FakeNightGpio held; held.refuse_input = true;

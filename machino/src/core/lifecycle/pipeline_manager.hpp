@@ -118,7 +118,10 @@ public:
     // releases the demand when done (the encoder stays warm for grace_ms).
     // Requests within cache_ms share one capture instead of hammering the
     // hardware. Never touches the H.264 units.
-    Result snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms = 5000);
+    // `max_age_ms` < 0: the configured cache_ms; otherwise an image older
+    // than this is captured anew (a periodic MJPEG consumer wants a fresh
+    // frame per period).
+    Result snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms = 5000, int max_age_ms = -1);
     // One current frame of an H.264 unit's channel, uncompressed NV12 at the
     // unit's geometry (/image.yuv420). Takes snapshot demand on the unit for
     // the duration; the unit's own grace keeps it warm for the next grab.

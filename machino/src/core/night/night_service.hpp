@@ -21,9 +21,12 @@
 #include "core/media/tuning_service.hpp"
 #include "ports/igpio.hpp"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace machino { namespace night {
@@ -70,6 +73,18 @@ public:
     // sysfs auch; die Config speichert Nummern).
     NightService(media::TuningService& tuning, IGpioController* gpio, ConfigStore& store,
                  const hw::IPinResolver* resolver = nullptr);
+    ~NightService();
+    NightService(const NightService&) = delete;
+    NightService& operator=(const NightService&) = delete;
+
+    // The automation's own thread: one tick() every two seconds. Its own
+    // thread rather than a slot in the daemon's main loop, because a switch
+    // pulses the IR-cut coil for 150 ms with the mutex held - on the main
+    // loop that stalled the watchdog feeder and every other timer - and
+    // because the automation must run whether or not the network poll timer
+    // could be created. Tests call tick() directly and never start().
+    void start();
+    void stop();
 
     // W4: die GPIO-Landkarte fuer /api/v1/gpio -- Baenke, gehaltene Pins und
     // die aktuelle Rollen-Zuordnung. Rein aus dem, was machino WEISS
@@ -103,12 +118,19 @@ public:
     std::string toggle_light();
 
     NightPins pins() const;               // live aus dem ConfigStore
+    // colorToGray geaendert: nur den ISP-RunningMode fuer den aktuellen Modus
+    // neu anwenden -- Filter und Licht stehen schon richtig und werden nicht
+    // erneut gepulst.
+    std::string reapply_running_mode();
 
-    // Automatik-Takt (Hauptschleife, alle paar Sekunden). Liest den
+    // Automatik-Takt (eigener Thread, alle zwei Sekunden). Liest den
     // Fotosensor und schaltet NUR bei einem Wechsel, der auto_*_delay_s
     // lang stabil war -- ein manueller Knopfdruck bleibt also stehen, bis
     // sich das Licht wirklich aendert. Beim Einschalten der Automatik wird
-    // der aktuelle Zustand einmal angewendet.
+    // der aktuelle Zustand einmal angewendet. Ein Wechsel gilt erst als
+    // vollzogen, wenn der Schaltvorgang GELUNGEN ist: schlaegt er fehl
+    // (ISP noch nicht da, GPIO belegt), wird beim naechsten Takt erneut
+    // geschaltet -- nicht erst beim naechsten Lichtwechsel.
     void tick(int64_t now_ms);
     AutoState auto_state() const;
 
@@ -122,7 +144,9 @@ public:
       def_light_sensor_pin_ = light_sensor_pin; }
 
 private:
-    std::string set_night_locked_(bool on);
+    // `actuator_error`: the first IR-cut/light failure, separately - it
+    // does not undo the mode (the return value), but the automation retries.
+    std::string set_night_locked_(bool on, std::string* actuator_error = nullptr);
     std::string drive_ircut_(bool engaged);
     std::string drive_light_(bool on);
     // Pin-String (Nummer ODER Name) -> sysfs-Name fuer den GPIO-Aufruf.
@@ -136,6 +160,10 @@ private:
     const hw::IPinResolver* resolver_ = nullptr;
     bool night_ = false;
     bool ircut_ = true;                   // Tag = Filter drin
+    // Zuletzt tatsaechlich GEPULSTE Richtung der Zweipin-Spule (-1 = noch
+    // nie). Ein Retry der Automatik darf eine bereits geschaltete Spule
+    // nicht erneut pulsen: hoerbares Klicken, Verschleiss, 150 ms unter m_.
+    int  ircut_driven_ = -1;
     bool light_ = false;
     std::string def_ircut_pin1_, def_ircut_pin2_;   // Board-Profil-Vorgaben
     std::string def_light_sensor_pin_;              // dto., Lichtsensor
@@ -145,13 +173,24 @@ private:
     struct Auto {
         std::string input_pin;            // als Eingang konfiguriert (sysfs-Name), leer = noch nicht
         int64_t     retry_at_ms = 0;      // nach einem Fehler nicht jede Runde neu exportieren
-        int         committed = -1;       // entprellter Zustand: 1 dunkel, 0 hell
-        int         candidate = -1;       // Wechsel, der gerade reift
+        int         committed = -1;       // ANGEWENDETER Zustand: 1 dunkel, 0 hell
+        int         candidate = -1;       // Wechsel, der gerade reift (oder dessen Schalten fehlschlug)
         int64_t     candidate_since_ms = 0;
         int         raw = -1;
         int         pending_s = -1;
-        std::string error;
+        bool        announced = false;    // "automatic on" einmal geloggt
+        std::string error;                // Sensor: warum nicht gelesen wird
+        std::string switch_error;         // Schalten: warum der letzte Versuch scheiterte (einmal geloggt)
+        // Der MODUS steht, ein Aktor (Licht/Filter) fehlt noch: begrenzt
+        // nachfassen statt die ganze Nacht alle 2 s -- ein dauerhaft
+        // scheiternder Pin ist keine Endlosschleife wert.
+        bool        actuator_pending = false;
+        int         actuator_tries = 0;
     } auto_;
+    std::thread             thread_;
+    std::mutex              thread_m_;
+    std::condition_variable thread_cv_;
+    bool                    quit_ = false;
 };
 
 }} // namespace machino::night

@@ -433,14 +433,21 @@ Json ApiService::config_json() {
         ai.set("model_path", Json::string(cfg_.ai.model_path));
     }
     j.set("ai", ai);
+    // The full, stable set of six audio keys whenever the audio subsystem is
+    // present -- consumers (WebUI, migration, cam-tool) read and round-trip
+    // them unconditionally, so omitting a key made a save-all write it back as
+    // false. enabled/output_enabled are CLAMPED to what the hardware actually
+    // offers, so a board without a microphone still never reports it as on
+    // (the capability the camera lacks is expressed by the clamp, not by a
+    // missing key).
     if (audio_) {
         const AudioConfig ac = audio_->config();
         Json au = Json::object();
-        au.set("enabled", Json::boolean(ac.enabled));
+        au.set("enabled", Json::boolean(audio_->available() && ac.enabled));
         au.set("srate", Json::integer(ac.srate));
         au.set("volume", Json::integer(ac.volume));
         au.set("gain", Json::integer(ac.gain));
-        au.set("output_enabled", Json::boolean(ac.output_enabled));
+        au.set("output_enabled", Json::boolean(audio_->output_available() && ac.output_enabled));
         au.set("output_volume", Json::integer(ac.output_volume));
         j.set("audio", au);
     }
@@ -615,10 +622,10 @@ Json ApiService::telemetry_json() {
         n.set("auto", au);
         j.set("night", n);
     }
-    if (audio_) {
+    if (audio_ && (audio_->available() || audio_->output_available())) {
         const audio::AudioStats as = audio_->stats();
         Json au = Json::object();
-        au.set("enabled", Json::boolean(as.enabled));
+        au.set("enabled", Json::boolean(as.enabled && audio_->available()));
         au.set("capturing", Json::boolean(as.capturing));
         au.set("listeners", Json::integer(as.listeners));
         au.set("sample_rate", Json::integer(as.sample_rate));
@@ -1270,7 +1277,7 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
         // its settings from the store.
         if (night_)
             for (const auto& c : changes)
-                if (c.r.ok && c.key == "night.color_to_gray") { if (night_->night()) night_->set_night(true); break; }
+                if (c.r.ok && c.key == "night.color_to_gray") { night_->reapply_running_mode(); break; }   // the ISP only: no second coil pulse
         Json ev = Json::object(); ev.set("revision", Json::integer(store_.revision()));
         Json paths = Json::array(); for (const auto& c : changes) if (c.r.ok) paths.push(Json::string(c.path)); ev.set("paths", paths);
         bus_.publish("config_changed", ev.dump());

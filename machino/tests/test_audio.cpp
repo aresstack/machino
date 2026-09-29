@@ -10,6 +10,7 @@
 #include "app/http/hls.hpp"
 #include "app/http/stills.hpp"
 #include "app/rtsp/rtp_jpeg.hpp"
+#include "app/rtp/rtp_packet.hpp"
 #include "core/audio/audio_encoder.hpp"
 #include "app/rtsp/rtp_audio.hpp"
 #include "core/audio/audio_service.hpp"
@@ -192,6 +193,31 @@ void test_service_lifecycle() {
     ACHECK(svc.stats().starts == 2 && svc.stats().frames > 0);
 }
 
+// Listeners that never read must not cost the others a frame: the shared
+// pool is sized for a few of them, and past that a frame is allocated
+// rather than dropped for everyone. Five stalled listeners, one reader: the
+// reader sees every capture sequence number.
+void test_service_slow_listeners() {
+    AudioConfig cfg; cfg.enabled = true; cfg.grace_ms = 60; cfg.srate = 16000;
+    FakeMicCounters c;
+    audio::AudioService svc(cfg, fake_factory(c));
+    std::string why;
+    std::vector<std::shared_ptr<Sink>> stalled;
+    for (int i = 0; i < 5; ++i) stalled.push_back(svc.listen(why));
+    auto reader = svc.listen(why);
+    ACHECK(reader != nullptr && svc.stats().listeners == 6);
+    AuPtr au; uint32_t last = 0; bool first = true; int contiguous = 0;
+    for (int i = 0; i < 40; ++i) {
+        if (!reader->pop(au, 1000) || !au) break;
+        if (!first && au->seq == last + 1) ++contiguous;
+        first = false; last = au->seq;
+    }
+    ACHECK(contiguous >= 38);                                              // no gap for the reader
+    for (auto& s : stalled) svc.unlisten(s);
+    svc.unlisten(reader);
+    ACHECK(eventually([&] { return c.closes == 1; }));
+}
+
 void test_service_disable_drops_listeners() {
     AudioConfig cfg; cfg.enabled = true; cfg.grace_ms = 10000;
     FakeMicCounters c;
@@ -271,6 +297,10 @@ void test_audio_test_helpers() {
     ACHECK(!app::wav_parse(stereo, rate, back, err) && err.find("mono") != std::string::npos);
     std::vector<uint8_t> junk(20, 0);
     ACHECK(!app::wav_parse(junk, rate, back, err) && err.find("RIFF") != std::string::npos);
+    // A chunk length near 2^32: on the 32-bit camera `body + len` wrapped
+    // past the check and the walk read outside the body.
+    std::vector<uint8_t> wrap = {'R','I','F','F', 0,0,0,0, 'W','A','V','E', 'f','m','t',' ', 0xF0,0xFF,0xFF,0xFF, 1,0};
+    ACHECK(!app::wav_parse(wrap, rate, back, err) && err.find("truncated") != std::string::npos);
     std::vector<uint8_t> cut(file.begin(), file.begin() + 60);
     ACHECK(!app::wav_parse(cut, rate, back, err) && err.find("truncated") != std::string::npos);
 
@@ -403,6 +433,10 @@ void test_rtp_jpeg() {
     ACHECK(!rtsp::parse_jpeg(prog.data(), prog.size(), f, why));
     const std::vector<uint8_t> s444 = synth_jpeg(320, 240, 0x11, 0, 0xc0, 10);
     ACHECK(!rtsp::parse_jpeg(s444.data(), s444.size(), f, why));
+    std::vector<uint8_t> badtq = synth_jpeg(320, 240, 0x22, 0, 0xc0, 10);          // a component naming table 9
+    { size_t sof = 0; for (size_t i = 0; i + 1 < badtq.size(); ++i) if (badtq[i] == 0xff && badtq[i + 1] == 0xc0) { sof = i; break; }
+      badtq[sof + 4 + 6 + 2] = 9; }
+    ACHECK(!rtsp::parse_jpeg(badtq.data(), badtq.size(), f, why) && why.find("selector") != std::string::npos);
     const uint8_t junk[] = {1, 2, 3, 4};
     ACHECK(!rtsp::parse_jpeg(junk, sizeof junk, f, why));
     ACHECK(rtsp::sdp_jpeg_section().find("a=rtpmap:26 JPEG/90000") != std::string::npos);
@@ -501,11 +535,22 @@ void test_hls_segmenter() {
     for (int i = 0; i < 10; ++i) { pts += 100000; s.feed(p_au().data(), p_au().size(), false, pts, 64, 48); }
     pts += 100000; s.feed(au2.data(), au2.size(), true, pts, 64, 48);
     ACHECK(s.ready() && s.playlist().find("#EXTINF") != std::string::npos);
+    // ...and the new init has a new name, the playlist says so, and the
+    // first segment after it carries the discontinuity.
+    ACHECK(s.init_generation() == 1 && s.init_name() == "init1.mp4");
+    ACHECK(s.playlist().find("#EXT-X-MAP:URI=\"init1.mp4\"") != std::string::npos);
+    ACHECK(s.playlist().find("#EXT-X-DISCONTINUITY-SEQUENCE:1\n") != std::string::npos);
+    ACHECK(s.playlist().find("#EXT-X-DISCONTINUITY\n#EXTINF") != std::string::npos);
+    unsigned g = 9;
+    ACHECK(hls::Segmenter::parse_init_name("init.mp4", g) && g == 0 && hls::Segmenter::parse_init_name("init7.mp4", g) && g == 7);
+    ACHECK(!hls::Segmenter::parse_init_name("init.m4s", g) && !hls::Segmenter::parse_init_name("initx.mp4", g));
     // Bounded in bytes: a small budget drops the oldest segments early.
-    hls::Segmenter::Limits tiny; tiny.target_ms = 100; tiny.max_bytes = 400;
+    hls::Segmenter::Limits tiny; tiny.target_ms = 100; tiny.max_bytes = 300;   // a segment is 116 bytes here: three do not fit, two do
     hls::Segmenter t(tiny);
     for (int g = 0; g < 4; ++g) { pts += 200000; const std::vector<uint8_t> au = idr_au((uint8_t)g); t.feed(au.data(), au.size(), true, pts, 64, 48); }
-    ACHECK(t.ready() && t.first_seq() >= 1 && t.held_bytes() <= 400);
+    ACHECK(t.ready() && t.first_seq() == 1);                                   // ...but never below two finished segments
+    { const std::string tp = t.playlist(); size_t n = 0; for (size_t at = tp.find("#EXTINF"); at != std::string::npos; at = tp.find("#EXTINF", at + 1)) ++n; ACHECK(n == 2); }
+    ACHECK(pl.find("#EXT-X-DISCONTINUITY-SEQUENCE") == std::string::npos);       // the first generation says nothing
 }
 
 struct FakeSpkCounters {
@@ -646,18 +691,37 @@ void test_rtsp_backchannel_helpers() {
     std::string head("$\x00", 2);
     ACHECK(rtsp::take_interleaved(head, ch, data) == rtsp::Interleaved::Partial);
 
-    // RTP payload location, then G.711 to PCM.
-    std::vector<uint8_t> rtp = {0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0xFF, 0x80, 0x00};
-    uint8_t pt = 99; size_t off = 0, len = 0;
-    ACHECK(rtsp::rtp_payload(rtp.data(), rtp.size(), pt, off, len) && pt == 0 && off == 12 && len == 3);
+    // A frame longer than kMaxInterleaved is refused up front, not buffered:
+    // the 16-bit length is the attacker's, the ceiling is ours.
+    std::string huge("$\x00\xff\xff" "x", 5);
+    ACHECK(rtsp::take_interleaved(huge, ch, data) == rtsp::Interleaved::TooLarge && huge.size() == 5);
+    std::string edge("$\x00\x10\x00", 4);                            // exactly 4096: still a frame in progress
+    ACHECK(rtsp::take_interleaved(edge, ch, data) == rtsp::Interleaved::Partial);
+
+    // RTP payload location (the one parser RTSP and WebRTC share), then G.711 to PCM.
+    std::vector<uint8_t> pkt = {0x80, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0xFF, 0x80, 0x00};
+    rtp::Header h;
+    ACHECK(rtp::parse(pkt.data(), pkt.size(), h) && h.pt == 0 && !h.marker && h.seq == 1 && h.ssrc == 0x01020304u);
+    ACHECK(h.payload_at == 12 && h.payload_len == 3);
     std::vector<int16_t> pcm;
-    ACHECK(rtsp::decode_g711(pt, rtp.data() + off, len, pcm) && pcm.size() == 3);
+    ACHECK(rtp::decode_g711(h.pt, pkt.data() + h.payload_at, h.payload_len, pcm) && pcm.size() == 3);
     ACHECK(pcm[0] == 0 && pcm[1] == 32124 && pcm[2] == -32124);
-    std::vector<uint8_t> ext = {0xB0, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0xBE, 0xDE, 0, 1, 1, 2, 3, 4, 0xD5, 0xD5, 0, 2};
-    ACHECK(rtsp::rtp_payload(ext.data(), ext.size(), pt, off, len) && pt == 8 && off == 20 && len == 2);
-    ACHECK(!rtsp::decode_g711(96, ext.data(), 2, pcm));                // only G.711 is offered
+    std::vector<uint8_t> ext = {0xB0, 0x88, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0xBE, 0xDE, 0, 1, 1, 2, 3, 4, 0xD5, 0xD5, 0, 2};
+    ACHECK(rtp::parse(ext.data(), ext.size(), h) && h.pt == 8 && h.marker && h.payload_at == 20 && h.payload_len == 2);
+    ACHECK(rtp::header_length(ext.data(), ext.size()) == 20);
+    ACHECK(!rtp::decode_g711(96, ext.data(), 2, pcm));                 // only G.711 is offered
     std::vector<uint8_t> bad = {0x90, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 0xBE, 0xDE, 0, 9};
-    ACHECK(!rtsp::rtp_payload(bad.data(), bad.size(), pt, off, len));
+    ACHECK(!rtp::parse(bad.data(), bad.size(), h) && rtp::header_length(bad.data(), bad.size()) == 0);
+    std::vector<uint8_t> v1 = {0x40, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4};
+    ACHECK(!rtp::parse(v1.data(), v1.size(), h));                       // not version 2
+    std::vector<uint8_t> padbad = {0xA0, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 1, 9};   // padding count past the payload
+    ACHECK(!rtp::parse(padbad.data(), padbad.size(), h));
+    std::vector<uint8_t> pad0 = {0xA0, 8, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 1, 0};     // a padding count of zero is malformed
+    ACHECK(!rtp::parse(pad0.data(), pad0.size(), h));
+    std::vector<uint8_t> csrc = {0x82, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 9, 9, 9, 9, 8, 8, 8, 8, 0xFF};   // two CSRCs
+    ACHECK(rtp::parse(csrc.data(), csrc.size(), h) && h.payload_at == 20 && h.payload_len == 1);
+    std::vector<uint8_t> csrc_short = {0x8F, 0, 0, 1, 0, 0, 0, 0, 1, 2, 3, 4, 9};                          // 15 CSRCs announced, none there
+    ACHECK(!rtp::parse(csrc_short.data(), csrc_short.size(), h) && rtp::header_length(csrc_short.data(), csrc_short.size()) == 0);
 }
 
 void test_rtsp_audio_helpers() {
@@ -671,11 +735,13 @@ void test_rtsp_audio_helpers() {
     ACHECK(rtsp::track_from_url("rtsp://cam/ch0") == 0);                 // single-track clients: the video
 
     uint8_t h[12];
-    rtsp::rtp_header(h, rtsp::kPayloadPcma, false, 0x1234, 0x01020304, 0xAABBCCDD);
+    rtp::write_header(h, rtp::kPayloadPcma, false, 0x1234, 0x01020304, 0xAABBCCDD);
     ACHECK(h[0] == 0x80 && h[1] == 8 && h[2] == 0x12 && h[3] == 0x34);
     ACHECK(h[4] == 1 && h[7] == 4 && h[8] == 0xAA && h[11] == 0xDD);
-    rtsp::rtp_header(h, 96, true, 0, 0, 0);
+    rtp::write_header(h, 96, true, 0, 0, 0);
     ACHECK(h[1] == (0x80 | 96));
+    rtp::Header back;                                                   // what the writer makes, the parser reads
+    ACHECK(rtp::parse(h, 12, back) && back.pt == 96 && back.marker && back.payload_len == 0);
 
     int a = -1, b = -1;
     ACHECK(rtsp::interleaved_channels("RTP/AVP/TCP;unicast;interleaved=2-3", a, b) && a == 2 && b == 3);
@@ -785,7 +851,49 @@ void test_encoders() {
 
 } // namespace
 
+// The audio overflow policy of a Sink: one frame at a time, never the wipe
+// the video policy does for a key frame (every audio frame is one).
+void test_audio_sink_policy() {
+    StreamHub video;                                   // the default: a key frame supersedes the queue
+    auto vs = video.subscribe(3);
+    for (uint32_t i = 0; i < 5; ++i) { auto au = std::make_shared<AccessUnit>(); au->key = true; au->seq = i; au->data = {1}; video.publish(au); }
+    AuPtr got; std::vector<uint32_t> seqs;
+    while (vs->pop(got, 0)) seqs.push_back(got->seq);
+    ACHECK(seqs.size() == 2 && seqs[0] == 3 && seqs[1] == 4 && vs->dropped() == 3);
+
+    StreamHub audio; audio.set_key_supersedes(false);
+    auto as = audio.subscribe(3);
+    for (uint32_t i = 0; i < 5; ++i) { auto au = std::make_shared<AccessUnit>(); au->key = true; au->seq = i; au->data = {1}; audio.publish(au); }
+    seqs.clear();
+    bool disc = false;
+    while (as->pop(got, 0, &disc)) seqs.push_back(got->seq);
+    ACHECK(seqs.size() == 3 && seqs[0] == 2 && seqs[1] == 3 && seqs[2] == 4 && as->dropped() == 2);   // the oldest two, one at a time
+    ACHECK(!disc);                                                                                     // audio: a drop is a gap, not a resync
+
+    // The output bound per format: two seconds of the wire format.
+    ACHECK(http::audio_stream_bytes(http::AudioFormat::Pcm, 16000, 2) == 64000 && http::audio_stream_bytes(http::AudioFormat::Pcm, 8000, 2) == 32000);
+    ACHECK(http::audio_stream_bytes(http::AudioFormat::Alaw, 16000, 2) == 16000 && http::audio_stream_bytes(http::AudioFormat::Ulaw, 8000, 1) == 8000);
+    ACHECK(http::audio_stream_bytes(http::AudioFormat::Aac, 16000, 2) == 12000 && http::audio_stream_bytes(http::AudioFormat::Opus, 16000, 2) == 8000);
+    ACHECK(http::audio_stream_bytes(http::AudioFormat::Pcm, 16000, 0) == 32000);                                 // never zero
+}
+
+// A packet that is not sent skips the granule, never the page sequence:
+// a sequence hole is "pages lost" to every Ogg reader, a granule jump a gap.
+void test_ogg_skip() {
+    ogg::OpusWriter w(7, 16000, 312);
+    (void)w.headers();
+    auto seqno = [](const std::string& pg) { return (uint32_t)(uint8_t)pg[18] | ((uint32_t)(uint8_t)pg[19] << 8); };
+    auto granule = [](const std::string& pg) { uint64_t g = 0; for (int i = 0; i < 8; ++i) g |= (uint64_t)(uint8_t)pg[6 + i] << (8 * i); return g; };
+    const std::string p1 = w.packet(std::vector<uint8_t>(10, 1), 960);
+    w.skip(960); w.skip(960);                                       // two frames dropped for a slow client
+    const std::string p2 = w.packet(std::vector<uint8_t>(10, 2), 960);
+    ACHECK(seqno(p1) == 2 && seqno(p2) == 3);                       // contiguous
+    ACHECK(granule(p1) == 960 && granule(p2) == 3840);              // the time passed anyway
+}
+
 void run_audio_tests() {
+    test_audio_sink_policy();
+    test_ogg_skip();
     test_ogg_opus();
     test_fmp4_audio();
     test_encoders();
@@ -805,5 +913,6 @@ void run_audio_tests() {
     test_audio_config();
     test_service_refusals();
     test_service_lifecycle();
+    test_service_slow_listeners();
     test_service_disable_drops_listeners();
 }

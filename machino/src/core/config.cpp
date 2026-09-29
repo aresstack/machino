@@ -129,6 +129,7 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("rtsp.send_stall_ms", c.rtsp.send_stall_ms, 50, 10000)
     INT   ("rtsp.max_clients",   c.rtsp.max_clients, 1, 16)
     STR   ("rtsp.sub_path",      c.rtsp.sub_path)
+    INT   ("rtsp.mjpeg_fps",     c.rtsp.mjpeg_fps, 1, 30)
     BOOL  ("video.1.enabled",    c.video1.enabled)
     OPTINT("video.1.width",      c.video1.width,  128, 4096)
     OPTINT("video.1.height",     c.video1.height, 96, 4096)

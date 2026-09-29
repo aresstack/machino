@@ -310,7 +310,18 @@ private:
         if (sec_l == "mqtt")     return unsupported(key, val, "no MQTT integration");
         if (sec_l == "outgoing") return unsupported(key, val, "no outgoing/stream-push integration");
         if (sec_l == "onvif")    return unsupported(key, val, "no ONVIF service");
-        if (sec_l == "nightmode" || sec_l == "night") return unsupported(key, val, "day/night switching not implemented");
+        if (sec_l == "nightmode" || sec_l == "night") {
+            // The automation and its knobs (W2/W5): the same names the WebUI
+            // maps (majestic_webui.cpp kNightAlias). Pins stay manual - the
+            // Day / Night page takes them, a yaml's pin numbers are a guess.
+            if (leaf_l == "lightmonitor") return mapped(key, val, "night.light_monitor", is_truthy(val) ? "true" : "false");
+            if (leaf_l == "colortogray")  return mapped(key, val, "night.color_to_gray", is_truthy(val) ? "true" : "false");
+            if (leaf_l == "autonightdelay" || leaf_l == "autodaydelay") {
+                long long v; if (!to_int(val, v) || v < 0 || v > 3600) return invalid(key, val, "delay must be 0..3600 seconds");
+                return mapped(key, val, leaf_l == "autonightdelay" ? "night.auto_night_delay" : "night.auto_day_delay", std::to_string(v));
+            }
+            return unsupported(key, val, "day/night pins and thresholds are set on the Day / Night page, not migrated");
+        }
         return unsupported(key, val, "unknown majestic key");
     }
 };

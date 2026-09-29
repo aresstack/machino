@@ -26,6 +26,10 @@ AudioFormat audio_format_for_path(const std::string& path);
 const char* audio_format_name(AudioFormat f);
 // The rate the wire carries for a capture at `capture_rate`.
 int audio_wire_rate(AudioFormat f, int capture_rate);
+// How many bytes of `f` at the wire rate `seconds` of audio are - the most a
+// client's output buffer may hold before new frames are dropped (compressed
+// formats: the encoder bit rate, generously).
+size_t audio_stream_bytes(AudioFormat f, int capture_rate, int seconds);
 std::string audio_stream_headers(AudioFormat f, int capture_rate);
 // Compressed formats: the encoder's codec name ("mp4a.40.2" / "opus"), "" otherwise.
 const char* audio_codec_for(AudioFormat f);

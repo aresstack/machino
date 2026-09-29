@@ -2,6 +2,7 @@
 #include "core/log.hpp"
 
 #include <chrono>
+#include <ctime>
 #include <thread>
 
 namespace machino { namespace night {
@@ -24,6 +25,36 @@ NightService::NightService(media::TuningService& tuning, IGpioController* gpio, 
                            const hw::IPinResolver* resolver)
     : tuning_(tuning), gpio_(gpio), store_(store), resolver_(resolver)
 {
+}
+
+NightService::~NightService() { stop(); }
+
+void NightService::start()
+{
+    std::lock_guard<std::mutex> lk(thread_m_);
+    if (thread_.joinable()) return;
+    quit_ = false;
+    thread_ = std::thread([this] {
+        std::unique_lock<std::mutex> lk(thread_m_);
+        while (!quit_) {
+            lk.unlock();
+            struct timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts);
+            tick((int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+            lk.lock();
+            thread_cv_.wait_for(lk, std::chrono::seconds(2), [this] { return quit_; });
+        }
+    });
+}
+
+void NightService::stop()
+{
+    {
+        std::lock_guard<std::mutex> lk(thread_m_);
+        if (!thread_.joinable()) return;
+        quit_ = true;
+    }
+    thread_cv_.notify_all();
+    thread_.join();
 }
 
 // Ein Pin-String ist entweder eine reine GPIO-Nummer (so schreibt die
@@ -103,6 +134,10 @@ std::string NightService::drive_ircut_(bool engaged)
 
     const std::string n2 = pin_name_(p.ircut_pin2);
     if (n2.empty()) return "IR-cut pin 2 '" + p.ircut_pin2 + "': not a valid pin";
+    // Idempotenz: die Spule wurde bereits in diese Richtung gepulst -- nicht
+    // erneut pulsen. Die Automatik darf nachfassen (H1), aber ein Retry wegen
+    // eines ANDEREN Aktors darf hier nicht jede Runde klicken.
+    if (ircut_driven_ == (engaged ? 1 : 0)) { ircut_ = engaged; return {}; }
     const std::string& hi = engaged ? n1 : n2;
     const std::string& lo = engaged ? n2 : n1;
     Result r = gpio_->configure_output(hi, false);
@@ -114,6 +149,7 @@ std::string NightService::drive_ircut_(bool engaged)
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     gpio_->write(hi, false);
     ircut_ = engaged;
+    ircut_driven_ = engaged ? 1 : 0;
     return {};
 }
 
@@ -150,27 +186,66 @@ std::string NightService::toggle_night(bool& out)
     return e;
 }
 
-std::string NightService::set_night_locked_(bool on)
+std::string NightService::set_night_locked_(bool on, std::string* actuator_error)
 {
     const NightPins p = pins();
     // Der ISP-Teil zuerst: RunningMode 0/1 -- Schwarzweiss nur, wenn
     // colorToGray es will. Ein unsupported RunningMode (Plattform ohne den
     // Regler) ist ein ehrlicher Fehler.
     //
-    // set_image, nicht set_image_live: der Wert wird VORGEMERKT und nach
-    // jedem Pipeline-Start wieder angewendet. Mit _live ging er verloren,
-    // wenn das Video gerade kalt war -- eine Kamera, die nachts ohne
-    // Zuschauer umschaltet und spaeter geoeffnet wird, zeigte dann Tagmodus.
-    const power::ApplyResult ar = tuning_.set_image(ImageControl::RunningMode, on && p.color_to_gray ? 1 : 0);
-    if (!ar.ok) return ar.message.empty() ? "running_mode could not be applied" : ar.message;
+    // set_image_override, nicht set_image und nicht set_image_live: der Wert
+    // wird nach jedem Pipeline-Start wieder angewendet (mit _live ging er
+    // verloren, wenn das Video gerade kalt war -- eine Kamera, die nachts
+    // ohne Zuschauer umschaltet und spaeter geoeffnet wird, zeigte dann
+    // Tagmodus), aber er landet NICHT in der gemeldeten Config: set_image
+    // schrieb ihn dorthin, und eine nachts gespeicherte Image-Seite machte
+    // das Graubild dauerhaft, auch fuer den Tag.
+    // Der Override existiert NUR, solange die Nacht das Graubild erzwingt.
+    // Tag (und Nacht ohne colorToGray) gibt den Regler FREI: der gespeicherte
+    // Nutzerwert gilt wieder (Fallback 0 = Farbprofil). Vorher blieb ein
+    // Override 0/1 fuer die Prozesslebenszeit stehen -- die Image-Seite war
+    // nach dem ersten Schaltvorgang tot, und ein bewusst gespeichertes
+    // running_mode=1 wurde bei jedem Pipeline-Start ueberschrieben.
+    if (on) {
+        // Nacht besitzt running_mode, solange sie aktiv ist: Graubild (colorToGray)
+        // oder Farbe. Der Wert landet NICHT in der gemeldeten Config.
+        const power::ApplyResult ar = tuning_.set_image_override(ImageControl::RunningMode, p.color_to_gray ? 1 : 0);
+        if (!ar.ok) return ar.message.empty() ? "running_mode could not be applied" : ar.message;
+    } else {
+        // Tag gibt den Regler FREI: der gespeicherte Nutzerwert gilt wieder
+        // (Fallback 0 = Farbe). Vorher hielt der Tag-Zustand override 0 fuer
+        // die Prozesslebenszeit -- die Image-Seite war danach tot.
+        tuning_.clear_image_override(ImageControl::RunningMode, 0);
+    }
     night_ = on;
 
     // Filter und Licht folgen dem Modus NUR, wo die Config sie freigibt --
     // "an actuator told not to follow day/night does not move with it"
     // (Kommentar der Stock-Seite). Deren Fehler ueberschreiben den Erfolg
-    // des Modus nicht: die Seite liest alle drei Zustaende ohnehin neu.
-    if (p.ircut && !p.ircut_pin1.empty()) drive_ircut_(!on);   // Nacht = Filter raus
-    if (p.backlight && !p.backlight_pin.empty()) drive_light_(on);
+    // des Modus nicht (die Seite liest alle drei Zustaende ohnehin neu),
+    // aber die Automatik bekommt sie ueber `actuator_error` und schaltet
+    // beim naechsten Takt erneut.
+    std::string ae;
+    if (p.ircut && !p.ircut_pin1.empty()) ae = drive_ircut_(!on);   // Nacht = Filter raus
+    if (p.backlight && !p.backlight_pin.empty()) { const std::string le = drive_light_(on); if (ae.empty()) ae = le; }
+    if (actuator_error) *actuator_error = ae;
+    return {};
+}
+
+std::string NightService::reapply_running_mode()
+{
+    std::lock_guard<std::mutex> lk(m_);
+    const NightPins p = pins();
+    // Gleiche Besitz-Regel wie set_night_locked_: Override nur bei
+    // Nacht+colorToGray, sonst Freigabe. Damit ist der Aufruf in JEDEM
+    // Zustand korrekt -- ein colorToGray-Toggle am Tag installiert keinen
+    // Override mehr, sondern gibt den Regler (zurueck) an den Nutzerwert.
+    if (night_) {
+        const power::ApplyResult ar = tuning_.set_image_override(ImageControl::RunningMode, p.color_to_gray ? 1 : 0);
+        return ar.ok ? std::string() : (ar.message.empty() ? "running_mode could not be applied" : ar.message);
+    }
+    // Tag: der Regler gehoert wieder dem Nutzer (kein Override im Tagmodus).
+    tuning_.clear_image_override(ImageControl::RunningMode, 0);
     return {};
 }
 
@@ -194,7 +269,9 @@ void NightService::tick(int64_t now_ms)
         // Aus: vergessen, was gereift ist. Beim naechsten Einschalten wird der
         // dann aktuelle Zustand wieder einmal angewendet.
         auto_.committed = auto_.candidate = auto_.raw = auto_.pending_s = -1;
-        auto_.error.clear();
+        auto_.announced = false;
+        auto_.actuator_pending = false; auto_.actuator_tries = 0;
+        auto_.error.clear(); auto_.switch_error.clear();
         return;
     }
     auto fail = [&](const std::string& why) {
@@ -224,23 +301,75 @@ void NightService::tick(int64_t now_ms)
     const int dark = (level != p.light_sensor_invert) ? 1 : 0;
     auto_.raw = dark;
 
-    if (auto_.committed < 0) {                  // gerade eingeschaltet: einmal anwenden
+    // Ein Wechsel ist erst vollzogen, wenn das Schalten gelungen ist. Vorher
+    // stand `committed = dark` VOR dem Aufruf: ein einmal fehlgeschlagener
+    // Schaltvorgang in der Daemmerung (ISP beim Boot noch nicht da, GPIO
+    // gerade belegt) wurde nie wiederholt -- eine ganze Nacht im Tagmodus.
+    auto apply = [&](const char* how) {
+        if (auto_.switch_error.empty()) LOGI("NIGHT", "automatic day/night%s: switching to %s", how, dark ? "night" : "day");
+        std::string ae;
+        std::string e = set_night_locked_(dark == 1, &ae);
+        if (!e.empty()) {
+            // Der MODUS selbst scheiterte (ISP beim Boot noch nicht da):
+            // unbegrenzt weiter versuchen -- das ist der H1-Fix.
+            if (e != auto_.switch_error) LOGW("NIGHT", "automatic switch to %s failed: %s - retrying", dark ? "night" : "day", e.c_str());
+            auto_.switch_error = e;
+            auto_.pending_s = 0;                    // faellig, noch nicht geschafft
+            return false;
+        }
+        // Der Modus steht -- DAS ist, was der Sensor treibt, also committen
+        // (sonst wuerde ein dauerhaft kaputter Aktor die ganze Nacht alle 2 s
+        // neu schalten und jeden manuellen Toggle binnen 2 s ueberschreiben).
+        // Rest-Aktorfehler werden begrenzt nachgefasst; die Spule ist per
+        // ircut_driven_ idempotent, ein Nachfassen klickt also nicht.
+        if (!auto_.switch_error.empty()) LOGI("NIGHT", "automatic switch to %s succeeded on retry", dark ? "night" : "day");
         auto_.committed = dark;
         auto_.candidate = auto_.pending_s = -1;
-        LOGI("NIGHT", "automatic day/night on: sensor says %s", dark ? "dark" : "light");
-        set_night_locked_(dark == 1);
+        if (!ae.empty()) {
+            if (ae != auto_.switch_error) LOGW("NIGHT", "actuator after automatic switch: %s - retrying briefly", ae.c_str());
+            auto_.switch_error = ae;
+            auto_.actuator_pending = true;
+            auto_.actuator_tries = 0;
+        } else {
+            auto_.switch_error.clear();
+            auto_.actuator_pending = false;
+        }
+        return true;
+    };
+    if (auto_.committed < 0) {                  // gerade eingeschaltet: einmal anwenden
+        if (!auto_.announced) { LOGI("NIGHT", "automatic day/night on: sensor says %s", dark ? "dark" : "light"); auto_.announced = true; }
+        apply(" on");
         return;
     }
-    if (dark == auto_.committed) { auto_.candidate = auto_.pending_s = -1; return; }
-    if (auto_.candidate != dark) { auto_.candidate = dark; auto_.candidate_since_ms = now_ms; }
+    if (dark == auto_.committed) {
+        auto_.candidate = auto_.pending_s = -1;
+        // Rest-Aktor nachfassen -- begrenzt, und nie gegen einen manuellen
+        // Toggle (hat der Betreiber den Modus inzwischen selbst umgelegt,
+        // gehoert ihm die Entscheidung bis zum naechsten Lichtwechsel).
+        if (auto_.actuator_pending && night_ == (dark == 1)) {
+            std::string ae;
+            (void)set_night_locked_(dark == 1, &ae);
+            if (ae.empty()) {
+                LOGI("NIGHT", "actuator recovered on retry");
+                auto_.actuator_pending = false;
+                auto_.switch_error.clear();
+            } else if (++auto_.actuator_tries >= 5) {
+                LOGW("NIGHT", "actuator still failing: %s - giving up until the light changes", ae.c_str());
+                auto_.actuator_pending = false;   // Fehler bleibt sichtbar (auto_state)
+                auto_.switch_error = ae;
+            } else {
+                auto_.switch_error = ae;
+            }
+        } else if (auto_.actuator_pending) {
+            auto_.actuator_pending = false;       // manueller Eingriff: nicht dagegen anschalten
+        }
+        return;
+    }
+    if (auto_.candidate != dark) { auto_.candidate = dark; auto_.candidate_since_ms = now_ms; auto_.switch_error.clear(); }
     const int64_t need_ms = (int64_t)(dark ? p.auto_night_delay_s : p.auto_day_delay_s) * 1000;
     const int64_t left_ms = need_ms - (now_ms - auto_.candidate_since_ms);
     if (left_ms > 0) { auto_.pending_s = (int)((left_ms + 999) / 1000); return; }
-    auto_.committed = dark;
-    auto_.candidate = auto_.pending_s = -1;
-    LOGI("NIGHT", "automatic day/night: switching to %s", dark ? "night" : "day");
-    const std::string e = set_night_locked_(dark == 1);
-    if (!e.empty()) LOGW("NIGHT", "automatic switch to %s failed: %s", dark ? "night" : "day", e.c_str());
+    apply("");
 }
 
 AutoState NightService::auto_state() const
@@ -251,7 +380,7 @@ AutoState NightService::auto_state() const
     a.sensing = a.enabled && !auto_.input_pin.empty() && auto_.error.empty();
     a.dark = auto_.raw;
     a.pending_s = auto_.pending_s;
-    a.error = auto_.error;
+    a.error = !auto_.error.empty() ? auto_.error : auto_.switch_error;
     return a;
 }
 

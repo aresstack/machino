@@ -457,7 +457,7 @@ Result PipelineManager::snap_nv12(int unit, std::vector<uint8_t>& out, int& w, i
 }
 
 // ---- snapshot ----------------------------------------------------------------
-Result PipelineManager::snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms) {
+Result PipelineManager::snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms, int max_age_ms) {
     {
         std::lock_guard<std::mutex> lk(m_);
         if (shutdown_) { err = "shutting down"; return Result::busy(); }
@@ -486,7 +486,8 @@ Result PipelineManager::snapshot(std::vector<uint8_t>& out, std::string& err, in
     {
         std::lock_guard<std::mutex> cap(snap_m_);
         int64_t now = mono_us();
-        bool fresh = jpeg_.cache_at_us > 0 && (now - jpeg_.cache_at_us) < (int64_t)jpeg_.cache_ms * 1000 && !jpeg_.cache.empty();
+        const int64_t max_age_us = (int64_t)(max_age_ms >= 0 ? max_age_ms : jpeg_.cache_ms) * 1000;
+        bool fresh = jpeg_.cache_at_us > 0 && (now - jpeg_.cache_at_us) < max_age_us && !jpeg_.cache.empty();
         if (fresh) {
             out = jpeg_.cache;
         } else {
