@@ -269,6 +269,63 @@ Regeln (CP-Netz muss ganz in einem akzeptierten TSr liegen).
 
 Hardware-Abnahme (Cellular-Underlay, echter EAP-Peer): PENDING_PHYSICAL.
 
+## AP10: WeirdOS-Profilparitaet — ID-Typ, Tunnel-Adresse per CP, PFS, Autostart
+
+Anlass: das WeirdOS-Profil einer realen Gegenstelle (IKEv2/PSK, Identitaet
+als E-Mail-Adresse, „Tunnel-IP leer = automatisch vom Gateway", PFS ja,
+„Automatisch verbinden beim Start"). Die Engine ist byteidentisch mit der in
+WeirdOS (`vendor/weirdike` = `esp32-modem-host/src/weirdike`, Pin d3c5d1e);
+alle vier Luecken lagen in machinods Verdrahtung. Kein Engine-Code geaendert.
+
+**ID-Typ** (`localIdType`, `remoteIdType`: `fqdn|rfc822|ipv4|keyid`,
+Vorgabe `fqdn` = Verhalten vor AP10). Explizit wie in WeirdOS („Senden als"
+/ „Erwarten als"), keine Inhaltserkennung: ein Gateway prueft Typ UND Wert,
+und `cam@intern` als FQDN ist fuer ein LANCOM eine andere Identitaet als
+dieselben Bytes als RFC822. `ipv4` verlangt ein Literal (Validierung mit
+Namen); der Daemon sendet dann die vier Bytes. Eine leere ID bleibt NONE
+(eigene Quell-IP bzw. jede Server-ID akzeptieren) — unabhaengig vom Typ.
+Daemon-Datei: `local_id_type`/`remote_id_type`, nur emittiert, wenn eine ID
+gesetzt ist und der Typ nicht `fqdn` ist.
+
+**Tunnel-Adresse vom Gateway** (IKEv2 Configuration Payload, RFC 7296 2.19).
+`requestCp` ist ABGELEITET, nicht gespeichert — die WeirdOS-Regel „leer =
+automatisch": PSK fordert CP genau dann an, wenn `localSubnet` leer ist; EAP
+immer (wie bisher). Die API zeigt `requestCp` nur lesend; ein PUT damit wird
+mit Namen abgelehnt. Der Daemon bekommt `request_cp = yes` explizit (Vorgabe
+`no`, damit eine Daemon-Datei ohne die Zeile dasselbe bedeutet wie vor
+AP10, auch fuer den Interop-CI). Die zugewiesene Adresse wird die
+ipsec0-Adresse, sofern keine `local_subnet` konfiguriert ist — auch wenn
+der Responder TSi nicht auf sie verengt hat (manche Gateways lassen es bei
+any). Status: `tunnelIpv4`, `requestCp`, `cpAddress`.
+
+**PFS** (`pfs`, Vorgabe `false`). Der Child-Rekey traegt dann eine neue
+D-H-Gruppe (`pfs_group = 14`, die einzige erlaubte IKE-Gruppe). Aus bleibt
+das im Namespace-CI unter Dauer-Ping bewiesene Verhalten; an entspricht der
+LANCOM-/FRITZ!Box-Vorgabe. Wichtig fuer die Reihenfolge: WeirdIKEs
+Child-Lebensdauer (55 min) ist kuerzer als die LANCOM-Vorgabe (8 h), also
+initiiert Machinos Seite den ersten Rekey — ein Gateway, das PFS erzwingt,
+lehnt ihn ohne KE ab. Status: `pfsGroup`.
+
+**Autostart** (`autoConnect`, Vorgabe `true`). Der erste `tick()` nach dem
+Start von machinod plant bei `enabled` + `autoConnect` einen Connect als
+Reconnect-Versuch 1 (sofort). Scheitert er — typisch: das Mobilfunk-Underlay
+ist Sekunden nach dem Boot noch nicht da — laeuft die AP7-Backoff-Kette
+(2 s, 5 s, 10 s, dann 30 s) weiter, bis der Tunnel steht; `schedule_reconnect_`
+verlangt weiterhin gueltige Config, Gateway und Credential. Ein bereits
+laufender weirdiked (machinod-Neustart bei lebendem Daemon) wird nicht
+angefasst. Ein manueller `disconnect` gilt wie bisher bis zum naechsten
+`connect`; einen Boot ueberlebt er nicht (manualStop ist Prozesszustand).
+
+Kompatibilitaet: eine unveraenderte Konfiguration erzeugt eine byteidentische
+Daemon-Datei; eine alte `ipsec.conf` ohne die Keys liest sich mit den
+Vorgaben. Hosttests: `tests/test_ipsec.cpp` (`test_ap10_profile_parity`),
+`tests/test_api.cpp` (`test_ap10_ipsec_api_fields`), `tests/test_ctl.cpp`,
+`weirdike-openipc/tests/test_config.c` (`t_profile_fields`).
+
+Hardware-Abnahme gegen die LANCOM-Gegenstelle (RFC822-ID, CP-Adresse auf
+ipsec0, Rekey mit PFS nach 55 min, Tunnel nach Reboot ohne Klick):
+PENDING_PHYSICAL.
+
 ## Terminal: machinoctl
 
 Dieselben Routen sind vom Terminal aus bedienbar — UART wie SSH — ueber

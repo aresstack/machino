@@ -189,6 +189,7 @@ typedef struct {
     weirdike_child_sa_t child;
     int              have_child;
     int              tun_configured;
+    uint8_t          tun_ip[4];             /* AP10: the inner address ipsec0 carries (status) */
     wd_route_table   routes;
     int              full_tunnel_refused;   /* peer offered 0.0.0.0/0 (status flag) */
     uint64_t         tx_drop_sel, rx_drop_sel;
@@ -332,14 +333,24 @@ static void data_path_install(wd_daemon *d)
             wd_log(LOG_ERR, "data path: non-IPv4 local selector -- not configuring %s", d->cfg.ifname);
             return;
         }
-        if (wd_tun_configure(d->cfg.ifname, d->child.local_ts.start_addr,
-                             d->cfg.have_local_ts ? d->cfg.local_ts.prefix : 32,
-                             WD_TUN_MTU, err, sizeof(err)) != 0) {
+        const uint8_t *addr = d->child.local_ts.start_addr;
+        uint8_t prefix = d->cfg.have_local_ts ? d->cfg.local_ts.prefix : 32;
+        /* AP10: with a Configuration Payload the gateway's assignment IS the
+         * inner address, even when the responder left TSi at any instead of
+         * narrowing it (some gateways do). A configured local_subnet always
+         * wins -- the operator said what this camera is. */
+        weirdike_cp_t cp;
+        const int have_cp = (weirdike_get_cp(d->ike, &cp) == 0 && cp.have_address);
+        if (!d->cfg.have_local_ts && have_cp) { addr = cp.address; prefix = 32; }
+        if (wd_tun_configure(d->cfg.ifname, addr, prefix, WD_TUN_MTU, err, sizeof(err)) != 0) {
             wd_log(LOG_ERR, "data path: %s", err);
             return;
         }
+        memcpy(d->tun_ip, addr, 4);
         d->tun_configured = 1;
-        wd_log(LOG_NOTICE, "%s configured (mtu %d)", d->cfg.ifname, WD_TUN_MTU);
+        wd_log(LOG_NOTICE, "%s configured %u.%u.%u.%u/%u%s (mtu %d)", d->cfg.ifname,
+               addr[0], addr[1], addr[2], addr[3], (unsigned)prefix,
+               (!d->cfg.have_local_ts && have_cp) ? " (assigned by the gateway, CP)" : "", WD_TUN_MTU);
     }
 
     wd_route desired[WD_ROUTE_MAX];
@@ -526,6 +537,31 @@ static const char *state_name(wd_daemon *d)
     return weirdike_state_str(weirdike_state(d->ike));
 }
 
+/* AP10: wd_config's identity type -> the core's. FQDN and RFC822 and KEY_ID
+ * go out as the text; IPv4 as its four bytes (the parser guaranteed a
+ * literal, so a failed parse here is a bug, not an input -- fall back to
+ * FQDN loudly rather than send four zero bytes). */
+static void set_id(weirdike_id_t *id, int type, const char *val, uint8_t raw[4])
+{
+    id->data = (const uint8_t *)val;
+    id->len  = strlen(val);
+    switch (type) {
+    case WD_ID_RFC822: id->type = WEIRDIKE_ID_RFC822_ADDR; return;
+    case WD_ID_KEYID:  id->type = WEIRDIKE_ID_KEY_ID;      return;
+    case WD_ID_IPV4:
+        if (wd_parse_ipv4(val, raw) == 0) { id->type = WEIRDIKE_ID_IPV4_ADDR; id->data = raw; id->len = 4; return; }
+        wd_log(LOG_ERR, "identity '%s' is not an IPv4 literal -- sending it as FQDN", val);
+        /* fall through */
+    default:           id->type = WEIRDIKE_ID_FQDN;        return;
+    }
+}
+
+static const char *id_type_name(int t)
+{
+    switch (t) { case WD_ID_RFC822: return "rfc822"; case WD_ID_IPV4: return "ipv4"; case WD_ID_KEYID: return "keyid"; }
+    return "fqdn";
+}
+
 static void ctl_status(wd_daemon *d, char *buf, size_t cap)
 {
     weirdike_diag_t dg;
@@ -588,6 +624,35 @@ static void ctl_status(wd_daemon *d, char *buf, size_t cap)
              d->tr.active_port == 4500 ? "udp4500" : "udp500",
              d->full_tunnel_refused ? "yes" : "no",
              d->cfg.auth == 1 ? "eap-mschapv2" : "psk");
+
+    /* AP10: the inner address ipsec0 carries, whether the gateway assigned
+     * one (CP), and the PFS/identity settings in force -- so the UI shows
+     * what the daemon DOES, not what someone remembers configuring. */
+    {
+        char line[256];
+        weirdike_cp_t cp;
+        const int have_cp = (weirdike_get_cp(d->ike, &cp) == 0 && cp.have_address);
+        char tip[20] = "", cpa[20] = "";
+        if (d->tun_configured)
+            snprintf(tip, sizeof(tip), "%u.%u.%u.%u", d->tun_ip[0], d->tun_ip[1], d->tun_ip[2], d->tun_ip[3]);
+        if (have_cp)
+            snprintf(cpa, sizeof(cpa), "%u.%u.%u.%u", cp.address[0], cp.address[1], cp.address[2], cp.address[3]);
+        snprintf(line, sizeof(line),
+                 "tunnel_ip=%s\n"
+                 "request_cp=%s\n"
+                 "cp_address=%s\n"
+                 "pfs_group=%u\n"
+                 "local_id_type=%s\n"
+                 "remote_id_type=%s\n",
+                 tip,
+                 (d->cfg.request_cp || d->cfg.auth == 1) ? "yes" : "no",
+                 cpa,
+                 (unsigned)d->cfg.pfs_group,
+                 id_type_name(d->cfg.local_id_type),
+                 id_type_name(d->cfg.remote_id_type));
+        size_t have_len = strlen(buf), add = strlen(line);
+        if (have_len + add < cap) memcpy(buf + have_len, line, add + 1);
+    }
 
     /* AP6 §12: one "route=" line per owned route, tagged with its source, so
      * the status carries the INSTALLED truth (not the requested config). */
@@ -864,7 +929,7 @@ int main(int argc, char **argv)
         wc.eap_password     = d.cfg.eap_password;
         wc.eap_password_len = d.cfg.eap_password_len;
         wc.trust_mode       = d.cfg.trust_mode;
-        wc.request_cp       = 1;                 /* pull IP/DNS/subnets via CP */
+        wc.request_cp       = 1;                 /* EAP: pull IP/DNS/subnets via CP, always */
         if (d.cfg.ca_pem_len)    { wc.ca_pem = d.cfg.ca_pem;       wc.ca_pem_len = d.cfg.ca_pem_len; }
         if (d.cfg.extra_pem_len) { wc.extra_pem = d.cfg.extra_pem; wc.extra_pem_len = d.cfg.extra_pem_len; }
     } else {
@@ -872,6 +937,14 @@ int main(int argc, char **argv)
         wc.psk              = d.cfg.psk;
         wc.psk_len          = d.cfg.psk_len;
     }
+    /* AP10: CP is a property of the connection, not of the auth method
+     * (weirdike.c, PSK IKE_AUTH carries the CFG_REQUEST too). machinod asks
+     * for it whenever no local_subnet is configured -- "tunnel address:
+     * empty = from the gateway", the WeirdOS rule. */
+    if (d.cfg.request_cp) wc.request_cp = 1;
+    /* AP10: PFS on Child rekeys. 0 keeps the pre-AP10 behaviour (no KE in
+     * CREATE_CHILD_SA); the core refuses an unsupported group at init. */
+    wc.pfs_group        = (uint16_t)d.cfg.pfs_group;
     wc.enable_nat_t     = d.cfg.nat_t;
     wc.child_lifetime_s = d.cfg.child_lifetime_s;
     wc.ike_lifetime_s   = d.cfg.ike_lifetime_s;
@@ -891,16 +964,11 @@ int main(int argc, char **argv)
         weirdike_ts_any_ipv4(&wc.remote_ts);
     }
 
-    if (d.cfg.local_id[0]) {
-        wc.local_id.type = WEIRDIKE_ID_FQDN;
-        wc.local_id.data = (const uint8_t *)d.cfg.local_id;
-        wc.local_id.len  = strlen(d.cfg.local_id);
-    }
-    if (d.cfg.remote_id[0]) {
-        wc.remote_id.type = WEIRDIKE_ID_FQDN;
-        wc.remote_id.data = (const uint8_t *)d.cfg.remote_id;
-        wc.remote_id.len  = strlen(d.cfg.remote_id);
-    }
+    /* AP10: explicit identity types. The raw IPv4 buffers only have to live
+     * until weirdike_new() has deep-copied the config, just below. */
+    uint8_t lid_raw[4], rid_raw[4];
+    if (d.cfg.local_id[0])  set_id(&wc.local_id,  d.cfg.local_id_type,  d.cfg.local_id,  lid_raw);
+    if (d.cfg.remote_id[0]) set_id(&wc.remote_id, d.cfg.remote_id_type, d.cfg.remote_id, rid_raw);
 
     d.esp_scratch = malloc(ESP_MAX_PACKET);
     if (!d.esp_scratch) { wd_log(LOG_ERR, "out of memory for the ESP scratch"); goto fail; }

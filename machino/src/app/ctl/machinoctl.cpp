@@ -25,12 +25,15 @@ struct Field {
 };
 const Field kFields[] = {
     {"enabled",        Kind::Bool,   "true|false",   "VPN aktiv (Voraussetzung fuer connect)", 0, 0},
+    {"autoConnect",    Kind::Bool,   "true|false",   "beim Start von machinod selbst verbinden (wenn enabled)", 0, 0},
     {"gateway",        Kind::Str,    "",             "Hostname oder IPv4 des IKE-Gateways", 0, 0},
     {"port",           Kind::Int,    "1..65535",     "IKE-Port (NAT-T wechselt selbst auf 4500)", 1, 65535},
     {"underlay",       Kind::Enum,   "auto|ethernet|wifi|cellular", "Uplink fuer IKE/ESP (auto = Machino-Policy)", 0, 0},
-    {"localId",        Kind::Str,    "",             "eigene IKE-Identitaet (FQDN-artig)", 0, 0},
-    {"remoteId",       Kind::Str,    "",             "IKE-Identitaet des Gateways", 0, 0},
-    {"localSubnet",    Kind::Str,    "",             "innere Adresse/Netz, CIDR (z.B. 10.77.0.2/32)", 0, 0},
+    {"localId",        Kind::Str,    "",             "eigene IKE-Identitaet (Wert; Typ: localIdType)", 0, 0},
+    {"localIdType",    Kind::Enum,   "fqdn|rfc822|ipv4|keyid", "Typ der eigenen Identitaet ('Senden als'; E-Mail = rfc822)", 0, 0},
+    {"remoteId",       Kind::Str,    "",             "erwartete IKE-Identitaet des Gateways (leer = jede)", 0, 0},
+    {"remoteIdType",   Kind::Enum,   "fqdn|rfc822|ipv4|keyid", "Typ der Server-Identitaet ('Erwarten als')", 0, 0},
+    {"localSubnet",    Kind::Str,    "",             "eigene Tunnel-Adresse/Netz, CIDR; LEER = vom Gateway (Config Payload)", 0, 0},
     {"remoteSubnet",   Kind::Str,    "",             "Netz hinter dem Gateway, CIDR (genau eines)", 0, 0},
     {"natT",           Kind::Bool,   "true|false",   "NAT-Traversal erlauben", 0, 0},
     {"dpdIntervalS",   Kind::Int,    "0..3600",      "Dead-Peer-Detection in s (0 = aus)", 0, 3600},
@@ -41,6 +44,7 @@ const Field kFields[] = {
     {"ikeDh",          Kind::Algos,  "dh14",         "IKE-DH-Gruppe", 0, 0},
     {"espEnc",         Kind::Algos,  "aes256cbc",    "ESP-Verschluesselung", 0, 0},
     {"espHash",        Kind::Algos,  "sha256",       "ESP-Integritaet", 0, 0},
+    {"pfs",            Kind::Bool,   "true|false",   "PFS beim Child-Rekey (neue DH-Gruppe = ikeDh)", 0, 0},
     {"auth",           Kind::Enum,   "psk|eap-mschapv2", "Authentifizierung", 0, 0},
     {"psk",            Kind::Secret, "",             "Pre-Shared Key, write-only ('ipsec psk' fragt verdeckt)", 0, 0},
     {"eapUser",        Kind::Str,    "",             "EAP-Benutzername (Identity, kein Secret)", 0, 0},
@@ -388,11 +392,27 @@ int ipsec_setup(Console& c) {
         if (enum_allows("auto|ethernet|wifi|cellular", v)) { body.set("underlay", Json::string(v)); break; }
         c.out("  auto, ethernet, wifi oder cellular.\n");
     }
-    if (!ask(c, "Lokale IKE-ID (z.B. cam.example.org)", str_of(k, "localId"), v)) return abort();
+    const char* kIdTypes = "fqdn|rfc822|ipv4|keyid";
+    if (!ask(c, "Lokale IKE-ID (leer = eigene Quell-IP)", str_of(k, "localId"), v)) return abort();
     body.set("localId", Json::string(v));
-    if (!ask(c, "Remote-ID des Gateways", str_of(k, "remoteId"), v)) return abort();
+    if (!v.empty()) {
+        // AP10: der Typ ist Teil der Identitaet -- LANCOM/FRITZ!Box pruefen beide.
+        for (;;) {
+            if (!ask(c, "Typ der eigenen Identitaet fqdn|rfc822 (E-Mail)|ipv4|keyid", str_of(k, "localIdType", "fqdn"), v)) return abort();
+            if (enum_allows(kIdTypes, v)) { body.set("localIdType", Json::string(v)); break; }
+            c.out("  fqdn, rfc822, ipv4 oder keyid.\n");
+        }
+    }
+    if (!ask(c, "Remote-ID des Gateways (leer = jede akzeptieren)", str_of(k, "remoteId"), v)) return abort();
     body.set("remoteId", Json::string(v));
-    if (!ask(c, "Lokales Netz/Adresse, CIDR (z.B. 10.77.0.2/32)", str_of(k, "localSubnet"), v)) return abort();
+    if (!v.empty()) {
+        for (;;) {
+            if (!ask(c, "Typ der Server-Identitaet fqdn|rfc822|ipv4|keyid", str_of(k, "remoteIdType", "fqdn"), v)) return abort();
+            if (enum_allows(kIdTypes, v)) { body.set("remoteIdType", Json::string(v)); break; }
+            c.out("  fqdn, rfc822, ipv4 oder keyid.\n");
+        }
+    }
+    if (!ask(c, "Eigene Tunnel-Adresse/Netz, CIDR (leer = automatisch vom Gateway)", str_of(k, "localSubnet"), v)) return abort();
     body.set("localSubnet", Json::string(v));
     if (!ask(c, "Remote-Netz, CIDR (z.B. 192.168.178.0/24)", str_of(k, "remoteSubnet"), v)) return abort();
     body.set("remoteSubnet", Json::string(v));
@@ -439,8 +459,20 @@ int ipsec_setup(Console& c) {
         c.out("  ja oder nein.\n");
     }
     for (;;) {
+        if (!ask(c, "PFS beim Child-Rekey ja|nein", yn(bool_of(k, "pfs")), v)) return abort();
+        bool p;
+        if (parse_bool(v, p)) { body.set("pfs", Json::boolean(p)); break; }
+        c.out("  ja oder nein.\n");
+    }
+    for (;;) {
         if (!ask(c, "VPN aktivieren (enabled) ja|nein", "ja", v)) return abort();
         if (parse_bool(v, b)) { body.set("enabled", Json::boolean(b)); break; }
+        c.out("  ja oder nein.\n");
+    }
+    for (;;) {
+        if (!ask(c, "Beim Start von machinod automatisch verbinden ja|nein", yn(!has_bool(k, "autoConnect") || bool_of(k, "autoConnect")), v)) return abort();
+        bool a;
+        if (parse_bool(v, a)) { body.set("autoConnect", Json::boolean(a)); break; }
         c.out("  ja oder nein.\n");
     }
 
@@ -698,7 +730,9 @@ std::string pretty(const Json& j) {
 std::string ipsec_summary(const Json& cfg, const Json& st) {
     std::string s;
     const std::string state = str_of(st, "state", "?");
-    s += "ipsec    : enabled=" + std::string(yn(bool_of(cfg, "enabled"))) + "  state=" + state
+    s += "ipsec    : enabled=" + std::string(yn(bool_of(cfg, "enabled")))
+       + "  autoConnect=" + yn(!has_bool(cfg, "autoConnect") || bool_of(cfg, "autoConnect"))
+       + "  state=" + state
        + "  runtime=" + str_of(st, "runtimeState", "?") + "  daemon=" + (bool_of(st, "daemonRunning") ? "laeuft" : "aus") + "\n";
     if (state == "failed") {
         const Json* f = st.get("failure");
@@ -716,9 +750,16 @@ std::string ipsec_summary(const Json& cfg, const Json& st) {
         if (!str_of(st, "underlayInterface").empty()) s += " (" + str_of(st, "underlayInterface") + ")";
     }
     s += "\n";
-    s += "ids      : local=" + str_of(cfg, "localId", "(leer)") + "  remote=" + str_of(cfg, "remoteId", "(leer)") + "\n";
-    s += "nets     : local=" + str_of(cfg, "localSubnet", "(leer)") + "  remote=" + str_of(cfg, "remoteSubnet", "(leer)");
+    // AP10: Typ neben dem Wert -- ein Gateway prueft beides.
+    const std::string lid = str_of(cfg, "localId"), rid = str_of(cfg, "remoteId");
+    s += "ids      : local=" + (lid.empty() ? std::string("(leer = Quell-IP)") : lid + " (" + str_of(cfg, "localIdType", "fqdn") + ")")
+       + "  remote=" + (rid.empty() ? std::string("(leer = jede)") : rid + " (" + str_of(cfg, "remoteIdType", "fqdn") + ")") + "\n";
+    const std::string lsub = str_of(cfg, "localSubnet");
+    s += "nets     : local=" + (lsub.empty() ? std::string("automatisch vom Gateway (CP)") : lsub)
+       + "  remote=" + str_of(cfg, "remoteSubnet", "(leer)");
     if (!str_of(st, "remoteTs").empty()) s += "  ausgehandelt=" + str_of(st, "remoteTs");
+    if (!str_of(st, "tunnelIpv4").empty()) s += "  tunnel=" + str_of(st, "tunnelIpv4");
+    if (!str_of(st, "cpAddress").empty())  s += "  cp=" + str_of(st, "cpAddress");
     s += "\n";
     const Json* routes = st.get("routes");
     s += "routes   : ";
@@ -735,6 +776,8 @@ std::string ipsec_summary(const Json& cfg, const Json& st) {
        + "  natDetected=" + yn(bool_of(st, "natDetected"));
     if (!str_of(st, "ikeTransport").empty()) s += "  ike=" + str_of(st, "ikeTransport");
     if (!str_of(st, "espTransport").empty()) s += "  esp=" + str_of(st, "espTransport");
+    s += "  pfs=" + std::string(yn(bool_of(cfg, "pfs")));
+    if (st.get("pfsGroup") && st.get("pfsGroup")->is_number() && int_of(st, "pfsGroup")) s += " (dh" + std::to_string(int_of(st, "pfsGroup")) + ")";
     if (!str_of(st, "interface").empty())    s += "  if=" + str_of(st, "interface");
     s += "\n";
     s += "secrets  : psk=" + std::string(bool_of(cfg, "pskSet") ? "gesetzt" : "nicht gesetzt")
@@ -791,9 +834,9 @@ const char* help_text() {
         "                                beliebige Route schreiben (Body als JSON)\n"
         "  exit | quit                   Konsole beenden\n"
         "\n"
-        "Beispiel -- VPN zum Heimnetz ueber Mobilfunk:\n"
-        "  ipsec set gateway vpn.example.org remoteSubnet 192.168.178.0/24 localSubnet 10.77.0.2/32 \\\n"
-        "            localId cam.example.org remoteId vpn.example.org underlay cellular\n"
+        "Beispiel -- VPN zum Heimnetz ueber Mobilfunk (Tunnel-Adresse vom Gateway, ID als E-Mail):\n"
+        "  ipsec set gateway vpn.example.org remoteSubnet 192.168.178.0/24 \\\n"
+        "            localId cam@example.org localIdType rfc822 underlay cellular pfs true\n"
         "  ipsec psk\n"
         "  ipsec enable\n"
         "  ipsec connect\n";

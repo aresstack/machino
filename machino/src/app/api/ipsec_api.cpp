@@ -25,6 +25,13 @@ Json ipsec_config_json(const ipsec::IpsecConfig& c, bool psk_set)
     j.set("underlay", Json::string(ipsec::underlay_name(c.underlay)));
     j.set("localId", Json::string(c.local_id));
     j.set("remoteId", Json::string(c.remote_id));
+    // AP10: ID-Typen, PFS, Autostart -- und requestCp als ABGELEITETE Auskunft
+    // (leere localSubnet = Tunnel-Adresse vom Gateway; nur lesbar).
+    j.set("localIdType", Json::string(ipsec::id_type_name(c.local_id_type)));
+    j.set("remoteIdType", Json::string(ipsec::id_type_name(c.remote_id_type)));
+    j.set("pfs", Json::boolean(c.pfs));
+    j.set("autoConnect", Json::boolean(c.auto_connect));
+    j.set("requestCp", Json::boolean(ipsec::request_cp(c)));
     j.set("localSubnet", Json::string(c.local_subnet));
     j.set("remoteSubnet", Json::string(c.remote_subnet));
     j.set("natT", Json::boolean(c.nat_t));
@@ -120,7 +127,9 @@ Response ApiService::ipsec_put_config(const std::string& body)
                                   "ikeLifetimeS","childLifetimeS",
                                   "ikeEnc","ikeHash","ikeDh","espEnc","espHash","psk",
                                   // AP9:
-                                  "auth","eapUser","eapPassword","trustMode","caPem","extraPem"};
+                                  "auth","eapUser","eapPassword","trustMode","caPem","extraPem",
+                                  // AP10 (requestCp ist abgeleitet, nur GET):
+                                  "localIdType","remoteIdType","pfs","autoConnect"};
     for (const auto& m : in.members()) {
         bool ok = false;
         for (const char* k : known) if (m.first == k) { ok = true; break; }
@@ -134,6 +143,7 @@ Response ApiService::ipsec_put_config(const std::string& body)
     long long ikeLt = c.ike_lifetime_s, childLt = c.child_lifetime_s;
     std::string underlay = ipsec::underlay_name(c.underlay);
     std::string auth = ipsec::auth_name(c.auth), trust = ipsec::trust_mode_name(c.trust_mode);
+    std::string lidt = ipsec::id_type_name(c.local_id_type), ridt = ipsec::id_type_name(c.remote_id_type);
     ipsec::IpsecSecrets secrets;   // write-only: nur was gesendet wird
 
     if (!take_bool(in, "enabled", c.enabled, err) ||
@@ -160,7 +170,12 @@ Response ApiService::ipsec_put_config(const std::string& body)
         !take_string(in, "eapPassword", secrets.eap_password, err) ||
         !take_string(in, "trustMode", trust, err) ||
         !take_string(in, "caPem", secrets.ca_pem, err) ||
-        !take_string(in, "extraPem", secrets.extra_pem, err))
+        !take_string(in, "extraPem", secrets.extra_pem, err) ||
+        // AP10:
+        !take_string(in, "localIdType", lidt, err) ||
+        !take_string(in, "remoteIdType", ridt, err) ||
+        !take_bool(in, "pfs", c.pfs, err) ||
+        !take_bool(in, "autoConnect", c.auto_connect, err))
         return fail(400, "invalid_value", path, err);
 
     c.port = (uint16_t)port;
@@ -173,6 +188,10 @@ Response ApiService::ipsec_put_config(const std::string& body)
         return fail(400, "invalid_value", path, "auth: '" + auth + "'");
     if (!ipsec::trust_mode_from_name(trust, c.trust_mode))
         return fail(400, "invalid_value", path, "trustMode: '" + trust + "'");
+    if (!ipsec::id_type_from_name(lidt, c.local_id_type))
+        return fail(400, "invalid_value", path, "localIdType: '" + lidt + "' (fqdn|rfc822|ipv4|keyid)");
+    if (!ipsec::id_type_from_name(ridt, c.remote_id_type))
+        return fail(400, "invalid_value", path, "remoteIdType: '" + ridt + "' (fqdn|rfc822|ipv4|keyid)");
 
     const std::string e = ipsec_->set_config(c, secrets);
     if (!e.empty()) return fail(400, "invalid_value", path, e);
@@ -240,6 +259,16 @@ Response ApiService::ipsec_status()
     if (!st.ike_transport.empty())      j.set("ikeTransport", Json::string(st.ike_transport));
     if (!st.esp_transport.empty())      j.set("espTransport", Json::string(st.esp_transport));
     if (!st.auth.empty())               j.set("auth", Json::string(st.auth));   // AP9
+    // AP10: Daemon-Wahrheit zu Tunnel-Adresse, CP und PFS (nur bei laufendem
+    // Daemon vorhanden; ohne ihn bleibt es weg statt zu raten).
+    if (st.daemon_running) {
+        if (!st.tunnel_ipv4.empty()) j.set("tunnelIpv4", Json::string(st.tunnel_ipv4));
+        j.set("requestCp", Json::boolean(st.request_cp));
+        if (!st.cp_address.empty())  j.set("cpAddress", Json::string(st.cp_address));
+        j.set("pfsGroup", Json::integer((long long)st.pfs_group));
+        if (!st.local_id_type.empty())  j.set("localIdType", Json::string(st.local_id_type));
+        if (!st.remote_id_type.empty()) j.set("remoteIdType", Json::string(st.remote_id_type));
+    }
     // AP6: die INSTALLIERTEN Routen (Daemon-Wahrheit), source tsr|cp getrennt.
     Json routes = Json::array();
     for (const auto& r : st.routes) {

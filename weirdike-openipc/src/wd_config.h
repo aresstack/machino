@@ -19,6 +19,13 @@
 #define WD_MAX_ID      128
 #define WD_MAX_REMOTE_TS 4    /* == WEIRDIKE_TS_MAX; AP6 multi-subnet request */
 
+/* AP10: identity types (local_id_type / remote_id_type). Numbers are OURS;
+ * weirdiked.c maps them onto weirdike_id_type_t. */
+#define WD_ID_FQDN   0
+#define WD_ID_RFC822 1
+#define WD_ID_IPV4   2
+#define WD_ID_KEYID  3
+
 typedef struct {
     uint8_t  ip[4];
     uint8_t  prefix;      /* 0..32 */
@@ -56,6 +63,20 @@ typedef struct {
 
     char     local_id[WD_MAX_ID];     /* empty = derive from source IP */
     char     remote_id[WD_MAX_ID];    /* empty = accept whatever the responder sends */
+
+    /* AP10 (WeirdOS profile parity): the TYPE of each identity, explicit --
+     * "send as" / "expect as". WD_ID_FQDN is the pre-AP10 behaviour and the
+     * default. WD_ID_IPV4 requires the value to be a dotted quad (checked by
+     * the parser). Only meaningful when the id itself is set. */
+    int      local_id_type;
+    int      remote_id_type;
+
+    /* AP10: ask the gateway for a tunnel address (IKEv2 Configuration
+     * Payload, RFC 7296 2.19) with PSK too; EAP always requests it. 0/1. */
+    int      request_cp;
+
+    /* AP10: D-H group for Child rekeys (PFS, RFC 7296 2.8); 0 = no PFS. */
+    uint32_t pfs_group;
 
     wd_cidr  local_ts;                /* the network we protect */
     wd_cidr  remote_ts;               /* remote_ts_list[0]; kept for back-compat */
@@ -97,6 +118,7 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
 int wd_valid_hostname(const char *s);            /* 1 = ok */
 int wd_valid_ifname(const char *s);              /* 1 = ok */
 int wd_parse_cidr(const char *s, wd_cidr *out);  /* 0 = ok */
+int wd_parse_ipv4(const char *s, uint8_t out[4]);  /* 0 = ok; a plain dotted quad */
 
 /* Format a CIDR back out, for logs and status. Never fails. */
 void wd_cidr_str(const wd_cidr *c, char *buf, size_t cap);

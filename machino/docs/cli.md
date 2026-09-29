@@ -75,6 +75,15 @@ meinen dasselbe Feld. `ipsec fields` zeigt die vollstaendige Tabelle — sie ist
 exakt die Menge, die `PUT /api/v1/ipsec/config` kennt, und ein Hosttest
 (`tests/test_ctl.cpp`) beweist das gegen die echte `ApiService`.
 
+Die vier Felder aus der WeirdOS-Profilparitaet (AP10 in
+`architecture/ipsec.md`): `localIdType`/`remoteIdType`
+(`fqdn|rfc822|ipv4|keyid`, „Senden als"/„Erwarten als"), `pfs` (PFS beim
+Child-Rekey) und `autoConnect` (beim Start von machinod verbinden). Die
+Tunnel-Adresse ist kein eigenes Feld: `localSubnet` leer = vom Gateway per
+Configuration Payload, so wie WeirdOS' „leer = automatisch"; `ipsec` zeigt
+dann `local=automatisch vom Gateway (CP)` und, sobald der Tunnel steht,
+`tunnel=<adresse>`.
+
 Werte: `true|false` (auch `ja|nein`, `on|off`, `1|0`), Ganzzahlen mit den
 API-Grenzen, Listen mit Komma (`ikeEnc aes256cbc,aes256cbc`). Ein falscher
 Wert wird **vor** dem Request mit Feldname abgelehnt; was die API dann noch
@@ -87,15 +96,18 @@ Rueckgabewerte: `0` ok, `1` API- oder Transportfehler, `2` Bedienfehler.
 
 ```
 machinoctl ipsec set gateway vpn.example.org remoteSubnet 192.168.178.0/24 \
-    localSubnet 10.77.0.2/32 localId cam.example.org remoteId vpn.example.org \
-    underlay cellular
+    localId cam@example.org localIdType rfc822 underlay cellular pfs true
 machinoctl ipsec psk            # fragt verdeckt
-machinoctl ipsec enable
+machinoctl ipsec enable         # autoConnect ist Vorgabe: nach einem Reboot kommt der Tunnel von selbst
 machinoctl ipsec connect        # danach: machinoctl ipsec
 ```
 
-Oder gefuehrt: `machinoctl ipsec setup` fragt Gateway, Port, Underlay, IDs,
-Netze, Auth (PSK oder EAP-MSCHAPv2 mit Trust-Modus), NAT-T und `enabled` ab,
+Ohne `localSubnet` holt sich die Kamera ihre Tunnel-Adresse vom Gateway;
+eine feste Adresse (`localSubnet 10.77.0.2/32`) schaltet das ab.
+
+Oder gefuehrt: `machinoctl ipsec setup` fragt Gateway, Port, Underlay, IDs
+samt Typ, Tunnel-Adresse (leer = vom Gateway), Remote-Netz, Auth (PSK oder
+EAP-MSCHAPv2 mit Trust-Modus), NAT-T, PFS, `enabled` und `autoConnect` ab,
 zeigt den heutigen Wert als Vorgabe (Enter uebernimmt, `-` leert), speichert
 mit **einem** PUT und bietet an, sofort zu verbinden. Strg-D bricht ab, ohne
 etwas zu speichern.
@@ -103,13 +115,13 @@ etwas zu speichern.
 `ipsec` danach:
 
 ```
-ipsec    : enabled=ja  state=childEstablished  runtime=dataPlaneUp  daemon=laeuft
-gateway  : vpn.example.org:500  peer=203.0.113.5  auth=psk
-underlay : cellular -> cellular (usb0 100.71.3.9)
-ids      : local=cam.example.org  remote=vpn.example.org
-nets     : local=10.77.0.2/32  remote=192.168.178.0/24  ausgehandelt=192.168.178.0/24
+ipsec    : enabled=ja  autoConnect=ja  state=childEstablished  runtime=dataPlaneUp  daemon=laeuft
+gateway  : vpn.example.org:500  auth=psk
+underlay : cellular -> cellular (usb0)
+ids      : local=cam@example.org (rfc822)  remote=(leer = jede)
+nets     : local=automatisch vom Gateway (CP)  remote=192.168.178.0/24  ausgehandelt=192.168.178.0/24  tunnel=10.9.0.7  cp=10.9.0.7
 routes   : 192.168.178.0/24 (tsr, ipsec0)
-transport: natT=ja  natDetected=ja  ike=udp4500  esp=udp4500  if=ipsec0
+transport: natT=ja  natDetected=ja  ike=udp4500  esp=udp4500  pfs=ja (dh14)  if=ipsec0
 secrets  : psk=gesetzt  eapPassword=nicht gesetzt  caPem=nicht gesetzt
 traffic  : tx 12 Pakete/1024 B  rx 10 Pakete/900 B  uptime 120 s  child-gen 1  ike-gen 1
 ```

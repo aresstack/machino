@@ -141,6 +141,13 @@ VpnStatus parse_status(const std::string& text, bool daemon_running, bool enable
         else if (k == "esp_transport")    st.esp_transport = v;
         else if (k == "auth")             st.auth = v;
         else if (k == "full_tunnel_refused") st.full_tunnel_refused = (v == "yes" || v == "1" || v == "true");
+        // AP10:
+        else if (k == "tunnel_ip")        st.tunnel_ipv4 = v;
+        else if (k == "request_cp")       st.request_cp = (v == "yes" || v == "1" || v == "true");
+        else if (k == "cp_address")       st.cp_address = v;
+        else if (k == "pfs_group")        st.pfs_group = (uint32_t)strtoul(v.c_str(), nullptr, 10);
+        else if (k == "local_id_type")    st.local_id_type = v;
+        else if (k == "remote_id_type")   st.remote_id_type = v;
         else if (k == "route") {
             // "prefix source device" (space-separated), vom Daemon.
             VpnStatus::Route r;
@@ -452,6 +459,21 @@ std::string IpsecService::disconnect()
 void IpsecService::tick(uint32_t now_ms)
 {
     const IpsecConfig c = config();
+
+    // 0) AP10: Autostart. Genau einmal, beim ersten tick nach dem Start:
+    //    enabled + auto_connect, keine Session, kein laufender Daemon -> ein
+    //    Connect wird als "Reconnect-Versuch 1" geplant (sofort faellig) und
+    //    unten in Schritt 3 ausgefuehrt. Scheitert er (Underlay noch nicht
+    //    da, DNS noch nicht erreichbar), laeuft die AP7-Backoff-Kette weiter,
+    //    bis der Tunnel steht. Ein Daemon, der schon laeuft (machinod-
+    //    Neustart bei lebendem weirdiked), wird nicht angefasst.
+    if (!boot_checked_) {
+        boot_checked_ = true;
+        if (c.enabled && c.auto_connect && !session_.active && !backend_.daemon_running()) {
+            reconnect_attempt_ = 0;
+            schedule_reconnect_(now_ms, c);
+        }
+    }
 
     // 1) Rekey-Fenster (nur fuer den Runtime-Zustand) auslaufen lassen.
     if (rekey_until_ms_ && (int32_t)(now_ms - rekey_until_ms_) >= 0) rekey_until_ms_ = 0;

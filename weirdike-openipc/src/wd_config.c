@@ -50,6 +50,18 @@ int wd_valid_ifname(const char *s)
 
 /* "a.b.c.d" or "a.b.c.d/p". Rejects leading zeros, out-of-range octets, a
  * prefix > 32, and anything with trailing garbage. */
+int wd_parse_ipv4(const char *s, uint8_t out[4])
+{
+    /* Strict: exactly four decimal octets, nothing before or after. */
+    unsigned a, b, c, d; char extra;
+    if (!s || sscanf(s, "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4) return -1;
+    if (a > 255 || b > 255 || c > 255 || d > 255) return -1;
+    /* Refuse leading '+', spaces and the like that sscanf would swallow. */
+    for (const char *p = s; *p; p++) if (!((*p >= '0' && *p <= '9') || *p == '.')) return -1;
+    out[0] = (uint8_t)a; out[1] = (uint8_t)b; out[2] = (uint8_t)c; out[3] = (uint8_t)d;
+    return 0;
+}
+
 int wd_parse_cidr(const char *s, wd_cidr *out)
 {
     if (!s || !out) return -1;
@@ -202,6 +214,20 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
         } else if (!strcmp(k, "remote_id")) {
             if (strlen(v) >= WD_MAX_ID) { seterr(err, errcap, "remote_id too long", NULL); return -1; }
             snprintf(out->remote_id, sizeof(out->remote_id), "%s", v);
+        } else if (!strcmp(k, "local_id_type") || !strcmp(k, "remote_id_type")) {
+            /* AP10: explicit identity type. No content sniffing: the operator
+             * says what the gateway expects, the daemon sends exactly that. */
+            int t;
+            if      (!strcmp(v, "fqdn"))   t = WD_ID_FQDN;
+            else if (!strcmp(v, "rfc822")) t = WD_ID_RFC822;
+            else if (!strcmp(v, "ipv4"))   t = WD_ID_IPV4;
+            else if (!strcmp(v, "keyid"))  t = WD_ID_KEYID;
+            else { seterr(err, errcap, "bad %s (fqdn|rfc822|ipv4|keyid)", k); return -1; }
+            if (k[0] == 'l') out->local_id_type = t; else out->remote_id_type = t;
+        } else if (!strcmp(k, "request_cp")) {
+            if (as_bool(v, &out->request_cp)) { seterr(err, errcap, "bad request_cp", NULL); return -1; }
+        } else if (!strcmp(k, "pfs_group")) {
+            if (as_uint(v, 32, &out->pfs_group)) { seterr(err, errcap, "bad pfs_group (0 = off, else the D-H group number)", NULL); return -1; }
         } else if (!strcmp(k, "local_subnet")) {
             if (wd_parse_cidr(v, &out->local_ts)) { seterr(err, errcap, "bad local_subnet", NULL); return -1; }
             out->have_local_ts = 1;
@@ -267,6 +293,15 @@ int wd_config_parse(const char *text, size_t len, wd_config *out, char *err, siz
     }
 
     if (!out->gateway[0]) { seterr(err, errcap, "gateway is required", NULL); return -1; }
+    /* AP10: an IPv4 identity is four bytes on the wire, so the value must be
+     * a literal -- a name here would go out as garbage, not as an address. */
+    {
+        uint8_t ip[4];
+        if (out->local_id[0] && out->local_id_type == WD_ID_IPV4 && wd_parse_ipv4(out->local_id, ip))
+            { seterr(err, errcap, "local_id_type=ipv4 needs a dotted-quad local_id", NULL); return -1; }
+        if (out->remote_id[0] && out->remote_id_type == WD_ID_IPV4 && wd_parse_ipv4(out->remote_id, ip))
+            { seterr(err, errcap, "remote_id_type=ipv4 needs a dotted-quad remote_id", NULL); return -1; }
+    }
     /* AP9: the required credential depends on the auth mode. */
     if (out->auth == 1) {
         if (!out->eap_user[0])     { seterr(err, errcap, "eap_user is required for eap-mschapv2", NULL); return -1; }
