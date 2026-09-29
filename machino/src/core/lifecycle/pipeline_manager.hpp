@@ -119,6 +119,10 @@ public:
     // Requests within cache_ms share one capture instead of hammering the
     // hardware. Never touches the H.264 units.
     Result snapshot(std::vector<uint8_t>& out, std::string& err, int timeout_ms = 5000);
+    // One current frame of an H.264 unit's channel, uncompressed NV12 at the
+    // unit's geometry (/image.yuv420). Takes snapshot demand on the unit for
+    // the duration; the unit's own grace keeps it warm for the next grab.
+    Result snap_nv12(int unit, std::vector<uint8_t>& out, int& w, int& h, std::string& err, int timeout_ms = 3000);
 
     void on_grace_timeout();               // base grace
     void on_unit_grace(int unit);          // per-unit grace (sub)

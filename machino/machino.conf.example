@@ -98,6 +98,17 @@ power.isp_performance     = auto
 power.encoder_performance = auto
 power.cpu_performance     = auto
 
+# --- audio (microphone) -------------------------------------------------------
+# majestic's names and defaults. Off until the owner turns it on. The codec
+# input is opened only while somebody listens on /audio.pcm, /audio.alaw,
+# /audio.g711a or /audio.ulaw, and closed audio.grace_ms after the last one.
+# Hardware check first: machino --audio-test (docs/ap20-audio-talkback.md).
+# audio.enabled = false
+# audio.srate = 8000            # 8000 | 16000
+# audio.volume = 30             # 0..100 (0 = mute), vendor-calibrated curve
+# audio.gain = -1               # analog 0..31, -1 = driver default
+# audio.grace_ms = 2000
+
 # --- HTTP control / telemetry API (/api/v1) ---------------------------------
 # Reads and SSE connections are never media demand. PATCH /api/v1/config
 # persists the managed keys of THIS file atomically and bumps config.revision.

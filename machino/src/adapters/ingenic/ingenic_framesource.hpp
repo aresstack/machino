@@ -15,6 +15,7 @@ public:
     Result enable() override  { return chan_->enable(); }
     Result disable() override { return chan_->disable(); }
     int    channel() const override { return chan_->chn(); }
+    Result snap_nv12(std::vector<uint8_t>& out, int w, int h) override;
 
 private:
     explicit IngenicFrameSource(std::unique_ptr<imp::FrameSourceChannel> c) : chan_(std::move(c)) {}

@@ -13,6 +13,7 @@
 #include "app/onvif/onvif_service.hpp"
 #include "app/osd/osd_service.hpp"
 #include "app/api/net_api.hpp"
+#include "core/audio/audio_service.hpp"
 #include "core/events.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/result.hpp"
@@ -109,6 +110,11 @@ public:
     // USB backend or a radio should look like to a client.
     void set_net_api(api::NetApiService* n) { net_api_ = n; }
 
+    // Majestic's HTTP audio streams (/audio.pcm, /audio.alaw, /audio.ulaw,
+    // /audio.g711a). Each client is one AudioService listener. Null = the
+    // routes answer 501 with the reason instead of falling through to the relay.
+    void set_audio(audio::AudioService* a) { audio_ = a; }
+
     Result start();
     void   stop();
     int    port() const { return cfg_.port; }
@@ -129,6 +135,7 @@ private:
     SetupGate*       setup_ = nullptr;
     onvif::OnvifService* onvif_ = nullptr;
     api::NetApiService*  net_api_ = nullptr;
+    audio::AudioService* audio_ = nullptr;
     void loop();
     void accept_client();
     // Parse and serve every complete request already buffered in c.in. Stops at
@@ -139,6 +146,8 @@ private:
     void drain_events(Client& c);
     void push_mjpeg(Client& c);     // multipart JPEG frames for an /api/v1/stream.mjpeg client
     void pump_ws_video(Client& c);  // fMP4-per-frame over WebSocket (majestic /ws/video)
+    void pump_audio(Client& c);     // an /audio.* client: PCM, G.711, AAC in fMP4, Opus in Ogg
+    void pump_ws_audio(Client& c);  // /ws/video&audio=: the microphone as track 2
     bool ws_video_input(Client& c); // client frames: {"request":"idr"}, ping, close
     bool rtc_ws_input(Client& c);   // /ws/webrtc signalling: offer -> answer/busy/error
     // /ws/upgrade: the JSON start frame spawns sysupgrade; pump_upgrade streams
@@ -164,6 +173,9 @@ private:
     // answer that follows the browser's own codec preference.
     // Written and read only from the poll loop, like every other Client-facing
     // member here - no lock, and none needed.
+    bool grab_idr(int unit, AuPtr& out, int timeout_ms, std::string& err);
+    void start_fmp4_viewer(Client& c, int unit, StreamHub* h, lifecycle::DemandHandle d, const std::string& audio_want);
+    bool queue_fmp4(Client& c, const std::vector<uint8_t>& b, size_t cap);
     void note_h264_profile(int unit, const std::vector<uint8_t>& sps);
     std::string h264_profile_[4];   // profile-level-id, "" until first seen
     bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
@@ -194,6 +206,14 @@ private:
     void drop_clients_on_vanished_addresses();
     std::thread       thread_;
     std::vector<std::unique_ptr<Client>> clients_;
+    // /hls: one shared segmenter on the main stream, alive while players
+    // keep fetching (see hls_pump).
+    struct HlsLive;
+    std::unique_ptr<HlsLive> hls_;
+    bool hls_touch(std::string& err);
+    void hls_pump(int64_t t);
+    void hls_stop();
+    bool hls_answer_playlist(Client& c);
     int64_t           last_telemetry_ms_ = 0;
     int64_t           last_heartbeat_ms_ = 0;
 };

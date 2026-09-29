@@ -25,10 +25,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y build-essential wget curl git python3 xxd rsync bc cpio unzip file ccache
       - name: "Fetch and build mbedTLS (pinned; WebRTC DTLS handshake)"
         run: sh machino/tools/fetch-mbedtls.sh "$PWD/3p" gcc ar
+      - name: "Fetch and build libfaac + libopus (pinned; /audio.m4a, /audio.opus, audio in /ws/video)"
+        run: sh machino/tools/fetch-codecs.sh "$PWD/3p/codecs" gcc ar
       - name: "Host unit tests (board profiles, precedence, capabilities, Ingenic conversion)"
         run: |
           set -o pipefail
-          make -C machino test MBEDTLS="$PWD/3p/mbedtls-3.6.7" 2>&1 | tee /tmp/host-test.log
+          make -C machino test MBEDTLS="$PWD/3p/mbedtls-3.6.7" CODECS="$PWD/3p/codecs" 2>&1 | tee /tmp/host-test.log
       # Auch dieser Log als Artefakt: der Step fiel am 2026-09-26 rot, und ohne
       # Token sind Job-Logs unlesbar -- Artefakte via nightly.link schon.
       - uses: actions/upload-artifact@v4
@@ -44,7 +46,7 @@ jobs:
           # second file list, but nothing else stops it from rotting -- so it
           # is run here too. Same sources, same flags, same assertions.
           rm -rf machino/build machino/tests/machino-tests
-          sh machino/tools/host-test.sh "$PWD/3p/mbedtls-3.6.7"
+          sh machino/tools/host-test.sh "$PWD/3p/mbedtls-3.6.7" "$PWD/3p/codecs"
       - name: "The network page must at least parse"
         # Die Seite ist ein String in C++: der Compiler prueft sie nicht, und
         # ein fehlendes Komma im JavaScript zerlegt nicht die eine Schaltflaeche,
@@ -71,16 +73,17 @@ jobs:
           TC=$(ls -d toolchain/xburst2-musl/*/bin | head -1)
           echo "toolchain bin: $TC"
           sh machino/tools/fetch-mbedtls.sh "$PWD/3p" "$PWD/$TC/mipsel-linux-gcc" "$PWD/$TC/mipsel-linux-ar"
+          sh machino/tools/fetch-codecs.sh "$PWD/3p/codecs" "$PWD/$TC/mipsel-linux-gcc" "$PWD/$TC/mipsel-linux-ar"
           set -o pipefail
           exec > >(tee /tmp/machino-build.log) 2>&1
           make -C machino -j"$(nproc)" WERROR=1 \
-            MBEDTLS="$PWD/3p/mbedtls-3.6.7" \
+            MBEDTLS="$PWD/3p/mbedtls-3.6.7" CODECS="$PWD/3p/codecs" \
             CROSS_COMPILE="$PWD/$TC/mipsel-linux-" \
             PLATFORM="$SOC" \
             IMP_INC="$PWD/include/$SOC/$SDK_VERSION/en" \
             IMP_LIB="$PWD/3rdparty/install/lib" \
             IMPLIBS="-Wl,--start-group -l:libimp.a -l:libalog.a -l:libsysutils.a -Wl,--end-group -l:libmuslshim.a"
-          make -C machino MBEDTLS="$PWD/3p/mbedtls-3.6.7" CROSS_COMPILE="$PWD/$TC/mipsel-linux-" strip
+          make -C machino MBEDTLS="$PWD/3p/mbedtls-3.6.7" CODECS="$PWD/3p/codecs" CROSS_COMPILE="$PWD/$TC/mipsel-linux-" strip
       # Der Build-Log als Artefakt, GERADE im Fehlerfall: Job-Logs sind ohne
       # Token nicht lesbar, Artefakte ueber nightly.link schon. Ein roter
       # -Werror-Lauf ohne Log war ein Ratespiel (8c30c25).

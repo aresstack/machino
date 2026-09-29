@@ -26,4 +26,16 @@ std::unique_ptr<IngenicFrameSource> IngenicFrameSource::create(int chn, const Ef
     return std::unique_ptr<IngenicFrameSource>(new IngenicFrameSource(std::move(c)));
 }
 
+// IMP_FrameSource_SnapFrame copies the channel's current frame into our
+// buffer: no SetFrameDepth (which would take frames away from the bound
+// encoder), valid only while the channel is enabled.
+Result IngenicFrameSource::snap_nv12(std::vector<uint8_t>& out, int w, int h) {
+    if (w <= 0 || h <= 0) return Result::unsupported();
+    out.resize((size_t)w * (size_t)h * 3 / 2);
+    IMPFrameInfo info; memset(&info, 0, sizeof info);
+    const int rc = IMP_FrameSource_SnapFrame(chan_->chn(), PIX_FMT_NV12, w, h, out.data(), &info);
+    if (rc != 0) { LOGW(MOD, "SnapFrame(chn%d %dx%d) failed (%d)", chan_->chn(), w, h, rc); out.clear(); return Result::error(rc); }
+    return Result::ok();
+}
+
 }} // namespace machino::ingenic

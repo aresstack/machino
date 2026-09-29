@@ -195,6 +195,18 @@ static bool apply(AppConfig& c, const std::string& k, const std::string& v, int 
     INT   ("ai.inference_fps",   c.ai.inference_fps, 1, 60)
     STR   ("ai.model_path",      c.ai.model_path)
 
+    BOOL  ("audio.enabled",        c.audio.enabled)
+    if (k == "audio.srate") {
+        if (to_int(v, n) && (n == 8000 || n == 16000)) c.audio.srate = (int)n;
+        else LOGW(MOD, "line %d: audio.srate=%s unsupported (8000|16000) - keeping %d", line, v.c_str(), c.audio.srate);
+        return true;
+    }
+    INT   ("audio.volume",         c.audio.volume, 0, 100)
+    INT   ("audio.gain",           c.audio.gain, -1, 31)
+    BOOL  ("audio.output_enabled", c.audio.output_enabled)
+    INT   ("audio.output_volume",  c.audio.output_volume, 0, 100)
+    INT   ("audio.grace_ms",       c.audio.grace_ms, 0, 60000)
+
     BOOL  ("pipeline.always_on", c.pipeline.always_on)
     INT   ("lifecycle.idle_grace_ms", c.pipeline.idle_grace_ms, 0, 600000)
     INT   ("pipeline.grace_ms",  c.pipeline.idle_grace_ms, 0, 600000)

@@ -50,6 +50,10 @@ public:
     // Busy when another driver holds it -- never steal.
     virtual Result configure_output(const std::string& name, bool initial_level) = 0;
 
+    // Take the pin as an input (a photocell, a button). Same rule as for an
+    // output: Busy when a driver holds it. Default: this backend cannot.
+    virtual Result configure_input(const std::string& name) { (void)name; return Result::unsupported(); }
+
     virtual Result write(const std::string& name, bool level) = 0;
     virtual Result read(const std::string& name, bool& level_out) const = 0;
 

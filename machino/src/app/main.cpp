@@ -8,6 +8,9 @@
 // The HTTP API (/api/v1) is served by its own bounded poll() thread; API
 // access is never media demand.
 #include "adapters/ingenic/ingenic_platform.hpp"
+#include "adapters/ingenic/ingenic_audio.hpp"
+#include "app/audio_test.hpp"
+#include "core/audio/audio_service.hpp"
 #include "app/api/api_service.hpp"
 #include "app/api/net_api.hpp"
 #include "core/devices/aic8800_package.hpp"
@@ -266,7 +269,9 @@ static bool eula_present() {
 static void usage(const char* argv0) {
     fprintf(stderr, "usage: %s [-c machino.conf] [-v]\n"
                     "       %s --version\n"
-                    "       %s --migrate-majestic <majestic.yaml> [-o machino.conf]\n", argv0, argv0, argv0);
+                    "       %s --migrate-majestic <majestic.yaml> [-o machino.conf]\n"
+                    "       %s --audio-test [--rate 8000|16000] [--volume 0..100] [--gain 0..31] bias|record|tone|play ...\n",
+            argv0, argv0, argv0, argv0);
 }
 
 // One-way import of an existing OpenIPC majestic.yaml. Prints a full
@@ -349,6 +354,12 @@ static const char* lc_lower(lifecycle::State s) {
 int main(int argc, char** argv) {
     if (argc >= 2 && (!strcmp(argv[1], "--version") || !strcmp(argv[1], "-V"))) { printf("machino %s\n", MACHINO_VERSION); return 0; }
     if (argc >= 2 && !strcmp(argv[1], "--migrate-majestic")) return run_migration(argc, argv);
+    // Hardware bring-up aid for the audio connector (docs/ap20-audio-talkback.md):
+    // the codec straight through the adapter, no config, no daemon.
+    if (argc >= 2 && !strcmp(argv[1], "--audio-test"))
+        return app::run_audio_test(argc, argv, 2,
+            [](const AudioParams& p) -> std::unique_ptr<IAudioIn>  { return ingenic::IngenicAudioIn::create(p); },
+            [](const AudioParams& p) -> std::unique_ptr<IAudioOut> { return ingenic::IngenicAudioOut::create(p); });
 
     const char* conf = "/etc/machino/machino.conf";   // canonical path (init, streamerctl, installer, manager all use it)
     bool verbose = false;
@@ -502,7 +513,18 @@ int main(int argc, char** argv) {
                         [] { return claim_state() == http::ClaimState::Claimed; },
                         cfg.system.unsafe);
         IStreamServer& server = rtsp;
+        // Audio: the microphone as a demand-driven stream. Independent of the
+        // video pipeline (no sensor, no ISP): the codec input is open only
+        // while somebody listens on /audio.*, plus audio.grace_ms.
+        audio::AudioService audio_service(cfg.audio,
+            [&platform](const AudioParams& p) { return platform->create_audio_in(p); },
+            [&platform](const AudioParams& p) { return platform->create_audio_out(p); });
+        LOGI(MOD, "audio: microphone %s, speaker %s, %d Hz; each side is opened only while it is used",
+             cfg.audio.enabled ? "enabled" : "disabled (audio.enabled=false)",
+             cfg.audio.output_enabled ? "enabled" : "disabled (audio.output_enabled=false)", cfg.audio.srate);
         api::ApiService api(perf, tuning, pipeline, store, bus, hwr, cfg, &detection, &rtsp);
+        api.set_audio_service(&audio_service);
+        rtsp.set_audio(&audio_service);         // before server.start(): the accept loop reads it
         // AP-NNA5: der Availability-Vertrag aus der Plattform in die API --
         // dieselbe Bewertung, die auch die Detector-Fabrik gated.
         // static_cast, nicht dynamic_cast: das Binary baut mit -fno-rtti, und
@@ -657,6 +679,7 @@ int main(int argc, char** argv) {
         LOGI(MOD, "cellular: data link is %s", want_ppp ? "ppp" : "ecm");
 
         net::CellularUplink cell_uplink(cell_service, cell_link);
+        cell_uplink.set_clock([] { return (uint64_t)now_ms(); });
 
         // The stored cellular configuration is the SOURCE OF TRUTH.
         //
@@ -897,6 +920,20 @@ int main(int argc, char** argv) {
         };
         api::NetApiService net_api(nd);
 
+        // Eine SIM-Aktion (PIN-Sperre an/aus, PIN geaendert) aendert die
+        // gespeicherte PIN SOFORT und ohne Bestaetigungsfenster: die Karte hat
+        // die Aenderung bereits angenommen, und eine Datei, die noch die alte
+        // PIN traegt, hiesse beim naechsten Start eine gesperrte Karte.
+        cell_uplink.set_persist([&store](const cellular::CellularConfig& cc) {
+            KeyValues kv; api::cellular_config_to_settings(cc, kv);
+            std::string e;
+            if (!store.commit(kv, e))
+                LOGE(MOD, "cellular: the changed SIM PIN could not be saved (%s) - "
+                          "it is live now and will be gone after a reboot", e.c_str());
+            else
+                LOGI(MOD, "cellular: SIM PIN configuration updated by a SIM action");
+        });
+
         // Transports hear about an uplink switch; the media pipeline never
         // does. The source address and the NAT path change underneath a live
         // socket, so this is a transport concern and not an encoder one.
@@ -969,6 +1006,7 @@ int main(int argc, char** argv) {
         httpd.set_setup(&setup_gate);
         httpd.set_log_reader(&log_reader);
         httpd.set_net_api(&net_api);
+        httpd.set_audio(&audio_service);
 
         // AP11 ONVIF. Off by default until it has met a real client; the
         // profiles it advertises are the ones the pipeline actually has, so
@@ -1248,6 +1286,10 @@ int main(int argc, char** argv) {
                         // Uplink-Wechsel, kein Reconnect nach manuellem Stopp).
                         diag::set_main("ipsec_tick");
                         ipsec_service.tick((uint32_t)now_ms());
+                        // Automatic day/night (nightMode.lightMonitor): one
+                        // sysfs read of the photocell per tick; switches only
+                        // after the configured delay of a stable change.
+                        night_service.tick(now_ms());
                     }
                 }
             }
@@ -1261,6 +1303,7 @@ int main(int argc, char** argv) {
             wdt.stop();
         }
         httpd.stop();
+        audio_service.shutdown();   // no listener is left once the server is down; close the codec input now
         server.stop();
         detection.shutdown();   // stop the detector and release its base demand before the base goes down
         hold.release();

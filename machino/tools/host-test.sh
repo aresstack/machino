@@ -7,7 +7,7 @@
 # list -- it reads TEST_SRC out of the Makefile, so adding a test to the
 # Makefile is enough for both paths.
 #
-# Usage: sh tools/host-test.sh [MBEDTLS_ROOT]
+# Usage: sh tools/host-test.sh [MBEDTLS_ROOT] [CODECS_DIR]
 #        MBEDTLS may also come from the environment. It must point at an
 #        unpacked mbedtls-<ver> containing libmbedall-<cc>.a, i.e. what
 #        tools/fetch-mbedtls.sh produces.
@@ -53,13 +53,25 @@ SRC=$(tr -d '\r' < Makefile \
 [ -n "$SRC" ] || { echo "could not read TEST_SRC from Makefile" >&2; exit 1; }
 
 LIBS="$MBEDTLS_LIB"
+# Optional second argument (or CODECS in the environment): the directory
+# tools/fetch-codecs.sh built, exactly as `make test CODECS=...` takes it.
+CODECS="${2:-${CODECS:-}}"
+CODEC_FLAGS=""
+if [ -n "$CODECS" ]; then
+    CC_TAG="$(basename "$(echo "$HOST_CXX" | sed 's/g++$/gcc/')")"
+    for l in faac opus; do
+        [ -f "$CODECS/lib$l-$CC_TAG.a" ] || { echo "no $CODECS/lib$l-$CC_TAG.a -- run tools/fetch-codecs.sh first" >&2; exit 2; }
+    done
+    LIBS="$LIBS $CODECS/libfaac-$CC_TAG.a $CODECS/libopus-$CC_TAG.a -lm"
+    CODEC_FLAGS="-DMACHINO_CODECS -isystem $CODECS/include"
+fi
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) LIBS="$LIBS -lbcrypt -lws2_32" ;;
 esac
 
 CXXFLAGS="-std=c++17 -O1 -fno-exceptions -fno-rtti -Wall -Wextra
  -Wno-unused-parameter -Werror -pthread -Isrc -Itests
- -DMACHINO_VERSION=\"test\" -DMBEDTLS_SSL_DTLS_SRTP -isystem $MBEDTLS/include"
+ -DMACHINO_VERSION=\"test\" -DMBEDTLS_SSL_DTLS_SRTP -isystem $MBEDTLS/include $CODEC_FLAGS"
 
 # One translation unit at a time, into build/host/. Two reasons: a re-run after
 # touching one file takes a second instead of a minute, and handing ~80 paths

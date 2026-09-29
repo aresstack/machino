@@ -276,3 +276,163 @@ gegen den, der gerade läuft.
   einen Befund hält.
 
 2534 Hosttests, 0 failed.
+
+---
+
+## Nachtrag 2026-09-28: Stock-Firmware ausgewertet, Mikrofonpfad gebaut
+
+### Die Stock-Firmware widerlegt „kein Ausgabepfad"
+
+Ausgewertet wurde ein vollständiger Flash-Dump der Kamera mit der
+Hersteller-Firmware (16 MB NOR; `JZT40N_D13_Q38`, IMX307, V4.3.S62I;
+Partitionen `uboot 256k, factory 64k, config 512k, kernel 1920k, rootfs 1440k,
+appfs 12192k`).
+
+* **Der Hersteller lädt den Treiber mit denselben Parametern**
+  (`appfs/ko.tar.xz` → `loadko.sh`):
+
+  ```
+  insmod audio.ko spk_gpio=-1 mono_channel=1
+  ```
+
+  Und trotzdem gibt die Stock-Firmware Ton aus: `ovfs_boardsystem` ruft
+  `IMP_AO_Enable/EnableChn/SendFrame/SetVol/SetGain`, spielt acht
+  Sprachansagen (`appfs/soundFile/`, G.711 µ-law) und nimmt RTSP-Talkback an
+  (`RtspReceiveTalkingDataCallback`). Die Aufnahmeseite nutzt
+  `IMP_AI_Enable/GetFrame/SetVol/SetGain` samt `EnableAec` — Echounterdrückung,
+  die nur mit gleichzeitiger Ausgabe Sinn ergibt.
+* **`spk_gpio = -1` heißt also nur: der Treiber schaltet keinen
+  Verstärker-Pin.** Die Folgerung aus Abschnitt 1 („es gibt auf diesem Board
+  keinen konfigurierten Ausgabepfad") war zu stark und ist hiermit
+  zurückgenommen. Auch die App kennt keinen Speaker-GPIO (nur
+  `AlarmLightGpio`/`LightGpio`): Der Ausgang ist entweder dauerhaft verstärkt
+  oder ein Line-Pegel am Stecker.
+* **Kalibrierung:** `appfs/audio_param.json` enthält die Pegelkurven des
+  Herstellers für Ein- und Ausgang (`VolConfig`, ein Punkt je 10 %). Machino
+  übernimmt genau diese Kurven für `audio.volume` (0..100 → IMP −30..120).
+* **Unterschied zu OpenIPC:** Stock nutzt `mono_channel=1`, unter OpenIPC
+  läuft der Treiber mit `mono_channel=2` (Abschnitt 1). Falls die Aufnahme
+  still bleibt, ist das der erste Verdacht: der Parameter wählt den
+  Mikrofonkanal, und er lässt sich nur beim Laden von `audio.ko` setzen.
+* Die Config des Exemplars (`BoardSys.json`) hatte `AudioEnable: 0` — Audio
+  war dort abgeschaltet, nicht unmöglich.
+
+### Der Stecker (Messung am Gerät, stromlos bzw. Audio aus)
+
+| Pin | DC an | Widerstand stromlos | Arbeitshypothese |
+|---|---|---|---|
+| 1 | 0 V | ~400–500 kΩ | Audio-Out (HPOUTL, AC-gekoppelt) |
+| 2 | 0 V | 0 Ω | GND |
+| 3 | ~0,8 V | kapazitiv, MΩ | Mikrofonbeschaltung (Pegel nahe VCM ≈ AVD/2) |
+| 4 | 0 V | ~2 kΩ stabil | Mikrofon über Bias-Widerstand (2,2 kΩ ist der Elektret-Standard) |
+| 5 | 0 V | kapazitiv, MΩ | zweite Mikrofonseite oder unbelegt |
+
+Gemessen wurde bei **abgeschaltetem Audio**: MICBIAS ist dann aus, der
+Ausgang liegt auf Ruhepegel. Die Belegung wird mit `machino --audio-test`
+bestätigt (unten). Bis dahin **keinen 8-Ω-Lautsprecher an Pin 1** — ein
+Line-/Kopfhörerausgang ist dafür nicht gebaut.
+
+### Was jetzt gebaut ist
+
+* **Port** `ports/iaudio.hpp` (`IAudioIn`, `IAudioOut`), Fabriken an
+  `IPlatform`; **Adapter** `adapters/ingenic/ingenic_audio.*` auf
+  `IMP_AI`/`IMP_AO` dev 0 / chn 0, 8 oder 16 kHz, 40-ms-Frames,
+  `usrFrmDepth` gesetzt (ohne liefert der T-Series-AI nichts).
+  **Kein** HPF/NS/AGC/AEC: die liegen in `libaudioProcess.so`, die libimp per
+  `dlopen` lädt und die OpenIPC nicht mitbringt. Geprüft am Archiv:
+  `IMP_AI_Enable` selbst ruft sie nicht.
+* **`AudioService`** (`core/audio/`): das Mikrofon nach „kein Zuhörer, keine
+  Pipeline". Der erste Zuhörer öffnet den Codec-Eingang, nach dem letzten
+  bleibt er `audio.grace_ms` offen und wird dann geschlossen. Braucht weder
+  Sensor noch ISP, nimmt keine Video-Demand.
+* **HTTP** (majestic-Namen, Stream-URLs-Seite): `/audio.pcm` (s16le mono,
+  Aufnahmerate — das Format, das die Settings-Seite der WebUI liest),
+  `/audio.alaw` = `/audio.g711a`, `/audio.ulaw` (G.711, 8 kHz; bei 16 kHz
+  Aufnahme 2:1 dezimiert). `/audio.opus`, `/audio.m4a` → 501 mit Begründung.
+* **Config** `audio.enabled|srate|volume|gain|output_enabled|output_volume|grace_ms`,
+  per `PATCH /api/v1/config` live, im Majestic-Schema als Mikrofon-Sektion,
+  Migration aus `majestic.yaml`. `outputEnabled` bleibt an die WebUI `false`
+  gemeldet, solange nichts abspielt.
+
+### Lautsprecher (seit 2026-09-29)
+
+* `audio::Speaker` (`core/audio/speaker.*`): eine Warteschlange von Clips.
+  `play()` reiht nur ein — der Aufrufer ist die HTTP-Poll-Schleife, die nie auf
+  einen Lautsprecher warten darf. Ein Wiedergabe-Thread oeffnet `IMP_AO` erst,
+  wenn etwas zu spielen ist, schreibt in 200-ms-Stuecken (Ausschalten schneidet
+  sofort ab), leert das Geraet am Ende (`FlushChnBuf`, sonst fehlt der letzte
+  Teil) und schliesst es `audio.grace_ms` nach dem letzten Clip. Warteschlange
+  begrenzt auf 70 s.
+* `POST /play_audio`: der Body ist, was die Stock-WebUI schickt — rohe s16le
+  mono mit der Rate der Kamera (`audio.srate`), ohne Container; WAV (16 bit
+  mono, 8/16 kHz) geht auch. Antworten als Klartext, weil die Settings-Seite
+  den Text einer Ablehnung woertlich anzeigt. Bis 1 MiB Body.
+* `audio.outputEnabled`/`outputVolume` sind live (Pegelkurve aus dem Stock
+  `audio_param.json`), im Schema, in der Config und in der Telemetrie
+  (`audio.speaker`).
+
+### Audio in RTSP (seit 2026-09-29)
+
+* Solange `audio.enabled` gilt, bietet DESCRIBE eine zweite Spur an:
+  `m=audio 0 RTP/AVP 8`, `a=rtpmap:8 PCMA/8000`, `a=control:trackID=1` — auf
+  `/ch0`, `/ch1` und den majestic-Namen `/stream=0|1`. G.711 A-law ist der
+  Codec, den jeder NVR, VLC und ONVIF-Client dekodiert, und der ohne
+  Encoder-Bibliothek geht (`app/rtsp/rtp_audio.*`, host-getestet).
+* Ein RTP-Paket je 40-ms-Frame (320 Byte bei 8 kHz); 16 kHz Aufnahme wird 2:1
+  dezimiert. TCP-interleaved (Kanal aus dem SETUP, sonst 2-3) und UDP, je
+  Spur eigener Transport.
+* Die Spur ist ein normaler AudioService-Zuhoerer: das Mikrofon oeffnet erst
+  beim PLAY. Laesst es sich nicht oeffnen, laeuft die Sitzung ohne Ton weiter;
+  wird das Mikrofon ausgeschaltet, endet nur die Audiospur.
+
+### WebRTC: Ton und Talkback im Live-Bild (seit 2026-09-29)
+
+Der Live-Player der Stock-WebUI (`preview-webrtc.js`) bietet Audio ohne
+Codec-Vorgabe an — also neben Opus immer auch PCMA/PCMU, die jeder
+WebRTC-Browser kann. Talkback laeuft dort ueber dieselbe Sitzung
+(`sendrecv`), nicht ueber einen eigenen Kanal.
+
+* SDP (`webrtc::plan_audio`): die Kamera SENDET (Mikrofon), wenn
+  `audio.enabled` und der Browser empfaengt; sie EMPFAENGT (Talkback), wenn
+  `audio.outputEnabled` und der Browser sendet. Antwort `sendrecv`,
+  `sendonly` (Lautsprecher aus — genau das, was der Player liest) oder
+  `recvonly`; keine Richtung = m-line abgelehnt wie bisher. PCMA vor PCMU,
+  gleicher Port, im BUNDLE.
+* SRTP: Rollover-Zaehler jetzt PRO SSRC (Video und Audio sind getrennte
+  Sequenzraeume), neu `unprotect_rtp` fuer den Empfang: Index-Schaetzung nach
+  RFC 3711 Anhang A, 64er-Replay-Fenster, Header-Extension und Padding (was
+  Browser an Audio haengen). Gegen ein von Hand gebautes Browser-Paket
+  getestet.
+* Peer: Mikrofon als G.711 auf eigener SSRC; empfangenes G.711 wird zu PCM
+  dekodiert (max. 1 s gepuffert) und landet in der Lautsprecher-Warteschlange.
+* Der Lautsprecher leert das Geraet nicht mehr nach jedem Clip, sondern
+  einmal vor dem Schliessen: Talkback kommt als Strom von 20–40-ms-Clips, und
+  ein Flush dazwischen haette jede Luecke hoerbar gemacht.
+
+### ONVIF/RTSP-Backchannel (seit 2026-09-29)
+
+* Ein Client, der DESCRIBE mit `Require: www.onvif.org/ver20/backchannel`
+  schickt, bekommt bei eingeschaltetem Lautsprecher eine dritte Spur:
+  `m=audio 0 RTP/AVP 0 8` (PCMU/PCMA), `a=sendonly`, `trackID=2` (ONVIF
+  Streaming Spec 5.3). SETUP ueber TCP-interleaved oder UDP; die empfangenen
+  RTP-Pakete werden zu 8-kHz-PCM dekodiert und in die
+  Lautsprecher-Warteschlange gestellt.
+* Nebenbei behoben: Interleaved-Frames (`$`) auf der RTSP-Verbindung wurden
+  bisher als Text gelesen. Das RTCP jedes TCP-Clients sammelte sich als
+  "Anfrage ohne Ende" an, bis der Client bei 8 KiB rausflog. Frames werden
+  jetzt vorne abgenommen (`rtsp::take_interleaved`, host-getestet).
+
+### Noch offen
+
+* Audio in `/ws/video` (`&audio=`, braucht Opus oder
+  AAC), `/audio.opus`, `/audio.m4a`.
+* Hardwareabnahme mit `machino --audio-test` (Daemon vorher stoppen):
+
+  ```
+  streamerctl stop
+  machino --audio-test bias 60        # jetzt DC an allen Pins messen: MICBIAS (~1,4–1,7 V) zeigt den Mikrofon-Pin
+  machino --audio-test tone 20 1000   # jetzt AC zwischen Pin 1 und Pin 2 messen
+  machino --audio-test record /tmp/mic.wav 5   # dabei aufs Mikrofon klopfen; Pegel wird je Sekunde ausgegeben
+  machino --audio-test play /tmp/mic.wav
+  streamerctl start
+  ```

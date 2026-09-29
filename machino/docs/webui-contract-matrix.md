@@ -69,12 +69,12 @@ switch. Those need the specific endpoints below, not schema fields.
 
 | UI feature | Endpoint | Method | Contract | Machino | Where | Tests | Next action |
 |---|---|---|---|---|---|---|---|
-| Live (MSE) | `/ws/video?stream=N` | WS | text `{"type":"init",...}` + fMP4 init, then moof+mdat per frame; client `{"request":"idr"}` | `NATIVE` main+sub | `http_server.cpp`, `fmp4.cpp` | `test_fmp4`, `test_sps`, hardware-accepted | — |
+| Live (MSE) | `/ws/video?stream=N` | WS | text `{"type":"init",...}` + fMP4 init, then moof+mdat per frame; client `{"request":"idr"}`; `&audio=opus,mp4a.40.2` adds track 2 (first buildable codec, `audioCodec`/`mime` in the init JSON) | `NATIVE` main+sub (+audio with `CODECS=`) | `http_server.cpp`, `fmp4.cpp` | `test_fmp4`, `test_sps`, hardware-accepted | — |
 | Live (WebRTC) | `/ws/webrtc?stream=N` | WS | `{req:offer/candidate}` -> `{reply:answer/candidate/stats/served/busy/error/closed}` | `NATIVE` main+sub | `webrtc/*`, `http_server.cpp` | `test_webrtc`, `test_dtls`, hardware-accepted | camera `stats` replies not sent yet (UI tolerates absence) |
 | MJPEG fallback | `/mjpeg` | GET | multipart JPEG | `MISSING` **and** `BLOCKED_HARDWARE` | Machino serves `/stream.mjpeg`, not `/mjpeg` | — | JPEG path wedges the T40NN (`jpeg.enabled=false`); URL alias is pointless until that is solved |
 | Snapshot | `/image.jpg` | GET | one JPEG | `MISSING` **and** `BLOCKED_HARDWARE` | Machino serves `/snapshot.jpg` | — | same blocker; consider `SetbufshareChn` instead of a second encoder |
-| Raw frames | `/image.dng`, `/image.yuv420` | GET | developer capture | `MISSING` | — | — | low value; needs an ISP raw tap |
-| MP4 / HLS | `/video.mp4`, `/hls` | GET | listed on the endpoints page | `MISSING` | — | — | low priority while RTSP+WebRTC are good |
+| Raw frames | `/image.yuv420?crop=XxYxWxH` | GET | the Live page's detail still (preview-still.js): NV12 of the main channel, `X-Frame-Width/-Height`, `X-Pixel-Format`, `X-Stride-Luma/-Chroma` | `NATIVE` (`IMP_FrameSource_SnapFrame` on the running main channel, cropped on the 2x2 grid) | `PipelineManager::snap_nv12`, `http/stills` | `test_audio` (crop), `test_lifecycle` (snap) | `/image.dng` stays absent: no ISP raw tap |
+| MP4 / HLS | `/video.mp4`, `/hls`, `/hls/index.m3u8`, `/video.m3u8` | GET | progressive fMP4 (H.264 + AAC when the microphone is on; `?audio=opus`, `?audio=none`, `?stream=1`); HLS v7 with fMP4 segments cut at key frames, a 4-segment / 6 MB window in RAM, stopped 30 s after the last player request; `/hls` is a viewer page (native HLS, else hls.js from the CDN) | `NATIVE` | `http_server` (shared with /ws/video), `http/hls` | `test_audio` (segmenter) | — |
 
 ## Streams / sources
 
@@ -124,7 +124,12 @@ switch. Those need the specific endpoints below, not schema fields.
 | Pin mux | `/api/v1/pinmux`, `/ws/pins` | GET / WS | live pin state | `MISSING` | — | — | low priority |
 | PTZ | `/ptz`, `/cgi-bin/j/ptz.cgi` | POST | pan/tilt | `NOT_APPLICABLE` (relay for the CGI) | — | — | this camera has no PTZ |
 | Autofocus | `/autofocus`, `/autofocus/status` | POST/GET | lens AF | `NOT_APPLICABLE` | — | — | fixed lens |
-| Audio out | `/play_audio`, `/audio.opus`, `/audio.pcm` | POST/GET | speaker + audio streams | `MISSING` | — | — | no audio path yet |
+| Audio in | `/audio.pcm`, `/audio.alaw`, `/audio.g711a`, `/audio.ulaw` | GET | microphone streams | `NATIVE` | `AudioService`, `http/audio_stream` | `test_audio` | hardware acceptance with `machino --audio-test` |
+| Speaker | `/play_audio` | POST | raw s16le at audio.srate (or WAV) to the speaker | `NATIVE` | `audio::Speaker`, `http_server` | `test_audio` | — |
+| Encoded audio | `/audio.opus`, `/audio.m4a` | GET | Ogg Opus (48 kHz clock) / fragmented-MP4 AAC-LC at audio.srate | `NATIVE` with `CODECS=` (pinned libopus 1.5.2 + libfaac via `tools/fetch-codecs.sh`); 501 with the reason in a build without | `audio::AudioEncoder`, `http/ogg`, `http/fmp4` | `test_audio` (Opus decode round trip, Ogg CRC, esds/dOps) | — |
+| MJPEG | `/mjpeg`, `/mjpeg.html` | GET | multipart JPEG + viewer page | `NATIVE` (alias of `/stream.mjpeg`; 501 while `jpeg.enabled=false`) | `http_server` | — | — |
+| Stills | `/image.heif` | GET | one IDR of the main stream as a HEIF image item (`avci`: H.264 in HEIF - the encoder makes H.264) | `NATIVE` | `fmp4::heif_avc_still` | `test_audio` | decodes with libheif >= 1.18 (AVC); older readers only know HEVC HEIF |
+| RTSP MJPEG | `rtsp://CAM/stream=2` | RTSP | MJPEG over RTP (RFC 2435, Q=255 in-band tables) from the JPEG unit at 5 fps | `NATIVE` while `jpeg.enabled`; 404 otherwise; 415 for frames over 2040 px | `rtsp/rtp_jpeg`, `RtspServer::send_jpeg` | `test_audio` (packetiser) | — |
 | Multi-camera | `/api/v1/peers`, `/api/v1/calibration/*` | GET | camera roster / stereo calibration | `NOT_APPLICABLE` | — | — | single camera |
 | Outgoing | `/api/v1/outgoing.json` | GET | RTMP/SRT push targets | `MISSING` | — | — | no outgoing publisher |
 | Live beacon | `/api/v1/live` | POST beacon | viewer heartbeat; **404 is expected and remembered** by the UI | `MISSING` (404) | — | — | harmless: the UI explicitly tolerates an older daemon |

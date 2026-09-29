@@ -800,6 +800,61 @@ void test_cellular_rejects_the_wrong_method()
     TCHECK(call(api, "DELETE", "/api/v1/network/cellular/presets").r.status == 405);
 }
 
+// Bandwahl und die Einmal-Aktionen ueber HTTP.
+//
+// Die Rig hat keinen antwortenden Modem-Transport, und genau das ist der
+// erste Fall: eine Aktion ohne Modem ist ein 409 mit Grund, kein 202, das
+// nie etwas tut.
+void test_cellular_actions_are_posts_and_refuse_without_a_modem()
+{
+    Rig r;
+    NetApiService api(r.deps());
+    for (const char* path : {"/api/v1/network/cellular/bandscan",
+                             "/api/v1/network/cellular/neighbours",
+                             "/api/v1/network/cellular/restart"}) {
+        TCHECK(call(api, "GET", path).r.status == 405);
+        const Call c = call(api, "POST", path);
+        TCHECK(c.routed && c.r.status == 409);
+    }
+    TCHECK(call(api, "GET", "/api/v1/network/cellular/sim/lock").r.status == 405);
+    const Call sl = call(api, "POST", "/api/v1/network/cellular/sim/lock",
+                         "{\"action\":\"status\"}");
+    TCHECK(sl.r.status == 409);
+    TCHECK(contains(dumped(sl.r), "switched off") || contains(dumped(sl.r), "no modem"));
+    // Und die Form wird VOR dem Modem geprueft: 422, nicht 409.
+    TCHECK(call(api, "POST", "/api/v1/network/cellular/sim/lock",
+                "{\"action\":\"enable\",\"pin\":\"ab\"}").r.status == 422);
+    TCHECK(call(api, "POST", "/api/v1/network/cellular/sim/lock", "nicht json").r.status == 400);
+    // Ohne verdrahteten Mobilfunk: 404, wie die anderen Routen.
+    NetApiService::Deps d = r.deps();
+    d.cellular = nullptr;
+    NetApiService bare(d);
+    TCHECK(call(bare, "POST", "/api/v1/network/cellular/bandscan").r.status == 404);
+}
+
+void test_the_cellular_document_carries_bands_and_the_band_patch_is_staged()
+{
+    Rig r;
+    NetApiService api(r.deps());
+    const Call g = call(api, "GET", "/api/v1/network/cellular");
+    TCHECK(g.r.status == 200);
+    const std::string doc = dumped(g.r);
+    TCHECK(contains(doc, "\"bands\":{"));
+    TCHECK(contains(doc, "\"supported\":["));
+    TCHECK(contains(doc, "\"neighbourCells\":null"));
+    TCHECK(contains(doc, "\"simLock\":null"));
+    // /api/v1/network bleibt schlank.
+    TCHECK(!contains(dumped(call(api, "GET", "/api/v1/network").r), "\"supported\":["));
+
+    // Ein Band-Lock ist eine Netzaenderung: 202 und Bestaetigungsfenster.
+    const Call p = call(api, "PATCH", "/api/v1/network/cellular",
+                        "{\"bandProfile\":\"custom\",\"bands\":[20],\"netMode\":\"lte\"}");
+    TCHECK(p.r.status == 202);
+    TCHECK(r.cell.config().band_mask == (1ULL << 19));
+    TCHECK(r.cell.config().net_mode == cellular::NetMode::LteOnly);
+    TCHECK(call(api, "PATCH", "/api/v1/network/cellular", "{\"bands\":[2]}").r.status == 422);
+}
+
 // Der Geraetemanager ueber HTTP.
 //
 // Zwei Dinge sollen hier festgenagelt sein. Erstens: /api/v1/devices ist NICHT
@@ -901,6 +956,8 @@ void run_net_api_tests()
     test_cellular_presets_are_offered_with_their_reason();
     test_cellular_routes_answer_404_when_no_modem_support_is_wired();
     test_cellular_rejects_the_wrong_method();
+    test_cellular_actions_are_posts_and_refuse_without_a_modem();
+    test_the_cellular_document_carries_bands_and_the_band_patch_is_staged();
     test_paths_outside_our_prefixes_are_not_claimed();
     test_a_typo_under_our_prefix_is_our_404();
     test_usb_get_reports_status_and_config();

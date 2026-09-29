@@ -131,6 +131,10 @@ static const struct { const char* maj; const char* nat; bool boolean; } kNightAl
     {"backlightPin",      "backlight_pin",       false},
     {"lightSensorPin",    "light_sensor_pin",    false},
     {"lightSensorInvert", "light_sensor_invert", true},
+    {"lightMonitor",      "light_monitor",       true},
+    {"colorToGray",       "color_to_gray",       true},
+    {"autoNightDelay",    "auto_night_delay",    false},
+    {"autoDayDelay",      "auto_day_delay",      false},
 };
 
 // Attach the shared compiled-in default to an already-built schema field, so
@@ -240,8 +244,10 @@ Json majestic_schema(const Json& capabilities) {
     // Build den Dienst hat -- eine Plattform ohne ihn bekaeme sonst eine
     // Seite voller toter Felder. Der IR-Cut/Licht-Schalter der Live-Seite
     // liest seine Freigabe (und der Tooltip seinen Text) aus genau irCut/
-    // backlight. Die Auto-Tag/Nacht-Keys (Thresholds, Delays) fehlen
-    // ABSICHTLICH: die Automatik ist nicht implementiert, und ein Feld, das
+    // backlight. Die Automatik ist die des Fotosensors (lightMonitor +
+    // lightSensorPin + autoNight/DayDelay); die Schwellen fuer eine Automatik
+    // aus der Sensorverstaerkung (minThreshold/maxThreshold, autoNight/DayGain)
+    // fehlen ABSICHTLICH: die ist nicht implementiert, und ein Feld, das
     // nichts tut, ist eine Fake-Capability.
     if (const Json* night = capabilities.get("night")) {
         const Json* av = night->get("available");
@@ -267,6 +273,18 @@ Json majestic_schema(const Json& capabilities) {
             nf.set("backlightPin", strf("Light pin"));
             nf.set("lightSensorPin", strf("Daylight sensor pin (photocell)"));
             nf.set("lightSensorInvert", boolf("Invert daylight sensor level"));
+            nf.set("lightMonitor", boolf("Automatic day/night (daylight sensor)"));
+            nf.set("colorToGray", boolf("Colorless night mode"));
+            auto secf = [](const char* title) {
+                Json f = Json::object();
+                f.set("type", Json::string("integer"));
+                f.set("title", Json::string(title));
+                f.set("minimum", Json::integer(0));
+                f.set("maximum", Json::integer(3600));
+                return f;
+            };
+            nf.set("autoNightDelay", secf("Seconds of darkness before night"));
+            nf.set("autoDayDelay", secf("Seconds of daylight before day"));
             add_section(properties, "nightMode", nf);
         }
     }
@@ -330,6 +348,37 @@ Json majestic_schema(const Json& capabilities) {
     }
     add_section(properties, "ai", ai_fields);
 
+    // Audio: microphone and speaker, each only when the platform has it.
+    // Every field applies inside the POST (srate at the next open of the
+    // device, which is when a rate can change at all), so all of them are
+    // "live" in majestic's sense.
+    Json audio_fields = Json::object();
+    if (const Json* au = capabilities.get("audio"); au && au->is_object()) {
+        const Json* outc = au->get("output");
+        if (outc && outc->is_bool() && outc->as_bool()) {
+            Json oe = bool_field("Enable speaker"); oe.set("x-reload", Json::string("live"));
+            audio_fields.set("outputEnabled", oe);
+            Json vr = Json::object(); vr.set("min", Json::integer(0)); vr.set("max", Json::integer(100));
+            Json ov = integer_field("Speaker volume", &vr); ov.set("x-reload", Json::string("live"));
+            audio_fields.set("outputVolume", ov);
+        }
+        const Json* in = au->get("input");
+        if (in && in->is_bool() && in->as_bool()) {
+            Json en = bool_field("Enable microphone"); en.set("x-reload", Json::string("live"));
+            audio_fields.set("enabled", en);
+            Json sr = Json::object();
+            sr.set("type", Json::string("integer"));
+            sr.set("title", Json::string("Sample rate (Hz)"));
+            if (const Json* rates = au->get("sample_rates")) sr.set("enum", *rates);
+            sr.set("x-reload", Json::string("live"));
+            audio_fields.set("srate", sr);
+            Json vr = Json::object(); vr.set("min", Json::integer(0)); vr.set("max", Json::integer(100));
+            Json vol = integer_field("Microphone volume", &vr); vol.set("x-reload", Json::string("live"));
+            audio_fields.set("volume", vol);
+        }
+    }
+    add_section(properties, "audio", audio_fields);
+
     // The dashboard's camera tile. Two settings, both live:
     //   jpeg.enabled           the JPEG snapshot path (OpenIPC's own tile,
     //                          /image.jpg, /snapshot). Off by default on the
@@ -366,10 +415,10 @@ Json majestic_schema(const Json& capabilities) {
     Json groups = Json::array();
     const char* media_sections[] = {"video0", "video1", "sensor", "latency"};
     const char* image_sections[] = {"image", "nightMode"};   // W2: Day / Night neben Image
-    const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai", "jpeg", "webui"};
+    const char* runtime_sections[] = {"performance", "lifecycle", "rtsp", "ai", "audio", "jpeg", "webui"};
     Json media = group("media", "Media", properties, media_sections, 4);
     Json image = group("image", "Image", properties, image_sections, 2);
-    Json runtime = group("runtime", "Runtime", properties, runtime_sections, 4);
+    Json runtime = group("runtime", "Runtime", properties, runtime_sections, 7);
     if (media.get("sections")->size()) groups.push(media);
     if (image.get("sections")->size()) groups.push(image);
     if (runtime.get("sections")->size()) groups.push(runtime);
@@ -405,17 +454,24 @@ Json majestic_config(const Json& native_config, const Json& state) {
     // requesting a path this camera must not be asked for: the T40NN JPEG
     // encoder wedges the whole daemon (machino-t40nn-jpeg-wedge), which is why
     // jpeg.enabled defaults to false here.
-    // webui.dashboard_preview=off darkens the tile even with JPEG on: the
-    // page's own gate is jpeg.enabled, so the majestic-shaped view reports
-    // the switch the dashboard should act on, not the raw encoder state. The
-    // native /api/v1/config keeps the raw value.
+    // webui.dashboard_preview ist die EXKLUSIVE Wahl des Betreibers, wie das
+    // Dashboard-Tile seine Vorschau bekommt; das Gate der Seite ist
+    // jpeg.enabled, also meldet die majestic-Sicht den Schalter, auf den das
+    // Dashboard reagieren soll:
+    //   auto -> echter Wert (OpenIPCs eigener JPEG-Weg, der Default)
+    //   live -> false: der injizierte Stream-Player IST die Vorschau; die
+    //           Seite darf /image.jpg nicht zusaetzlich pollen (live ersetzt
+    //           JPEG, es kombiniert nicht)
+    //   off  -> false: Tile dunkel, auch bei JPEG an
+    // Das native /api/v1/config behaelt in allen Faellen den rohen Wert.
     copy_if(native_config, out, "webui");
     const Json* wb = native_config.get("webui");
     const Json* pv = wb && wb->is_object() ? wb->get("dashboard_preview") : nullptr;
-    const bool tile_off = pv && pv->is_string() && pv->as_string() == "off";
+    const std::string pvm = pv && pv->is_string() ? pv->as_string() : std::string("auto");
+    const bool tile_no_jpeg = (pvm == "off" || pvm == "live");
     if (const Json* j = native_config.get("jpeg"); j && j->is_object()) {
         Json jp = *j;
-        if (tile_off) jp.set("enabled", Json::boolean(false));
+        if (tile_no_jpeg) jp.set("enabled", Json::boolean(false));
         out.set("jpeg", jp);
     } else {
         Json jp = Json::object();
@@ -514,29 +570,30 @@ Json majestic_config(const Json& native_config, const Json& state) {
         out.set("nightMode", nm);
     }
 
-    // AP20: this build has no audio path at all. Saying so matters, because
-    // upstream's audio-check.js treats silence and "off" as different answers
-    // and says why in its own words:
+    // Audio. upstream's audio-check.js treats silence and "off" as different
+    // answers and says why in its own words:
     //
     //   "Absent is not false. A camera that never sent the key has not said
     //    its microphone is off - it has said nothing - and a panel that turns
     //    silence into 'switched off' sends somebody looking for a control to
     //    change that may not even be there."
     //
-    // With the section missing the panel answers "The camera has not said what
-    // its audio settings are yet" - a waiting state, about a camera that will
-    // never answer. With both switches present and false it answers "This
-    // camera has both its microphone and its speaker switched off, so there is
-    // nothing to test yet", which is what a STOCK camera with stock defaults
-    // says (majestic.yaml ships audio.enabled and outputEnabled false).
-    //
-    // Only the two switches, not volume/srate/codec: those would be settings
-    // that do nothing. The player is unaffected either way - preview-page.js
-    // reads `audio.enabled === true`, so absent and false already agree there.
+    // So both switches are ALWAYS reported: from the native section when this
+    // build has an audio service, false otherwise. The live player is safe
+    // either way: preview.js drops to muted when the video init names no
+    // audio codec, which /ws/video does not (yet).
     {
         Json au = Json::object();
-        au.set("enabled", Json::boolean(false));
-        au.set("outputEnabled", Json::boolean(false));
+        const Json* na = native_config.get("audio");
+        if (na && na->is_object()) {
+            copy_if(*na, au, "enabled");
+            copy_if(*na, au, "srate");
+            copy_if(*na, au, "volume");
+            if (const Json* v = na->get("output_enabled")) au.set("outputEnabled", *v);
+            if (const Json* v = na->get("output_volume")) au.set("outputVolume", *v);
+        }
+        if (!au.get("enabled")) au.set("enabled", Json::boolean(false));
+        if (!au.get("outputEnabled")) au.set("outputEnabled", Json::boolean(false));
         out.set("audio", au);
     }
 
@@ -655,18 +712,17 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
         // NightService IR-Cut/Licht wirklich -- die Sektion wird oben
         // uebersetzt; ob der ZIEL-Build sie hat, entscheidet die native
         // Validierung mit "day/night is not wired on this platform".)
-        // AP20: audio is reported, so a write to it
-        // is refused with the reason rather than called unknown.
-        if (name == "audio") {
-            r.code = "unsupported_control";
-            r.status = 403;
-            r.path = name;
-            r.message = "this build has no audio path: nothing captures from /dev/dsp and "
-                        "nothing plays to it. The T40 inner codec is up and the SDK has "
-                        "IMP_AI/IMP_AO, so capture is possible later - but the audio driver "
-                        "was given spk_gpio=-1 and no external codec, so there is no "
-                        "configured output on this board at all.";
-            return r;
+        // Audio: majestic's camelCase speaker keys onto the native ones; the
+        // native validation decides (and names) everything else.
+        if (name == "audio" && value.is_object()) {
+            Json native_audio = Json::object();
+            for (const auto& kv : value.members()) {
+                const std::string key = kv.first == "outputEnabled" ? "output_enabled"
+                                      : kv.first == "outputVolume"  ? "output_volume" : kv.first;
+                native_audio.set(key, kv.second);
+            }
+            patch.set("audio", native_audio);
+            continue;
         }
         r.code = "unknown_field";
         r.path = name;

@@ -11,6 +11,7 @@
 // (sub, unit 1) when a substream hub is wired. The request URL picks the unit;
 // each stream has its own hub, demand unit, and cached SPS/PPS.
 #pragma once
+#include "core/audio/audio_service.hpp"
 #include "core/config.hpp"
 #include "core/lifecycle/pipeline_manager.hpp"
 #include "core/stream_hub.hpp"
@@ -50,6 +51,11 @@ public:
     power::ApplyResult set_port(int port) override;
     bool listening() const;            // for tests/diagnostics
 
+    // The microphone as a second track (G.711 A-law, trackID=1). Offered in
+    // DESCRIBE only while audio.enabled; a client that does not SETUP it gets
+    // video exactly as before. Set before start(). Null = video only.
+    void set_audio(audio::AudioService* a) { audio_ = a; }
+
 private:
     struct Session;
     // One connected client. `done` is set by its own thread as the very last
@@ -77,6 +83,12 @@ private:
     bool obtain_params(int unit, std::vector<uint8_t>& sps, std::vector<uint8_t>& pps);
     bool send_au(Session& s, const AccessUnit& au);
     bool send_rtp(Session& s, const uint8_t* payload, size_t len, uint32_t ts, bool marker);
+    bool send_audio(Session& s, const std::string& pcma);
+    bool send_jpeg(Session& s);
+    bool audio_offered() const;
+    bool backchannel_offered() const;
+    void on_backchannel(Session& s, const char* rtp, size_t n);
+    audio::AudioService* audio_ = nullptr;
 
     RtspConfig  cfg_;
     lifecycle::PipelineManager& pipeline_;

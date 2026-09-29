@@ -9,6 +9,7 @@
 #pragma once
 #include "core/config.hpp"
 #include "core/config_store.hpp"
+#include "core/audio/audio_service.hpp"
 #include "core/detection/detection_service.hpp"
 #include "core/detection/detector_availability.hpp"
 #include "core/events.hpp"
@@ -67,6 +68,9 @@ public:
     // (so liest es die Stock-Seite). night_metric liefert die "0"/"1"-
     // Textwerte fuer /metrics/night?value=... Ohne verdrahteten Service 404.
     void set_night_service(night::NightService* s) { night_ = s; }
+    // Audio: config section `audio`, telemetry `audio`. Null = not wired;
+    // the section is then absent and a PATCH to it says why.
+    void set_audio_service(audio::AudioService* a) { audio_ = a; }
     Response night_action(const std::string& cmd);
     bool night_metric(const std::string& value_name, std::string& out);
     // W4: GET /api/v1/gpio -- die Pin-Landkarte, aus der die Day/Night-Seite
@@ -133,6 +137,7 @@ private:
     std::function<std::vector<detection::DetectorStatus>(const std::string&)> det_status_;
     ipsec::IpsecService*        ipsec_ = nullptr;  // AP3: optional, null = nicht verdrahtet
     night::NightService*        night_ = nullptr;  // W2: optional, null = nicht verdrahtet
+    audio::AudioService*        audio_ = nullptr;
     std::mutex                  patch_m_;          // PATCHes are serialised
 };
 

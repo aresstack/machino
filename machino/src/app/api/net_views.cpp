@@ -707,6 +707,8 @@ Json cellular_status_json(const cellular::CellularStatus& s)
     rf.set("pci", maybe_int(s.cell.pci));
     rf.set("cellId", str_or_null(s.cell.cell_id));
     rf.set("tac", str_or_null(s.cell.tac));
+    rf.set("mcc", str_or_null(s.cell.mcc));
+    rf.set("mnc", str_or_null(s.cell.mnc));
     rf.set("rsrpDbm", maybe_int(s.cell.rsrp));
     rf.set("rsrqDb", maybe_int(s.cell.rsrq));
     // QENG misst genauer als CSQ. Fehlt es, tritt der aus CSQ abgeleitete Wert
@@ -743,6 +745,19 @@ Json cellular_config_json(const cellular::CellularConfig& c)
     j.set("dataLink", Json::string(c.data_link));
     j.set("dataLinkAppliesAt", Json::string("reboot"));
     j.set("dial", Json::string(c.dial));
+    // Funk. `bands` ist die EIGENE Auswahl (nur bei custom von Bedeutung),
+    // `effectiveBands` das, was fuer das gewaehlte Profil geschrieben wird.
+    // Beides, weil eine Seite die Haekchen des Benutzers wiederherstellen und
+    // daneben zeigen muss, was ein Profil tatsaechlich bedeutet.
+    j.set("netMode", Json::string(cellular::net_mode_name(c.net_mode)));
+    j.set("bandProfile", Json::string(cellular::band_profile_name(c.band_profile)));
+    Json own = Json::array();
+    for (int b : cellular::bands_from_mask(c.band_mask)) own.push(Json::integer(b));
+    j.set("bands", own);
+    Json eff = Json::array();
+    for (int b : cellular::bands_from_mask(cellular::profile_mask(c.band_profile, c.band_mask)))
+        eff.push(Json::integer(b));
+    j.set("effectiveBands", eff);
     // Weder Passwort noch PIN. Nur ob eines hinterlegt ist -- das braucht die
     // Oberflaeche, um "gespeichert" von "leer" zu unterscheiden.
     j.set("passwordSet", Json::boolean(!c.password.empty()));
@@ -852,7 +867,8 @@ bool cellular_config_from_json(const Json& body, cellular::CellularConfig& cfg, 
     }
     if (!reject_unknown(body, {"apn", "pdpType", "authMode", "username",
                                "password", "autoConnect", "simPin", "nicMode",
-                               "dataLink", "dial"}, nullptr, err)) return false;
+                               "dataLink", "dial", "netMode", "bandProfile",
+                               "bands"}, nullptr, err)) return false;
 
     cellular::CellularConfig next = cfg;
     if (!get_bool(body, "autoConnect", next.auto_connect, err)) return false;
@@ -896,6 +912,43 @@ bool cellular_config_from_json(const Json& body, cellular::CellularConfig& cfg, 
         err = "PAP or CHAP needs a username"; return false;
     }
 
+    // ---- Funk: Netzmodus, Bandprofil, eigene Bandauswahl -----------------
+    s.clear();
+    if (!get_string(body, "netMode", s, err, 8)) return false;
+    if (!s.empty() && !cellular::net_mode_parse(s, next.net_mode)) {
+        err = "netMode must be auto, lte or gsm"; return false;
+    }
+    s.clear();
+    if (!get_string(body, "bandProfile", s, err, 8)) return false;
+    if (!s.empty() && !cellular::band_profile_parse(s, next.band_profile)) {
+        err = "bandProfile must be auto, mid, low or custom"; return false;
+    }
+    if (const Json* bl = body.get("bands")) {
+        // Eine Liste von Bandnummern, jede aus der Tabelle des Modems. Ein
+        // fremdes Band wird hier abgelehnt und nicht erst vom Modem: dessen
+        // Antwort waere ein CME ERROR ohne Angabe, welches Bit es war.
+        if (!bl->is_array()) { err = "bands must be a list of band numbers"; return false; }
+        std::vector<int> nums;
+        for (size_t i = 0; i < bl->size(); ++i) {
+            const Json& v = bl->at(i);
+            if (!v.is_number() || !v.is_integer()) { err = "bands must be a list of band numbers"; return false; }
+            nums.push_back((int)v.as_int());
+        }
+        int bad = 0;
+        uint64_t mask = 0;
+        if (!cellular::mask_from_bands(nums, mask, bad)) {
+            err = "band " + std::to_string(bad) + " is not in the EC200A-EU band set"; return false;
+        }
+        next.band_mask = mask;
+    }
+    if (next.band_profile == cellular::BandProfile::Custom &&
+        cellular::profile_mask(next.band_profile, next.band_mask) == 0) {
+        // Kein stilles "dann eben alle": eine leere Auswahl beim Profil
+        // "custom" ist ein Versehen, und das Modem faende mit Maske 0 nie ein
+        // Netz.
+        err = "the custom band profile needs at least one band"; return false;
+    }
+
     // ZULETZT, ueber das Ergebnis und nicht ueber das Fragment: ein PATCH kann
     // ein Feld unberuehrt lassen, und geprueft werden muss, was am Ende in der
     // Konfigurationsdatei steht.
@@ -925,6 +978,11 @@ void cellular_config_to_settings(const cellular::CellularConfig& cfg,
     out.emplace_back("cellular.data_link", cfg.data_link);
     out.emplace_back("cellular.dial", cfg.dial);
     out.emplace_back("cellular.sim_pin", cfg.sim_pin);
+    out.emplace_back("cellular.net_mode", cellular::net_mode_name(cfg.net_mode));
+    out.emplace_back("cellular.band_profile", cellular::band_profile_name(cfg.band_profile));
+    // Als Hex wie im Modem, damit ein Blick in die Datei und einer in die
+    // AT-Antwort dasselbe zeigen.
+    out.emplace_back("cellular.band_mask", cellular::mask_hex(cfg.band_mask));
 }
 
 bool cellular_config_from_settings(const std::vector<std::pair<std::string, std::string>>& in,
@@ -964,9 +1022,162 @@ bool cellular_config_from_settings(const std::vector<std::pair<std::string, std:
             if (!cellular::auth_mode_parse(v, next.auth)) {
                 err = "cellular.auth_mode is not none, pap or chap"; return false;
             }
+        } else if (k == "cellular.net_mode") {
+            if (!cellular::net_mode_parse(v, next.net_mode)) {
+                err = "cellular.net_mode is not auto, lte or gsm"; return false;
+            }
+        } else if (k == "cellular.band_profile") {
+            if (!cellular::band_profile_parse(v, next.band_profile)) {
+                err = "cellular.band_profile is not auto, mid, low or custom"; return false;
+            }
+        } else if (k == "cellular.band_mask") {
+            // Leer = keine eigene Auswahl (Datei aus der Zeit davor).
+            uint64_t m = 0;
+            if (!v.empty() && !cellular::parse_mask_hex(v, m)) {
+                err = "cellular.band_mask is not a hex band mask: " + v; return false;
+            }
+            next.band_mask = m;
         }
     }
     cfg = next;
+    return true;
+}
+
+// ------------------------------------------------ Extras der Mobilfunkseite --
+
+namespace {
+
+Json band_numbers(uint64_t mask)
+{
+    Json a = Json::array();
+    for (int b : cellular::bands_from_mask(mask)) a.push(Json::integer(b));
+    return a;
+}
+
+} // namespace
+
+Json cellular_bands_json(const cellular::RadioState& r, const cellular::CellularConfig& c)
+{
+    Json j = Json::object();
+
+    // Die Tabelle, damit die Seite die Haekchen zeichnen kann, ohne sie zu
+    // kennen: das Modem meldet seine Baender nicht, machino schon.
+    Json sup = Json::array();
+    for (const cellular::LteBand& b : cellular::lte_bands()) {
+        Json o = Json::object();
+        o.set("band", Json::integer(b.num));
+        o.set("mhz", Json::integer(b.mhz));
+        o.set("tdd", Json::boolean(b.tdd));
+        sup.push(o);
+    }
+    j.set("supported", sup);
+
+    // Die Absicht, wie der Tuner sie sieht (bei einer ausstehenden Aenderung
+    // schon die neue).
+    j.set("netMode", Json::string(cellular::net_mode_name(r.desired_mode)));
+    j.set("bandProfile", Json::string(cellular::band_profile_name(c.band_profile)));
+    j.set("bands", band_numbers(r.desired_mask));
+    j.set("lteMaskHex", Json::string(cellular::mask_hex(r.desired_mask)));
+
+    j.set("sync", Json::string(cellular::radio_sync_name(r.sync)));
+    j.set("detail", str_or_null(r.detail));
+    j.set("writes", Json::integer(r.writes));
+
+    // Was das Modem zuletzt gemeldet hat -- null, solange nichts lesbar war.
+    // Ein unbekannter nwscanmode (etwa 2 = WCDMA von einem Fremdstand) wird
+    // als Zahl gezeigt und als netMode null: er ist keiner von unseren.
+    if (r.modem_mask.has || r.modem_nwscanmode.has) {
+        Json m = Json::object();
+        m.set("lteMaskHex", r.modem_mask.has ? Json::string(cellular::mask_hex(r.modem_mask.value)) : Json::null());
+        m.set("bands", r.modem_mask.has ? band_numbers(r.modem_mask.value) : Json::null());
+        m.set("nwscanmode", maybe_int(r.modem_nwscanmode));
+        cellular::NetMode nm;
+        m.set("netMode", (r.modem_nwscanmode.has && cellular::net_mode_from_nwscanmode(r.modem_nwscanmode.value, nm))
+                             ? Json::string(cellular::net_mode_name(nm)) : Json::null());
+        j.set("modem", m);
+    } else {
+        j.set("modem", Json::null());
+    }
+
+    Json sc = Json::object();
+    sc.set("state", Json::string(cellular::scan_state_name(r.scan)));
+    sc.set("detail", str_or_null(r.scan_detail));
+    sc.set("current", r.scan_current ? Json::integer(r.scan_current) : Json::null());
+    sc.set("best", r.scan_best ? Json::integer(r.scan_best) : Json::null());
+    Json rows = Json::array();
+    for (const cellular::ScanRow& row : r.rows) {
+        Json o = Json::object();
+        o.set("band", Json::integer(row.band));
+        o.set("mhz", Json::integer(row.mhz));
+        o.set("ok", Json::boolean(row.ok));
+        o.set("samples", Json::integer(row.samples));
+        o.set("sinrDb", maybe_int(row.sinr));
+        o.set("rsrpDbm", maybe_int(row.rsrp));
+        o.set("rsrqDb", maybe_int(row.rsrq));
+        rows.push(o);
+    }
+    sc.set("rows", rows);
+    j.set("scan", sc);
+    return j;
+}
+
+Json cellular_neighbours_json(const cellular::NeighbourReport& n)
+{
+    if (!n.have) return Json::null();
+    Json j = Json::object();
+    j.set("updatedMs", Json::integer((long long)n.updated_ms));
+    j.set("error", str_or_null(n.error));
+    Json cells = Json::array();
+    for (const cellular::NeighbourCell& c : n.cells) {
+        Json o = Json::object();
+        o.set("kind", str_or_null(c.kind));
+        o.set("rat", str_or_null(c.rat));
+        o.set("earfcn", maybe_int(c.earfcn));
+        o.set("pci", maybe_int(c.pci));
+        o.set("rsrpDbm", maybe_int(c.rsrp));
+        o.set("rsrqDb", maybe_int(c.rsrq));
+        o.set("rssiDbm", maybe_int(c.rssi));
+        o.set("sinrDb", maybe_int(c.sinr));
+        cells.push(o);
+    }
+    j.set("cells", cells);
+    // Der Rohtext bleibt dabei: eine Firmware mit anderen Feldern zeigt sich
+    // hier, und nur hier.
+    j.set("raw", str_or_null(n.raw));
+    return j;
+}
+
+Json cellular_sim_lock_json(const cellular::SimLockReport& s)
+{
+    if (!s.have) return Json::null();
+    Json j = Json::object();
+    j.set("updatedMs", Json::integer((long long)s.updated_ms));
+    j.set("action", Json::string(cellular::sim_lock_action_name(s.action)));
+    j.set("ok", Json::boolean(s.ok));
+    j.set("detail", str_or_null(s.detail));
+    j.set("enabled", s.enabled.has ? Json::boolean(s.enabled.value == 1) : Json::null());
+    j.set("pinAttemptsLeft", maybe_int(s.pin_left));
+    j.set("pukAttemptsLeft", maybe_int(s.puk_left));
+    j.set("cpin", str_or_null(s.cpin));
+    return j;
+}
+
+bool sim_lock_request_from_json(const Json& body, cellular::SimLockRequest& out, std::string& err)
+{
+    if (!body.is_object()) { err = "body must be an object"; return false; }
+    if (!reject_unknown(body, {"action", "pin", "newPin"}, nullptr, err)) return false;
+    cellular::SimLockRequest r;
+    std::string a;
+    if (!get_string(body, "action", a, err, 16)) return false;
+    if (a.empty() || !cellular::sim_lock_action_parse(a, r.action)) {
+        err = "action must be status, enable, disable or change"; return false;
+    }
+    if (!get_string(body, "pin", r.pin, err, 8)) return false;
+    if (!get_string(body, "newPin", r.new_pin, err, 8)) return false;
+    for (const std::string* p : {&r.pin, &r.new_pin})
+        for (char ch : *p)
+            if (ch < '0' || ch > '9') { err = "a SIM PIN is digits only"; return false; }
+    out = r;
     return true;
 }
 

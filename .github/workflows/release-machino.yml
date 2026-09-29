@@ -59,11 +59,13 @@ jobs:
 
       - name: "Fetch and build mbedTLS"
         run: sh machino/tools/fetch-mbedtls.sh "$PWD/3p" gcc ar
+      - name: "Fetch and build libfaac + libopus (pinned; /audio.m4a, /audio.opus, audio in /ws/video)"
+        run: sh machino/tools/fetch-codecs.sh "$PWD/3p/codecs" gcc ar
 
       - name: "Host suite (the gate)"
         run: |
           set -o pipefail
-          make -C machino test MBEDTLS="$PWD/3p/mbedtls-3.6.7" 2>&1 | tee "$RUNNER_TEMP/tests.log"
+          make -C machino test MBEDTLS="$PWD/3p/mbedtls-3.6.7" CODECS="$PWD/3p/codecs" 2>&1 | tee "$RUNNER_TEMP/tests.log"
           # The counts go into the release note, so they are extracted rather
           # than retyped. A release that claims a number nobody measured is
           # the specific failure this guards against.
@@ -85,7 +87,7 @@ jobs:
           # The make-free runner must not have rotted either: it is what a
           # contributor without make will use to check their work.
           rm -rf machino/build machino/tests/machino-tests
-          sh machino/tools/host-test.sh "$PWD/3p/mbedtls-3.6.7" >/dev/null
+          sh machino/tools/host-test.sh "$PWD/3p/mbedtls-3.6.7" "$PWD/3p/codecs" >/dev/null
 
       - name: "Cross-build and bundle"
         run: |
@@ -94,14 +96,15 @@ jobs:
           ./build.sh deps "$SOC" --libc-musl
           TC=$(ls -d toolchain/xburst2-musl/*/bin | head -1)
           sh machino/tools/fetch-mbedtls.sh "$PWD/3p" "$PWD/$TC/mipsel-linux-gcc" "$PWD/$TC/mipsel-linux-ar"
+          sh machino/tools/fetch-codecs.sh "$PWD/3p/codecs" "$PWD/$TC/mipsel-linux-gcc" "$PWD/$TC/mipsel-linux-ar"
           make -C machino -j"$(nproc)" WERROR=1 \
-            MBEDTLS="$PWD/3p/mbedtls-3.6.7" \
+            MBEDTLS="$PWD/3p/mbedtls-3.6.7" CODECS="$PWD/3p/codecs" \
             CROSS_COMPILE="$PWD/$TC/mipsel-linux-" \
             PLATFORM="$SOC" \
             IMP_INC="$PWD/include/$SOC/$SDK_VERSION/en" \
             IMP_LIB="$PWD/3rdparty/install/lib" \
             IMPLIBS="-Wl,--start-group -l:libimp.a -l:libalog.a -l:libsysutils.a -Wl,--end-group -l:libmuslshim.a"
-          make -C machino MBEDTLS="$PWD/3p/mbedtls-3.6.7" CROSS_COMPILE="$PWD/$TC/mipsel-linux-" strip
+          make -C machino MBEDTLS="$PWD/3p/mbedtls-3.6.7" CODECS="$PWD/3p/codecs" CROSS_COMPILE="$PWD/$TC/mipsel-linux-" strip
 
           O=bundle/machino-openipc-t40nn
           mkdir -p "$O/sbin" "$O/init"

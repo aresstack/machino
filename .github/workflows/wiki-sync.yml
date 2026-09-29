@@ -1,98 +1,147 @@
-# Mirror docs/wiki/ into the GitHub wiki.
+# Validate docs/wiki/ on pull requests and mirror it into the GitHub wiki from main.
 #
-# WHY THIS EXISTS: the wiki was populated once, by hand, in a single import
-# commit - and then never again. It drifted silently: a page added to
-# docs/wiki/ on main sat there for days while the wiki a visitor actually
-# reads had no such page and an index that did not list it. Nothing warns you,
-# because the wiki is a separate git repository that no normal push touches.
+# docs/wiki/ is the single source of truth. Documentation prose stays curated in
+# Git; CI validates structure but never generates or rewrites content.
 #
-# docs/wiki/ is the single source of truth. This job makes the wiki a copy of
-# it, including deletions - see the --delete note below.
+# AUTH: no PAT. The sync job uses the automatically provided GITHUB_TOKEN with
+# job-scoped `contents: write`. Pull-request validation stays read-only.
 name: Sync wiki
 
 on:
+  pull_request:
+    paths:
+      - 'docs/wiki/**'
+      - '.github/workflows/wiki-sync.yml'
   push:
     branches: [main]
-    paths: ['docs/wiki/**']
-  # Manual run, for the first sync after a drift and for testing.
+    paths:
+      - 'docs/wiki/**'
+      - '.github/workflows/wiki-sync.yml'
+  # Allow an explicit resync after infrastructure or wiki changes.
   workflow_dispatch:
 
-# One sync at a time: two concurrent runs would race on the same wiki repo and
-# the loser would fail its push. Queue instead of cancelling, so the last
-# content state always wins rather than an arbitrary interrupted one.
+# Main pushes share one group so two wiki publications cannot race. PR refs use
+# separate groups and therefore do not block unrelated reviews.
 concurrency:
-  group: wiki-sync
+  group: wiki-sync-${{ github.ref }}
   cancel-in-progress: false
 
+# Default to the minimum permission. Only the publication job receives write.
 permissions:
   contents: read
 
 jobs:
-  sync:
+  validate:
+    name: Validate wiki structure
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # The default GITHUB_TOKEN cannot push to <repo>.wiki.git - wikis sit
-      # outside the permissions that token grants, so this needs a PAT stored
-      # as the WIKI_SYNC_TOKEN secret (classic token with `repo`, or a
-      # fine-grained token for this repository). Fail loudly and explain,
-      # rather than dying in `git push` with an opaque 403.
-      - name: Check the token is configured
-        env:
-          WIKI_SYNC_TOKEN: ${{ secrets.WIKI_SYNC_TOKEN }}
+      # Keep navigation semantic and human-curated, but make structural drift a
+      # CI error. Every public Markdown page must be reachable from _Sidebar.md,
+      # and every wiki link in the sidebar must resolve to a real page.
+      - name: Validate wiki structure
+        shell: bash
         run: |
-          if [ -z "$WIKI_SYNC_TOKEN" ]; then
-            echo "::error::Secret WIKI_SYNC_TOKEN is not set."
-            echo "The built-in GITHUB_TOKEN cannot write to a wiki repository."
-            echo "Create a personal access token with repo scope and add it as"
-            echo "the repository secret WIKI_SYNC_TOKEN."
-            exit 1
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
 
-      # Classic PAT goes in as the USERNAME with the literal password
-      # x-oauth-basic. Both other spellings were tried and both fail: the
-      # x-access-token:<token> form is for GitHub App installation tokens and
-      # GitHub answers "Invalid username or token", while a bare
-      # https://<token>@ leaves the password field empty, so git blocks asking
-      # for one and dies with "could not read Password". Because a public wiki
-      # clones anonymously, a bad credential would otherwise stay invisible
-      # until the push - so prove write access first, before doing any work.
-      - name: Clone the wiki
-        env:
-          WIKI_SYNC_TOKEN: ${{ secrets.WIKI_SYNC_TOKEN }}
-        run: |
-          git clone --depth 1 \
-            "https://${WIKI_SYNC_TOKEN}:x-oauth-basic@github.com/${GITHUB_REPOSITORY}.wiki.git" \
-            wiki
-          # Fail here, not 40 lines later: a token without wiki write access
-          # (a fine-grained PAT cannot have it - wikis sit outside that
-          # permission model) is only detectable by asking for a write.
-          git -C wiki push --dry-run origin HEAD:master || {
-            echo "::error::WIKI_SYNC_TOKEN cannot write to the wiki."
-            echo "A fine-grained personal access token will not work: wikis are"
-            echo "a separate repository outside its permission model. Use a"
-            echo "CLASSIC token with the full 'repo' scope."
-            exit 1
+          root = Path("docs/wiki")
+          required = [root / "Home.md", root / "_Sidebar.md"]
+          errors = []
+
+          for path in required:
+              if not path.is_file():
+                  errors.append("Missing required wiki file: %s" % path)
+
+          if errors:
+              for error in errors:
+                  print("ERROR: %s" % error)
+              sys.exit(1)
+
+          sidebar = (root / "_Sidebar.md").read_text(encoding="utf-8")
+          wiki_link_pattern = re.compile(r"\[\[([^\]]+)\]\]")
+          sidebar_targets = set()
+
+          for match in wiki_link_pattern.finditer(sidebar):
+              raw = match.group(1).strip()
+              target = raw.split("|", 1)[-1].strip()
+              target = target.split("#", 1)[0].strip()
+              if not target:
+                  errors.append("Empty wiki target in _Sidebar.md: [[%s]]" % raw)
+                  continue
+
+              target_path = root / (target + ".md")
+              if not target_path.is_file():
+                  errors.append(
+                      "Broken _Sidebar.md target [[%s]] -> %s" % (raw, target_path)
+                  )
+                  continue
+
+              sidebar_targets.add(target)
+
+          public_pages = {
+              path.stem
+              for path in root.glob("*.md")
+              if not path.name.startswith("_")
           }
+          orphaned = sorted(public_pages - sidebar_targets)
+          if orphaned:
+              errors.append(
+                  "Wiki pages missing from _Sidebar.md: %s" % ", ".join(orphaned)
+              )
 
-      # --delete makes docs/wiki/ authoritative: a page removed here is removed
-      # there, and a page edited through the wiki web UI is overwritten on the
-      # next sync. That is the intended contract - a mirror that only ever adds
-      # would drift back into the state this workflow exists to prevent - but it
-      # does mean the web UI is read-only in practice. Edit docs/wiki/ instead.
+          if errors:
+              for error in errors:
+                  print("ERROR: %s" % error)
+              sys.exit(1)
+
+          print(
+              "Wiki structure OK: %d public pages, all present in _Sidebar.md."
+              % len(public_pages)
+          )
+          PY
+
+  sync:
+    name: Publish GitHub wiki
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      # The wiki is a separate git repository (<repo>.wiki). checkout leaves it
+      # in wiki/ with the GITHUB_TOKEN configured as its push credential.
+      - name: Checkout wiki
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+
+      # --delete makes docs/wiki/ authoritative. Manual edits in the GitHub wiki
+      # are overwritten on the next sync; edit docs/wiki/ through normal commits.
       - name: Copy docs/wiki into the wiki working tree
-        run: rsync -a --delete --exclude '.git' docs/wiki/ wiki/
+        run: rsync -a --delete --exclude '.git' source/docs/wiki/ wiki/
 
       - name: Commit and push if anything changed
         working-directory: wiki
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; then
+
+          if [ -z "$(git status --porcelain)" ]; then
             echo "Wiki already matches docs/wiki - nothing to do."
             exit 0
           fi
+
           git add -A
           git commit -m "Sync wiki from docs/wiki (${GITHUB_SHA::7})"
           git push
