@@ -8,6 +8,12 @@
 #
 # docs/wiki/ is the single source of truth. This job makes the wiki a copy of
 # it, including deletions - see the --delete note below.
+#
+# AUTH: no PAT. The wiki of THIS repository is reachable with the automatically
+# provided GITHUB_TOKEN as long as the job is granted `contents: write`.
+# actions/checkout wires that token into the checked-out wiki repo's origin, so
+# the final `git push` uses it. (Confirmed working pattern, GitHub Community
+# Discussion #56893.)
 name: Sync wiki
 
 on:
@@ -25,71 +31,40 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: source
 
-      # The default GITHUB_TOKEN cannot push to <repo>.wiki.git - wikis sit
-      # outside the permissions that token grants, so this needs a PAT stored
-      # as the WIKI_SYNC_TOKEN secret (classic token with `repo`, or a
-      # fine-grained token for this repository). Fail loudly and explain,
-      # rather than dying in `git push` with an opaque 403.
-      - name: Check the token is configured
-        env:
-          WIKI_SYNC_TOKEN: ${{ secrets.WIKI_SYNC_TOKEN }}
-        run: |
-          if [ -z "$WIKI_SYNC_TOKEN" ]; then
-            echo "::error::Secret WIKI_SYNC_TOKEN is not set."
-            echo "The built-in GITHUB_TOKEN cannot write to a wiki repository."
-            echo "Create a personal access token with repo scope and add it as"
-            echo "the repository secret WIKI_SYNC_TOKEN."
-            exit 1
-          fi
+      # The wiki is a separate git repository (<repo>.wiki). checkout leaves it
+      # in wiki/ with the GITHUB_TOKEN configured as its push credential, which
+      # `contents: write` above authorises. Its default branch is master.
+      - name: Checkout wiki
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
 
-      # Classic PAT goes in as the USERNAME with the literal password
-      # x-oauth-basic. Both other spellings were tried and both fail: the
-      # x-access-token:<token> form is for GitHub App installation tokens and
-      # GitHub answers "Invalid username or token", while a bare
-      # https://<token>@ leaves the password field empty, so git blocks asking
-      # for one and dies with "could not read Password". Because a public wiki
-      # clones anonymously, a bad credential would otherwise stay invisible
-      # until the push - so prove write access first, before doing any work.
-      - name: Clone the wiki
-        env:
-          WIKI_SYNC_TOKEN: ${{ secrets.WIKI_SYNC_TOKEN }}
-        run: |
-          git clone --depth 1 \
-            "https://${WIKI_SYNC_TOKEN}:x-oauth-basic@github.com/${GITHUB_REPOSITORY}.wiki.git" \
-            wiki
-          # Fail here, not 40 lines later: a token without wiki write access
-          # (a fine-grained PAT cannot have it - wikis sit outside that
-          # permission model) is only detectable by asking for a write.
-          git -C wiki push --dry-run origin HEAD:master || {
-            echo "::error::WIKI_SYNC_TOKEN cannot write to the wiki."
-            echo "A fine-grained personal access token will not work: wikis are"
-            echo "a separate repository outside its permission model. Use a"
-            echo "CLASSIC token with the full 'repo' scope."
-            exit 1
-          }
-
-      # --delete makes docs/wiki/ authoritative: a page removed here is removed
-      # there, and a page edited through the wiki web UI is overwritten on the
-      # next sync. That is the intended contract - a mirror that only ever adds
-      # would drift back into the state this workflow exists to prevent - but it
-      # does mean the web UI is read-only in practice. Edit docs/wiki/ instead.
+      # --delete makes docs/wiki/ authoritative: a page removed there is removed
+      # in the wiki, and a page edited through the wiki web UI is overwritten on
+      # the next sync. That is the intended contract - a mirror that only ever
+      # added would drift back into the state this workflow exists to prevent -
+      # but it does mean the web UI is read-only in practice. Edit docs/wiki/.
       - name: Copy docs/wiki into the wiki working tree
-        run: rsync -a --delete --exclude '.git' docs/wiki/ wiki/
+        run: rsync -a --delete --exclude '.git' source/docs/wiki/ wiki/
 
       - name: Commit and push if anything changed
         working-directory: wiki
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; then
+          if [ -z "$(git status --porcelain)" ]; then
             echo "Wiki already matches docs/wiki - nothing to do."
             exit 0
           fi
