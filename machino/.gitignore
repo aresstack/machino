@@ -6,6 +6,7 @@ tests/tmp-openipc-install/
 # nur, wenn der Test durchlaeuft; ein Abbruch soll keine Dateien im Index
 # hinterlassen.
 tests/tmp-devices*/
+tests/tmp-nna-frame.bin
 tests/tmp_machino.conf
 tests/tmp_machino.conf.tmp
 tests/machino-tests
