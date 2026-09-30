@@ -58,6 +58,7 @@ lange aufzuschieben.
 | B4 | MSE-Latenz über längere Laufzeit im Auge behalten (Band `lagFloor + 1 s`) | AP15 |
 | B5 | Bestehende RTSP-Clients bekommen jetzt 401 (Auth-Default umgestellt) | AP7 |
 | B6 | AP6–AP10 Laufzeitprüfungen der Config-/Schema-Wege | AP6–10 |
+| B7 | **Test-Ping durch den Tunnel** (Karte „Tunnel test ping", `machinoctl ipsec ping`): Echo an einen LAN-Rechner hinter dem Gateway antwortet mit plausibler RTT; ein Ziel außerhalb der Tunnelrouten wird mit Grund abgelehnt; ein Rechner, der nicht antwortet, gibt `ok=false` statt 409; die Zielliste überlebt einen Reboot | IPsec AP12 (`architecture/ipsec.md`) |
 
 **B1 ist der Punkt mit dem größten Rückrollwert.** Er verschiebt die
 ausgehandelte Nutzlast auf einem bereits hardwareabgenommenen Pfad. Spielt

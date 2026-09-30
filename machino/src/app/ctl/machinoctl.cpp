@@ -361,6 +361,59 @@ int ipsec_pem(Console& c, const Field& f, const std::vector<std::string>& rest, 
     return 0;
 }
 
+// AP12: der Test-Ping laeuft im DAEMON -- ein echtes ICMP-Echo ueber das
+// Tunnel-Interface, die Ziel-Historie auf dem Geraet. Dieselbe Messung wie
+// der Knopf in der WebUI, kein Shell-ping (das ginge ueber generisches
+// Routing und wuesste nichts vom Tunnel).
+std::string ms1(const Json& j, const char* k) {
+    const Json* v = j.get(k);
+    if (!v || !v->is_number()) return "?";
+    char b[32];
+    snprintf(b, sizeof b, "%.1f", v->as_number());
+    return b;
+}
+
+int ipsec_ping(Console& c, const std::vector<std::string>& a) {
+    if (a.empty()) {
+        Call r;
+        if (!call(c, "GET", "/api/v1/ipsec/ping", "", r)) return 1;
+        if (c.raw_json) { show(c, r); return 0; }
+        const Json* t = r.json.get("targets");
+        if (!t || !t->is_array() || t->size() == 0) { c.out("noch kein Ziel gepingt -- ipsec ping <ip> [<anzahl>]\n"); return 0; }
+        c.out("zuletzt gepingt (neuestes zuerst):\n");
+        for (size_t i = 0; i < t->size(); ++i) c.out("  " + t->at(i).as_string() + "\n");
+        return 0;
+    }
+    std::string err;
+    if (lower(a[0]) == "forget") {
+        if (a.size() != 2 || !ping_target_ok(a[1], err)) { c.err("erwartet: ipsec ping forget <ip>\n"); return 2; }
+        Json b = Json::object();
+        b.set("target", Json::string(a[1]));
+        Call r;
+        if (!call(c, "POST", "/api/v1/ipsec/ping/forget", b.dump(), r)) return 1;
+        if (c.raw_json) { show(c, r); return 0; }
+        c.out(a[1] + " aus der Liste entfernt.\n");
+        return 0;
+    }
+    if (a.size() > 2) { c.err("erwartet: ipsec ping [<ip> [<anzahl 1..5>] | forget <ip>]\n"); return 2; }
+    if (!ping_target_ok(a[0], err)) { c.err(err + "\n"); return 2; }
+    long long n = 3;
+    if (a.size() == 2 && (!parse_int(a[1], n) || n < 1 || n > 5)) { c.err("ipsec ping: Anzahl 1..5\n"); return 2; }
+    Json b = Json::object();
+    b.set("target", Json::string(a[0]));
+    b.set("count", Json::integer(n));
+    Call r;
+    if (!call(c, "POST", "/api/v1/ipsec/ping", b.dump(), r)) return 1;
+    const bool ok = bool_of(r.json, "ok");
+    if (c.raw_json) { show(c, r); return ok ? 0 : 1; }
+    const long long sent = int_of(r.json, "sent"), recv = int_of(r.json, "received");
+    std::string line = a[0] + " via " + str_of(r.json, "via", "?") + ": " + std::to_string(recv) + "/" + std::to_string(sent) + " Antworten";
+    if (ok) line += ", RTT min/avg/max " + ms1(r.json, "rttMinMs") + "/" + ms1(r.json, "rttMs") + "/" + ms1(r.json, "rttMaxMs") + " ms";
+    else    line += " -- " + str_of(r.json, "error", "keine Antwort");
+    c.out(line + "\n");
+    return ok ? 0 : 1;
+}
+
 int ipsec_connect(Console& c) {
     Call r;
     if (!call(c, "POST", "/api/v1/ipsec/connect", "", r)) return 1;
@@ -512,7 +565,7 @@ int ipsec_setup(Console& c) {
 
 const char* kIpsecUsage =
     "ipsec [status|config|fields|algos|get <k>|set <k> <v> ...|enable|disable|psk|eap-password|"
-    "ca-pem <datei>|extra-pem <datei>|setup|connect|disconnect|reconnect|rekey [ike]|ping <ip>|fetch <ip[:port]>|log [n]]\n";
+    "ca-pem <datei>|extra-pem <datei>|setup|connect|disconnect|reconnect|rekey [ike]|ping [<ip> [<n>]|forget <ip>]|fetch <ip[:port]>|log [n]]\n";
 
 int cmd_ipsec(Console& c, const std::vector<std::string>& a) {
     if (a.empty()) return ipsec_show_summary(c);
@@ -558,13 +611,11 @@ int cmd_ipsec(Console& c, const std::vector<std::string>& a) {
         c.out(std::string(ike ? "IKE-SA-Rekey" : "Child-Rekey") + " angefordert -- 'ipsec' zeigt die Generation, 'ipsec log' den Verlauf.\n");
         return 0;
     }
-    if (op == "ping" || op == "fetch" || op == "log") {
+    if (op == "ping") return ipsec_ping(c, rest);
+    if (op == "fetch" || op == "log") {
         if (!c.shell) { c.err("Diagnose braucht die Kamera-Shell (nicht in dieser Umgebung)\n"); return 2; }
         std::string cmd, err;
-        if (op == "ping") {
-            if (rest.size() != 1) { c.err("erwartet: ipsec ping <ip>\n"); return 2; }
-            if (!ping_cmdline(rest[0], cmd, err)) { c.err(err + "\n"); return 2; }
-        } else if (op == "fetch") {
+        if (op == "fetch") {
             if (rest.size() != 1) { c.err("erwartet: ipsec fetch <ip>[:port]\n"); return 2; }
             if (!fetch_cmdline(rest[0], cmd, err)) { c.err(err + "\n"); return 2; }
         } else {
@@ -576,7 +627,7 @@ int cmd_ipsec(Console& c, const std::vector<std::string>& a) {
         const bool ok = c.shell(cmd, out);
         c.out(out);
         if (!out.empty() && out.back() != '\n') c.out("\n");
-        if (!ok) { c.err(std::string(op == "log" ? "logread" : op == "ping" ? "ping" : "curl") + ": fehlgeschlagen (Exit != 0)\n"); return 1; }
+        if (!ok) { c.err(std::string(op == "log" ? "logread" : "curl") + ": fehlgeschlagen (Exit != 0)\n"); return 1; }
         return 0;
     }
     if (op == "reconnect") {
@@ -914,7 +965,9 @@ const char* help_text() {
         "  ipsec connect | disconnect    Tunnel aufbauen / trennen (wie die Web-Buttons)\n"
         "  ipsec reconnect               trennen + neu aufbauen (nach einer Aenderung)\n"
         "  ipsec rekey [ike]             Child-SA (oder IKE-SA) jetzt neu schluesseln -- PFS-Nachweis\n"
-        "  ipsec ping <ip>               ICMP durch den Tunnel (ping -c 3)\n"
+        "  ipsec ping <ip> [<n>]         Test-Ping: echtes ICMP-Echo aus machinod durch den Tunnel (n Echos, Vorgabe 3)\n"
+        "  ipsec ping                    die zuletzt gepingten Ziele (auf der Kamera gemerkt, wie das WebUI-Dropdown)\n"
+        "  ipsec ping forget <ip>        ein Ziel aus dieser Liste entfernen\n"
         "  ipsec fetch <ip>[:port]       HTTP GET durch den Tunnel (curl): Status, Bytes, Zeit\n"
         "  ipsec log [<n>]               die letzten n Zeilen des weirdiked-Logs (logread)\n"
         "  api get <pfad>                beliebige API-Route lesen, z.B. api get /api/v1/network\n"
@@ -970,9 +1023,8 @@ static bool ipv4_ok(const std::string& s) {
     return a < 256 && b < 256 && c2 < 256 && d < 256;
 }
 
-bool ping_cmdline(const std::string& target, std::string& cmd, std::string& err) {
-    if (!ipv4_ok(target)) { err = "ipsec ping: IPv4-Adresse erwartet, nicht '" + target + "'"; return false; }
-    cmd = "ping -c 3 -W 2 " + target + " 2>&1";
+bool ping_target_ok(const std::string& target, std::string& err) {
+    if (!ipv4_ok(target)) { err = "ipsec ping: IPv4-Adresse erwartet, nicht '" + target + "' (kein Hostname: DNS laeuft nicht durch den Tunnel)"; return false; }
     return true;
 }
 

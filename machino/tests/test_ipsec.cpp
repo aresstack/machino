@@ -61,6 +61,13 @@ struct FakeBackend : IIpsecBackend {
             }
         return true;                           // idempotent, wie das echte Backend
     }
+    // AP12: der Test-Ping -- was der Service dem Backend gibt, und was zurueckkommt.
+    PingRequest last_ping; int pings = 0; bool ping_ok = true; double rtt = 45.0;
+    bool ping(const PingRequest& r, PingResult& o) override {
+        ++pings; last_ping = r; o = PingResult{}; o.sent = r.count;
+        if (!ping_ok) { o.error = "keine Antwort (" + std::to_string(r.timeout_ms) + " ms je Echo)"; return false; }
+        o.received = r.count; o.rtt_min_ms = rtt - 1; o.rtt_avg_ms = rtt; o.rtt_max_ms = rtt + 1; return true;
+    }
 };
 
 // AP5 §11: zwei Uplinks mit verschiedenen Adressen -- der Test sieht, WOHIN
@@ -872,6 +879,76 @@ void test_ap11_algorithm_grid()
     remove(MCONF); remove(DCONF);
 }
 
+// AP12: der Test-Ping durch den Tunnel. Was hier zaehlt: Ablehnung MIT GRUND
+// (kein Tunnel, Ziel ausserhalb der INSTALLIERTEN Tunnelrouten -- das Echo
+// ginge sonst nie durch den Tunnel), die Bindung an das Tunnel-Interface,
+// und die Ziel-Historie auf dem Geraet: neuestes zuerst, ohne Doppelte,
+// gedeckelt, persistent, vergessbar -- wie das WeirdOS-Dropdown (NVS).
+void test_ap12_test_ping()
+{
+    remove(MCONF); remove(DCONF); remove("ipsec-ping-targets");
+    FakeBackend be;
+    IpsecService svc(be, MCONF, DCONF);
+    ICHECK(svc.set_config(sample(), S("psk-geheim")).empty());
+
+    // rein: Praefix- und Literal-Test
+    ICHECK(ipv4_in_prefix("10.66.0.7", "10.66.0.0/24") && !ipv4_in_prefix("10.66.1.7", "10.66.0.0/24"));
+    ICHECK(ipv4_in_prefix("1.2.3.4", "0.0.0.0/0") && ipv4_in_prefix("10.66.0.7", "10.66.0.7/32") && !ipv4_in_prefix("10.66.0.8", "10.66.0.7/32"));
+    ICHECK(!ipv4_in_prefix("10.66.0.7", "10.66.0.0") && !ipv4_in_prefix("x", "10.66.0.0/24") && !ipv4_in_prefix("10.66.0.7", "10.66.0.0/33"));
+    ICHECK(ipv4_literal("192.168.110.11") && !ipv4_literal("fritz.box") && !ipv4_literal("256.1.1.1") && !ipv4_literal("1.2.3.4 ") && !ipv4_literal(""));
+
+    PingResult r;
+    // Eingaben: MIT NAMEN abgelehnt, nichts gemerkt.
+    ICHECK(svc.ping("fritz.box", 1, 2000, r).rfind("target", 0) == 0);
+    ICHECK(svc.ping("10.66.0.7", 0, 2000, r).rfind("count", 0) == 0);
+    ICHECK(svc.ping("10.66.0.7", 6, 2000, r).rfind("count", 0) == 0);
+    ICHECK(svc.ping("10.66.0.7", 1, 50, r).rfind("timeoutMs", 0) == 0);
+    ICHECK(svc.ping("10.66.0.7", 5, 5000, r).rfind("count * timeoutMs", 0) == 0);
+    // Kein Tunnel: gesagt -- nicht als "keine Antwort" getarnt.
+    ICHECK(svc.ping("10.66.0.7", 1, 2000, r) == "kein Tunnel (Daemon laeuft nicht)");
+    ICHECK(be.pings == 0 && svc.ping_targets().empty());
+    be.running = true;
+    be.status_text = "state=IKE_SA_ESTABLISHED\ninterface=ipsec0\n";
+    ICHECK(svc.ping("10.66.0.7", 1, 2000, r) == "Tunnel steht nicht (ikeEstablished)");
+    be.status_text = "state=CHILD_SA_ESTABLISHED\n";
+    ICHECK(svc.ping("10.66.0.7", 1, 2000, r) == "Tunnel ohne Interface -- der Daemon meldet keins");
+    be.status_text = "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\n";
+    ICHECK(svc.ping("10.66.0.7", 1, 2000, r).rfind("keine Tunnelroute installiert", 0) == 0);
+    be.status_text = "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\nroute=10.66.0.0/24 tsr ipsec0\nroute=192.168.178.0/24 cp ipsec0\n";
+    ICHECK(svc.ping("10.77.0.1", 1, 2000, r) == "10.77.0.1 liegt in keiner installierten Tunnelroute (10.66.0.0/24, 192.168.178.0/24)");
+    ICHECK(be.pings == 0 && svc.ping_targets().empty());
+
+    // Der Ping: an das Tunnel-Interface gebunden, mit count/timeout -- und gemerkt.
+    ICHECK(svc.ping("10.66.0.7", 3, 1500, r).empty());
+    ICHECK(be.pings == 1 && be.last_ping.target == "10.66.0.7" && be.last_ping.ifname == "ipsec0" && be.last_ping.count == 3 && be.last_ping.timeout_ms == 1500);
+    ICHECK(r.sent == 3 && r.received == 3 && r.error.empty() && r.via == "ipsec0" && r.rtt_avg_ms == 45.0);
+    ICHECK(svc.ping_targets() == (std::vector<std::string>{"10.66.0.7"}));
+    // "keine Antwort" ist ein MESSERGEBNIS, kein Ablehnungsgrund -- das Ziel bleibt gemerkt.
+    be.ping_ok = false;
+    ICHECK(svc.ping("192.168.178.1", 1, 2000, r).empty() && r.received == 0 && r.error == "keine Antwort (2000 ms je Echo)" && r.via == "ipsec0");
+    be.ping_ok = true;
+    ICHECK(svc.ping_targets() == (std::vector<std::string>{"192.168.178.1", "10.66.0.7"}));
+    // Wiederholung rueckt nach vorn, keine Doppelten.
+    ICHECK(svc.ping("10.66.0.7", 1, 2000, r).empty());
+    ICHECK(svc.ping_targets() == (std::vector<std::string>{"10.66.0.7", "192.168.178.1"}));
+    // Gedeckelt (kPingHistoryMax), neuestes zuerst.
+    for (int i = 10; i < 20; ++i) ICHECK(svc.ping("10.66.0." + std::to_string(i), 1, 2000, r).empty());
+    const std::vector<std::string> t = svc.ping_targets();
+    ICHECK(t.size() == kPingHistoryMax && t.front() == "10.66.0.19" && t.back() == "10.66.0.12");
+    // Persistent auf dem Geraet: eine zweite Instanz liest dieselbe Liste (Datei neben ipsec.conf).
+    { IpsecService again(be, MCONF, DCONF); ICHECK(again.ping_targets() == t); }
+    ICHECK(slurp("ipsec-ping-targets").rfind("10.66.0.19\n10.66.0.18\n", 0) == 0);
+    // Vergessen.
+    ICHECK(svc.forget_ping_target("10.66.0.19").empty() && svc.ping_targets().front() == "10.66.0.18" && svc.ping_targets().size() == kPingHistoryMax - 1);
+    ICHECK(svc.forget_ping_target("nope").rfind("target", 0) == 0);
+    ICHECK(svc.forget_ping_target("10.9.9.9").empty());   // nicht drin: kein Fehler
+    // Eine kaputte Zeile faellt still raus, der Rest bleibt, Doppelte werden gefaltet.
+    { FILE* f = fopen("ipsec-ping-targets", "w"); if (f) { fputs("10.66.0.1\nkaputt\n\n10.66.0.2\n10.66.0.1\n", f); fclose(f); } }
+    ICHECK(svc.ping_targets() == (std::vector<std::string>{"10.66.0.1", "10.66.0.2"}));
+
+    remove(MCONF); remove(DCONF); remove("ipsec-ping-targets");
+}
+
 void run_ipsec_tests()
 {
     test_review_findings();
@@ -889,4 +966,5 @@ void run_ipsec_tests()
     test_status_mapping();
     test_ap10_profile_parity();
     test_ap11_algorithm_grid();
+    test_ap12_test_ping();
 }

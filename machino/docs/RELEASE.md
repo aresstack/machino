@@ -166,6 +166,51 @@ Deinstallation.
 * **migriert** bei einer Erstinstallation einmalig `majestic.yaml`, mit einem
   Protokoll pro Schlüssel (mapped/converted/ignored/unsupported/invalid).
 
+## Automatische Releases
+
+Jeder Push auf `main` erzeugt ein GitHub-Release — derselbe Workflow, der
+baut und prüft (`.github/workflows/build-machino-t40.yml`, Job `release`).
+Es gibt keinen zweiten Build: das Release-Asset ist byteidentisch mit dem
+CI-Artefakt `machino-openipc-t40nn` desselben Laufs.
+
+| | |
+|---|---|
+| Push auf `main` | Release `main-<Commitdatum>-<sha7>`, z.B. `main-20260930-ca9b444`. Die zehn neuesten bleiben, ältere werden samt Tag entfernt. |
+| Push eines Tags `v*` | versioniertes Release, das bleibt (`v1.0`, `v1.1-rc1`). |
+| `workflow_dispatch` mit `release: true` | ein `main-…`-Release aus dem gewählten Lauf — nur auf `main`. |
+| Build rot oder Bundle unvollständig | **kein** Release, kein Tag. |
+
+Der Tag wird **vor dem Build lokal gesetzt** und erst nach grünem Lauf
+gepusht. So ist `git describe` = Tag = `-DMACHINO_VERSION` im Binary =
+`Machino commit: … (<tag>)` in `BUILDINFO` = `version` im Manifest. Genau
+diesen String vergleicht der Cam-Tool (`ipcam-lan-discovery`, Reiter
+*Patches*) mit `machino --version` auf der Kamera; er lädt das Asset
+`machino-openipc-t40nn.tar.gz` aus `/releases/latest`. Ein Prerelease
+oder Draft würde dort nie erscheinen — deshalb ist jedes automatische
+Release ein normales, als *latest* markiertes Release.
+
+Assets pro Release: `machino-openipc-t40nn.tar.gz`, `manifest.json`
+(Cam-Tool-Schema 1, mit der sha256 des Bundles), `SHA256SUMS`, `BUILDINFO`
+und `machino-nna-model-t40nn.tgz` (AGPL, deshalb nie im Bundle). Die
+Release-Notes nennen die Testzähler des Laufs und zitieren
+`docs/pending-physical.md` — was Hardware braucht, wird nicht behauptet.
+
+Strenger als das Entwicklungs-Artefakt: dem Release fehlt keine Nutzlast.
+Fehlen WLAN-Treiber, hostapd, Modem-Module, pppd, NNA-Helfer oder
+WeirdIKE, gibt es kein Release, und die Fehlermeldung nennt den
+Nutzlast-Workflow (`build-aic8800-t40`, `build-hostapd-t40`,
+`build-modem-modules-t40`, `build-ppp-t40`, `build-nna-t40`,
+`build-weirdike-t40`), dessen Artefakt fehlt — meist, weil es nach 90
+Tagen abgelaufen ist: den Workflow neu starten, dann den Release-Lauf.
+Ändert ein Push `weirdike-openipc/` oder `machino/tools/nna/`, wartet der
+Build auf den Nutzlast-Lauf **desselben Commits**, statt den alten Daemon
+unter dem neuen Namen zu veröffentlichen.
+
+Berechtigungen: das Release entsteht mit dem `GITHUB_TOKEN` des Laufs
+(`permissions: contents: write`, wie in `aresstack/firmware-tool`). Ein
+Organisations-Secret ist nicht nötig. Der Tag-Push mit diesem Token löst
+keinen weiteren Workflow aus.
+
 ## Artefakt
 
 Das CI erzeugt zwei Bündel pro Commit:

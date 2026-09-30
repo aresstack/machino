@@ -369,10 +369,11 @@ Gateway: `machinoctl ipsec rekey`, dann `ipsec log` zeigt „rekey sent (PFS)".
 **Status**: `ikeSuite` (enc/prf/integ/dh) und `childSuite` (enc/integ) — die
 AUSGEHANDELTEN Suiten aus der Engine-Diag, nicht die konfigurierten.
 
-**Diagnose in der Konsole**: `ipsec ping <ip>`, `ipsec fetch <ip[:port]>`,
-`ipsec log [n]` fuehren `ping`, `curl` und `logread` in der Shell des
-Bedienenden aus (machinoctl ist ein eigener Prozess; machinod forkt weiter
-nicht). Nur IPv4-Literale und Zahlen gelangen in die Kommandozeile.
+**Diagnose in der Konsole**: `ipsec fetch <ip[:port]>` und `ipsec log [n]`
+fuehren `curl` und `logread` in der Shell des Bedienenden aus (machinoctl ist
+ein eigener Prozess; machinod forkt weiter nicht). Nur IPv4-Literale und
+Zahlen gelangen in die Kommandozeile. `ipsec ping` war hier zuerst ein
+Shell-`ping` und ist seit AP12 der Test-Ping des Daemons (unten).
 
 Nicht uebernommen aus WeirdOS: die Server-Rolle (dort selbst nur Konfig ohne
 Runtime), L2TP und Zertifikats-Auth (dort beim Speichern abgelehnt), die
@@ -380,6 +381,57 @@ ESP32-spezifische AES-Backend-Wahl. Hosttests: `test_ap11_algorithm_grid`,
 `test_ap11_ipsec_api_grid`, `test_ctl.cpp`, `weirdike-openipc` `t_policy_lists`.
 Hardware-Abnahme (breitere Suite gegen das LANCOM, Rekey mit PFS, Suite im
 Status): PENDING_PHYSICAL.
+
+## AP12: Test-Ping durch den Tunnel
+
+WeirdOS hat unter der VPN-Seite den „IPsec Test-Ping": eine Zieladresse,
+ein Knopf, das Ergebnis als RTT, und ein Dropdown mit den letzten Zielen —
+gespeichert auf dem Geraet (NVS), nicht im Browser. Das ist der Beweis, ob
+ein Rechner im privaten LAN hinter dem Gateway wirklich erreichbar ist, und
+er fehlte in Machino: `machinoctl ipsec ping` war ein Shell-`ping` ueber
+generisches Routing, die WebUI hatte nichts.
+
+**Messung im Daemon, ohne fork.** `IIpsecBackend::ping(PingRequest,
+PingResult)`; Linux (`linux_ipsec_backend.cpp`): `SOCK_RAW`/`IPPROTO_ICMP`
+(machinod ist root), `SO_BINDTODEVICE` auf das Tunnel-Interface aus dem
+Daemon-Status, Echo-Request mit id=PID und Sequenz 1..n, Antwort nur, wenn
+Typ 0 mit unserer id/Sequenz vom Ziel kommt; ein `DEST_UNREACH`/
+`TIME_EXCEEDED`, das den Kopf unseres Echos traegt, wird als Grund gemeldet
+(`unreachable (ICMP 3/1 von 10.66.0.1)`). Blockierend mit Timeout — im
+API-Thread, nie im Medienpfad; `count` 1..5, `timeoutMs` 100..5000, zusammen
+hoechstens 10 s. Kein `ping`-Prozess, denn machinod forkt bei lebendem IMP
+nicht.
+
+**Durch den Tunnel, nicht irgendwohin.** `IpsecService::ping` verweigert
+mit Grund, bevor ein Paket entsteht: kein Daemon, Child steht nicht
+(`Tunnel steht nicht (ikeEstablished)`), kein Interface, oder das Ziel liegt
+in keiner **installierten** Tunnelroute (`10.77.0.1 liegt in keiner
+installierten Tunnelroute (10.66.0.0/24)`). Ein Echo ueber den Uplink, das
+dann „keine Antwort" hiesse, waere eine Luege ueber den Tunnel. „Keine
+Antwort" ist dagegen ein Messergebnis: HTTP 200 mit `ok=false` und dem
+Grund. Nur IPv4-Literale — DNS laeuft nicht durch den Tunnel.
+
+**Historie auf dem Geraet.** `/etc/machino/ipsec-ping-targets` (neben
+`ipsec.conf`, atomar, 0600): die letzten acht Ziele, neuestes zuerst, ohne
+Doppelte; ein gueltiges Ziel wird gemerkt, sobald der Tunnel steht — auch
+eines, das gerade nicht antwortet, denn genau das wiederholt man. Eine
+kaputte Zeile faellt still raus, der Rest bleibt.
+
+**API**: `POST /api/v1/ipsec/ping` `{target, count?, timeoutMs?}` →
+`{ok, target, via, sent, received, rttMs, rttMinMs, rttMaxMs, error?,
+targets}`; 400 MIT NAMEN fuer Eingaben, 409 mit Grund ohne Tunnel.
+`GET /api/v1/ipsec/ping` → `{targets, maxCount, maxTimeoutMs}`;
+`POST /api/v1/ipsec/ping/forget` `{target}`. **WebUI**: Karte „Tunnel test
+ping" (`machino-ipsec.cgi`): Eingabe mit `<datalist>` aus der Historie,
+Echos 1/3/5, Ergebniszeile, „Forget target". **Konsole**: `ipsec ping <ip>
+[n]`, `ipsec ping` (Liste), `ipsec ping forget <ip>` — dieselbe Route, kein
+Shell-`ping` mehr.
+
+Hosttests: `test_ap12_test_ping` (Ablehnung mit Grund, Bindung an das
+Interface, Historie: Reihenfolge, Doppelte, Deckel, Persistenz, Vergessen),
+`test_ap12_ipsec_api_ping`, `test_ctl.cpp` (Fake-API und echte ApiService).
+Der Raw-Socket selbst laeuft nur auf der Kamera: PENDING_PHYSICAL
+(`docs/pending-physical.md`).
 
 ## Terminal: machinoctl
 
