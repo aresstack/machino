@@ -92,6 +92,39 @@ den ersten Mount-Fehler per `logger`). Werkzeuge, alles busybox: **Mount**
 auf etwas Gemountetes, nie auf `mtd*`). Die CGI läuft als eigener Prozess
 unter busybox httpd — machinod forkt weiterhin nicht.
 
+## exFAT als Nutzlast (2026-09-30)
+
+Die frische 128-GB-Karte war exFAT, und „Format FAT32“ war die einzige
+Antwort — mit der 4-GB-Dateigrenze von FAT32. Jetzt gibt es exFAT als
+**opt-in-Nutzlast** (`install.sh --with-exfat`, Cam-Tool: „exFAT-Nutzlast“),
+rund 200 kB Overlay:
+
+```
+exfat.ko      Samsung-Treiber exfat-nofuse (der Android-Treiber fuer 3.x/4.x-
+              Kernel), out-of-tree gegen OpenIPC/linux@ingenic-t40 mit der
+              Board-Konfiguration gebaut; dieselben drei Gates wie bei den
+              Speichermodulen (vermagic, Symbole VON DER KAMERA, existiert).
+              Workflow: .github/workflows/build-exfat-t40.yml, Commit gepinnt.
+mkfs.exfat    exfatprogs 1.2.9, fuer mipsel/musl wie machino selbst gebaut
+              (busybox hat nur mkfs.vfat). Nach /usr/sbin.
+```
+
+Das Modul liegt inert unter `/etc/machino/modules/exfat.ko`; der USB-Helfer
+lädt es bei `usb.storage=true` **vor** `usb-storage`, denn OpenIPCs
+`automount.sh` probiert „vfat exfat …“ genau in dem Moment, in dem `sd_mod`
+die Partition meldet — ein später geladenes Modul verpasst das Einstecken.
+Die Storage-Seite mountet exFAT von Hand (und lädt das Modul notfalls per
+`insmod` nach), sagt bei einer exFAT-Karte ohne Nutzlast, woran es liegt,
+und bietet **Format exFAT** neben **Format FAT32** — beide im Hintergrund
+mit Statusdatei, beide mit Rückfrage. So lässt sich eine Karte in Machino
+jederzeit zwischen FAT32 (4 GB pro Datei, überall lesbar) und exFAT (keine
+Dateigrenze, Werksformat) umformatieren. `machino-usb-helper status` zeigt
+`exfat:`.
+
+Nicht am Gerät bewiesen (pending-physical B9): dass die Kamera ein
+exFAT-Medium mountet und dass ein mit diesem `mkfs.exfat` geschriebenes
+Volume von Windows/macOS gelesen wird.
+
 ## Bedienung
 
 1. Bundle mit `storage/modules` installieren (jedes Release seit heute).
@@ -99,8 +132,9 @@ unter busybox httpd — machinod forkt weiterhin nicht.
    Apply, Neustart.
 3. Kartenleser mit FAT32-Karte in den Hub. `dmesg` zeigt `usb-storage`,
    `sd 0:0:0:0: [sda] …`, mdev mountet `/mnt/sda1`. Storage-Seite zeigt
-   das Medium — oder den Grund und den Knopf, wenn nicht (exFAT-Karte:
-   „Format FAT32").
+   das Medium — oder den Grund und den Knopf, wenn nicht (exFAT-Karte ohne
+   exFAT-Nutzlast: „Format FAT32"; mit ihr wird sie gemountet, und „Format
+   exFAT" steht neben „Format FAT32").
 4. Modell: `yolov5s_t40_magik.bin` und `manifest.json` auf die Karte,
    KI-Seite → „Use“. Schreiben geht genauso: das Medium ist rw gemountet.
 
