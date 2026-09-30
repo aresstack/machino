@@ -67,7 +67,9 @@ ipsec setup                    gefuehrte Einrichtung (fragt ab, speichert, verbi
 ipsec connect | disconnect     wie die Web-Buttons
 ipsec reconnect                trennen + neu aufbauen (nach einer Aenderung)
 ipsec rekey [ike]              Child-SA (oder IKE-SA) jetzt neu schluesseln
-ipsec ping <ip>                ICMP durch den Tunnel (ping -c 3)
+ipsec ping <ip> [<n>]          Test-Ping: echtes ICMP-Echo aus machinod durch den Tunnel (n Echos, Vorgabe 3)
+ipsec ping                     die zuletzt gepingten Ziele (auf der Kamera gemerkt, wie das WebUI-Dropdown)
+ipsec ping forget <ip>         ein Ziel aus dieser Liste entfernen
 ipsec fetch <ip>[:port]        HTTP GET durch den Tunnel (curl): Status, Bytes, Zeit
 ipsec log [<n>]                die letzten n Zeilen des weirdiked-Logs (logread)
 api get <pfad>                 beliebige Route lesen (Nicht-JSON kommt roh)
@@ -98,9 +100,9 @@ implementiert (`chacha20`) heisst es sofort und mit Namen.
 Die Algorithmen sind Allow-Listen im LANCOM-Raster (`ipsec algos` zeigt es
 mit `[x]` gewaehlt, `[ ]` moeglich, `[-]` nicht implementiert, `*`
 LANCOM-DEFAULT). Dazu die Liveness-Knoepfe `dpd`, `dpdRetries`,
-`nattKeepaliveS`, `childLifetimeMb`, `mtu`. Die Diagnose (`ping`, `fetch`,
-`log`) laeuft in der Shell des Bedienenden, nur IPv4-Literale und Zahlen
-gelangen in die Kommandozeile.
+`nattKeepaliveS`, `childLifetimeMb`, `mtu`. `fetch` und `log` laufen in der
+Shell des Bedienenden (curl, logread), nur IPv4-Literale und Zahlen gelangen
+in die Kommandozeile; `ping` ist ein API-Aufruf (siehe unten).
 
 Rueckgabewerte: `0` ok, `1` API- oder Transportfehler, `2` Bedienfehler.
 `--json` gibt die Antwort des Daemons unformatiert aus — fuer Skripte.
@@ -144,6 +146,29 @@ traffic  : tx 12 Pakete/1024 B  rx 10 Pakete/900 B  uptime 120 s  child-gen 1  i
 Bei `state=failed` steht die Fehlerklasse aus WeirdIKEs Diag in der zweiten
 Zeile (`FEHLER   : authenticationFailed (notify 24)`), nicht ein generisches
 „Error" — dieselbe Trennung wie in der WebUI.
+
+## Test-Ping durch den Tunnel
+
+```
+machinoctl ipsec ping 192.168.178.1        # 3 Echos
+192.168.178.1 via ipsec0: 3/3 Antworten, RTT min/avg/max 44.0/45.2/46.5 ms
+machinoctl ipsec ping 192.168.178.20 1     # ein Echo
+192.168.178.20 via ipsec0: 0/1 Antworten -- keine Antwort (2000 ms je Echo)
+machinoctl ipsec ping                      # die zuletzt gepingten Ziele
+machinoctl ipsec ping forget 192.168.178.20
+```
+
+Das ist der Beweis, dass ein Rechner im privaten LAN hinter dem Gateway
+wirklich erreichbar ist — das Gegenstueck zum „IPsec Test-Ping" von WeirdOS.
+Die Messung macht **machinod** (`POST /api/v1/ipsec/ping`): ein echtes
+ICMP-Echo ueber einen Raw-Socket, gebunden an das Tunnel-Interface, kein
+`ping`-Prozess (machinod forkt nicht). Deshalb ist es kein generisches
+Routing: steht der Tunnel nicht oder liegt das Ziel in keiner **installierten**
+Tunnelroute, sagt die Antwort das mit Grund (Exit 1), statt ein Echo ueber den
+Uplink zu schicken und „keine Antwort" zu melden. Nur IPv4-Literale — DNS
+laeuft nicht durch den Tunnel. Die zuletzt gepingten Ziele (acht, neuestes
+zuerst) merkt sich die Kamera in `/etc/machino/ipsec-ping-targets`; dieselbe
+Liste fuellt das Dropdown der WebUI-Karte „Tunnel test ping".
 
 ## Secrets
 

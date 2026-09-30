@@ -138,6 +138,7 @@ jobs:
             sh machino/tools/check-netui.sh machino/openipc/www/$p.cgi
           done
           sh machino/tools/check-netui.sh machino/openipc/www/machino-devices.cgi
+          sh machino/tools/check-netui.sh machino/openipc/www/machino-ipsec.cgi
           # machino-ai.cgi absichtlich NICHT: die Seite hat keinen
           # <script>-Block (nur onsubmit-confirms), und der Checker verlangt
           # einen -- "kein <script>-Block gefunden" war der rote Lauf 4a4c232.

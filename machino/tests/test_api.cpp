@@ -1159,6 +1159,75 @@ void test_ap11_ipsec_api_grid() {
     remove(MC); remove(DC);
 }
 
+// AP12: der Test-Ping ueber die API. Der Kern (Routenpruefung, Historie) wohnt
+// in test_ipsec.cpp; hier der Vertrag: 404 ohne Service, 400 MIT NAMEN fuer
+// Eingaben, 409 mit Grund ohne Tunnel, 200 mit ok=false fuer eine Messung
+// ohne Antwort -- und die Historie in jeder Antwort.
+void test_ap12_ipsec_api_ping() {
+    Rig r;
+    ACHECK(r.api.ipsec_ping("{\"target\":\"10.66.0.7\"}").status == 404);
+    ACHECK(r.api.ipsec_ping_targets().status == 404);
+    ACHECK(r.api.ipsec_ping_forget("{\"target\":\"10.66.0.7\"}").status == 404);
+
+    const char* MC = "test_api_ipsec12_m.conf";
+    const char* DC = "test_api_ipsec12_d.conf";
+    remove(MC); remove(DC); remove("ipsec-ping-targets");
+    struct Be : ApiFakeIpsecBackend {
+        bool ok = true; int pings = 0; machino::ipsec::PingRequest last;
+        bool ping(const machino::ipsec::PingRequest& q, machino::ipsec::PingResult& o) override {
+            ++pings; last = q; o = machino::ipsec::PingResult{}; o.sent = q.count;
+            if (!ok) { o.error = "keine Antwort (2000 ms je Echo)"; return false; }
+            o.received = q.count; o.rtt_min_ms = 44.0; o.rtt_avg_ms = 45.25; o.rtt_max_ms = 46.5; return true;
+        }
+    } be;
+    machino::ipsec::IpsecService svc(be, MC, DC);
+    r.api.set_ipsec_service(&svc);
+
+    api::Response g = r.api.ipsec_ping_targets();
+    ACHECK(g.status == 200 && g.body.get("targets")->is_array() && g.body.get("targets")->size() == 0 && g.body.get("maxCount")->as_int() == 5);
+
+    // Eingaben MIT NAMEN.
+    ACHECK(r.api.ipsec_ping("nicht json").status == 400);
+    api::Response e1 = r.api.ipsec_ping("{\"target\":\"10.66.0.7\",\"foo\":1}");
+    ACHECK(e1.status == 400 && e1.body.get("error")->get("message")->as_string() == "unbekanntes Feld: foo");
+    ACHECK(r.api.ipsec_ping("{}").body.get("error")->get("message")->as_string() == "target: fehlt");
+    api::Response e2 = r.api.ipsec_ping("{\"target\":\"fritz.box\"}");
+    ACHECK(e2.status == 400 && e2.body.get("error")->get("code")->as_string() == "invalid_value"
+           && e2.body.get("error")->get("message")->as_string().find("fritz.box") != std::string::npos);
+    ACHECK(r.api.ipsec_ping("{\"target\":\"10.66.0.7\",\"count\":9}").status == 400);
+    ACHECK(r.api.ipsec_ping("{\"target\":\"10.66.0.7\",\"timeoutMs\":10}").status == 400);
+    ACHECK(r.api.ipsec_ping("{\"target\":\"10.66.0.7\",\"count\":5,\"timeoutMs\":5000}").status == 400);   // > 10 s am Stueck
+    // Kein Tunnel: 409 mit Grund, kein Ping, nichts gemerkt.
+    api::Response c1 = r.api.ipsec_ping("{\"target\":\"10.66.0.7\"}");
+    ACHECK(c1.status == 409 && c1.body.get("error")->get("message")->as_string() == "kein Tunnel (Daemon laeuft nicht)" && be.pings == 0);
+    be.running = true;
+    be.status_text = "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\nroute=10.66.0.0/24 tsr ipsec0\n";
+    api::Response c2 = r.api.ipsec_ping("{\"target\":\"192.168.1.1\"}");
+    ACHECK(c2.status == 409 && c2.body.get("error")->get("message")->as_string().find("keiner installierten Tunnelroute") != std::string::npos);
+    ACHECK(r.api.ipsec_ping_targets().body.get("targets")->size() == 0);
+    // Die Messung.
+    api::Response ok = r.api.ipsec_ping("{\"target\":\"10.66.0.7\",\"count\":2,\"timeoutMs\":1000}");
+    ACHECK(ok.status == 200 && ok.body.get("ok")->as_bool() && ok.body.get("sent")->as_int() == 2 && ok.body.get("received")->as_int() == 2);
+    ACHECK(ok.body.get("via")->as_string() == "ipsec0" && ok.body.get("rttMs")->as_number() == 45.25
+           && ok.body.get("rttMinMs")->as_number() == 44.0 && ok.body.get("rttMaxMs")->as_number() == 46.5 && !ok.body.has("error"));
+    ACHECK(be.last.target == "10.66.0.7" && be.last.ifname == "ipsec0" && be.last.count == 2 && be.last.timeout_ms == 1000);
+    ACHECK(ok.body.get("targets")->size() == 1 && ok.body.get("targets")->at(0).as_string() == "10.66.0.7");
+    // Vorgaben: count 1, timeoutMs 2000.
+    ACHECK(r.api.ipsec_ping("{\"target\":\"10.66.0.8\"}").status == 200 && be.last.count == 1 && be.last.timeout_ms == 2000);
+    // Ohne Antwort: 200, ok=false, der Grund -- eine Messung, kein API-Fehler; das Ziel bleibt gemerkt.
+    be.ok = false;
+    api::Response no = r.api.ipsec_ping("{\"target\":\"10.66.0.9\"}");
+    ACHECK(no.status == 200 && !no.body.get("ok")->as_bool() && no.body.get("received")->as_int() == 0
+           && no.body.get("error")->as_string() == "keine Antwort (2000 ms je Echo)" && !no.body.has("rttMs"));
+    ACHECK(no.body.get("targets")->size() == 3 && no.body.get("targets")->at(0).as_string() == "10.66.0.9");
+    // Vergessen.
+    api::Response f = r.api.ipsec_ping_forget("{\"target\":\"10.66.0.9\"}");
+    ACHECK(f.status == 200 && f.body.get("targets")->size() == 2 && f.body.get("targets")->at(0).as_string() == "10.66.0.8");
+    ACHECK(r.api.ipsec_ping_forget("{\"target\":\"nope\"}").status == 400 && r.api.ipsec_ping_forget("{").status == 400);
+    ACHECK(r.api.ipsec_ping_targets().body.get("targets")->size() == 2);
+    remove(MC); remove(DC); remove("ipsec-ping-targets");
+}
+
 // W2 (Day/Night): /night/*-Vertrag der Stock-Seite an Fake-GPIO + Rig.
 namespace {
 struct FakeNightGpio : IGpioController {
@@ -1535,6 +1604,7 @@ void run_api_tests() {
     test_ap3_ipsec_api();
     test_ap10_ipsec_api_fields();
     test_ap11_ipsec_api_grid();
+    test_ap12_ipsec_api_ping();
     test_get_documents();
     test_ai_detectors_route_and_person_config();
     test_patch_cold_and_partial();

@@ -113,8 +113,10 @@ std::string ipsec_summary(const Json& cfg, const Json& status);
 const char* help_text();
 // AP11: der Algorithmen-Katalog aus GET /api/v1/ipsec (algorithms) als Text.
 std::string ipsec_algos_text(const Json& catalogue, const Json& cfg);
+// AP12: der Test-Ping geht an die API (POST /api/v1/ipsec/ping); nur ein
+// IPv4-Literal darf hinein.
+bool ping_target_ok(const std::string& target, std::string& err);
 // AP11: Shell-Kommandozeilen der Diagnose (rein; Argumente werden geprueft).
-bool ping_cmdline(const std::string& target, std::string& cmd, std::string& err);
 bool fetch_cmdline(const std::string& target, std::string& cmd, std::string& err);
 std::string log_cmdline(int lines);
 // Die Feldtabelle ('ipsec fields').

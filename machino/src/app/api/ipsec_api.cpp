@@ -279,6 +279,90 @@ Response ApiService::ipsec_rekey(bool ike_sa)
     return Response{200, j};
 }
 
+// ---- AP12: Test-Ping -------------------------------------------------------
+
+namespace {
+Json ping_targets_json(const ipsec::IpsecService& svc)
+{
+    Json a = Json::array();
+    for (const auto& t : svc.ping_targets()) a.push(Json::string(t));
+    return a;
+}
+} // namespace
+
+Response ApiService::ipsec_ping_targets()
+{
+    const char* path = "/api/v1/ipsec/ping";
+    if (!ipsec_) return fail(404, "not_found", path, "ipsec ist auf dieser Plattform nicht verdrahtet");
+    Json j = Json::object();
+    j.set("targets", ping_targets_json(*ipsec_));
+    j.set("maxCount", Json::integer(ipsec::kPingMaxCount));
+    j.set("maxTimeoutMs", Json::integer(ipsec::kPingMaxTimeoutMs));
+    return Response{200, j};
+}
+
+Response ApiService::ipsec_ping(const std::string& body)
+{
+    const char* path = "/api/v1/ipsec/ping";
+    if (!ipsec_) return fail(404, "not_found", path, "ipsec ist auf dieser Plattform nicht verdrahtet");
+    Json in;
+    std::string err;
+    if (!Json::parse(body, in, err)) return fail(400, "bad_json", path, err);
+    if (!in.is_object()) return fail(400, "bad_json", path, "Objekt erwartet");
+    for (const auto& m : in.members())
+        if (m.first != "target" && m.first != "count" && m.first != "timeoutMs")
+            return fail(400, "unknown_field", path, "unbekanntes Feld: " + m.first);
+    std::string target;
+    long long count = 1, timeout = 2000;
+    if (!take_string(in, "target", target, err) ||
+        !take_int(in, "count", 1, ipsec::kPingMaxCount, count, err) ||
+        !take_int(in, "timeoutMs", ipsec::kPingMinTimeoutMs, ipsec::kPingMaxTimeoutMs, timeout, err))
+        return fail(400, "invalid_value", path, err);
+    if (target.empty()) return fail(400, "invalid_value", path, "target: fehlt");
+    if (!ipsec::ipv4_literal(target)) return fail(400, "invalid_value", path, "target: IPv4-Adresse erwartet, nicht '" + target + "'");
+
+    ipsec::PingResult res;
+    const std::string e = ipsec_->ping(target, (int)count, (int)timeout, res);
+    // Kein Tunnel / Ziel ausserhalb der Tunnelrouten: 409 mit dem Grund. Eine
+    // MESSUNG ohne Antwort ist dagegen 200 mit ok=false -- der Ping lief.
+    if (!e.empty()) {
+        const bool bad_input = e.rfind("target", 0) == 0 || e.rfind("count", 0) == 0 || e.rfind("timeoutMs", 0) == 0;
+        return fail(bad_input ? 400 : 409, bad_input ? "invalid_value" : "conflict", path, e);
+    }
+    Json j = Json::object();
+    j.set("ok", Json::boolean(res.received > 0));
+    j.set("target", Json::string(target));
+    j.set("via", Json::string(res.via));
+    j.set("sent", Json::integer(res.sent));
+    j.set("received", Json::integer(res.received));
+    if (res.received > 0) {
+        j.set("rttMs", Json::number(res.rtt_avg_ms));
+        j.set("rttMinMs", Json::number(res.rtt_min_ms));
+        j.set("rttMaxMs", Json::number(res.rtt_max_ms));
+    }
+    if (!res.error.empty()) j.set("error", Json::string(res.error));
+    j.set("targets", ping_targets_json(*ipsec_));
+    return Response{200, j};
+}
+
+Response ApiService::ipsec_ping_forget(const std::string& body)
+{
+    const char* path = "/api/v1/ipsec/ping/forget";
+    if (!ipsec_) return fail(404, "not_found", path, "ipsec ist auf dieser Plattform nicht verdrahtet");
+    Json in;
+    std::string err;
+    if (!Json::parse(body, in, err)) return fail(400, "bad_json", path, err);
+    if (!in.is_object()) return fail(400, "bad_json", path, "Objekt erwartet");
+    std::string target;
+    if (!take_string(in, "target", target, err)) return fail(400, "invalid_value", path, err);
+    const std::string e = ipsec_->forget_ping_target(target);
+    if (!e.empty()) return fail(400, "invalid_value", path, e);
+    Json j = Json::object();
+    j.set("ok", Json::boolean(true));
+    j.set("targets", ping_targets_json(*ipsec_));
+    return Response{200, j};
+}
+
 Response ApiService::ipsec_status()
 {
     if (!ipsec_) return fail(404, "not_found", "/api/v1/ipsec/status", "ipsec ist auf dieser Plattform nicht verdrahtet");

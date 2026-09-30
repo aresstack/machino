@@ -84,6 +84,10 @@ public:
     Response ipsec_disconnect();                       // POST /api/v1/ipsec/disconnect
     Response ipsec_rekey(bool ike_sa);                 // POST /api/v1/ipsec/rekey | rekey-ike (AP11)
     Response ipsec_status();                           // GET  /api/v1/ipsec/status
+    // AP12: Test-Ping durch den Tunnel + Ziel-Historie auf dem Geraet.
+    Response ipsec_ping(const std::string& body);      // POST /api/v1/ipsec/ping   {target,count?,timeoutMs?}
+    Response ipsec_ping_targets();                     // GET  /api/v1/ipsec/ping   {targets:[...]}
+    Response ipsec_ping_forget(const std::string& body); // POST /api/v1/ipsec/ping/forget {target}
     // Partial update. `if_match` = expected revision ("" = none). Serialised.
     Response patch_config(const std::string& body, const std::string& if_match);
 

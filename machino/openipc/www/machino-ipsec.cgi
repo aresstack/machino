@@ -190,7 +190,28 @@ page_title="IPsec"
 	<button id="cfg-save4" class="btn btn-sm btn-primary" type="button">Save</button>
 </div></div></div>
 
-<!-- Card 5: diagnostics -->
+<!-- Card 5: tunnel test ping (AP12) -->
+<div class="col-12"><div class="card"><div class="card-body">
+	<div class="mj-live-head"><h3 class="mj-cap">Tunnel test ping</h3><span class="mj-live-rule"></span></div>
+	<p class="mj-card-note">Sends a real ICMP echo from the camera through the tunnel interface
+	  (not generic routing) &mdash; the proof that a host in the private LAN behind the gateway is
+	  really reachable. Target e.g. the LAN address of your router. The dropdown keeps the last
+	  targets on the camera, not in the browser.</p>
+	<div class="row g-2 align-items-end">
+	  <div class="col-12 col-md-5"><label class="form-label" for="ping-target">Target (IPv4 behind the gateway)</label>
+	    <input class="form-control form-control-sm mj-mono" id="ping-target" list="ping-targets" placeholder="192.168.178.1" inputmode="decimal" autocomplete="off">
+	    <datalist id="ping-targets"></datalist></div>
+	  <div class="col-4 col-md-2"><label class="form-label" for="ping-count">Echos</label>
+	    <select class="form-select form-select-sm" id="ping-count"><option value="1">1</option><option value="3" selected>3</option><option value="5">5</option></select></div>
+	  <div class="col-8 col-md-5 d-flex gap-2">
+	    <button id="ping-send" class="btn btn-sm btn-primary" type="button">Ping</button>
+	    <button id="ping-forget" class="btn btn-sm btn-outline-secondary" type="button" title="Remove this target from the camera's list">Forget target</button>
+	  </div>
+	</div>
+	<div id="ping-result" class="mt-2 mj-mono" hidden></div>
+</div></div></div>
+
+<!-- Card 6: diagnostics -->
 <div class="col-12"><div class="card"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap">Status &amp; diagnostics</h3><span class="mj-live-rule"></span></div>
 	<div class="row">
@@ -483,6 +504,52 @@ async function loadStatus() {
   $("ips-cell").hidden = !((s.actualUnderlay || s.requestedUnderlay) === "cellular");
 }
 
+// AP12: the tunnel test ping. The measurement runs in machinod (raw ICMP
+// bound to the tunnel interface); the target list lives on the camera.
+function fillPingTargets(list) {
+  const dl = $("ping-targets"); dl.replaceChildren();
+  (list || []).forEach((t) => { const o = document.createElement("option"); o.value = t; dl.appendChild(o); });
+  if (!$("ping-target").value && list && list.length) $("ping-target").value = list[0];
+}
+async function loadPingTargets() {
+  const res = await api("GET", "/api/v1/ipsec/ping");
+  if (res.status === 200 && res.body) fillPingTargets(res.body.targets);
+}
+function pingResult(text, kind) {
+  const el = $("ping-result"); el.textContent = text; el.hidden = !text;
+  el.className = "mt-2 mj-mono " + (kind === "ok" ? "text-success" : kind === "bad" ? "text-danger" : "text-muted");
+}
+const fmtMs = (v) => (typeof v === "number" ? v.toFixed(1) : "?");
+async function sendPing() {
+  const target = $("ping-target").value.trim();
+  if (!target) { pingResult("Enter a target address.", "bad"); return; }
+  const count = parseInt($("ping-count").value, 10) || 1;
+  $("ping-send").disabled = true;
+  pingResult("Pinging " + target + " through the tunnel\u2026", "");
+  try {
+    const res = await api("POST", "/api/v1/ipsec/ping", {target, count, timeoutMs: 2000});
+    const b = res.body || {};
+    if (res.status !== 200) { pingResult(reason(res, "ping failed"), "bad"); return; }
+    if (b.targets) fillPingTargets(b.targets);
+    if (b.ok) {
+      pingResult("OK \u2013 " + b.received + "/" + b.sent + " replies via " + (b.via || "tunnel") +
+                 ", RTT " + fmtMs(b.rttMs) + " ms (min " + fmtMs(b.rttMinMs) + ", max " + fmtMs(b.rttMaxMs) + ")", "ok");
+    } else {
+      pingResult("No reply \u2013 " + b.received + "/" + b.sent + " via " + (b.via || "tunnel") + (b.error ? ": " + b.error : ""), "bad");
+    }
+  } finally { $("ping-send").disabled = false; }
+}
+async function forgetPingTarget() {
+  const target = $("ping-target").value.trim();
+  if (!target) return;
+  const res = await api("POST", "/api/v1/ipsec/ping/forget", {target});
+  if (res.status === 200 && res.body) { fillPingTargets(res.body.targets); $("ping-target").value = ""; pingResult("Forgot " + target + ".", ""); }
+  else pingResult(reason(res, "could not forget the target"), "bad");
+}
+$("ping-send").addEventListener("click", sendPing);
+$("ping-forget").addEventListener("click", forgetPingTarget);
+$("ping-target").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendPing(); } });
+
 $("cfg-save").addEventListener("click", save);
 $("cfg-save2").addEventListener("click", save);
 $("cfg-save3").addEventListener("click", save);
@@ -502,6 +569,7 @@ $("ips-reconnect").addEventListener("click", async () => {
 
 loadConfig();
 loadStatus();
+loadPingTargets();
 setInterval(loadStatus, 3000);
 })();
 </script>

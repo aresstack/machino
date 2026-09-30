@@ -129,6 +129,31 @@ public:
 // Mapping "Daemon laeuft nicht" -> Disabled|Disconnected.
 VpnStatus parse_status(const std::string& text, bool daemon_running, bool enabled);
 
+// AP12: der Test-Ping durch den Tunnel (WeirdOS "IPsec Test-Ping"). Ein
+// echtes inneres ICMP-Echo an eine IPv4-Adresse HINTER dem Gateway, ueber
+// das Tunnel-Interface -- nicht ueber generisches Routing. Der Beweis, dass
+// ein Rechner im privaten LAN wirklich erreichbar ist.
+struct PingRequest {
+    std::string target;        // IPv4-Literal
+    std::string ifname;        // Tunnel-Interface (ipsec0); "" = Routing entscheidet
+    int         count = 1;     // 1..kPingMaxCount
+    int         timeout_ms = 2000;   // je Echo
+};
+struct PingResult {
+    std::string via;           // das Interface, ueber das gesendet wurde (vom Service gesetzt)
+    int    sent = 0, received = 0;
+    double rtt_min_ms = 0, rtt_avg_ms = 0, rtt_max_ms = 0;
+    std::string error;         // leer = mindestens eine Antwort
+};
+constexpr int    kPingMaxCount     = 5;
+constexpr int    kPingMinTimeoutMs = 100;
+constexpr int    kPingMaxTimeoutMs = 5000;
+constexpr int    kPingMaxTotalMs   = 10000;   // count * timeout: der API-Thread blockt so lange
+constexpr size_t kPingHistoryMax   = 8;       // wie das WeirdOS-Dropdown: die letzten Ziele
+// "a.b.c.d" in "p.q.r.s/n"? (rein; false bei Unsinn)
+bool ipv4_in_prefix(const std::string& ip, const std::string& prefix);
+bool ipv4_literal(const std::string& s);
+
 // Die Naht zur Welt: Dateien liest/schreibt der Service selbst; Prozess und
 // Socket gehen ueber diesen Port (Ziel: Init-Skript + /var/run/weirdike.sock;
 // Hosttests: Attrappe).
@@ -158,6 +183,13 @@ public:
     // parst ihn; machinod fragt nur, um HOST_STORE in der UI auszugrauen und
     // NIE heimlich auf NONE zurueckzufallen.) Default: nein.
     virtual bool host_store_available() { return false; }
+
+    // AP12: ein echtes ICMP-Echo, gebunden an das Tunnel-Interface (Linux:
+    // Raw-Socket + SO_BINDTODEVICE, im Prozess -- machinod forkt nicht).
+    // Vorgabe: nicht verdrahtet (Hosttests ohne Netz).
+    virtual bool ping(const PingRequest& req, PingResult& out) {
+        (void)req; out = PingResult{}; out.error = "Ping ist in diesem Build nicht verdrahtet"; return false;
+    }
 };
 
 class IpsecService {
@@ -192,6 +224,16 @@ public:
     std::string rekey(bool ike_sa);
     VpnStatus   status();
 
+    // AP12: Test-Ping. Prueft Ziel und Tunnel (Child steht, Interface
+    // bekannt, Ziel in einer INSTALLIERTEN Tunnelroute -- sonst ginge das
+    // Paket nie durch den Tunnel), merkt sich das Ziel auf dem Geraet und
+    // misst. Leerer Rueckgabestring = gemessen (auch "keine Antwort" ist ein
+    // Messergebnis, es steht in out.error); sonst der Grund der Ablehnung.
+    std::string ping(const std::string& target, int count, int timeout_ms, PingResult& out);
+    // Die letzten Ziele, neuestes zuerst (Datei neben ipsec.conf).
+    std::vector<std::string> ping_targets() const;
+    std::string forget_ping_target(const std::string& target);   // leer = ok
+
     // AP5 §9 / AP7 §9,§10: regelmaessig aus dem Hauptthread mit der Uhr des
     // Aufrufers. AP10: der ERSTE Aufruf plant bei enabled + auto_connect den
     // Verbindungsaufbau (sofort; scheitert er, etwa weil das Mobilfunk-
@@ -219,6 +261,8 @@ private:
     // AP9: die PEM-Dateien liegen neben der Daemon-Datei (/etc/weirdike/).
     std::string ca_pem_path_() const;
     std::string extra_pem_path_() const;
+    std::string ping_targets_path_() const;   // AP12: /etc/machino/ipsec-ping-targets
+    std::string remember_ping_target_(const std::string& target);
     bool has_daemon_key_(const char* key) const;   // "key = ..." in weirdike.conf?
     static bool file_exists_(const std::string& path);
 

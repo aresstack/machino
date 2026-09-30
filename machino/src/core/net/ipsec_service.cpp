@@ -456,6 +456,132 @@ std::string IpsecService::disconnect()
     return out;
 }
 
+// ---- AP12: Test-Ping ------------------------------------------------------
+
+bool ipv4_literal(const std::string& s)
+{
+    unsigned a, b, c, d; char extra;
+    if (s.size() > 15 || sscanf(s.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4) return false;
+    for (char ch : s) if (!((ch >= '0' && ch <= '9') || ch == '.')) return false;
+    return a < 256 && b < 256 && c < 256 && d < 256;
+}
+
+namespace {
+bool ipv4_bits(const std::string& s, uint32_t& out)
+{
+    unsigned a, b, c, d; char extra;
+    if (!ipv4_literal(s) || sscanf(s.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4) return false;
+    out = (uint32_t)((a << 24) | (b << 16) | (c << 8) | d);
+    return true;
+}
+} // namespace
+
+bool ipv4_in_prefix(const std::string& ip, const std::string& prefix)
+{
+    const size_t slash = prefix.find('/');
+    if (slash == std::string::npos) return false;
+    uint32_t a = 0, n = 0;
+    if (!ipv4_bits(ip, a) || !ipv4_bits(prefix.substr(0, slash), n)) return false;
+    char extra;
+    unsigned len;
+    if (sscanf(prefix.c_str() + slash + 1, "%u%c", &len, &extra) != 1 || len > 32) return false;
+    const uint32_t mask = len == 0 ? 0u : (0xffffffffu << (32 - len));
+    return (a & mask) == (n & mask);
+}
+
+std::string IpsecService::ping_targets_path_() const
+{
+    const size_t slash = machino_path_.find_last_of("/\\");
+    const std::string dir = slash == std::string::npos ? std::string() : machino_path_.substr(0, slash + 1);
+    return dir + "ipsec-ping-targets";
+}
+
+std::vector<std::string> IpsecService::ping_targets() const
+{
+    bool existed = false;
+    const std::string text = read_file(ping_targets_path_(), existed);
+    std::vector<std::string> out;
+    size_t pos = 0;
+    while (pos < text.size() && out.size() < kPingHistoryMax) {
+        size_t eol = text.find('\n', pos);
+        const std::string line = trim(text.substr(pos, eol == std::string::npos ? std::string::npos : eol - pos));
+        pos = eol == std::string::npos ? text.size() : eol + 1;
+        if (!ipv4_literal(line)) continue;              // eine kaputte Zeile faellt still raus, der Rest bleibt
+        bool dup = false;
+        for (const auto& t : out) if (t == line) { dup = true; break; }
+        if (!dup) out.push_back(line);
+    }
+    return out;
+}
+
+std::string IpsecService::remember_ping_target_(const std::string& target)
+{
+    std::vector<std::string> list = ping_targets();
+    for (size_t i = 0; i < list.size(); ++i) if (list[i] == target) { list.erase(list.begin() + i); break; }
+    list.insert(list.begin(), target);
+    while (list.size() > kPingHistoryMax) list.pop_back();
+    std::string text;
+    for (const auto& t : list) text += t + "\n";
+    std::string err;
+    if (!write_atomic_0600(ping_targets_path_(), text, err)) return "Ziel-Historie: " + err;
+    return {};
+}
+
+std::string IpsecService::forget_ping_target(const std::string& target)
+{
+    if (!ipv4_literal(target)) return "target: IPv4-Adresse erwartet";
+    std::vector<std::string> list = ping_targets();
+    std::string text;
+    for (const auto& t : list) if (t != target) text += t + "\n";
+    std::string err;
+    if (!write_atomic_0600(ping_targets_path_(), text, err)) return "Ziel-Historie: " + err;
+    return {};
+}
+
+std::string IpsecService::ping(const std::string& target, int count, int timeout_ms, PingResult& out)
+{
+    out = PingResult{};
+    if (!ipv4_literal(target)) return "target: IPv4-Adresse erwartet (kein Hostname -- DNS laeuft nicht durch den Tunnel)";
+    if (count < 1 || count > kPingMaxCount) return "count: 1.." + std::to_string(kPingMaxCount);
+    if (timeout_ms < kPingMinTimeoutMs || timeout_ms > kPingMaxTimeoutMs)
+        return "timeoutMs: " + std::to_string(kPingMinTimeoutMs) + ".." + std::to_string(kPingMaxTimeoutMs);
+    if (count * timeout_ms > kPingMaxTotalMs)
+        return "count * timeoutMs darf " + std::to_string(kPingMaxTotalMs) + " ms nicht uebersteigen";
+
+    // Erst der Tunnel: ohne Child und Interface gibt es nichts, wodurch das
+    // Echo gehen koennte -- das wird gesagt, nicht als "keine Antwort" getarnt.
+    const VpnStatus st = status();
+    if (!st.daemon_running) return "kein Tunnel (Daemon laeuft nicht)";
+    if (st.state != VpnState::ChildEstablished)
+        return std::string("Tunnel steht nicht (") + vpn_runtime_state_name(st.runtime) + ")";
+    if (st.interface_name.empty()) return "Tunnel ohne Interface -- der Daemon meldet keins";
+    bool routed = false;
+    std::string prefixes;
+    for (const auto& r : st.routes) {
+        if (ipv4_in_prefix(target, r.prefix)) routed = true;
+        if (!prefixes.empty()) prefixes += ", ";
+        prefixes += r.prefix;
+    }
+    if (!routed)
+        return prefixes.empty()
+            ? "keine Tunnelroute installiert -- das Echo wuerde den Tunnel nie erreichen"
+            : target + " liegt in keiner installierten Tunnelroute (" + prefixes + ")";
+
+    // Das Ziel wird gemerkt, sobald es gueltig ist und der Tunnel steht --
+    // ein Ziel, das gerade nicht antwortet, ist genau das, das man wiederholt.
+    const std::string herr = remember_ping_target_(target);
+    if (!herr.empty()) return herr;
+
+    PingRequest req;
+    req.target = target;
+    req.ifname = st.interface_name;
+    req.count = count;
+    req.timeout_ms = timeout_ms;
+    backend_.ping(req, out);          // false = keine Antwort / Socketfehler: steht in out.error
+    out.via = st.interface_name;
+    return {};
+}
+
 std::string IpsecService::rekey(bool ike_sa)
 {
     if (!backend_.daemon_running()) return "kein Tunnel (Daemon laeuft nicht)";

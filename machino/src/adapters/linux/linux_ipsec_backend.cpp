@@ -7,6 +7,10 @@
 #include <net/route.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip_icmp.h>
+#include <sys/time.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -172,6 +176,126 @@ bool LinuxIpsecBackend::host_store_available()
         struct stat st;
         if (::stat(cand[i], &st) == 0 && (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))) return true;
     }
+    return false;
+}
+
+// ---- AP12: Test-Ping -------------------------------------------------------
+
+namespace {
+
+uint16_t icmp_checksum(const uint8_t* data, size_t len)
+{
+    uint32_t sum = 0;
+    for (size_t i = 0; i + 1 < len; i += 2) sum += (uint32_t)((data[i] << 8) | data[i + 1]);
+    if (len & 1) sum += (uint32_t)(data[len - 1] << 8);
+    while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+    return (uint16_t)~sum;
+}
+
+double now_ms()
+{
+    timespec ts;
+    ::clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+} // namespace
+
+bool LinuxIpsecBackend::ping(const PingRequest& req, PingResult& out)
+{
+    out = PingResult{};
+    sockaddr_in dst;
+    std::memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    if (::inet_pton(AF_INET, req.target.c_str(), &dst.sin_addr) != 1) { out.error = "target kein IPv4-Literal"; return false; }
+
+    const int fd = ::socket(AF_INET, SOCK_RAW | SOCK_CLOEXEC, IPPROTO_ICMP);
+    if (fd < 0) { out.error = std::string("ICMP-Socket: ") + strerror(errno); return false; }
+    if (!req.ifname.empty() &&
+        ::setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, req.ifname.c_str(), (socklen_t)(req.ifname.size() + 1)) != 0) {
+        out.error = "Tunnel-Interface " + req.ifname + ": " + strerror(errno);
+        ::close(fd);
+        return false;
+    }
+
+    // Identifier = PID (wie ping), Sequenz 1..count. Der Kernel liefert an
+    // einen Raw-Socket JEDES ICMP (auch fremde Echos) -- gefiltert wird hier.
+    const uint16_t ident = (uint16_t)(::getpid() & 0xffff);
+    uint8_t pkt[64];
+    double sum = 0;
+    for (int seq = 1; seq <= req.count; ++seq) {
+        std::memset(pkt, 0, sizeof(pkt));
+        icmphdr* h = reinterpret_cast<icmphdr*>(pkt);
+        h->type = ICMP_ECHO;
+        h->code = 0;
+        h->un.echo.id = htons(ident);
+        h->un.echo.sequence = htons((uint16_t)seq);
+        for (size_t i = sizeof(icmphdr); i < sizeof(pkt); ++i) pkt[i] = (uint8_t)i;   // wie ping: erkennbare Nutzlast
+        h->checksum = 0;
+        h->checksum = htons(icmp_checksum(pkt, sizeof(pkt)));
+
+        const double t0 = now_ms();
+        if (::sendto(fd, pkt, sizeof(pkt), 0, (sockaddr*)&dst, sizeof(dst)) != (ssize_t)sizeof(pkt)) {
+            // ENETUNREACH heisst hier: keine Route ueber DIESES Interface.
+            out.error = std::string("senden: ") + strerror(errno);
+            ::close(fd);
+            return false;
+        }
+        ++out.sent;
+
+        // Warten bis zur Antwort auf GENAU dieses Echo oder bis zum Timeout.
+        for (;;) {
+            const double left = (double)req.timeout_ms - (now_ms() - t0);
+            if (left <= 0) break;
+            timeval tv;
+            tv.tv_sec = (time_t)(left / 1000.0);
+            tv.tv_usec = (suseconds_t)((left - (double)tv.tv_sec * 1000.0) * 1000.0);
+            if (tv.tv_sec == 0 && tv.tv_usec < 1000) tv.tv_usec = 1000;
+            ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            uint8_t buf[512];
+            sockaddr_in from;
+            socklen_t fl = sizeof(from);
+            const ssize_t n = ::recvfrom(fd, buf, sizeof(buf), 0, (sockaddr*)&from, &fl);
+            if (n < 0) { if (errno == EINTR) continue; break; }   // EAGAIN = Timeout
+            const double rtt = now_ms() - t0;
+            if (n < (ssize_t)sizeof(iphdr)) continue;
+            const iphdr* ip = reinterpret_cast<const iphdr*>(buf);
+            const size_t ihl = (size_t)ip->ihl * 4;
+            if (ihl < sizeof(iphdr) || (size_t)n < ihl + sizeof(icmphdr)) continue;
+            const icmphdr* r = reinterpret_cast<const icmphdr*>(buf + ihl);
+            if (r->type == ICMP_ECHOREPLY) {
+                if (ntohs(r->un.echo.id) != ident || ntohs(r->un.echo.sequence) != (uint16_t)seq) continue;
+                if (from.sin_addr.s_addr != dst.sin_addr.s_addr) continue;
+                ++out.received;
+                if (out.received == 1 || rtt < out.rtt_min_ms) out.rtt_min_ms = rtt;
+                if (rtt > out.rtt_max_ms) out.rtt_max_ms = rtt;
+                sum += rtt;
+                break;
+            }
+            if (r->type == ICMP_DEST_UNREACH || r->type == ICMP_TIME_EXCEEDED) {
+                // Traegt den Kopf UNSERES Echos: nur dann ist es unsere Antwort.
+                const size_t inner = ihl + sizeof(icmphdr);
+                if ((size_t)n < inner + sizeof(iphdr) + sizeof(icmphdr)) continue;
+                const iphdr* iip = reinterpret_cast<const iphdr*>(buf + inner);
+                const size_t iihl = (size_t)iip->ihl * 4;
+                if ((size_t)n < inner + iihl + sizeof(icmphdr)) continue;
+                const icmphdr* ie = reinterpret_cast<const icmphdr*>(buf + inner + iihl);
+                if (ie->type != ICMP_ECHO || ntohs(ie->un.echo.id) != ident) continue;
+                char who[INET_ADDRSTRLEN];
+                ::inet_ntop(AF_INET, &from.sin_addr, who, sizeof(who));
+                out.error = std::string(r->type == ICMP_DEST_UNREACH ? "unreachable" : "TTL abgelaufen")
+                          + " (ICMP " + std::to_string((int)r->type) + "/" + std::to_string((int)r->code) + " von " + who + ")";
+                break;
+            }
+        }
+    }
+    ::close(fd);
+    if (out.received > 0) {
+        out.rtt_avg_ms = sum / (double)out.received;
+        out.error.clear();
+        return true;
+    }
+    if (out.error.empty()) out.error = "keine Antwort (" + std::to_string(req.timeout_ms) + " ms je Echo)";
     return false;
 }
 

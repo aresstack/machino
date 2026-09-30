@@ -285,11 +285,34 @@ void test_commands_ipsec() {
     t.http.reply("POST", "/api/v1/ipsec/rekey", 409, "{\"ok\":false,\"error\":{\"code\":\"conflict\",\"message\":\"kein Tunnel (Daemon laeuft nicht)\"}}");
     t.err.clear();
     CCHECK(t.run({"ipsec", "rekey"}) == 1 && has(t.err, "kein Tunnel"));
-    // Diagnose: die Konsole baut geprueft Kommandozeilen, die Shell fuehrt aus
-    t.shell_out = "64 bytes from 192.168.110.11: seq=0 ttl=63 time=45.1 ms\n"; t.out.clear();
-    CCHECK(t.run({"ipsec", "ping", "192.168.110.11"}) == 0 && t.shell_cmds.back() == "ping -c 3 -W 2 192.168.110.11 2>&1" && has(t.out, "64 bytes from"));
-    CCHECK(t.run({"ipsec", "ping", "fritz.box; rm -rf /"}) == 2 && t.shell_cmds.size() == 1);
-    CCHECK(t.run({"ipsec", "ping", "192.168.110.11", "x"}) == 2);
+    // AP12: der Test-Ping laeuft im DAEMON (POST /api/v1/ipsec/ping), nie in der Shell.
+    t.http.reply("POST", "/api/v1/ipsec/ping", 200, "{\"ok\":true,\"target\":\"192.168.110.11\",\"via\":\"ipsec0\",\"sent\":3,\"received\":3,\"rttMs\":45.25,\"rttMinMs\":44,\"rttMaxMs\":46.5,\"targets\":[\"192.168.110.11\"]}");
+    t.out.clear();
+    { const size_t sh = t.shell_cmds.size();
+      CCHECK(t.run({"ipsec", "ping", "192.168.110.11"}) == 0 && t.last().path == "/api/v1/ipsec/ping"
+             && has(t.last().body, "\"target\":\"192.168.110.11\"") && has(t.last().body, "\"count\":3"));
+      CCHECK(has(t.out, "192.168.110.11 via ipsec0: 3/3 Antworten, RTT min/avg/max 44.0/45.2/46.5 ms") || has(t.out, "44.0/45.3/46.5 ms"));
+      CCHECK(t.shell_cmds.size() == sh); }
+    CCHECK(t.run({"ipsec", "ping", "192.168.110.11", "5"}) == 0 && has(t.last().body, "\"count\":5"));
+    CCHECK(t.run({"ipsec", "ping", "fritz.box; rm -rf /"}) == 2 && t.run({"ipsec", "ping", "192.168.110.11", "0"}) == 2);
+    CCHECK(t.run({"ipsec", "ping", "192.168.110.11", "x"}) == 2 && t.run({"ipsec", "ping", "192.168.110.11", "3", "x"}) == 2);
+    t.http.reply("POST", "/api/v1/ipsec/ping", 200, "{\"ok\":false,\"target\":\"10.0.0.1\",\"via\":\"ipsec0\",\"sent\":3,\"received\":0,\"error\":\"keine Antwort (2000 ms je Echo)\",\"targets\":[\"10.0.0.1\"]}");
+    t.out.clear();
+    CCHECK(t.run({"ipsec", "ping", "10.0.0.1"}) == 1 && has(t.out, "0/3 Antworten -- keine Antwort (2000 ms je Echo)"));
+    t.http.reply("POST", "/api/v1/ipsec/ping", 409, "{\"ok\":false,\"error\":{\"code\":\"conflict\",\"message\":\"kein Tunnel (Daemon laeuft nicht)\"}}");
+    t.err.clear();
+    CCHECK(t.run({"ipsec", "ping", "10.0.0.1"}) == 1 && has(t.err, "kein Tunnel"));
+    // Die Historie liegt auf dem Geraet: 'ipsec ping' zeigt sie, 'forget' entfernt.
+    t.http.reply("GET", "/api/v1/ipsec/ping", 200, "{\"targets\":[\"10.0.0.1\",\"192.168.110.11\"]}");
+    t.out.clear();
+    CCHECK(t.run({"ipsec", "ping"}) == 0 && has(t.out, "  10.0.0.1\n  192.168.110.11\n"));
+    t.http.reply("POST", "/api/v1/ipsec/ping/forget", 200, "{\"ok\":true,\"targets\":[]}");
+    CCHECK(t.run({"ipsec", "ping", "forget", "10.0.0.1"}) == 0 && t.last().path == "/api/v1/ipsec/ping/forget" && t.last().body == "{\"target\":\"10.0.0.1\"}");
+    CCHECK(t.run({"ipsec", "ping", "forget", "nope"}) == 2 && t.run({"ipsec", "ping", "forget"}) == 2);
+    t.http.reply("GET", "/api/v1/ipsec/ping", 200, "{\"targets\":[]}");
+    t.out.clear();
+    CCHECK(t.run({"ipsec", "ping"}) == 0 && has(t.out, "noch kein Ziel gepingt"));
+    // Diagnose in der Shell (fetch, log): die Konsole baut geprueft Kommandozeilen, die Shell fuehrt aus
     CCHECK(t.run({"ipsec", "fetch", "192.168.110.1:8080"}) == 0 && has(t.shell_cmds.back(), "http://192.168.110.1:8080/") && has(t.shell_cmds.back(), "curl -s -m 5"));
     CCHECK(t.run({"ipsec", "fetch", "192.168.110.1"}) == 0 && has(t.shell_cmds.back(), "http://192.168.110.1:80/"));
     CCHECK(t.run({"ipsec", "fetch", "192.168.110.1:0"}) == 2 && t.run({"ipsec", "fetch", "example.org"}) == 2);
@@ -297,9 +320,9 @@ void test_commands_ipsec() {
     CCHECK(t.run({"ipsec", "log", "5"}) == 0 && has(t.shell_cmds.back(), "tail -n 5"));
     CCHECK(t.run({"ipsec", "log", "0"}) == 2 && t.run({"ipsec", "log", "x"}) == 2);
     t.shell_ok = false; t.err.clear();
-    CCHECK(t.run({"ipsec", "ping", "10.0.0.1"}) == 1 && has(t.err, "ping: fehlgeschlagen"));
+    CCHECK(t.run({"ipsec", "fetch", "10.0.0.1"}) == 1 && has(t.err, "curl: fehlgeschlagen"));
     t.shell_ok = true;
-    { Term noshell; noshell.c.shell = nullptr; CCHECK(noshell.run({"ipsec", "ping", "10.0.0.1"}) == 2 && has(noshell.err, "Kamera-Shell")); }
+    { Term noshell; noshell.c.shell = nullptr; CCHECK(noshell.run({"ipsec", "fetch", "10.0.0.1"}) == 2 && has(noshell.err, "Kamera-Shell")); }
 
     // enable/disable
     CCHECK(t.run({"ipsec", "disable"}) == 0 && t.last().body == "{\"enabled\":false}");
@@ -535,6 +558,11 @@ hw::ResolvedHardware make_hw() {
 struct CtlFakeIpsecBackend : ipsec::IIpsecBackend {
     bool running = false;
     std::string status_text;
+    ipsec::PingRequest last_ping;   // AP12
+    bool ping(const ipsec::PingRequest& q, ipsec::PingResult& o) override {
+        last_ping = q; o = ipsec::PingResult{}; o.sent = o.received = q.count;
+        o.rtt_min_ms = 11.5; o.rtt_avg_ms = 12.5; o.rtt_max_ms = 13.5; return true;
+    }
     bool daemon_running() override { return running; }
     bool start_daemon(std::string&) override { running = true; return true; }
     bool stop_daemon(std::string&) override { running = false; return true; }
@@ -558,6 +586,9 @@ struct ApiHttp : IHttpClient {
         else if (p == "/api/v1/ipsec/disconnect" && m == "POST") r = api.ipsec_disconnect();
         else if (p == "/api/v1/ipsec/status"     && m == "GET")  r = api.ipsec_status();
         else if (p == "/api/v1/ipsec/rekey"      && m == "POST") r = api.ipsec_rekey(false);
+        else if (p == "/api/v1/ipsec/ping"       && m == "POST") r = api.ipsec_ping(body);
+        else if (p == "/api/v1/ipsec/ping"       && m == "GET")  r = api.ipsec_ping_targets();
+        else if (p == "/api/v1/ipsec/ping/forget" && m == "POST") r = api.ipsec_ping_forget(body);
         else if (p == "/api/v1/state"            && m == "GET")  r = api.state();
         else if (p == "/api/v1/config"           && m == "GET")  r = api.config();
         else if (p == "/api/v1/config"           && m == "PATCH") r = api.patch_config(body, "");
@@ -644,6 +675,28 @@ void test_against_real_api() {
     CCHECK(run_command(c, {"ipsec", "config"}) == 0 && has(out, "pskSet: true"));
     CCHECK(!has(out, "real-psk-geheim") && !has(err, "real-psk-geheim"));
     CCHECK(run_command(c, {"ipsec", "disconnect"}) == 0 && !be.running);
+
+    // AP12: der Test-Ping gegen die echte API -- der Body der Konsole wird
+    // angenommen, die Ablehnung (kein Tunnel, Ziel ausserhalb der Tunnelrouten)
+    // kommt MIT GRUND durch, die Historie liegt beim Service.
+    remove("ipsec-ping-targets");
+    out.clear(); err.clear();
+    CCHECK(run_command(c, {"ipsec", "ping", "10.66.0.7"}) == 1 && has(err, "kein Tunnel (Daemon laeuft nicht)"));
+    be.running = true;
+    be.status_text = "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\nlast_notify=0\n";
+    err.clear();
+    CCHECK(run_command(c, {"ipsec", "ping", "10.66.0.7"}) == 1 && has(err, "keine Tunnelroute installiert"));
+    be.status_text = "state=CHILD_SA_ESTABLISHED\ninterface=ipsec0\nlast_notify=0\nroute=10.66.0.0/24 tsr ipsec0\n";
+    out.clear(); err.clear();
+    CCHECK(run_command(c, {"ipsec", "ping", "10.66.0.7", "2"}) == 0 && err.empty());
+    CCHECK(has(out, "10.66.0.7 via ipsec0: 2/2 Antworten, RTT min/avg/max 11.5/12.5/13.5 ms") && be.last_ping.ifname == "ipsec0" && be.last_ping.count == 2);
+    out.clear();
+    CCHECK(run_command(c, {"ipsec", "ping"}) == 0 && has(out, "  10.66.0.7\n"));
+    CCHECK(run_command(c, {"ipsec", "ping", "forget", "10.66.0.7"}) == 0);
+    out.clear();
+    CCHECK(run_command(c, {"ipsec", "ping"}) == 0 && has(out, "noch kein Ziel"));
+    be.running = false;
+    remove("ipsec-ping-targets");
 
     // Der Rest der Konsole gegen die echte API: status, config get/set.
     out.clear();

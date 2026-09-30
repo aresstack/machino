@@ -29,6 +29,10 @@ public:
                         const std::string& gateway_ip, std::string& err) override;
     bool host_store_available() override;   // AP9: /etc/ssl/... vorhanden?
     bool rekey(bool ike_sa, std::string& out) override;   // AP11: ctl rekey | ikerekey
+    // AP12: ICMP-Echo ueber SOCK_RAW/IPPROTO_ICMP (root), SO_BINDTODEVICE auf
+    // das Tunnel-Interface, blockierend mit Timeout -- im API-Thread, nie
+    // im Medienpfad, und ohne fork.
+    bool ping(const PingRequest& req, PingResult& out) override;
 
 private:
     bool peer_route(const std::string& peer_ip, const std::string& ifname,
