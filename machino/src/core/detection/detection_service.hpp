@@ -13,6 +13,7 @@
 #include "core/result.hpp"
 #include "ports/iplatform.hpp"
 #include <atomic>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -65,6 +66,15 @@ public:
     AiState     state() const;
     AiTelemetry telemetry() const;
     void        shutdown();
+    // The live feed for /ws/analytics: called from the poll thread with EVERY
+    // analysed result (empty frames included - the overlay needs "nothing
+    // seen" to differ from "stopped speaking"), and with an empty result
+    // about once a second while the detector idles. `detector` is the
+    // running detector's name ("motion", "person"); `active` is false only
+    // when the detector stops, which clears its boxes on the page. The sink
+    // must not block: it hands a string to the HTTP server's queue.
+    using AnalyticsSink = std::function<void(const std::string& detector, const DetectionResult& r, bool active)>;
+    void set_analytics_sink(AnalyticsSink sink);
 
 private:
     Result start_locked();
@@ -83,6 +93,11 @@ private:
     std::unique_ptr<IDetector> det_;
     std::thread     thread_;
     std::atomic<bool> quit_{false};
+    std::string     run_detector_;     // the name run() reports; set before the thread starts
+
+    mutable std::mutex analytics_m_;
+    AnalyticsSink   analytics_;
+    void emit_analytics(const DetectionResult& r, bool active);
 
     // telemetry (updated by the poll thread under tel_m_)
     mutable std::mutex tel_m_;

@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <deque>
 #include <memory>
 #include <string>
 #include <thread>
@@ -121,6 +122,12 @@ public:
     void set_audio(audio::AudioService* a) { audio_ = a; }
 
     Result start();
+    // /ws/analytics: the live detection feed the stock WebUI's overlay draws
+    // (analytics-overlay.js on the Ai tab). The detection thread hands one
+    // JSON message per analysed frame in here; the poll loop fans it out to
+    // every subscribed socket on its next tick (250 ms idle, 20 ms while a
+    // preview streams). Thread-safe, never blocks, keeps the newest 16.
+    void push_analytics(std::string json);
     void   stop();
     int    port() const { return cfg_.port; }
 
@@ -183,6 +190,9 @@ private:
     bool queue_fmp4(Client& c, const std::vector<uint8_t>& b, size_t cap);
     void note_h264_profile(int unit, const std::vector<uint8_t>& sps);
     std::string h264_profile_[4];   // profile-level-id, "" until first seen
+    void analytics_pump();                               // hand queued analytics messages to /ws/analytics clients
+    std::mutex              analytics_m_;
+    std::deque<std::string> analytics_q_;
     bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
     // POST /upload (majestic-native, File Manager + Update page): the body is
     // streamed to disk from the head onwards, never through the working

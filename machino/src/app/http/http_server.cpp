@@ -189,6 +189,7 @@ struct HttpServer::Client {
     std::shared_ptr<Subscription> sub;
     unsigned requests = 0;
     bool ws_logs = false;           // /ws/logs subscriber (shared logread feed)
+    bool ws_analytics = false;      // /ws/analytics subscriber (live detection boxes)
     // /ws/upgrade: this connection runs one sysupgrade child and streams its
     // stdout+stderr to the page as text frames. One start per socket.
     bool ws_upgrade = false;
@@ -240,7 +241,7 @@ struct HttpServer::Client {
     // A socket this server streams INTO rather than converses on: nothing
     // is read from it, the idle timeout does not apply, the relay never
     // takes it over. One predicate, not six hand-kept lists.
-    bool streaming() const { return sse || mjpeg || ws_video || rtc_ws || ws_logs || (bool)audio_sink; }
+    bool streaming() const { return sse || mjpeg || ws_video || rtc_ws || ws_logs || ws_analytics || (bool)audio_sink; }
     bool ws_init_sent = false;
     bool ws_await_key = true;       // never hand the decoder a P-frame without its reference
     std::vector<uint8_t> ws_sps, ws_pps;
@@ -1009,6 +1010,21 @@ bool HttpServer::handle_request(Client& c) {
             c.ws_logs = true;
             RuntimeStats::get().inc(&RuntimeCounters::ws_logs_clients);
             LOGI(MOD, "%s: /ws/logs subscribed", c.peer.c_str());
+            return true;
+        }
+    } else if (path == "/ws/analytics") {
+        // The stock WebUI's live detection overlay (analytics-overlay.js on
+        // the Ai tab): one WebSocket, text frames, one JSON message per
+        // analysed frame with the boxes in main-stream pixels - see
+        // core/detection/analytics_event.hpp for the shape. Subscribe only:
+        // the detection thread pushes, the poll loop fans out. Nothing is
+        // read from the socket; a browser sends at most a close.
+        const std::string wskey = req.header("sec-websocket-key");
+        if (m != "GET" || wskey.empty()) { r = api::ApiService::fail(400, "invalid_value", path, "websocket upgrade required"); }
+        else {
+            queue(c, ws::handshake_response(wskey));
+            c.ws_analytics = true;
+            LOGI(MOD, "%s: /ws/analytics subscribed", c.peer.c_str());
             return true;
         }
     } else if (path == "/mjpeg.html") {
@@ -2298,6 +2314,32 @@ int HttpServer::logs_fd() const { return log_reader_ ? log_reader_->fd() : -1; }
 // dies is marked dead and stays dead for the life of the daemon, since forking
 // a replacement could happen while IMP is live - which is the whole defect
 // this design exists to avoid.
+void HttpServer::push_analytics(std::string json) {
+    std::lock_guard<std::mutex> lk(analytics_m_);
+    // Newest wins: the overlay draws "what is there now", and a page that
+    // was away for a second has no use for the second's worth of frames.
+    while (analytics_q_.size() >= 16) analytics_q_.pop_front();
+    analytics_q_.push_back(std::move(json));
+}
+
+void HttpServer::analytics_pump() {
+    std::deque<std::string> batch;
+    { std::lock_guard<std::mutex> lk(analytics_m_); batch.swap(analytics_q_); }
+    if (batch.empty()) return;
+    bool any = false;
+    for (auto& c : clients_) if (c->ws_analytics) { any = true; break; }
+    if (!any) return;                                            // nobody watching: the frames were free to drop
+    for (const std::string& json : batch) {
+        const std::string frame = ws::frame(true, json.data(), json.size());  // text, as the overlay parses it
+        for (auto& c : clients_) {
+            if (!c->ws_analytics) continue;
+            // a page that cannot keep up is dropped, never buffered without
+            // bound - five small messages a second must not become a leak
+            if (!queue(*c, frame, cfg_.max_out_buffer)) c->close_after_flush = true;
+        }
+    }
+}
+
 void HttpServer::logs_pump(short revents) {
     if (logs_fd() < 0) return;
     const auto reader_died = [this](const char* why) {
@@ -2404,6 +2446,7 @@ void HttpServer::loop() {
         int64_t t = now_ms();
         if (n > 0 && (pfds[0].revents & POLLIN)) accept_client();   // joins the NEXT poll cycle (not in refs)
         hls_pump(t);
+        analytics_pump();
         {
             const unsigned e = addr_epoch_.load(std::memory_order_acquire);
             if (e != seen_addr_epoch_) { seen_addr_epoch_ = e; drop_clients_on_vanished_addresses(); }

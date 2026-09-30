@@ -67,6 +67,7 @@ Result DetectionService::start_locked() {
     }
     { std::lock_guard<std::mutex> lk(tel_m_); completed_ = failed_ = detections_ = 0; win_start_ms_ = now_ms(); win_completed_ = 0; eff_fps_ = 0; motion_now_ = false; last_inference_ms_ = last_detection_ms_ = -1; last_dur_ms_ = -1; dur_sum_ms_ = 0; dur_n_ = 0; max_dur_ms_ = -1; }
     quit_ = false;
+    run_detector_ = cfg_.detector;
     thread_ = std::thread([this] { run(); });
     state_ = AiState::Active;
     LOGI(MOD, "detector active: %s (backend %s, %d fps)", cfg_.detector.c_str(), backend_.c_str(), cfg_.inference_fps);
@@ -80,24 +81,47 @@ void DetectionService::stop_locked() {
     // run() only touches tel_m_ and atomics, never m_, so releasing m_ across
     // the join cannot deadlock; all control callers hold m_ so stops serialise.
     if (thread_.joinable()) { m_.unlock(); thread_.join(); m_.lock(); }
+    // The overlay clears this detector's boxes on active=false; without it
+    // the last box would linger on the page for a detector that is gone.
+    if (det_) { DetectionResult none; emit_analytics(none, false); }
     if (det_) { det_->stop(); det_.reset(); }
     demand_.release();
     backend_.clear();
     if (state_ != AiState::Error) state_ = AiState::Disabled;
 }
 
+void DetectionService::set_analytics_sink(AnalyticsSink sink) {
+    std::lock_guard<std::mutex> lk(analytics_m_);
+    analytics_ = std::move(sink);
+}
+
+void DetectionService::emit_analytics(const DetectionResult& r, bool active) {
+    AnalyticsSink sink;
+    { std::lock_guard<std::mutex> lk(analytics_m_); sink = analytics_; }
+    if (sink) sink(run_detector_, r, active);
+}
+
 void DetectionService::run() {
     bool prev_motion = false;
+    int64_t last_analytics_ms = 0;
     while (!quit_.load(std::memory_order_acquire)) {
         DetectionResult r;
         Result pr = det_->poll(r, 500);
         if (quit_.load(std::memory_order_acquire)) break;
-        if (pr.status == Status::Timeout) continue;          // no activity is normal, not a failure
+        if (pr.status == Status::Timeout) {                  // no activity is normal, not a failure
+            // ... but the overlay must still hear that the detector is alive:
+            // past 5 s of silence it says "the camera has stopped speaking".
+            const int64_t now = now_ms();
+            if (now - last_analytics_ms >= 1000) { DetectionResult quiet; emit_analytics(quiet, true); last_analytics_ms = now; }
+            continue;
+        }
         int64_t t = now_ms();
         if (!pr) {
             std::lock_guard<std::mutex> lk(tel_m_); ++failed_;
             continue;
         }
+        emit_analytics(r, true);
+        last_analytics_ms = t;
         {
             std::lock_guard<std::mutex> lk(tel_m_);
             ++completed_; ++win_completed_; last_inference_ms_ = t;
