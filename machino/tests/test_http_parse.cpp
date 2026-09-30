@@ -371,19 +371,26 @@ void run_relay_head_end_tests() {
         const size_t brand = out.find("?ref=machino");
         HCHECK(oipc != std::string::npos && brand != std::string::npos && brand > oipc);   // UNDER the OpenIPC line
         // Verlinkt wie die OpenIPC-Zeile: Machino -> Repo, AresStack -> Site.
-        HCHECK(out.find(">OpenIPC</a></p>\n\t<p class=\"text-end\">"
-                        "<a href=\"https://github.com/aresstack/machino\">Machino</a>"
-                        " by <a href=\"https://aresstack.com/?ref=machino\">AresStack</a></p>") != std::string::npos);
+        static const char kLinked[] =
+            "<a href=\"https://github.com/aresstack/machino\">Machino</a>"
+            " by <a href=\"https://aresstack.org/?ref=machino\">AresStack</a>";
+        HCHECK(out.find(std::string(">OpenIPC</a></p>\n\t<p class=\"text-end\">") + kLinked + "</p>") != std::string::npos);
+        HCHECK(out.find("aresstack.com") == std::string::npos);   // die Site ist .org
         // Idempotent: a second pass (or a footer.cgi already patched on disk)
         // never doubles the line.
         bool again = false;
         const std::string twice = inject_machino_footer_brand(out, again);
         HCHECK(!again && twice == out);
-        // Legacy: eine footer.cgi, die der alte Cam-Tool-Patch bereits als
-        // Klartext editiert hatte, wird ebenfalls nicht gedoppelt.
+        // Legacy: eine footer.cgi, die der alte Cam-Tool-Patch als KLARTEXT
+        // editiert hatte, bekommt ihre Links an Ort und Stelle -- nicht
+        // gedoppelt, nicht in Ruhe gelassen (so stand sie ohne Links da).
         bool lg = false;
         const std::string legacy = page + "<p class=\"text-end\">Machino by AresStack</p>";
-        HCHECK(inject_machino_footer_brand(legacy, lg) == legacy && !lg);
+        const std::string upgraded = inject_machino_footer_brand(legacy, lg);
+        HCHECK(lg && upgraded == page + "<p class=\"text-end\">" + kLinked + "</p>");
+        HCHECK(upgraded.find("?ref=machino") != std::string::npos && upgraded.find("?ref=machino", upgraded.find("?ref=machino") + 1) == std::string::npos);
+        bool lg2 = false;
+        HCHECK(inject_machino_footer_brand(upgraded, lg2) == upgraded && !lg2);   // und danach stabil
         // full_bleed pages have no footer -> no anchor -> untouched.
         bool nb = false;
         const std::string plain = "<!DOCTYPE html><html><body><main>video</main></body></html>";

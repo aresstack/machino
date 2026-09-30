@@ -84,8 +84,9 @@ std::string inject_machino_nav(const std::string& html, bool& changed);
 // editierte p/footer.cgi und verschwand mit jedem OpenIPC-Update): der Footer
 // laeuft in jeder gerenderten Seite durch die Front-Door, also wird er dort
 // ergaenzt. Anker ist die ?ref=webui-Zeile; Seiten ohne Footer (full_bleed)
-// und bereits gebrandete Seiten (z. B. eine von Hand editierte footer.cgi)
-// bleiben unveraendert.
+// und bereits gebrandete Seiten bleiben unveraendert. Eine footer.cgi mit dem
+// KLARTEXT "Machino by AresStack" (der fruehere Cam-Tool-Patch) wird an Ort
+// und Stelle verlinkt: Machino -> Repo, AresStack -> aresstack.org?ref=machino.
 std::string inject_machino_footer_brand(const std::string& html, bool& changed);
 
 // Eine native Karte "USB network hardware" in OpenIPCs network.cgi einsetzen,

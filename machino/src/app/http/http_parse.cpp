@@ -232,12 +232,28 @@ std::string relay_head_stream_close(const std::string& head) {
 
 std::string inject_machino_footer_brand(const std::string& html, bool& changed) {
     changed = false;
+    // Analog zur OpenIPC-Zeile verlinkt: Machino -> das Repo, AresStack -> die
+    // Site mit ?ref=machino (dasselbe zaehlbare, datenfreie Muster wie #549).
+    static const char linked[] =
+        "<a href=\"https://github.com/aresstack/machino\">Machino</a>"
+        " by <a href=\"https://aresstack.org/?ref=machino\">AresStack</a>";
     // Schon gebrandet: niemals doppeln. ?ref=machino ist der eindeutige Marker
-    // der eigenen Zeile (analog zu OpenIPCs ?ref=webui); der Klartext faengt
-    // zusaetzlich eine footer.cgi ab, die der fruehere Cam-Tool-Patch editierte.
-    if (html.find("?ref=machino") != std::string::npos ||
-        html.find("Machino by AresStack") != std::string::npos)
+    // der eigenen Zeile (analog zu OpenIPCs ?ref=webui).
+    if (html.find("?ref=machino") != std::string::npos)
         return html;
+    // Der Klartext "Machino by AresStack" OHNE Links stammt aus einer
+    // footer.cgi, die der fruehere Cam-Tool-Patch auf der Kamera editiert hat.
+    // Frueher liess das die Zeile in Ruhe -- und damit ohne Links, obwohl die
+    // OpenIPC-Zeile darueber welche hat (Befund 2026-09-30). Jetzt wird genau
+    // dieser Text an Ort und Stelle verlinkt; sonst wird nichts angefasst.
+    static const char legacy[] = "Machino by AresStack";
+    const size_t old = html.find(legacy);
+    if (old != std::string::npos) {
+        std::string out = html;
+        out.replace(old, sizeof(legacy) - 1, linked);
+        changed = true;
+        return out;
+    }
     // Der Anker ist die OpenIPC-Footerzeile: ihr Link traegt ?ref=webui, und
     // der kommt auf der Seite sonst nirgends vor (footer.cgi, #549). Seiten
     // ohne Footer (full_bleed) haben den Anker nicht und bleiben unveraendert.
@@ -248,15 +264,13 @@ std::string inject_machino_footer_brand(const std::string& html, bool& changed) 
     if (pEnd == std::string::npos)
         return html;   // nicht die bekannte Struktur: lieber gar nicht anfassen
     const size_t insertAt = pEnd + 4;
-    // Analog zur OpenIPC-Zeile verlinkt: Machino -> das Repo, AresStack -> die
-    // Site mit ?ref=machino (dasselbe zaehlbare, datenfreie Muster wie #549).
-    static const char add[] =
-        "\n\t<p class=\"text-end\"><a href=\"https://github.com/aresstack/machino\">Machino</a>"
-        " by <a href=\"https://aresstack.com/?ref=machino\">AresStack</a></p>";
     std::string out;
-    out.reserve(html.size() + sizeof(add));
+    out.reserve(html.size() + sizeof(linked) + 32);
     out.append(html, 0, insertAt);
-    out.append(add);
+    out.append("\n\t<p class=\"text-end\"");
+    out.append(">");
+    out.append(linked);
+    out.append("</p>");
     out.append(html, insertAt, std::string::npos);
     changed = true;
     return out;
