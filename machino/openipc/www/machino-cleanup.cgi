@@ -57,6 +57,23 @@ is_ext_blockdev() {
 	esac
 }
 
+# exFAT gibt es nur mit Machinos exFAT-Nutzlast (install.sh --with-exfat):
+# das fuer diesen Kernel gebaute Modul unter /etc/machino/modules, mkfs.exfat
+# unter /usr/sbin. Beim Boot laedt der USB-Helfer das Modul mit den Speicher-
+# treibern; hier wird es notfalls nachgeladen (insmod, Millisekunden -- die
+# CGI ist ein eigener Prozess, machinod ist nicht beteiligt).
+EXFAT_KO=/etc/machino/modules/exfat.ko
+exfat_loaded()    { grep -q '^exfat ' /proc/modules 2>/dev/null; }
+exfat_available() { exfat_loaded || [ -f "$EXFAT_KO" ]; }
+exfat_ensure()    { exfat_loaded && return 0; [ -f "$EXFAT_KO" ] || return 1; insmod "$EXFAT_KO" >/dev/null 2>&1; exfat_loaded; }
+# Was laesst sich hier mounten -- und mit welchem -t? Leer: gar nicht.
+mount_type() {
+	case "$1" in
+		vfat|msdos) echo vfat ;;
+		exfat) exfat_available && echo exfat ;;
+	esac
+}
+
 if [ "$REQUEST_METHOD" = "POST" ]; then
 	case "$POST_action" in
 	del-file)
@@ -90,12 +107,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 		if grep -q "^$_d " /proc/mounts; then redirect_to "$SCRIPT_NAME" "success" "$_d is already mounted"; fi
 		_t=$(blkid "$_d" 2>/dev/null | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p')
 		case "$_t" in
-			vfat|msdos) ;;
-			"")  redirect_to "$SCRIPT_NAME" "danger" "$_d carries no filesystem this camera can read - format it as FAT32 first" ;;
-			*)   redirect_to "$SCRIPT_NAME" "danger" "$_d is $_t - this kernel can only mount FAT32 (vfat); format the medium as FAT32" ;;
+			vfat|msdos) _mt=vfat ;;
+			exfat)
+				exfat_ensure || redirect_to "$SCRIPT_NAME" "danger" "$_d is exFAT and this camera has no exFAT driver - install Machino with the exFAT payload (Cam-Tool: exFAT, or --with-exfat), or format the medium as FAT32"
+				_mt=exfat ;;
+			"")  redirect_to "$SCRIPT_NAME" "danger" "$_d carries no filesystem this camera can read - format it first (below)" ;;
+			*)   redirect_to "$SCRIPT_NAME" "danger" "$_d is $_t - this camera mounts FAT32 (vfat) and, with the exFAT payload, exFAT; format the medium as one of those" ;;
 		esac
 		mkdir -p "/mnt/$_n"
-		if _err=$(mount -t vfat -o rw,noatime "$_d" "/mnt/$_n" 2>&1); then
+		if _err=$(mount -t "$_mt" -o rw,noatime "$_d" "/mnt/$_n" 2>&1); then
 			redirect_to "$SCRIPT_NAME" "success" "Mounted $_d at /mnt/$_n"
 		else
 			redirect_to "$SCRIPT_NAME" "danger" "mount $_d failed: $_err"
@@ -116,32 +136,41 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 		fi
 		;;
 	format-ext)
-		# FAT32 mit busybox mkfs.vfat: das einzige Dateisystem, das dieser
-		# Kernel als Modul mitbringt. Loescht ALLES auf dem Geraet/der
+		# FAT32 mit busybox mkfs.vfat (immer da) oder exFAT mit mkfs.exfat aus
+		# Machinos exFAT-Nutzlast (fs=exfat). Loescht ALLES auf dem Geraet/der
 		# Partition; die Seite fragt vorher, die Pruefung hier ist die zweite.
 		_d=$(t_value "POST_dev")
+		_fstype=$(t_value "POST_fs"); [ "$_fstype" = "exfat" ] || _fstype=vfat
 		if ! is_ext_blockdev "$_d"; then redirect_to "$SCRIPT_NAME" "danger" "Not a removable block device: $_d"; fi
-		command -v mkfs.vfat >/dev/null 2>&1 || redirect_to "$SCRIPT_NAME" "danger" "mkfs.vfat is not in this image - format the medium as FAT32 on a PC"
+		if [ "$_fstype" = "exfat" ]; then
+			command -v mkfs.exfat >/dev/null 2>&1 || redirect_to "$SCRIPT_NAME" "danger" "mkfs.exfat is not installed - Machino's exFAT payload (Cam-Tool: exFAT, or --with-exfat) brings it"
+			exfat_ensure || redirect_to "$SCRIPT_NAME" "danger" "the exFAT kernel module is not installed - Machino's exFAT payload (Cam-Tool: exFAT, or --with-exfat) brings it"
+			_fsname=exFAT; _mkfs="mkfs.exfat -L MACHINO"
+		else
+			command -v mkfs.vfat >/dev/null 2>&1 || redirect_to "$SCRIPT_NAME" "danger" "mkfs.vfat is not in this image - format the medium as FAT32 on a PC"
+			_fsname=FAT32; _mkfs="mkfs.vfat -n MACHINO"
+		fi
 		if grep -q "^$_d " /proc/mounts; then redirect_to "$SCRIPT_NAME" "danger" "$_d is mounted - unmount it first"; fi
 		# Nie ein Geraet formatieren, von dem eine Partition gemountet ist.
 		if grep -q "^$_d[p]*[0-9] " /proc/mounts; then redirect_to "$SCRIPT_NAME" "danger" "a partition of $_d is mounted - unmount it first"; fi
 		_n=$(basename "$_d")
 		_st=/tmp/machino-format.$_n
-		if [ "$(cat "$_st" 2>/dev/null)" = "running" ]; then
-			redirect_to "$SCRIPT_NAME" "danger" "$_d is already being formatted - this page shows the result"
-		fi
+		case "$(cat "$_st" 2>/dev/null)" in running*)
+			redirect_to "$SCRIPT_NAME" "danger" "$_d is already being formatted - this page shows the result" ;;
+		esac
 		# Im HINTERGRUND. mkfs.vfat auf einer 128-GB-Karte schreibt zwei FATs
 		# von je 32 MB ueber USB und braucht deutlich laenger als die 6 s,
 		# nach denen Machinos Front-Door eine stumme CGI abbricht (Befund
 		# 2026-09-30: "backend sent nothing for 6000 ms", Ergebnis unsichtbar).
 		# Die Antwort kommt sofort; das Ergebnis steht in der Statusdatei, die
 		# Seite zeigt es und laedt sich waehrenddessen alle 10 s neu.
-		echo running > "$_st"
+		echo "running $_fsname" > "$_st"
 		(
-			mkfs.vfat -n MACHINO "$_d" > "$_st.log" 2>&1; _rc=$?
+			# shellcheck disable=SC2086 -- _mkfs ist ein fester Befehl mit Optionen
+			$_mkfs "$_d" > "$_st.log" 2>&1; _rc=$?
 			if [ "$_rc" = 0 ]; then
 				mkdir -p "/mnt/$_n"
-				if mount -t vfat -o rw,noatime "$_d" "/mnt/$_n" >> "$_st.log" 2>&1; then
+				if mount -t "$_fstype" -o rw,noatime "$_d" "/mnt/$_n" >> "$_st.log" 2>&1; then
 					echo "ok mounted" > "$_st"
 				else
 					echo "ok unmounted" > "$_st"
@@ -150,7 +179,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 				echo "failed $_rc" > "$_st"
 			fi
 		) </dev/null >/dev/null 2>&1 &
-		redirect_to "$SCRIPT_NAME" "success" "Formatting $_d as FAT32 in the background - a 128 GB card takes about a minute; this page shows the result"
+		redirect_to "$SCRIPT_NAME" "success" "Formatting $_d as $_fsname in the background - a 128 GB card takes up to a minute; this page shows the result"
 		;;
 	ensure-majestic-off)
 		if [ -c "$WO" ]; then
@@ -243,13 +272,13 @@ for _b in /sys/block/sd[a-z] /sys/block/mmcblk[0-9]; do
 		_fs=/tmp/machino-format.$_p
 		if [ -f "$_fs" ]; then
 			case "$(cat "$_fs" 2>/dev/null)" in
-				running)  _fmt=running; ext_formatting=1 ;;
+				running*) _fmt=running; _fmtname=$(sed 's/^running *//' "$_fs" 2>/dev/null); ext_formatting=1 ;;
 				ok*)      rm -f "$_fs" "$_fs.log" ;;           # Ergebnis steht im Mount-/blkid-Zustand
 				failed*)  _fmt="failed: $(tail -c 300 "$_fs.log" 2>/dev/null | tr '\n' ' ')"; rm -f "$_fs" "$_fs.log" ;;
 			esac
 		fi
 		if [ "$_fmt" = "running" ]; then
-			_note="formatting as FAT32 ... (this page reloads every 10 s)"
+			_note="formatting as ${_fmtname:-FAT32} ... (this page reloads every 10 s)"
 		elif [ -n "$_fmt" ]; then
 			_note="format $_fmt"
 		elif [ -n "$_mp" ]; then
@@ -258,9 +287,11 @@ for _b in /sys/block/sd[a-z] /sys/block/mmcblk[0-9]; do
 		else
 			case "$_type" in
 				vfat|msdos) _note="FAT - not mounted (mount it below)" ;;
-				exfat|ntfs) _note="$_type - this kernel cannot mount it; format as FAT32" ;;
-				"")         _note="no filesystem found - format as FAT32" ;;
-				*)          _note="$_type - only FAT32 is mountable here" ;;
+				exfat)      if exfat_available; then _note="exFAT - not mounted (mount it below)"
+				            else _note="exFAT - no driver on this camera: install Machino with the exFAT payload (Cam-Tool: exFAT), or format as FAT32"; fi ;;
+				ntfs)       _note="NTFS - this kernel cannot mount it; format as FAT32$(exfat_available && echo ' or exFAT')" ;;
+				"")         _note="no filesystem found - format it below" ;;
+				*)          _note="$_type - only FAT32$(exfat_available && echo ' and exFAT') can be mounted here" ;;
 			esac
 		fi
 		ext_rows="$ext_rows
@@ -269,6 +300,8 @@ for _b in /sys/block/sd[a-z] /sys/block/mmcblk[0-9]; do
 done
 ext_log=$(logread 2>/dev/null | grep -i 'automount' | tail -2)
 ext_canformat=0; command -v mkfs.vfat >/dev/null 2>&1 && ext_canformat=1
+ext_canexfat=0; command -v mkfs.exfat >/dev/null 2>&1 && exfat_available && ext_canexfat=1
+ext_exfat=0; exfat_available && ext_exfat=1
 
 # --- Partitionen (Info) ---------------------------------------------------
 %>
@@ -347,15 +380,21 @@ ext_canformat=0; command -v mkfs.vfat >/dev/null 2>&1 && ext_canformat=1
 			<form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"><input type="hidden" name="dev" value="<%= $_d %>">
 				<button class="btn btn-sm btn-outline-secondary" type="submit" name="action" value="umount-ext" title="Unmount before pulling the medium">Unmount</button></form>
 		<% elif [ "$_mb" -gt 0 ]; then %>
-			<% case "$_t" in vfat|msdos) %>
+			<% if [ -n "$(mount_type "$_t")" ]; then %>
 			<form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"><input type="hidden" name="dev" value="<%= $_d %>">
 				<button class="btn btn-sm btn-outline-primary" type="submit" name="action" value="mount-ext">Mount</button></form>
-			<% ;; esac %>
+			<% fi %>
 			<% if [ "$ext_canformat" = "1" ]; then %>
 			<form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"
 			      onsubmit="return confirm('Format <%= $_d %> (<%= $_mb %> MB) as FAT32? EVERYTHING on it is erased.')">
-				<input type="hidden" name="dev" value="<%= $_d %>">
-				<button class="btn btn-sm btn-outline-danger" type="submit" name="action" value="format-ext" title="mkfs.vfat on the camera - erases the medium">Format FAT32</button></form>
+				<input type="hidden" name="dev" value="<%= $_d %>"><input type="hidden" name="fs" value="vfat">
+				<button class="btn btn-sm btn-outline-danger" type="submit" name="action" value="format-ext" title="mkfs.vfat on the camera - erases the medium. FAT32: 4 GB per file, readable everywhere">Format FAT32</button></form>
+			<% fi %>
+			<% if [ "$ext_canexfat" = "1" ]; then %>
+			<form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"
+			      onsubmit="return confirm('Format <%= $_d %> (<%= $_mb %> MB) as exFAT? EVERYTHING on it is erased.')">
+				<input type="hidden" name="dev" value="<%= $_d %>"><input type="hidden" name="fs" value="exfat">
+				<button class="btn btn-sm btn-outline-danger" type="submit" name="action" value="format-ext" title="mkfs.exfat on the camera - erases the medium. exFAT: no 4 GB file limit, the factory format of SDXC cards">Format exFAT</button></form>
 			<% fi %>
 		<% fi %>
 		</td></tr>
@@ -365,10 +404,11 @@ ext_canformat=0; command -v mkfs.vfat >/dev/null 2>&1 && ext_canformat=1
 	<p class="mj-card-note">Mounted media can hold large AI models &mdash; the <a href="machino-ai.cgi">AI</a> page lists
 	  <code>.bin</code> files on them and points the model path there. Unmount before pulling a card.</p>
 	<% else %>
-	<p class="mj-card-note">The system mounts a medium by itself (mdev) when it carries a <b>FAT32</b> filesystem
-	  &mdash; the only one this kernel can read from a card. exFAT (the factory format of SDXC cards over
-	  32&nbsp;GB) and NTFS are not supported: format the card as FAT32 here or on a PC. A slot without a card
-	  shows no medium. <b>Mount</b> retries by hand.</p>
+	<p class="mj-card-note">The system mounts a medium by itself (mdev) when it carries <b>FAT32</b>
+	  <% if [ "$ext_exfat" = "1" ]; then %>or <b>exFAT</b> (Machino's exFAT payload is installed)<% else %>&mdash; exFAT,
+	  the factory format of SDXC cards over 32&nbsp;GB, needs Machino's exFAT payload (Cam-Tool: exFAT, or
+	  <code>--with-exfat</code>)<% fi %>. NTFS is not supported. Format the card here or on a PC. A slot without a
+	  card shows no medium. <b>Mount</b> retries by hand.</p>
 	<% fi %>
 	<% if [ -n "$ext_log" ]; then %>
 	<p class="mj-card-note">System log (automount): <code class="text-break"><%= $ext_log %></code></p>
@@ -379,9 +419,9 @@ ext_canformat=0; command -v mkfs.vfat >/dev/null 2>&1 && ext_canformat=1
 	<% else %>
 	<p class="mj-card-note">None mounted. Switch on <b>USB storage</b> on the <a href="machino-usb.cgi">USB</a>
 	  page (it needs the port role Wi-Fi or Cellular) and plug a card reader or stick into the hub
-	  next to the module &mdash; or a card into the board's slot, if it is wired. A FAT32 medium is
-	  mounted by the system under <code>/mnt</code>; large AI models can live there so they do not
-	  fill the overlay.</p>
+	  next to the module &mdash; or a card into the board's slot, if it is wired. A FAT32 medium (or exFAT,
+	  with Machino's exFAT payload) is mounted by the system under <code>/mnt</code>; large AI models can
+	  live there so they do not fill the overlay.</p>
 	<% fi %>
 </div></div></div>
 

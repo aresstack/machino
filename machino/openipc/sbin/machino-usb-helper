@@ -120,13 +120,21 @@ read_storage() {
 }
 
 start_storage() {
+	# exFAT ZUERST, wenn die Nutzlast da ist (install.sh --with-exfat): mdevs
+	# Automount probiert "vfat exfat ..." in dem Moment, in dem sd_mod die
+	# Partition meldet. Liegt das Modul dann noch nicht im Kernel, bleibt ein
+	# exFAT-Medium bis zum naechsten Einstecken ungemountet. Ohne Nutzlast
+	# gibt es nichts zu laden, und FAT32 geht wie bisher.
+	if [ -f "$MODDIR/exfat.ko" ]; then
+		load_module exfat || say "exFAT-Modul liess sich nicht laden - exFAT-Medien bleiben ungemountet, FAT32 geht weiter"
+	fi
 	for m in $STORAGE_MODULES; do
 		# scsi_common gibt es nur, wenn der Kernelbaum es getrennt baut; fehlt
 		# es im Payload, steckt es in scsi_mod -- kein Fehler.
 		if [ "$m" = "scsi_common" ] && [ ! -f "$MODDIR/$m.ko" ]; then continue; fi
 		load_module "$m" || return 1
 	done
-	say "USB-Massenspeicher: Treiber geladen - ein FAT32-Medium erscheint unter /mnt/sdX1 (mdev)"
+	say "USB-Massenspeicher: Treiber geladen - ein FAT32$(lsmod | grep -q '^exfat ' && echo '- oder exFAT')-Medium erscheint unter /mnt/sdX1 (mdev)"
 }
 
 # Der Portstrom. NUR wenn der Port auch benutzt wird -- bei "off" bleibt die
@@ -513,6 +521,7 @@ case "${1:-}" in
 		echo "ttyUSB:     $(ls $DEVDIR/ttyUSB* 2>/dev/null | tr '\n' ' ')"
 		echo "cell helper:$([ -f "$CELL_PIDFILE" ] && echo " laeuft" || echo " aus")"
 		echo "storage:    configured=$(read_storage) started=$(cat "$STORAGE_MARK" 2>/dev/null || echo '-') usb-storage=$(lsmod | grep -q '^usb_storage ' && echo geladen || echo fehlt)"
+		echo "exfat:      $(if lsmod | grep -q '^exfat '; then echo geladen; elif [ -f "$MODDIR/exfat.ko" ]; then echo 'installiert, nicht geladen'; else echo 'nicht installiert (--with-exfat)'; fi) mkfs.exfat=$([ -x $ROOT/usr/sbin/mkfs.exfat ] && echo da || echo fehlt)"
 		echo "media:      $(grep -E '^/dev/(sd[a-z][0-9]*|mmcblk[0-9]p[0-9]) ' $ROOT/proc/mounts 2>/dev/null | awk '{print $1 " auf " $2}' | tr '\n' ';')"
 		;;
 	*) echo "usage: $0 {start|stop|restart|status|mode|storage|wifi-attach}"; exit 1 ;;

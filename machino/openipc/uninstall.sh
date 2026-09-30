@@ -125,6 +125,7 @@ rm -f "$ROOT/usr/sbin/machino-usb-helper" "$ROOT/usr/sbin/machino-wifi-role"
 # Der NNA-Helfer geht mit; die Modelle unter /etc/machino/models BLEIBEN --
 # Nutzdaten des Betreibers, dieselbe Regel wie /etc/machino/payload.
 rm -f "$ROOT/usr/sbin/machino-nna"
+rm -f "$ROOT/usr/sbin/mkfs.exfat"          # exFAT-Nutzlast (--with-exfat)
 # WeirdIKE: Daemon, ctl, Initskript und Seite gehen mit; die Config mit dem
 # PSK bleibt (Betreibergeheimnis, wie die Modelle). Die tun-Zeile in
 # /etc/modules war unsere -- exakt sie wird entfernt.
@@ -152,6 +153,7 @@ rm -f "$STATE_DIR/udhcpc-wlan.script" "$STATE_DIR/wifi-role"
 # /lib/firmware gehoert uns nicht, deshalb dort nur das eine Unterverzeichnis.
 if [ -d "$STATE_DIR/modules" ]; then
     rm -f "$STATE_DIR/modules/aic8800.ko" "$STATE_DIR/modules/aic_load_fw.ko"
+    rm -f "$STATE_DIR/modules/exfat.ko"
     rmdir "$STATE_DIR/modules" 2>/dev/null || true
 fi
 # Seit der OpenIPC-Integration liegen die WLAN-Module unter /lib/modules/<ver>/

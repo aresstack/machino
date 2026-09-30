@@ -79,7 +79,9 @@ formatkompatibel; keine Ereignisse fuer leere Frames.
 Core-Bundle laeuft ohne jede KI-Beigabe. Optional, je eigene
 Entscheidung: `--with-nna-payload` (Helfer + Modell + Manifest +
 Provenienz nach /etc/machino/models, ueberlebt Uninstall),
-`--with-weirdike` analog fuers VPN. Cam-Tool: Checkboxen (Default aus)
+`--with-weirdike` analog fuers VPN, `--with-exfat` fuer das exFAT-Modul
+plus mkfs.exfat (Karte ueber 32 GB im Werksformat, docs/ap36-usb-storage.md).
+Cam-Tool: Checkboxen (Default aus)
 + NNA-Dialog (Befund/Plan/Apply mit doppelter Bestaetigung).
 
 ## Fehlerverhalten (Invariante, getestet)
