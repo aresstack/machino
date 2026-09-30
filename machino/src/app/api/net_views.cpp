@@ -187,6 +187,10 @@ Json usb_config_json(const usb::UsbConfig& cfg)
     // reads the API should not have to know which settings are live.
     j.set("mode", Json::string(usb::usb_function_name(cfg.function)));
     j.set("modeAppliesAt", Json::string("reboot"));
+    // AP36: the storage switch, same contract -- the boot helper loads the
+    // drivers, so it applies at the next boot too.
+    j.set("storage", Json::boolean(cfg.storage));
+    j.set("storageAppliesAt", Json::string("reboot"));
     return j;
 }
 
@@ -228,6 +232,8 @@ Json usb_status_json(const usb::UsbStatus& s)
     // deshalb hat die Oberflaeche ueberhaupt etwas zu sagen.
     j.set("mode", Json::string(usb::usb_function_name(s.function)));
     j.set("bootMode", Json::string(usb::usb_function_name(s.boot_function)));
+    j.set("storage", Json::boolean(s.storage));
+    j.set("bootStorage", Json::boolean(s.boot_storage));
     j.set("rebootRequired", Json::boolean(s.reboot_required));
 
     Json p = Json::object();
@@ -252,13 +258,21 @@ bool usb_config_from_json(const Json& body, usb::UsbConfig& cfg, std::string& er
     usb::UsbConfig next = cfg;
     // modeAppliesAt is reported, not accepted: it is a property of the
     // setting, not something a client gets to choose.
-    if (!reject_unknown(body, {"enabled", "power", "mode"}, nullptr, err)) return false;
+    if (!reject_unknown(body, {"enabled", "power", "mode", "storage"}, nullptr, err)) return false;
     if (!get_bool(body, "enabled", next.enabled, err)) return false;
 
     std::string mode_text;
     if (!get_string(body, "mode", mode_text, err, 16)) return false;
     if (!mode_text.empty() && !usb::usb_function_parse(mode_text, next.function)) {
         err = "mode must be off, wifi or cellular";
+        return false;
+    }
+    // AP36: storage rides on a port role. Switching it ON while the port is
+    // off is refused with the reason, not stored as a wish nothing acts on
+    // (the boot helper would load nothing and the page would say "active").
+    if (!get_bool(body, "storage", next.storage, err)) return false;
+    if (body.get("storage") && next.storage && next.function == usb::UsbFunction::Off) {
+        err = "storage needs a port role: set mode to wifi or cellular first (with the port off nothing enumerates)";
         return false;
     }
 
@@ -297,6 +311,7 @@ void usb_config_to_settings(const usb::UsbConfig& cfg,
     out.emplace_back("usb.power.enable_at_boot", cfg.enable_at_boot ? "true" : "false");
     out.emplace_back("usb.power.expert", cfg.expert ? "true" : "false");
     out.emplace_back("usb.mode", usb::usb_function_name(cfg.function));
+    out.emplace_back("usb.storage", cfg.storage ? "true" : "false");   // AP36, read by the boot helper
     // usb.wifi.enabled is written out as well, and ONLY as a mirror.
     //
     // It is what the boot helper of an older installation reads. Dropping it
@@ -345,6 +360,7 @@ bool usb_config_from_settings(const std::vector<std::pair<std::string, std::stri
             }
             have_mode = true;
         }
+        else if (k == "usb.storage")               next.storage = (v == "true" || v == "1" || v == "on");
         else if (k == "usb.power.pin")             next.pin = v;
         else if (k == "usb.power.enable_at_boot")  next.enable_at_boot = (v == "true" || v == "1");
         else if (k == "usb.power.expert")          next.expert = (v == "true" || v == "1");

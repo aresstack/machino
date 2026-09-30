@@ -128,6 +128,56 @@ void test_usb_is_off_until_someone_says_otherwise()
     TCHECK(j.get("modeAppliesAt") && j.get("modeAppliesAt")->as_string() == "reboot");
 }
 
+// AP36: USB-Massenspeicher ist ein EIGENER Schalter neben der Portrolle --
+// kein vierter Modus, denn der Port gehoert weiter WLAN oder Mobilfunk und
+// ein Hub traegt den Kartenleser daneben. Aus, bis jemand es einschaltet
+// (drei Kernelmodule beim Boot), und einschalten geht nur MIT Portrolle:
+// ohne Portstrom enumeriert nichts, und ein gespeicherter Wunsch, den der
+// Boot-Helfer nicht erfuellen kann, saehe in der Oberflaeche wie "aktiv" aus.
+void test_usb_storage_is_a_separate_switch_that_needs_a_port_role()
+{
+    const usb::UsbConfig fresh;
+    TCHECK(!fresh.storage);
+    std::string err;
+
+    // Aus der Datei: der Schluessel, den der Boot-Helfer liest; fehlt er, bleibt aus.
+    usb::UsbConfig c;
+    TCHECK(usb_config_from_settings({{"usb.mode", "cellular"}, {"usb.storage", "true"}}, c, err));
+    TCHECK(c.storage && c.function == usb::UsbFunction::Cellular);
+    usb::UsbConfig d;
+    TCHECK(usb_config_from_settings({{"usb.mode", "cellular"}}, d, err) && !d.storage);
+    // ... und zurueck: die Datei traegt usb.storage, damit der Helfer es findet.
+    std::vector<std::pair<std::string, std::string>> kv;
+    usb_config_to_settings(c, kv);
+    bool seen = false;
+    for (const auto& p : kv) if (p.first == "usb.storage") { seen = true; TCHECK(p.second == "true"); }
+    TCHECK(seen);
+
+    // Die API: Schalter + "gilt ab Neustart", wie bei mode.
+    const Json j = usb_config_json(c);
+    TCHECK(j.get("storage") && j.get("storage")->as_bool());
+    TCHECK(j.get("storageAppliesAt") && j.get("storageAppliesAt")->as_string() == "reboot");
+
+    // PATCH: mit Portrolle ja ...
+    usb::UsbConfig api = d;
+    Json body; std::string e;
+    TCHECK(Json::parse("{\"storage\":true}", body, e));
+    TCHECK(usb_config_from_json(body, api, e) && api.storage);
+    // ... ohne Portrolle MIT GRUND abgelehnt, nichts uebernommen.
+    usb::UsbConfig off;
+    TCHECK(Json::parse("{\"storage\":true}", body, e));
+    TCHECK(!usb_config_from_json(body, off, e));
+    TCHECK(!off.storage && e.find("port role") != std::string::npos);
+    // In EINEM Request mit der Rolle geht es.
+    usb::UsbConfig both;
+    TCHECK(Json::parse("{\"mode\":\"wifi\",\"storage\":true}", body, e));
+    TCHECK(usb_config_from_json(body, both, e) && both.storage && both.function == usb::UsbFunction::Wifi);
+    // Die Rolle spaeter auf off zu stellen bleibt erlaubt -- der Helfer laedt
+    // dann nichts und sagt es; der Schalter bleibt gespeichert.
+    TCHECK(Json::parse("{\"mode\":\"off\"}", body, e));
+    TCHECK(usb_config_from_json(body, both, e) && both.storage && both.function == usb::UsbFunction::Off);
+}
+
 // Ein Tippfehler in der Datei darf nicht still zu "off" werden.
 //
 // "Die Einstellung hat nicht gegriffen" und "die Einstellung ist aus" sehen
@@ -818,6 +868,7 @@ void run_net_views_tests()
     test_usb_config_survives_a_settings_round_trip();
     test_usb_is_off_until_someone_says_otherwise();
     test_an_unknown_usb_mode_is_refused_and_leaves_the_camera_off();
+    test_usb_storage_is_a_separate_switch_that_needs_a_port_role();
     test_the_old_wifi_switch_migrates_once();
     test_the_usb_mode_is_written_the_way_the_boot_helper_reads_it();
     test_wifi_capabilities_separate_driver_from_tooling();

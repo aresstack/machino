@@ -1,0 +1,266 @@
+name: build-storage-modules-t40
+# AP36: die Kernelmodule fuer USB-Massenspeicher (SD-Kartenleser, Stick) am
+# Hub der Kamera -- gebaut fuer den Kernel, den die Kamera bereits hat.
+#
+# Befund (docs/ap35-usb.md, br-ext-chip-ingenic/board/t40/t40.generic.config):
+# CONFIG_SCSI ist nicht gesetzt, usb-storage fehlt im Image; fat und vfat
+# liegen als Module bereit, OpenIPCs mdev mountet sd[a-z][0-9] nach /mnt.
+# Es fehlt also genau die Treiberkette Block <- SCSI <- USB Mass Storage, und
+# die ist In-Tree in 4.4.94:
+#
+#   scsi_mod.ko      SCSI-Kern            fehlt
+#   scsi_common.ko   nur, wenn der Baum ihn getrennt baut (sonst in scsi_mod)
+#   sd_mod.ko        SCSI-Disk -> /dev/sdX fehlt
+#   usb-storage.ko   USB Mass Storage     fehlt
+#
+# Derselbe Modul-only-Weg wie beim Modem (AP35.19, build-modem-modules-t40):
+# derselbe Kernelbaum, dieselbe Konfiguration, drei Optionen als =m, zwei
+# Verzeichnisse als Module uebersetzt. Kein neues Image.
+#
+# Was dieser Job beweist und was nicht:
+#
+#   BEWIESEN     die Module uebersetzen gegen 4.4.94/ingenic-t40 fuer mipsel,
+#                tragen exakt den vermagic der Kamera, und jedes undefinierte
+#                Symbol wird von diesem Kernel exportiert (Liste VON DER
+#                KAMERA, nicht Module.symvers dieses Builds)
+#   NICHT        dass ein Kartenleser enumeriert, sd_mod ein /dev/sda1 erzeugt
+#                oder mdev es mountet. Das braucht die Hardware und bleibt
+#                PENDING_PHYSICAL (docs/pending-physical.md B8).
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_ref:
+        description: "OpenIPC/linux ref to build against"
+        required: false
+        default: "ingenic-t40"
+  push:
+    branches: [ main ]
+    paths: [ '.github/workflows/build-storage-modules-t40.yml' ]
+
+permissions:
+  contents: read
+
+jobs:
+  storage-modules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      KERNEL_REPO: "https://github.com/OpenIPC/linux"
+      KERNEL_REF: "${{ github.event.inputs.kernel_ref || 'ingenic-t40' }}"
+      FIRMWARE_REPO: "https://github.com/OpenIPC/firmware"
+      # Der String der Kamera, von einem geladenen Modul abgelesen. Auf einem
+      # CONFIG_MODVERSIONS=n-Kernel ist er der ganze ABI-Vertrag.
+      WANT_VERMAGIC: "4.4.94 SMP preempt mod_unload MIPS32_R2 32BIT"
+      ARCH: "mips"
+      CROSS: "mipsel-linux-"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: "Dependencies"
+        run: sudo apt-get update && sudo apt-get install -y build-essential bc bison flex libssl-dev kmod file wget curl git
+
+      - name: "Toolchain"
+        run: |
+          set -eu
+          chmod +x build.sh
+          ./build.sh deps T40 --libc-musl
+          BIN=$(ls -d toolchain/*/*/bin 2>/dev/null | head -1)
+          test -n "$BIN" || { echo "::error::no toolchain"; exit 1; }
+          echo "$PWD/$BIN" >> "$GITHUB_PATH"
+          "$PWD/$BIN/${CROSS}gcc" --version | head -1
+
+      - name: "Fetch the kernel source (OpenIPC/linux @ ${{ env.KERNEL_REF }})"
+        run: |
+          set -eu
+          git clone --depth 1 --branch "$KERNEL_REF" "$KERNEL_REPO" "$RUNNER_TEMP/linux"
+          echo "kernel commit: $(git -C "$RUNNER_TEMP/linux" rev-parse HEAD)"
+          V=$(make -s -C "$RUNNER_TEMP/linux" kernelversion)
+          echo "kernelversion: $V"
+          case "$V" in
+            4.4.94*) ;;
+            *) echo "::error::this branch is $V, the camera runs 4.4.94 -- a module built here would not load"; exit 1 ;;
+          esac
+
+      - name: "Find the board's kernel config in OpenIPC/firmware"
+        run: |
+          set -eu
+          git clone --depth 1 --filter=blob:none --sparse "$FIRMWARE_REPO" "$RUNNER_TEMP/fw"
+          git -C "$RUNNER_TEMP/fw" sparse-checkout set br-ext-chip-ingenic
+          # Dieselbe Begruendung wie im aic8800-Job: eine erfundene defconfig
+          # ergibt einen anderen vermagic und ein Modul, das nicht laedt.
+          CFG=$(find "$RUNNER_TEMP/fw" \( -name '*t40*.config' -o -name '*t40*defconfig' \) -print 2>/dev/null | sort | head -1 || true)
+          [ -n "$CFG" ] || { echo "::error::no T40 kernel config found under br-ext-chip-ingenic"; exit 1; }
+          echo "kernel config: $CFG"
+          echo "KCONFIG=$CFG" >> "$GITHUB_ENV"
+
+      - name: "Enable exactly the three options these modules need"
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/linux"
+          cp "$KCONFIG" .config
+          echo "--- vorher"
+          grep -E "CONFIG_SCSI[= ]|CONFIG_BLK_DEV_SD|CONFIG_USB_STORAGE[= ]|CONFIG_BLK_DEV_BSG|CONFIG_MODVERSIONS" .config || echo "(keine davon gesetzt)"
+
+          # Als MODUL, nicht eingebaut: ein =y wuerde ein Kernelimage
+          # erfordern, und das wird auf dieser Kamera nicht getauscht. Alles,
+          # was an SCSI sonst noch aufgehen koennte (sg, sr, Low-Level-
+          # Treiber, UAS, Debug), bleibt ausdruecklich aus: die Kamera
+          # braucht Disk ueber USB und nichts weiter.
+          ./scripts/config --file .config \
+            --module  CONFIG_SCSI \
+            --module  CONFIG_BLK_DEV_SD \
+            --module  CONFIG_USB_STORAGE \
+            --disable CONFIG_SCSI_MQ_DEFAULT \
+            --disable CONFIG_SCSI_SCAN_ASYNC \
+            --disable CONFIG_SCSI_CONSTANTS \
+            --disable CONFIG_SCSI_LOGGING \
+            --disable CONFIG_CHR_DEV_SG \
+            --disable CONFIG_CHR_DEV_SCH \
+            --disable CONFIG_BLK_DEV_SR \
+            --disable CONFIG_SCSI_LOWLEVEL \
+            --disable CONFIG_SCSI_DH \
+            --disable CONFIG_USB_UAS \
+            --disable CONFIG_USB_STORAGE_DEBUG
+
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" olddefconfig
+          echo "--- nachher"
+          grep -E "CONFIG_SCSI[= ]|CONFIG_SCSI_DMA|CONFIG_SCSI_PROC_FS|CONFIG_BLK_DEV_SD|CONFIG_USB_STORAGE[= ]|CONFIG_USB_UAS|CONFIG_CHR_DEV_SG|CONFIG_BLK_DEV_BSG|CONFIG_MODVERSIONS" .config || true
+
+          # BSG war im Kamera-Kernel aus. Ginge es durch olddefconfig an,
+          # verwiese scsi_mod auf bsg_*-Symbole, die dieser Kernel nicht hat.
+          # Das Symbol-Gate unten wuerde es fangen; hier ist die Meldung klar.
+          if grep -q "^CONFIG_BLK_DEV_BSG=y" .config; then
+            echo "::error::CONFIG_BLK_DEV_BSG went =y -- the camera kernel has no bsg, scsi_mod would not load"; exit 1
+          fi
+          for s in CONFIG_SMP CONFIG_PREEMPT CONFIG_MODULE_UNLOAD; do
+            grep -q "^$s=y" .config || echo "::warning::$s is not =y -- the vermagic gate will decide"
+          done
+          if grep -q "^CONFIG_MODVERSIONS=y" .config; then
+            echo "::error::CONFIG_MODVERSIONS=y in this config -- symbol CRCs would have to match too, not just vermagic"
+            exit 1
+          fi
+
+      - name: "Build the two driver directories as modules"
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/linux"
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" modules_prepare
+          # M=<verzeichnis> geht auch fuer in-tree-Verzeichnisse und baut nur
+          # deren Module -- kein ganzer Kernel, keine Stunde Laufzeit.
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" M=drivers/scsi        modules
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS" -j"$(nproc)" M=drivers/usb/storage modules
+          echo "--- gebaut"
+          find drivers/scsi drivers/usb/storage -name '*.ko' -printf '%p  %s bytes\n' | sort
+
+      - name: "Gate: the modules we came for must exist"
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/linux"
+          miss=0
+          for m in drivers/scsi/scsi_mod.ko drivers/scsi/sd_mod.ko drivers/usb/storage/usb-storage.ko; do
+            if [ -s "$m" ]; then echo "  ok   $m"
+            else echo "::error::missing $m"; miss=1; fi
+          done
+          # scsi_common gibt es nur, wenn dieser Baum es getrennt baut.
+          if [ -s drivers/scsi/scsi_common.ko ]; then echo "  ok   drivers/scsi/scsi_common.ko (separate in this tree)"
+          else echo "  --   scsi_common is part of scsi_mod in this tree"; fi
+          exit $miss
+
+      - name: "Gate: vermagic must be the camera's, exactly"
+        run: |
+          set -eu
+          trim() { printf '%s' "$1" | sed 's/[[:space:]]*$//'; }
+          want=$(trim "$WANT_VERMAGIC")
+          fail=0
+          for ko in $(find "$RUNNER_TEMP/linux/drivers/scsi" "$RUNNER_TEMP/linux/drivers/usb/storage" -name '*.ko'); do
+            raw=$(modinfo -F vermagic "$ko")
+            got=$(trim "$raw")
+            echo "$(basename "$ko"): [$raw]"
+            if [ "$got" != "$want" ]; then
+              echo "::error::$(basename "$ko") vermagic is '$got', the camera wants '$want'"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: "Gate: every undefined symbol is exported by the camera's kernel"
+        run: |
+          set -eu
+          # Dieselbe Liste wie im Modem-Job: die tatsaechlichen Exporte der
+          # Kamera, aus /proc/kallsyms abgegriffen. Gegen Module.symvers dieses
+          # Builds zu pruefen wuerde nur beweisen, dass der Build mit sich
+          # selbst einig ist.
+          CAM="$GITHUB_WORKSPACE/machino/tools/kernel/t40nn-exported-symbols.txt"
+          test -s "$CAM" || { echo "::error::no captured symbol list at $CAM"; exit 1; }
+          n=$(wc -l < "$CAM"); echo "camera exports: $n symbols"
+          [ "$n" -gt 2000 ] || { echo "::error::only $n symbols -- the capture looks truncated"; exit 1; }
+
+          sort -u "$CAM" > /tmp/cam.sorted
+          # Die Module exportieren auch untereinander: sd_mod und usb-storage
+          # brauchen scsi_mod (und scsi_common). Das ist eine Ladereihenfolge,
+          # kein fehlendes Symbol -- also kommen ihre Exporte dazu.
+          : > /tmp/ours
+          for ko in $(find "$RUNNER_TEMP/linux/drivers/scsi" "$RUNNER_TEMP/linux/drivers/usb/storage" -name '*.ko'); do
+            "${CROSS}nm" -g --defined-only "$ko" 2>/dev/null | awk '{print $3}' >> /tmp/ours
+          done
+          sort -u /tmp/ours > /tmp/ours.sorted
+          cat /tmp/cam.sorted /tmp/ours.sorted | sort -u > /tmp/available
+
+          fail=0
+          for ko in drivers/scsi/scsi_common.ko drivers/scsi/scsi_mod.ko drivers/scsi/sd_mod.ko drivers/usb/storage/usb-storage.ko; do
+            p="$RUNNER_TEMP/linux/$ko"
+            [ -s "$p" ] || continue
+            "${CROSS}nm" -u "$p" 2>/dev/null | awk '{print $2}' | sort -u > /tmp/need
+            grep -vE '^(__this_module|__gnu_|_gp_disp|__mips)' /tmp/need > /tmp/need2 || true
+            missing=$(comm -23 /tmp/need2 /tmp/available || true)
+            if [ -n "$missing" ]; then
+              echo "::error::$(basename "$ko") needs symbols this kernel does not export:"
+              echo "$missing" | sed 's/^/    /'
+              fail=1
+            else
+              echo "  $(basename "$ko"): all undefined symbols are exported"
+            fi
+          done
+          exit $fail
+
+      - name: "Bundle"
+        run: |
+          set -eu
+          B=bundle/storage-modules-t40; mkdir -p "$B/modules"
+          [ -s "$RUNNER_TEMP/linux/drivers/scsi/scsi_common.ko" ] && cp "$RUNNER_TEMP/linux/drivers/scsi/scsi_common.ko" "$B/modules/"
+          cp "$RUNNER_TEMP/linux/drivers/scsi/scsi_mod.ko" "$RUNNER_TEMP/linux/drivers/scsi/sd_mod.ko" \
+             "$RUNNER_TEMP/linux/drivers/usb/storage/usb-storage.ko" "$B/modules/"
+          "${CROSS}strip" --strip-debug "$B/modules/"*.ko
+          {
+            echo "USB mass-storage kernel modules for the OpenIPC T40 (card reader / stick on a hub)"
+            echo
+            echo "kernel:     $KERNEL_REPO @ $KERNEL_REF ($(git -C "$RUNNER_TEMP/linux" rev-parse HEAD))"
+            echo "config:     $KCONFIG"
+            echo "toolchain:  $(${CROSS}gcc --version | head -1)"
+            echo "vermagic:   $WANT_VERMAGIC (verified against every .ko)"
+            echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}"
+            echo
+            echo "Load order: $([ -s "$B/modules/scsi_common.ko" ] && echo 'scsi_common -> ')scsi_mod -> sd_mod -> usb-storage"
+            echo
+            echo "fat.ko and vfat.ko are in the stock OpenIPC image (/lib/modules), the"
+            echo "NLS tables are built in, and OpenIPC's mdev.conf automounts sd[a-z][0-9]"
+            echo "under /mnt via /lib/mdev/automount.sh. Nothing else is needed for a"
+            echo "FAT32 card. exFAT, ext4 and NTFS are not in this kernel."
+            echo
+            echo "machino's boot helper (machino-usb-helper) loads these only when"
+            echo "usb.storage=true and the port role is wifi or cellular -- with the"
+            echo "role off there is no port power and nothing to enumerate."
+            echo
+            echo "NOT VERIFIED HERE: that a reader enumerates, that sd_mod creates"
+            echo "/dev/sda1, or that mdev mounts it. All of that needs the hardware."
+          } > "$B/BUILDINFO"
+          (cd "$B" && sha256sum modules/*.ko BUILDINFO > SHA256SUMS)
+          cat "$B/BUILDINFO"; echo; ls -l "$B/modules"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: storage-modules-t40
+          path: bundle/storage-modules-t40
+          if-no-files-found: error

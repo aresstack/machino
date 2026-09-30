@@ -217,7 +217,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -u
-          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml build-nna-t40.yml build-weirdike-t40.yml; do
+          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml build-nna-t40.yml build-weirdike-t40.yml build-storage-modules-t40.yml; do
             for id in $(gh run list --workflow "$wf" --commit "$GITHUB_SHA" --json databaseId,status \
                           -q '.[] | select(.status != "completed") | .databaseId' 2>/dev/null); do
               echo "$wf run $id builds this very commit -- waiting for it"
@@ -243,7 +243,7 @@ jobs:
         run: |
           set -u
           mkdir -p wifi-payload
-          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml build-nna-t40.yml build-weirdike-t40.yml; do
+          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml build-nna-t40.yml build-weirdike-t40.yml build-storage-modules-t40.yml; do
             id=$(gh run list --workflow "$wf" --status success --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
             if [ -z "${id:-}" ] || [ "$id" = "null" ]; then
               echo "::warning::no successful run of $wf to take a payload from"
@@ -391,6 +391,26 @@ jobs:
           } > "$O/cellular/PAYLOAD.txt"
           cat "$O/cellular/PAYLOAD.txt"
 
+          # AP36: USB-Massenspeicher (Kartenleser/Stick am Hub). Drei bis vier
+          # In-Tree-Module gegen den Kamera-Kernel (build-storage-modules-t40),
+          # best effort wie die uebrigen Nutzlasten; install.sh legt sie inert
+          # ab, der USB-Helfer laedt sie nur bei usb.storage=true.
+          mkdir -p "$O/storage/modules"
+          for m in scsi_common scsi_mod sd_mod usb-storage; do
+            f=$(find wifi-payload/build-storage-modules-t40.yml -name "$m.ko" 2>/dev/null | head -1)
+            if [ -n "$f" ]; then cp -f "$f" "$O/storage/modules/"; fi
+          done
+          {
+            echo "# USB mass-storage payload in this bundle"
+            echo "modules: $(ls "$O/storage/modules" 2>/dev/null | tr '\n' ' ' || echo none)"
+            echo "load order: scsi_common (if present) -> scsi_mod -> sd_mod -> usb-storage"
+            echo
+            echo "Installed by default and inert: the USB helper loads them only when"
+            echo "usb.storage=true and the port role is wifi or cellular. fat/vfat and"
+            echo "the mdev automount come with the OpenIPC image."
+          } > "$O/storage/PAYLOAD.txt"
+          cat "$O/storage/PAYLOAD.txt"
+
           # Die WLAN-Nutzlast. install.sh legt sie per Default ab und laesst
           # sie ausgeschaltet -- ohne diese Dateien waere der Schalter in der
           # Machino-UI eine Attrappe, weil niemand per Web-Klick ein
@@ -454,6 +474,7 @@ jobs:
             echo "| WLAN-Firmware | $(kb "$O/wifi/firmware") |"
             echo "| hostapd | $(kb "$O/wifi/hostapd") |"
             echo "| Modem-Module | $(kb "$O/cellular/modules") |"
+            echo "| USB-Speicher-Module | $(kb "$O/storage/modules") |"
             echo "| pppd + chat | $(kb "$O/cellular/pppd" "$O/cellular/chat") |"
             echo "| Helfer und Skripte | $(kb "$O/sbin" "$O/init" "$O"/*.script "$O"/*.sh) |"
             echo "| **Gesamt (entpackt)** | **$(kb "$O")** |"
@@ -496,6 +517,7 @@ jobs:
             echo "| Kernel-Module vermagic | ${vm:-(keine Module im Bundle)} |"
             echo "| WLAN mitgeliefert | $([ -n "$(ls "$O/wifi/modules" 2>/dev/null)" ] && echo ja || echo NEIN) |"
             echo "| Mobilfunk mitgeliefert | $([ -n "$(ls "$O/cellular/modules" 2>/dev/null)" ] && echo ja || echo NEIN) |"
+            echo "| USB-Speicher mitgeliefert | $([ -f "$O/storage/modules/usb-storage.ko" ] && echo ja || echo "NEIN - usb.storage haette nichts zu laden") |"
             echo "| PPP mitgeliefert | $([ -f "$O/cellular/pppd" ] && echo ja || echo "NEIN - die PPP-Auswahl bliebe wirkungslos") |"
             echo "| Boot-Helfer | $([ -f "$O/sbin/machino-usb-helper" ] && echo ja || echo NEIN) |"
             echo "| Veraltetes S41hostapd im Bundle | $([ -f "$O/init/S41hostapd" ] && echo JA || echo nein) |"
@@ -597,13 +619,14 @@ jobs:
                    nna/machino-nna cellular/pppd cellular/chat \
                    cellular/modules/option.ko cellular/modules/usb_wwan.ko \
                    cellular/modules/usbnet.ko cellular/modules/cdc_ether.ko \
+                   storage/modules/scsi_mod.ko storage/modules/sd_mod.ko storage/modules/usb-storage.ko \
                    sbin/machinoctl sbin/machino-manager install.sh uninstall.sh; do
             [ -s "$O/$f" ] || missing="$missing $f"
           done
           [ -n "$(find "$O/wifi/firmware" -type f 2>/dev/null)" ] || missing="$missing wifi/firmware/*"
           if [ -n "$missing" ]; then
             echo "::error::release refused -- the bundle lacks:$missing"
-            echo "::error::a payload workflow (build-aic8800-t40, build-hostapd-t40, build-modem-modules-t40, build-ppp-t40, build-nna-t40, build-weirdike-t40) has no downloadable artifact (expired after 90 days?) -- re-run it, then re-run this workflow"
+            echo "::error::a payload workflow (build-aic8800-t40, build-hostapd-t40, build-modem-modules-t40, build-ppp-t40, build-nna-t40, build-weirdike-t40, build-storage-modules-t40) has no downloadable artifact (expired after 90 days?) -- re-run it, then re-run this workflow"
             exit 1
           fi
           cp "$O/BUILDINFO" "$O/SHA256SUMS" bundle/
@@ -650,7 +673,7 @@ jobs:
               echo "(Testzaehler nicht im Log gefunden)"
             echo '```'
             echo "- Cross-Build fuer T40 (mipsel, musl) mit \`-Werror\`"
-            echo "- Bundle vollstaendig: WLAN (Treiber, Firmware, hostapd), Mobilfunk-Module, pppd/chat, NNA-Helfer, WeirdIKE (IPsec)"
+            echo "- Bundle vollstaendig: WLAN (Treiber, Firmware, hostapd), Mobilfunk-Module, pppd/chat, USB-Speicher-Module, NNA-Helfer, WeirdIKE (IPsec)"
             echo "- \`machino --version\` auf der Kamera meldet \`$TAG\` -- der Cam-Tool vergleicht genau diesen String"
             echo
             echo "### NICHT geprueft"

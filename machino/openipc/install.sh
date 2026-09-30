@@ -29,6 +29,9 @@ WITH_DEVPAGE=0
 # Schalter nicht, er meldet nur ehrlich, dass nichts zu schalten da ist.
 WITH_WIFI_PAYLOAD=1
 WITH_CELL_PAYLOAD=1
+# USB-Massenspeicher (AP36: Kartenleser/Stick am Hub): drei bis vier kleine
+# Kernelmodule, inert bis usb.storage=true. Dieselbe Regel wie beim Modem.
+WITH_STORAGE_PAYLOAD=1
 # NNA (KI) ist andersherum gepolt: AUS, bis jemand --with-nna-payload sagt.
 # Mehrere MB Helfer+Modell auf einem fast vollen Overlay sind eine
 # Entscheidung, kein Default.
@@ -119,6 +122,15 @@ only works after someone has copied files over by SSH is not a switch.
   --without-cellular-payload
                         the same for the modem modules and the helper.
 
+  --without-storage-payload
+                        the same for the USB mass-storage modules (scsi_mod,
+                        sd_mod, usb-storage; a few hundred kB). Installed by
+                        default and inert: the boot helper loads them only
+                        when usb.storage=true is set on the USB page, so a
+                        card reader or stick on a hub next to the Wi-Fi or 4G
+                        module is mounted under /mnt (FAT32) -- e.g. for AI
+                        models that do not fit the overlay.
+
   --with-nna-payload    install the NNA inference helper (machino-nna) and any
                         bundled detection model into /etc/machino/models. OFF
                         by default: several MB on an overlay that is usually
@@ -154,6 +166,7 @@ EOF
         --with-wifi) USB_MODE=wifi ;;          # Altname, siehe --help
         --without-wifi-payload) WITH_WIFI_PAYLOAD=0 ;;
         --without-cellular-payload) WITH_CELL_PAYLOAD=0 ;;
+        --without-storage-payload) WITH_STORAGE_PAYLOAD=0 ;;
         --with-nna-payload) WITH_NNA_PAYLOAD=1 ;;
         --with-weirdike) WITH_WEIRDIKE=1 ;;
         *) die "unknown option '$1' (try --help)" ;;
@@ -794,6 +807,33 @@ if [ "$WITH_CELL_PAYLOAD" = "1" ] &&
     fi
 elif [ "$WITH_CELL_PAYLOAD" != "1" ]; then
     say "skipped the cellular payload (--without-cellular-payload)"
+fi
+
+# ------------------------------------------- USB-Massenspeicher (AP36) ---
+#
+# Kartenleser oder Stick am (aktiven) Hub neben dem Modem: scsi_mod, sd_mod,
+# usb-storage -- und scsi_common, wenn der Kernelbaum es getrennt baut --
+# gegen den Kamera-Kernel (build-storage-modules-t40). Dieselbe Regel wie
+# beim Modem: liegt inert unter /etc/machino/modules, der USB-Helfer laedt es
+# beim Boot NUR bei usb.storage=true. fat/vfat und der mdev-Automount kommen
+# mit dem OpenIPC-Image; ein FAT32-Medium erscheint dann unter /mnt/sda1.
+if [ "$WITH_STORAGE_PAYLOAD" = "1" ] && [ -d "$HERE/storage/modules" ]; then
+    _smods=0
+    for _sko in "$HERE"/storage/modules/*.ko; do
+        [ -r "$_sko" ] || continue
+        put 0644 "$_sko" "$STATE_DIR/modules/$(basename "$_sko")" ||
+            die "cannot install $(basename "$_sko")"
+        _smods=$((_smods + 1))
+    done
+    say "installed the USB storage payload: $_smods module(s) (inert until usb.storage=true)"
+    if [ "$_smods" = "0" ]; then
+        warn "no storage kernel modules in the bundle - usb.storage=true would find nothing to load."
+        warn "they must be built against this exact kernel; see the build-storage-modules-t40 workflow"
+    fi
+elif [ "$WITH_STORAGE_PAYLOAD" != "1" ]; then
+    say "skipped the USB storage payload (--without-storage-payload)"
+else
+    warn "the bundle carries no storage/modules - usb.storage=true would have nothing to load (see build-storage-modules-t40)"
 fi
 
 # ------------------------------------------------------------ NNA (KI) ---

@@ -125,10 +125,10 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 
 <div class="col-12"><div class="card"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap">Models</h3><span class="mj-live-rule"></span></div>
-	<p class="mj-card-note">Model files live in <code>/etc/machino/models</code>. They are
-	  quantized Magik models (TransformKit output for the T40). Upload a model bundle below,
-	  or copy one on with the Cam-Tool or scp; the AI settings' <code>model path</code> then
-	  points at one<% [ -n "$model_cfg" ] && echo " (currently: <code>$model_cfg</code>)" %>.</p>
+	<p class="mj-card-note">Model files live in <code>/etc/machino/models</code> &mdash; or on a mounted
+	  SD card / USB stick (see below). They are quantized Magik models (TransformKit output for the
+	  T40). Upload a model bundle below, or copy one on with the Cam-Tool or scp; the AI settings'
+	  <code>model path</code> then points at one<% [ -n "$model_cfg" ] && echo " (currently: <code>$model_cfg</code>)" %>.</p>
 
 	<p class="mj-card-note">Upload a <b>.tgz</b> bundle containing the model <code>.bin</code>
 	  and its <code>manifest.json</code> (backend <code>venus-nna</code>, NNA generation
@@ -179,6 +179,31 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 	</tbody></table>
 	<% else %>
 	<p class="mj-card-note">No models on the camera yet.</p>
+	<% fi %>
+
+	<%
+	# AP36: Modelle auf einem gemounteten Medium (USB-Kartenleser am Hub oder
+	# Kartenslot). Sie bleiben dort -- der 7,6-MB-yolov5s passt nicht auf das
+	# Overlay --, "Use" zeigt ai.model_path darauf. Nur Pfade ohne Leerzeichen.
+	ext_models=$(find /mnt -maxdepth 3 -type f -name '*.bin' 2>/dev/null | grep -v ' ' | head -20)
+	%>
+	<div class="mj-live-head mt-3"><h3 class="mj-cap">Models on external storage</h3><span class="mj-live-rule"></span></div>
+	<% if [ -n "$ext_models" ]; then %>
+	<p class="mj-card-note">Found on a mounted card or stick (<a href="machino-cleanup.cgi">Storage</a>). They stay on
+	  the medium; <b>Use</b> points the model path at the file. Put the <code>manifest.json</code> from the model
+	  bundle next to the <code>.bin</code>, and keep the medium in at every boot the detector starts.</p>
+	<table class="table table-sm mb-0"><thead><tr><th>File</th><th>Size</th><th></th></tr></thead><tbody>
+	<% for f in $ext_models; do _s=$(du -k "$f" 2>/dev/null | cut -f1) %>
+		<tr><td class="text-break"><%= $f %></td><td><%= $_s %> kB</td>
+		<td class="text-nowrap"><button class="btn btn-sm btn-outline-primary ai-use" type="button"
+		        data-path="<%= $f %>"
+		        title="Sets ai.model_path to this file through machino's API. A running person detector restarts with it.">Use</button></td></tr>
+	<% done %>
+	</tbody></table>
+	<% else %>
+	<p class="mj-card-note">No medium with a <code>.bin</code> is mounted. Switch on <b>USB storage</b> on the
+	  <a href="machino-usb.cgi">USB</a> page, put the model bundle's <code>.bin</code> and <code>manifest.json</code>
+	  on a FAT32 card, and plug the reader into the hub &mdash; the medium appears under <code>/mnt</code>.</p>
 	<% fi %>
 </div></div></div>
 

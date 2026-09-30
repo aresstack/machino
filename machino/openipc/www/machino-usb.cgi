@@ -27,6 +27,12 @@
     <label><input type="radio" name="usbmode" value="off" style="width:auto"> Disabled</label>
     <label><input type="radio" name="usbmode" value="wifi" style="width:auto"> Wi-Fi</label>
     <label><input type="radio" name="usbmode" value="cellular" style="width:auto"> Cellular (4G)</label>
+    <label style="margin-top:10px"><input type="checkbox" id="usbstorage" style="width:auto"> USB storage: a card reader or stick on a hub next to the module</label>
+    <p class="mj-card-note" id="usbstorage-note">Loads the mass-storage drivers at boot (scsi_mod, sd_mod,
+      usb-storage). A FAT32 card or stick is then mounted by the system under
+      <code>/mnt/sda1</code>, shows up on the <a href="machino-cleanup.cgi">Storage</a> page, and the
+      <a href="machino-ai.cgi">AI</a> page can use a model from it. Needs a port role: with
+      <b>Disabled</b> there is no port power and nothing enumerates.</p>
     <p class="mj-card-note">This only assigns the port. SSID, password and IP address of a
       Wi-Fi client connection live on OpenIPC's own
       <a href="network.cgi">Network</a> page &mdash; once the adapter is
@@ -142,6 +148,8 @@ function stateKind(s) {
 
 let modeSaved = null;      // was in der Konfiguration steht
 let modeBooted = null;     // was beim Start tatsaechlich geladen wurde
+let storageSaved = null;   // AP36: der Speicherschalter, gespeichert ...
+let storageBooted = null;  // ... und was der Boot-Helfer damit getan hat
 
 const MODE_LABEL = {off: "Disabled", wifi: "Wi-Fi", cellular: "Cellular (4G)"};
 
@@ -150,14 +158,24 @@ function selectedMode() {
   return r ? r.value : null;
 }
 
+// AP36: der Speicherschalter haengt an der Portrolle. Ohne Rolle ist er
+// ausgegraut -- die API wuerde ihn ohnehin mit Grund ablehnen.
+function syncStorageBox() {
+  const off = selectedMode() === "off";
+  $("usbstorage").disabled = off;
+  if (off) $("usbstorage").checked = false;
+}
+
 function markModePending() {
   const n = $("usbmode-note");
   if (modeSaved === null) { n.textContent = "Takes effect after a reboot."; return; }
   const want = selectedMode();
-  if (want !== modeSaved) {
+  const wantStorage = $("usbstorage").checked;
+  if (want !== modeSaved || (storageSaved !== null && wantStorage !== storageSaved)) {
     n.textContent = "Not saved. Apply, then reboot.";
     return;
   }
+  const storagePending = (storageSaved !== null && storageBooted !== null && storageSaved !== storageBooted);
   // Drei Zustaende, nicht zwei. "Saved" und "laeuft" sind hier
   // verschiedene Dinge, und sie fallen genau zwischen Speichern und Neustart
   // auseinander -- deshalb vergleicht die Seite mit dem, was der Boot-Helfer
@@ -169,9 +187,15 @@ function markModePending() {
       + " — a reboot is required.";
     return;
   }
+  if (storagePending) {
+    n.textContent = "Saved: USB storage " + (storageSaved ? "on" : "off")
+      + ". Still " + (storageBooted ? "loaded" : "not loaded") + " — a reboot is required.";
+    return;
+  }
   n.textContent = modeSaved === "off"
     ? "The USB port is not in use: no driver, no port power, no service."
-    : (MODE_LABEL[modeSaved] || modeSaved) + " is active.";
+    : (MODE_LABEL[modeSaved] || modeSaved) + " is active"
+      + (storageSaved ? ", USB storage drivers loaded." : ".");
 }
 
 
@@ -212,6 +236,10 @@ async function loadUsb() {
   modeBooted = (res.body.bootMode !== undefined) ? res.body.bootMode : null;
   const radio = document.querySelector('input[name=usbmode][value="' + modeSaved + '"]');
   if (radio) radio.checked = true;
+  storageSaved  = !!cfg.storage;
+  storageBooted = (res.body.bootStorage !== undefined) ? !!res.body.bootStorage : null;
+  $("usbstorage").checked = storageSaved;
+  syncStorageBox();
   markModePending();
 
   $("usben").checked = !!cfg.enabled;
@@ -243,20 +271,29 @@ async function loadUsb() {
 
 
 document.querySelectorAll('input[name=usbmode]')
-        .forEach(r => r.addEventListener("change", markModePending));
+        .forEach(r => r.addEventListener("change", () => { syncStorageBox(); markModePending(); }));
+$("usbstorage").addEventListener("change", markModePending);
 
 $("usbmodesave").onclick = async () => {
   const want = selectedMode();
   if (!want) return;
-  const res = await api("PATCH", "/api/v1/usb", { mode: want });
+  // Rolle und Speicherschalter in EINEM Request: so ist "Wi-Fi + Speicher"
+  // ein Speichern, und "Disabled" nimmt den Speicher mit -- die API lehnt
+  // Speicher ohne Rolle ab.
+  const wantStorage = want === "off" ? false : $("usbstorage").checked;
+  const res = await api("PATCH", "/api/v1/usb", { mode: want, storage: wantStorage });
   if (res.status === 200) {
     modeSaved = (res.body && res.body.config && res.body.config.mode) || want;
     modeBooted = (res.body && res.body.bootMode !== undefined) ? res.body.bootMode : modeBooted;
+    storageSaved = (res.body && res.body.config && res.body.config.storage !== undefined) ? !!res.body.config.storage : wantStorage;
+    storageBooted = (res.body && res.body.bootStorage !== undefined) ? !!res.body.bootStorage : storageBooted;
+    $("usbstorage").checked = storageSaved;
     markModePending();
     // Kein "Applied." allein: uebernommen ist die EINSTELLUNG, nicht der
     // Zustand des Ports. Wer hier nur Erfolg meldet, laesst jemanden auf ein
     // Modem warten, das erst nach einem Neustart existiert.
-    const pending = (modeBooted !== null && modeBooted !== modeSaved);
+    const pending = (modeBooted !== null && modeBooted !== modeSaved)
+                 || (storageBooted !== null && storageBooted !== storageSaved);
     msg($("m-usbmode"), pending
         ? "Saved. Takes effect after a reboot — still running: "
           + (MODE_LABEL[modeBooted] || modeBooted) + "."

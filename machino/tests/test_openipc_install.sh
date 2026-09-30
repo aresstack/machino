@@ -108,6 +108,8 @@ FAKE
     cp "$PKG/sbin/machino-cellular-helper" "$B/sbin/"
     mkdir -p "$B/cellular/modules"
     for m in option usb_wwan usbnet cdc_ether; do echo "fake-$m" > "$B/cellular/modules/$m.ko"; done
+    mkdir -p "$B/storage/modules"
+    for m in scsi_mod sd_mod usb-storage; do echo "fake-$m" > "$B/storage/modules/$m.ko"; done
     cp "$PKG/install.sh" "$PKG/uninstall.sh" "$B/"
     chmod +x "$B/install.sh" "$B/uninstall.sh" "$B/sbin/streamerctl" "$B/sbin/machino-manager" "$B/init/"*
 }
@@ -520,6 +522,19 @@ if [ -d "$R/etc/machino/payload/aic8800" ]; then
     bad "--without-wifi-payload installed the WiFi payload anyway"
 else ok; fi
 
+# AP36: der Manager reicht --without-storage-payload durch -- der Cam-Tool
+# installiert nur ueber ihn, und ein Schalter, der dort nicht ankommt, ist
+# keiner.
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --without-storage-payload ) >"$WORK/out" 2>&1 ||
+    bad "manager install --without-storage-payload exited non-zero: $(cat "$WORK/out")"
+hasnt "manager: storage modules skipped"     "$R/etc/machino/modules/usb-storage.ko"
+has   "manager: cellular modules still there" "$R/etc/machino/modules/option.ko"
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
+    bad "manager install (default) exited non-zero: $(cat "$WORK/out")"
+has   "manager: storage modules by default"  "$R/etc/machino/modules/usb-storage.ko"
+
 # Ein unbekannter Schalter muss weiterhin scheitern -- sonst verschluckt der
 # Manager einen Tippfehler und installiert etwas anderes als gemeint.
 make_bundle; make_camera auto
@@ -817,6 +832,22 @@ has "cdc_ether.ko installed"                "$WORK/root/etc/machino/modules/cdc_
 # ... und tut nichts: es gibt keinen Wunsch, den der Helfer ausfuehren koennte.
 hasnt "no cellular request on install"      "$WORK/root/etc/machino/cellular-dhcp"
 
+# AP36: die USB-Speicher-Nutzlast liegt aus demselben Grund bereit -- inert,
+# bis usb.storage=true gesetzt ist; ein Schalter ohne Module waere keiner.
+has "scsi_mod.ko installed"                 "$WORK/root/etc/machino/modules/scsi_mod.ko"
+has "sd_mod.ko installed"                   "$WORK/root/etc/machino/modules/sd_mod.ko"
+has "usb-storage.ko installed"              "$WORK/root/etc/machino/modules/usb-storage.ko"
+# Und der Boot-Helfer laedt sie NICHT von selbst: ohne Schluessel ist es aus.
+eval "$(sed -n '/^read_storage() {/,/^}/p' "$PKG/sbin/machino-usb-helper")"
+out=$(CONF="$WORK/root/etc/machino/machino.conf"; read_storage)
+if [ "$out" = "off" ]; then ok; else bad "the boot helper would have loaded storage drivers on a default install ('$out')"; fi
+printf 'usb.mode = cellular\nusb.storage = true\n' > "$WORK/storage.conf"
+out=$(CONF="$WORK/storage.conf"; read_storage)
+if [ "$out" = "on" ]; then ok; else bad "usb.storage = true was read as '$out'"; fi
+printf 'usb.storage = maybe\n' > "$WORK/storage.conf"
+out=$(CONF="$WORK/storage.conf"; read_storage)
+if [ "$out" = "off" ]; then ok; else bad "an unknown usb.storage value must read as off, got '$out'"; fi
+
 # Nothing switched it on, so nothing may claim it is on.
 if grep -q "^usb.mode = wifi" "$WORK/root/etc/machino/machino.conf" 2>/dev/null ||
    grep -q "^usb.mode = cellular" "$WORK/root/etc/machino/machino.conf" 2>/dev/null; then
@@ -840,6 +871,14 @@ else bad "--usb-mode=cellular did not set usb.mode"; fi
 if grep -q "^usb.wifi.enabled = false" "$WORK/root/etc/machino/machino.conf"; then ok
 else bad "the legacy mirror was not cleared when cellular was selected"; fi
 if grep -q "next boot" "$WORK/out"; then ok; else bad "the reboot requirement was not stated"; fi
+
+# --without-storage-payload laesst die Speichermodule weg -- und nur die.
+make_bundle; make_camera auto
+run_install --without-storage-payload || bad "--without-storage-payload was refused: $(cat "$WORK/out")"
+hasnt "storage modules skipped on request"   "$WORK/root/etc/machino/modules/usb-storage.ko"
+hasnt "sd_mod skipped on request"            "$WORK/root/etc/machino/modules/sd_mod.ko"
+has   "cellular modules still installed"     "$WORK/root/etc/machino/modules/option.ko"
+if grep -q "skipped the USB storage payload" "$WORK/out"; then ok; else bad "skipping the storage payload was not stated"; fi
 
 # Der alte Name muss weiter funktionieren: bestehende Installationsbefehle
 # duerfen nicht brechen.

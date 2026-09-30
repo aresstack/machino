@@ -97,6 +97,38 @@ read_mode() {
 	esac
 }
 
+# AP36: USB-Massenspeicher (Kartenleser, Stick) am Hub NEBEN dem Modem oder
+# dem WLAN-Modul. usb.storage = true|false, Vorgabe false. Bewusst getrennt
+# von usb.mode: es ist KEINE zweite Portbelegung -- der Port gehoert weiter
+# WLAN oder Mobilfunk, ein Hub traegt den Speicher daneben. Ohne Portrolle
+# (usb.mode=off) gibt es keinen Portstrom und damit nichts, was enumerieren
+# koennte; dann wird auch nichts geladen, und der Status sagt es.
+#
+# Was hier passiert: drei bis vier Klassentreiber laden. Mounten tut mdev
+# (OpenIPCs /lib/mdev/automount.sh, S38 -- laeuft vor S42), nicht dieses
+# Skript, und machinod fasst weder Modul noch Mount an.
+STORAGE_MARK=$RUNDIR/machino-usb-storage    # was WIRKLICH versucht wurde: on|off
+STORAGE_MODULES="scsi_common scsi_mod sd_mod usb-storage"
+
+read_storage() {
+	[ -f "$CONF" ] || { echo off; return; }
+	v=$(tr -d ' \t\r' < "$CONF" | sed -n 's/^usb\.storage=//p' | tail -1)
+	case "$v" in
+		true|on|1) echo on ;;
+		*) echo off ;;
+	esac
+}
+
+start_storage() {
+	for m in $STORAGE_MODULES; do
+		# scsi_common gibt es nur, wenn der Kernelbaum es getrennt baut; fehlt
+		# es im Payload, steckt es in scsi_mod -- kein Fehler.
+		if [ "$m" = "scsi_common" ] && [ ! -f "$MODDIR/$m.ko" ]; then continue; fi
+		load_module "$m" || return 1
+	done
+	say "USB-Massenspeicher: Treiber geladen - ein FAT32-Medium erscheint unter /mnt/sdX1 (mdev)"
+}
+
 # Der Portstrom. NUR wenn der Port auch benutzt wird -- bei "off" bleibt die
 # Schiene unten, und zwar auch dann, wenn ein Geraet daran haengt.
 port_power_on() {
@@ -107,7 +139,9 @@ port_power_on() {
 }
 
 load_module() {
-	lsmod | grep -q "^$1 " && return 0
+	# lsmod nennt usb-storage als usb_storage: der Dateiname traegt den
+	# Bindestrich, der Modulname den Unterstrich.
+	lsmod | grep -q "^$(echo "$1" | tr - _) " && return 0
 	# Erst modprobe: die WLAN-Module liegen seit der OpenIPC-Integration unter
 	# /lib/modules (dort sucht auch network.cgi) und sind per depmod aufloesbar.
 	# Danach der alte Weg fuer alles, was noch in $MODDIR liegt (Modem).
@@ -409,6 +443,20 @@ start() {
 			start_cellular || say "Mobilfunk kam nicht hoch"
 			;;
 	esac
+	# AP36: der Speicher NACH der Portrolle -- der Portstrom steht dann, und
+	# der Hub hat enumeriert. Die Marke traegt den KONFIGURIERTEN Wert, wie
+	# bei usb.mode: ein fehlgeschlagener Versuch ist kein Grund, einen
+	# zweiten Neustart zu verlangen; was fehlt, steht im Log und im Status.
+	st=$(read_storage)
+	if [ "$st" = "on" ]; then
+		if [ "$mode" = "off" ]; then
+			say "usb.storage=true, aber usb.mode=off: ohne Portstrom kein Medium - nichts geladen"
+		else
+			start_storage || say "USB-Massenspeicher: Treiber kamen nicht hoch (fehlt die Nutzlast? siehe /etc/machino/modules)"
+		fi
+	fi
+	mkdir -p "$RUNDIR" 2>/dev/null
+	echo "$st" > "$STORAGE_MARK" 2>/dev/null
 	# Was WIRKLICH gestartet wurde, damit machino "Neustart erforderlich"
 	# sagen kann, ohne es zu raten. Auch im Fehlerfall: der Modus wurde
 	# versucht, und ein fehlgeschlagener Versuch ist kein Grund, einen zweiten
@@ -422,7 +470,9 @@ stop() {
 	# dann stop ruft, soll nicht den alten Stack stehen lassen.
 	stop_wifi
 	stop_cellular
-	rm -f "$MODEFILE"
+	rm -f "$MODEFILE" "$STORAGE_MARK"
+	# Die Speichertreiber bleiben geladen: ein Medium abzumelden, waehrend
+	# etwas davon liest, ist Sache von mdev beim Abziehen -- nicht von stop.
 	# Portstrom bleibt AN. Ihn abzuschalten wuerde das Geraet abmelden,
 	# waehrend machino unter Umstaenden noch laeuft und es abfragt.
 }
@@ -451,6 +501,7 @@ case "${1:-}" in
 		wifi_hw || { say "WLAN-Hardware kam nicht hoch"; exit 1; }
 		;;
 	mode) read_mode ;;
+	storage) read_storage ;;
 	status)
 		echo "configured: $(read_mode)"
 		echo "started:    $(cat "$MODEFILE" 2>/dev/null || echo '-')"
@@ -461,6 +512,8 @@ case "${1:-}" in
 		echo "hostapd:    $([ -e $RUNDIR/hostapd/$WIFI_IFACE ] && echo laeuft || echo aus)"
 		echo "ttyUSB:     $(ls $DEVDIR/ttyUSB* 2>/dev/null | tr '\n' ' ')"
 		echo "cell helper:$([ -f "$CELL_PIDFILE" ] && echo " laeuft" || echo " aus")"
+		echo "storage:    configured=$(read_storage) started=$(cat "$STORAGE_MARK" 2>/dev/null || echo '-') usb-storage=$(lsmod | grep -q '^usb_storage ' && echo geladen || echo fehlt)"
+		echo "media:      $(grep -E '^/dev/(sd[a-z][0-9]*|mmcblk[0-9]p[0-9]) ' $ROOT/proc/mounts 2>/dev/null | awk '{print $1 " auf " $2}' | tr '\n' ';')"
 		;;
-	*) echo "usage: $0 {start|stop|restart|status|mode|wifi-attach}"; exit 1 ;;
+	*) echo "usage: $0 {start|stop|restart|status|mode|storage|wifi-attach}"; exit 1 ;;
 esac

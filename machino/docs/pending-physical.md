@@ -59,6 +59,7 @@ lange aufzuschieben.
 | B5 | Bestehende RTSP-Clients bekommen jetzt 401 (Auth-Default umgestellt) | AP7 |
 | B6 | AP6–AP10 Laufzeitprüfungen der Config-/Schema-Wege | AP6–10 |
 | B7 | **Test-Ping durch den Tunnel** (Karte „Tunnel test ping", `machinoctl ipsec ping`): Echo an einen LAN-Rechner hinter dem Gateway antwortet mit plausibler RTT; ein Ziel außerhalb der Tunnelrouten wird mit Grund abgelehnt; ein Rechner, der nicht antwortet, gibt `ok=false` statt 409; die Zielliste überlebt einen Reboot | IPsec AP12 (`architecture/ipsec.md`) |
+| B8 | **USB-Massenspeicher am Hub** (`usb.storage`, USB-Seite): nach Neustart lädt der Helfer scsi_mod/sd_mod/usb-storage (`lsmod`), ein Kartenleser mit FAT32-Karte am aktiven Hub neben dem Modem erscheint als `/dev/sda1` und mdev mountet `/mnt/sda1` rw; Storage-Seite zeigt das Medium; KI-Seite listet ein `.bin` von der Karte und „Use“ setzt `ai.model_path`; Modem läuft daneben weiter | AP36 |
 
 **B1 ist der Punkt mit dem größten Rückrollwert.** Er verschiebt die
 ausgehandelte Nutzlast auf einem bereits hardwareabgenommenen Pfad. Spielt
@@ -91,7 +92,7 @@ ist isoliert.
 | E1 | Hat dieses Exemplar überhaupt einen IR-Cut-Filter? | AP18 |
 | E2 | Ist ein Mikrofon angelötet? (`aic_enable=1` sagt nur, dass der Controller an ist) | AP20 |
 | E3 | Gibt es einen Lautsprecheranschluss, den der Treiber nur nicht kennt? (`spk_gpio=-1` ist Treiberkonfiguration, keine Aussage über Kupfer) | AP20 |
-| E4 | Ist der SD-Slot verdrahtet? Der Controller steht im DT, eine Karte war nie drin | AP19 |
+| E4 | Ist der SD-Slot verdrahtet? Der Controller steht im DT, eine Karte war nie drin. Karte rein, `cat /proc/partitions`: erscheint `mmcblk0p1`, mountet mdev es nach `/mnt/mmcblk0p1` — dann braucht die SD-Karte keinen USB-Leser (AP36) | AP19, AP36 |
 
 Fällt E4 positiv aus, ist **Recording neu zu bewerten**: die Entscheidung
 „nicht angeboten" beruht ausdrücklich darauf, dass es kein Ziel gibt.

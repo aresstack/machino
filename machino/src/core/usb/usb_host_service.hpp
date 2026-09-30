@@ -66,6 +66,15 @@ struct UsbConfig {
     // pretending it is live would be the lie, and swapping kernel modules
     // under a running IMP pipeline is how this camera hardlocks.
     UsbFunction  function = UsbFunction::Off;
+
+    // AP36: USB mass storage -- a card reader or stick on a hub NEXT TO the
+    // Wi-Fi or 4G module. Deliberately not a fourth function: the port keeps
+    // its role, a hub carries the medium beside it. Off by default because
+    // it loads three kernel modules at boot (scsi_mod, sd_mod, usb-storage),
+    // and it needs a role -- with the port off there is no power and nothing
+    // enumerates. Read by the boot helper like function: takes effect at the
+    // next boot, and the mount itself is the system's (mdev), never ours.
+    bool         storage = false;
 };
 
 // What the service resolved the request into, after consulting the backend.
@@ -87,6 +96,8 @@ struct UsbStatus {
     // would survive the reboot and keep nagging.
     UsbFunction            function = UsbFunction::Off;
     UsbFunction            boot_function = UsbFunction::Off;
+    bool                   storage = false;          // AP36: stored ...
+    bool                   boot_storage = false;     // ... and what the helper acted on
     bool                   reboot_required = false;
     bool                   host_active = false;
     bool                   power_known = false;
@@ -139,6 +150,7 @@ public:
     // is reported as Off rather than as agreement -- claiming the running mode
     // matches the stored one when nobody knows would hide a needed reboot.
     void set_boot_function(UsbFunction f);
+    void set_boot_storage(bool on);          // AP36: same marker rule as the function
 
     UsbConfig       config() const;
     UsbCapabilities capabilities() const;
@@ -150,6 +162,7 @@ private:
     UsbConfig   cfg_;
     UsbResolved resolved_;
     UsbFunction boot_function_ = UsbFunction::Off;
+    bool        boot_storage_ = false;
 };
 
 }} // namespace machino::usb
