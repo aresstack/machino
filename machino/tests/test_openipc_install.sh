@@ -917,6 +917,69 @@ if grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "the space need mu
 _want=$(( _bin_kb + 1280 + 256 ))
 if grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "without --with-nna-payload the helper must not count (want ~${_want} kB): $(grep -o 'need ~[0-9]* kB' "$WORK/out")"; fi
 
+# Was schon identisch auf der Kamera liegt, kostet nichts mehr. 2026-09-30:
+# die Neuinstallation der KI-Nutzlast ueber sich selbst scheiterte an
+# "5970 kB nutzbar < 9150 kB", waehrend Helfer (2072 kB) und Demo-Modell
+# unveraendert auf dem Overlay lagen. put() laesst identische Dateien liegen,
+# die Rechnung weiss das, und --check-space sagt es dem Manager VOR dem Stoppen.
+make_bundle; make_camera auto
+head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
+mkdir -p "$WORK/root/usr/sbin"; cp "$WORK/bundle/nna/machino-nna" "$WORK/root/usr/sbin/machino-nna"
+_bin_kb=$(( $(wc -c < "$WORK/bundle/machino") / 1024 ))
+_tight=$(( _bin_kb + 1280 + 256 + 8 ))      # Daemon + Reserve + exFAT: der identische Helfer darf nichts kosten
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_tight sh ./install.sh --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+is "an identical helper already installed costs no space" "$rc" "0"
+if grep -q "already installed and unchanged" "$WORK/out"; then ok; else bad "the unchanged helper was not reported: $(cat "$WORK/out")"; fi
+if cmp -s "$WORK/bundle/nna/machino-nna" "$WORK/root/usr/sbin/machino-nna"; then ok; else bad "the helper changed although it was identical"; fi
+# Ein ANDERER alter Helfer: reicht der Platz nur ohne ihn, geht er zuerst und
+# der neue wird an seine Stelle geschrieben (In-Place, wie beim Daemon).
+make_bundle; make_camera auto
+head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
+mkdir -p "$WORK/root/usr/sbin"; head -c 2000000 /dev/zero | tr '\0' 'x' > "$WORK/root/usr/sbin/machino-nna"
+_free=$(( _bin_kb + 1280 + 256 + 2100000 / 1024 + 64 - 1000 ))   # 1000 kB zu wenig fuer eine tmp-Kopie NEBEN dem alten
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_free sh ./install.sh --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+is "a different old helper is replaced in place when only that fits" "$rc" "0"
+if grep -q "old helper is deleted first" "$WORK/out"; then ok; else bad "in-place helper replacement not reported: $(cat "$WORK/out")"; fi
+if cmp -s "$WORK/bundle/nna/machino-nna" "$WORK/root/usr/sbin/machino-nna"; then ok; else bad "the new helper is not in place"; fi
+# ... und ohne alten Helfer, den man opfern koennte, ist derselbe Platz eine Absage.
+make_bundle; make_camera auto
+head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_free sh ./install.sh --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+if [ "$rc" != 0 ]; then ok; else bad "without an old helper to reclaim this must not fit: $(cat "$WORK/out")"; fi
+if grep -q "not enough space" "$WORK/out"; then ok; else bad "no space message: $(cat "$WORK/out")"; fi
+hasnt "a refused install writes no helper" "$WORK/root/usr/sbin/machino-nna"
+
+# --check-space: rechnen, nichts anfassen, Ausgang 0/1 -- so fragt der Manager.
+make_bundle; make_camera auto
+head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
+_before=$(find "$WORK/root" | sort | md5sum)
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=10 sh ./install.sh --check-space --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+if [ "$rc" != 0 ]; then ok; else bad "--check-space must fail with 10 kB free: $(cat "$WORK/out")"; fi
+_want=$(( _bin_kb + 1280 + 256 + 2100000 / 1024 + 64 ))
+if grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "--check-space must carry the full need (want ~${_want} kB): $(cat "$WORK/out")"; fi
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=100000 sh ./install.sh --check-space --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+is "--check-space passes with room" "$rc" "0"
+if grep -q "space check passed" "$WORK/out"; then ok; else bad "no verdict line: $(cat "$WORK/out")"; fi
+is "--check-space wrote nothing" "$(find "$WORK/root" | sort | md5sum)" "$_before"
+hasnt "--check-space installed no daemon" "$WORK/root/usr/bin/machino"
+
+# Der Manager fragt genau so, VOR dem Stoppen und mit den Optionen des Aufrufs:
+# ein Helfer, der nicht passt, ist eine Absage, bevor irgendetwas steht; ein
+# identischer, der schon liegt, kostet nichts, und es laeuft durch.
+make_bundle; make_camera auto
+head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
+_tight=$(( _bin_kb + 1280 + 256 + 8 ))
+# (der Stub-Ordner ist seit den Manager-Tests weg -- hier laeuft der Daemon)
+mkdir -p "$MSTUB"; printf '#!/bin/sh\ncase "$*" in *machino*) echo 1234; exit 0 ;; esac\nexit 1\n' > "$MSTUB/pgrep"; chmod +x "$MSTUB/pgrep"
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_tight sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+if [ "$rc" != 0 ]; then ok; else bad "manager must refuse when the NNA helper does not fit: $(cat "$WORK/out")"; fi
+if grep -q "nothing was stopped" "$WORK/out" && grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "manager refusal must carry install.sh's numbers: $(cat "$WORK/out")"; fi
+hasnt "manager refused before writing the helper" "$R/usr/sbin/machino-nna"
+mkdir -p "$R/usr/sbin"; cp "$WORK/bundle/nna/machino-nna" "$R/usr/sbin/machino-nna"
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_tight sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+if [ "$rc" = 0 ]; then ok; else bad "manager must install when the identical helper is already there: $(cat "$WORK/out")"; fi
+if grep -q "already installed and unchanged" "$WORK/out"; then ok; else bad "manager run did not report the unchanged helper: $(cat "$WORK/out")"; fi
+
 # exFAT: per Vorgabe MIT (wie die Speichermodule): Modul und mkfs.exfat
 # liegen bereit, --without-exfat laesst sie weg, und der Boot-Helfer laedt
 # das Modul VOR usb-storage (sonst verpasst mdevs Automount ein exFAT-Medium

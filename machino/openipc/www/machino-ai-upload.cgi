@@ -75,14 +75,29 @@ grep -q '"nnaGeneration"[^,}]*nna1' "$_mf" || { rm -rf "$TMP"; _reply "400 Bad R
 _bin=$(find "$TMP/x" -type f -name '*.bin' 2>/dev/null | head -1)
 [ -f "$_bin" ] || { rm -rf "$TMP"; _reply "400 Bad Request" "bundle has no model .bin"; }
 
+# Schon genau so da? Dann ist nichts zu schreiben -- und vor allem kein Platz
+# noetig. 2026-09-30: die Neuinstallation der KI-Nutzlast (Cam-Tool) haette
+# hier am Platz fuer ein Modell scheitern koennen, das bereits unveraendert
+# auf dem Overlay lag. Die Antwort bleibt "Installed model": der Cam-Tool
+# prueft genau darauf, und wahr ist es.
+_tgt="$MODELS/$(basename "$_bin")"
+if [ -f "$_tgt" ] && cmp -s "$_bin" "$_tgt" && [ -f "$MODELS/manifest.json" ] && cmp -s "$_mf" "$MODELS/manifest.json"; then
+	rm -rf "$TMP"
+	_reply "200 OK" "Installed model $(basename "$_bin") on $_where ($MODELS) - already there, unchanged. Press Use next to it, then enable the detector."
+fi
+
 # Passt es auf das Ziel? (Das Overlay ist eng -- ehrlich absagen statt es
-# vollzuschreiben; eine Karte hat Platz, aber auch das wird gemessen.)
+# vollzuschreiben; eine Karte hat Platz, aber auch das wird gemessen.) Eine
+# alte Datei GLEICHEN Namens weicht zuerst: ihr Platz ist genau der, den die
+# neue braucht.
 _need=$(du -k "$_bin" "$_mf" 2>/dev/null | awk '{s+=$1} END{print s+64}')
+_old=0; [ -f "$_tgt" ] && _old=$(du -k "$_tgt" 2>/dev/null | awk '{print $1}')
 _free=$(df -k "${_dest:-/}" 2>/dev/null | awk 'NR==2{print $4}')
-[ "${_free:-0}" -gt "${_need:-0}" ] || { rm -rf "$TMP"; _reply "507 Insufficient Storage" "not enough space on $_where (need ${_need} kB, free ${_free:-0} kB)$([ -z "$_dest" ] && echo '; free some in System > Storage, or upload to the card')"; }
+[ "$(( ${_free:-0} + ${_old:-0} ))" -gt "${_need:-0}" ] || { rm -rf "$TMP"; _reply "507 Insufficient Storage" "not enough space on $_where (need ${_need} kB, free ${_free:-0} kB$([ "${_old:-0}" -gt 0 ] && echo " + ${_old} kB of the old $(basename "$_bin")"))$([ -z "$_dest" ] && echo '; free some in System > Storage, or upload to the card')"; }
 
 mkdir -p "$MODELS" || { rm -rf "$TMP"; _reply "500 Internal Server Error" "cannot create $MODELS"; }
-cp "$_bin" "$MODELS/$(basename "$_bin")" && cp "$_mf" "$MODELS/manifest.json" || { rm -rf "$TMP"; _reply "500 Internal Server Error" "could not write the model to $MODELS"; }
+[ -f "$_tgt" ] && rm -f "$_tgt"
+cp "$_bin" "$_tgt" && cp "$_mf" "$MODELS/manifest.json" || { rm -rf "$TMP"; _reply "500 Internal Server Error" "could not write the model to $MODELS"; }
 _prov=$(find "$TMP/x" -type f -name provenance.txt 2>/dev/null | head -1)
 [ -f "$_prov" ] && cp "$_prov" "$MODELS/provenance.txt"
 rm -rf "$TMP"
