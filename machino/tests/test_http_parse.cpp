@@ -541,13 +541,32 @@ void run_relay_head_end_tests() {
         HCHECK(!nc);
         HCHECK(same == noanchor);
 
-        // Already-integrated page (carries /cgi-bin/machino-devices.cgi) -> untouched.
-        bool ic = true;
-        const std::string pre = "<li><a href=\"machino-devices.cgi\">DM</a></li>"
-                                "<li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li>";
+        // Eine Seite, die im TEXT auf machino-devices.cgi verlinkt (die USB-Seite
+        // tut das: "registered on Device Manager"), ist NICHT "schon integriert":
+        // sie bekommt das Menue wie jede andere. Frueher galt der Link als
+        // Doppel-Marker, und genau diese Seiten zeigten nur die Stock-Eintraege
+        // (Befund 2026-09-30).
+        bool ic = false;
+        const std::string pre = "<li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li>"
+                                "<li><a class=\"dropdown-item\" href=\"wireguard.cgi\">WireGuard</a></li>"
+                                "<main><p>registered on <a href=\"machino-devices.cgi\">Device Manager</a>"
+                                " and <a href=\"machino-ipsec.cgi\">IPsec</a>; login.html?next=/cgi-bin/machino-usb.cgi</p></main>";
         const std::string preout = inject_machino_nav(pre, ic);
-        HCHECK(!ic);
-        HCHECK(preout == pre);
+        HCHECK(ic);
+        HCHECK(preout.find("href=\"machino-usb.cgi\">USB</a>") != std::string::npos);
+        HCHECK(preout.find("href=\"machino-devices.cgi\">Device Manager</a></li>") != std::string::npos);
+        HCHECK(preout.find("href=\"machino-ipsec.cgi\">IPsec / IKEv2</a>") != std::string::npos);
+        HCHECK(preout.find("href=\"machino-dyndns.cgi\">DynDNS</a>") != std::string::npos);
+        // Der Text-Link bleibt, das Menue kommt EINMAL dazu -- und ein zweiter
+        // Durchlauf (unser Marker ist jetzt drin) aendert nichts mehr.
+        HCHECK(preout.find("registered on <a href=\"machino-devices.cgi\">Device Manager</a>") != std::string::npos);
+        HCHECK(preout.find("<!-- machino-nav -->") != std::string::npos);
+        bool ic2 = true;
+        HCHECK(inject_machino_nav(preout, ic2) == preout && !ic2);
+        // Nur der Marker gilt als "schon integriert".
+        bool mc = true;
+        const std::string marked = "<!-- machino-nav --><li><a class=\"dropdown-item\" href=\"network.cgi\">Network</a></li>";
+        HCHECK(inject_machino_nav(marked, mc) == marked && !mc);
     }
 
     // inject_machino_network_cards: a native card next to "Wireless adapter"

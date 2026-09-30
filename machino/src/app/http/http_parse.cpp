@@ -276,12 +276,20 @@ std::string inject_machino_footer_brand(const std::string& html, bool& changed) 
     return out;
 }
 
+// Die Marker der eigenen Menue-Injektion. Der Doppel-Schutz fragt nach IHNEN,
+// nicht nach einem href: die USB-Seite verlinkt im Text den Geraetemanager,
+// die IPsec-Seite sich selbst -- und genau diese Seiten kamen deshalb ohne
+// Machino-Menue (nur Stock-Eintraege unter System, Befund 2026-09-30). Ein
+// HTML-Kommentar steht in keiner Seite von selbst, nur in unserer Injektion.
+static const char kNavMarkSystem[]   = "<!-- machino-nav -->";
+static const char kNavMarkServices[] = "<!-- machino-nav-services -->";
+
 std::string inject_machino_nav(const std::string& html, bool& changed) {
     changed = false;
 
     // Already there? Do not double it -- re-relaying the same page (or a proxy
-    // in front) must not stack the entries.
-    if (html.find("machino-devices.cgi") != std::string::npos)
+    // in front) must not stack the entries. Only OUR marker counts as "there".
+    if (html.find(kNavMarkSystem) != std::string::npos)
         return html;
 
     // The anchor is the stock Network item in System -> Setup. Match the href
@@ -316,7 +324,7 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     // OpenIPCs eigene Network-Seite, sobald der Geraetemanager den Adapter
     // registriert hat. Eine zweite WLAN-Verwaltung daneben war der
     // Architekturbefund vom 2026-09-25 (zwei Besitzer von wlan0).
-    const std::string add =
+    const std::string add = std::string("\n\t\t\t\t\t\t\t") + kNavMarkSystem +
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-usb.cgi\">USB</a></li>"
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-cellular.cgi\">Cellular</a></li>"
         "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-uplinks.cgi\">Uplinks</a></li>"
@@ -344,36 +352,21 @@ std::string inject_machino_nav(const std::string& html, bool& changed) {
     out.append(html, insertAt, std::string::npos);
     changed = true;
 
-    // DynDNS gehoert fachlich unter Services (neben WireGuard/VTun/Proxy), nicht
-    // unter System. Zweite Injektion in die Services-Dropdown: nach dem
-    // wireguard.cgi-Eintrag. Fehlt der (andere OpenIPC-Variante), bleibt es beim
-    // System-Block -- kein Abbruch. Guard: machino-dyndns.cgi noch nicht drin.
-    if (out.find("machino-dyndns.cgi") == std::string::npos) {
+    // DynDNS und IPsec/IKEv2 (AP8) gehoeren fachlich unter Services (neben
+    // WireGuard/VTun/Proxy), nicht unter System. Zweite Injektion in die
+    // Services-Dropdown: nach dem wireguard.cgi-Eintrag, IPsec zuerst, dann
+    // DynDNS. Fehlt der Anker (andere OpenIPC-Variante), bleibt es beim
+    // System-Block -- kein Abbruch, die Seiten sind unter /cgi-bin/ erreichbar.
+    // Guard: unser Services-Marker, nicht ein href (siehe oben).
+    if (out.find(kNavMarkServices) == std::string::npos) {
         size_t sa = out.find("href=\"wireguard.cgi\"");
         if (sa == std::string::npos) sa = out.find("href='wireguard.cgi'");
         if (sa != std::string::npos) {
             const size_t sli = out.find("</li>", sa);
             if (sli != std::string::npos) {
-                const std::string sadd =
+                const std::string sadd = std::string("\n\t\t\t\t\t\t\t") + kNavMarkServices +
+                    "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-ipsec.cgi\">IPsec / IKEv2</a></li>"
                     "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-dyndns.cgi\">DynDNS</a></li>";
-                out.insert(sli + 5, sadd);
-            }
-        }
-    }
-
-    // AP8: IPsec/IKEv2 gehoert fachlich neben WireGuard in die Services-
-    // Dropdown -- nicht als eigene Top-Level-Seite. Gleiche Anker-/Fail-
-    // closed-Logik wie DynDNS; eigener Guard (machino-ipsec.cgi noch nicht
-    // drin). Fehlt der wireguard.cgi-Anker, bleibt IPsec eben ohne Menuepunkt
-    // (die Seite ist trotzdem unter /cgi-bin/ erreichbar) -- kein Abbruch.
-    if (out.find("machino-ipsec.cgi") == std::string::npos) {
-        size_t sa = out.find("href=\"wireguard.cgi\"");
-        if (sa == std::string::npos) sa = out.find("href='wireguard.cgi'");
-        if (sa != std::string::npos) {
-            const size_t sli = out.find("</li>", sa);
-            if (sli != std::string::npos) {
-                const std::string sadd =
-                    "\n\t\t\t\t\t\t\t<li><a class=\"dropdown-item\" href=\"machino-ipsec.cgi\">IPsec / IKEv2</a></li>";
                 out.insert(sli + 5, sadd);
                 changed = true;
             }
