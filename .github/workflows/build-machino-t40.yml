@@ -302,6 +302,7 @@ jobs:
           cp -f machino/openipc/www/machino-ipsec.cgi   "$O/www/machino-ipsec.cgi"
           cp -f machino/openipc/www/machino-cleanup.cgi    "$O/www/machino-cleanup.cgi"
           cp -f machino/openipc/www/machino-cleanup-dl.cgi "$O/www/machino-cleanup-dl.cgi"
+          cp -f machino/openipc/www/machino-file-get.cgi   "$O/www/machino-file-get.cgi"
 
           # Upstream WebUI overlay: pin the majestic-webui commit the backend
           # (schema/keys/defaults) was built against and pack www/a. install.sh

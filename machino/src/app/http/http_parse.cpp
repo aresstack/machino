@@ -88,10 +88,14 @@ Parse parse_request(const std::string& buf, size_t& consumed, Request& out, cons
         for (char c : cl) if (c < '0' || c > '9') return Parse::Bad;
         char* ep = nullptr; unsigned long long v = strtoull(cl.c_str(), &ep, 10);
         if (ep == cl.c_str() || *ep) return Parse::Bad;
-        if (v > lim.max_body) return Parse::TooLarge;
+        // head_only still bounds the DECLARED length to what size_t can
+        // count on this (32-bit) target; the body itself is the caller's.
+        if (lim.head_only ? (v > (unsigned long long)(~(size_t)0) / 2) : (v > lim.max_body)) return Parse::TooLarge;
         body_len = (size_t)v;
     }
     if (!r.header("transfer-encoding").empty()) return Parse::Bad;     // chunked not supported (bounded API)
+    r.content_length = body_len;
+    if (lim.head_only) { consumed = end + 4; out = r; return Parse::Ok; }
     size_t total = end + 4 + body_len;
     if (buf.size() < total) return Parse::Incomplete;
     r.body = buf.substr(end + 4, body_len);
@@ -116,6 +120,48 @@ static bool is_stock_json_cgi(const std::string& path, std::string& tail) {
     if (tail.size() < 5 || tail.compare(tail.size() - 4, 4, ".cgi") != 0) return false;
     for (unsigned char ch : tail)
         if (!(std::isalnum(ch) || ch == '.' || ch == '_' || ch == '-')) return false;
+    return true;
+}
+
+std::string percent_decode(const std::string& s) {
+    std::string out; out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size() && isxdigit((unsigned char)s[i + 1]) && isxdigit((unsigned char)s[i + 2])) {
+            const char hex[3] = { s[i + 1], s[i + 2], 0 };
+            out.push_back((char)strtoul(hex, nullptr, 16));
+            i += 2;
+            continue;
+        }
+        out.push_back(s[i]);
+    }
+    return out;
+}
+
+std::string percent_encode_path(const std::string& s) {
+    static const char* HEX = "0123456789ABCDEF";
+    std::string out; out.reserve(s.size() + 8);
+    for (unsigned char ch : s) {
+        const bool keep = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+                          ch == '-' || ch == '.' || ch == '_' || ch == '~' || ch == '/';
+        if (keep) { out.push_back((char)ch); continue; }
+        out.push_back('%'); out.push_back(HEX[ch >> 4]); out.push_back(HEX[ch & 15]);
+    }
+    return out;
+}
+
+bool file_get_rewrite(Request& req, const std::string& web_root,
+                      const std::function<int(const std::string&)>& probe) {
+    if (req.method != "GET" || req.path.size() < 2 || req.path[0] != '/') return false;
+    // The WebUI's own trees: busybox serves them, and a stat per asset fetch
+    // would be a stat too many on a page load.
+    if (req.path.compare(0, 3, "/a/") == 0 || req.path.compare(0, 9, "/cgi-bin/") == 0) return false;
+    const std::string fs = percent_decode(req.path);
+    if (fs.find("..") != std::string::npos || fs.find('\0') != std::string::npos) return false;
+    if (fs.back() == '/') return false;
+    if (probe(web_root + fs) != 0) return false;   // in the web root: busybox's, unchanged
+    if (probe(fs) != 1) return false;              // not a regular file: relayed, busybox answers 404
+    req.path = "/cgi-bin/machino-file-get.cgi";
+    req.query = "path=" + percent_encode_path(fs);
     return true;
 }
 

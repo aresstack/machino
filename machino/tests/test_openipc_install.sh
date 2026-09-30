@@ -258,6 +258,8 @@ is    "pre-install state recorded" "$(cat "$R/etc/machino/streamer.preinstall")"
 is    "selection unchanged"        "$(cat "$R/etc/machino/streamer")"            "majestic"
 # The install must NOT touch the stock WebUI (no standalone page, no menu edit).
 hasnt "no standalone webui page" "$R/var/www/cgi-bin/machino.cgi"
+has   "file download helper"     "$R/var/www/cgi-bin/machino-file-get.cgi"
+if [ -x "$R/var/www/cgi-bin/machino-file-get.cgi" ]; then ok; else bad "machino-file-get.cgi is not executable"; fi
 if diff -q "$WORK/header.orig" "$R/var/www/cgi-bin/p/header.cgi" >/dev/null; then ok; else bad "install modified the stock header.cgi"; fi
 # The WebUI overlay payload is installed as machino-owned files (a bind mount
 # happens at boot, not here): the tarball and the boot script must land.

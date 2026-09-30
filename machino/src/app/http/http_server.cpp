@@ -1,4 +1,5 @@
 #include "app/http/http_server.hpp"
+#include "app/http/file_upload.hpp"
 #include "app/http/audio_stream.hpp"
 #include "app/http/ogg.hpp"
 #include "app/http/stills.hpp"
@@ -15,6 +16,7 @@
 #include "core/runtime_stats.hpp"
 
 #include <algorithm>
+#include <sys/stat.h>
 #include <atomic>
 #include <arpa/inet.h>
 #include <cerrno>
@@ -76,6 +78,13 @@ static size_t input_cap(const std::string& in) {
     if (in.compare(0, sizeof(AI_UPLOAD) - 1, AI_UPLOAD) == 0)
         return 8 * 1024 * 1024 + 4096;
     return MAX_IN;
+}
+
+// majestic's /upload (File Manager, Update page): never parsed as a whole
+// request - its body would trip the working buffer - but intercepted on the
+// request line and streamed to disk. See start_upload / feed_upload.
+static bool is_upload_request(const std::string& in) {
+    return in.compare(0, 13, "POST /upload ") == 0 || in.compare(0, 13, "POST /upload?") == 0;
 }
 
 // atoi() on a value outside int range is undefined behaviour, and these values
@@ -300,6 +309,16 @@ struct HttpServer::Client {
     int         relay_preview_stream = 0;
     std::string relay_saved_head;   // original upstream head, kept until injection
     std::string relay_inject_buf;   // the html body, accumulated
+    // A GET of a file outside the web root, rewritten onto machino-file-get.cgi
+    // (majestic's static fallback): a recording is bigger than the relay's
+    // byte cap and slower than its absolute ceiling, and both bounds exist
+    // for a runaway CGI, not for a download whose length the CGI declares.
+    // The inactivity bound still applies.
+    bool        relay_file = false;
+    // POST /upload streamed to disk (FileUpload); upload_keep is what the
+    // browser asked for, answered once the last byte is written.
+    std::unique_ptr<FileUpload> upload;
+    bool        upload_keep = false;
 };
 
 static const char* MJPEG_BOUNDARY = "machinoframe";
@@ -428,6 +447,7 @@ void HttpServer::release_client(Client& c) {
     // release() calls back into the manager.
     if (c.still) { still_orphans_.push_back(std::move(c.still)); }   // joined once its capture is done
     if (c.relay_fd >= 0) { close(c.relay_fd); c.relay_fd = -1; }
+    c.upload.reset();                           // an interrupted upload drops its temp file
     // Drop our read end of the upgrade child, but never kill it: sysupgrade
     // past the flash point is meant to outlive us ("Protected: flashing
     // continues"); the child finishes and reboots the box.
@@ -490,9 +510,10 @@ bool HttpServer::pump_requests(Client& c) {
     // the conversation: a second request pipelined behind it would otherwise
     // replace the sink the first one holds without giving it back.
     while (ok && !c.close_after_flush && c.relay_state == Client::Relay::None && !c.parked() && !c.streaming() &&
-           c.in.find("\r\n\r\n") != std::string::npos) {
+           !c.upload && c.in.find("\r\n\r\n") != std::string::npos) {
         const size_t before = c.in.size();
-        ok = handle_request(c);
+        if (is_upload_request(c.in)) ok = start_upload(c);
+        else ok = handle_request(c);
         if (c.in.size() == before) break;          // incomplete body: wait for more
     }
     return ok;
@@ -1170,7 +1191,24 @@ bool HttpServer::handle_request(Client& c) {
     } else if (cfg_.upstream_port > 0) {
         // Front-door: not a native route -> hand it to the internal OpenIPC
         // WebUI (busybox httpd). The stock UI never learns Machino exists.
-        return relay_upstream(c, req);
+        //
+        // One thing the stock UI relies on that busybox does not do: majestic
+        // serves a GET whose path is a file outside the web root straight off
+        // the filesystem (the File Manager downloads and reads files that way,
+        // /mnt/sda1/x.bin as much as /etc/...). Such a path is rewritten onto
+        // machino-file-get.cgi, which streams it back through the relay -
+        // still under busybox's own login for /cgi-bin, still without
+        // touching any OpenIPC file.
+        Request fr = req;
+        const bool file = file_get_rewrite(fr, cfg_.web_root, [](const std::string& p) -> int {
+            struct stat st;
+            if (stat(p.c_str(), &st) != 0) return 0;
+            return S_ISREG(st.st_mode) ? 1 : 2;
+        });
+        if (file) LOGD(MOD, "%s: file %s -> %s?%s", c.peer.c_str(), req.path.c_str(), fr.path.c_str(), fr.query.c_str());
+        const bool ok = relay_upstream(c, fr);
+        c.relay_file = file;
+        return ok;
     } else r = api::ApiService::fail(404, "unknown_field", path, "unknown endpoint");
 
     std::string body = r.body.dump();
@@ -1178,6 +1216,72 @@ bool HttpServer::handle_request(Client& c) {
     if (!queue(c, response(r.status, "application/json", body, req.keep_alive))) return false;
     if (!req.keep_alive) c.close_after_flush = true;
     return true;
+}
+
+bool HttpServer::authorized(const Client& c, const Request& req, int64_t t) {
+    if (!gate_ || cfg_.unsafe) return true;
+    if (SessionGate::is_local_peer(c.peer)) return true;                 // camera-local = trusted, like Majestic
+    if (SessionGate::is_public(req.method, req.path)) return true;
+    return gate_->authed(req.header("cookie"), t) || gate_->authed_basic(req.header("authorization"));
+}
+
+// POST /upload: the head is in c.in (the caller saw its terminator). Parse it
+// alone, apply the same login gate every route gets, open the target, and
+// move whatever body bytes already arrived. Refusals close the connection:
+// the browser is still sending the body, and a kept-alive socket with an
+// unread body on it would desynchronise the next request.
+bool HttpServer::start_upload(Client& c) {
+    auto refuse = [&](int status, const std::string& msg) -> bool {
+        LOGW(MOD, "%s: upload refused: %d %s", c.peer.c_str(), status, msg.c_str());
+        c.in.clear();
+        c.close_after_flush = true;
+        return queue(c, response(status, "text/plain", msg + "\n", false));
+    };
+    Request req; size_t used = 0;
+    Limits lim; lim.head_only = true;
+    const Parse p = parse_request(c.in, used, req, lim);
+    if (p == Parse::Incomplete) return true;
+    if (p == Parse::TooLarge) return refuse(413, "upload too large for this camera");
+    if (p != Parse::Ok) return refuse(400, "malformed upload request");
+    if (!authorized(c, req, now_ms())) return refuse(401, "sign in required");
+    const std::string loc = req.header("file-location");
+    if (loc.empty()) return refuse(400, "File-Location header missing (where should the file go?)");
+    int status = 0; std::string msg;
+    std::unique_ptr<FileUpload> up(new FileUpload());
+    if (!up->begin(loc, req.content_length, status, msg)) return refuse(status, msg);
+    c.in.erase(0, used);
+    c.upload = std::move(up);
+    c.upload_keep = req.keep_alive;
+    LOGI(MOD, "%s: upload %zu B -> %s", c.peer.c_str(), req.content_length, loc.c_str());
+    return feed_upload(c);
+}
+
+bool HttpServer::feed_upload(Client& c) {
+    FileUpload& up = *c.upload;
+    auto give_up = [&](int status, const std::string& msg) -> bool {
+        LOGW(MOD, "%s: upload to %s failed: %d %s", c.peer.c_str(), up.path().c_str(), status, msg.c_str());
+        c.upload.reset();
+        c.in.clear();
+        c.close_after_flush = true;
+        return queue(c, response(status, "text/plain", msg + "\n", false));
+    };
+    int status = 0; std::string msg;
+    const size_t n = std::min(up.remaining(), c.in.size());
+    if (n > 0) {
+        if (!up.feed(c.in.data(), n, status, msg)) return give_up(status, msg);
+        c.in.erase(0, n);
+        c.last_activity_ms = now_ms();          // a slow upload is not an idle client
+    }
+    if (up.remaining() > 0) return true;
+    if (!up.finish(status, msg)) return give_up(status, msg);
+    const bool keep = c.upload_keep;
+    const std::string where = up.path();
+    const size_t total = up.size();
+    c.upload.reset();
+    LOGI(MOD, "%s: upload done: %zu B at %s", c.peer.c_str(), total, where.c_str());
+    const bool ok = queue(c, response(200, "text/plain", "stored " + std::to_string(total) + " bytes at " + where + "\n", keep));
+    if (!keep) c.close_after_flush = true;
+    return ok;
 }
 
 // Start forwarding one request to the internal OpenIPC WebUI (busybox httpd).
@@ -1197,6 +1301,7 @@ bool HttpServer::relay_upstream(Client& c, const Request& req) {
     c.relay_inject = false;
     c.relay_saved_head.clear();
     c.relay_inject_buf.clear();
+    c.relay_file = false;
     c.relay_get = (req.method == "GET");
     // Nur fuer die eine bekannte Seite; alles andere behaelt den schnellen
     // Fenster-Pfad. Der Query-Teil ist egal (req.path ist ohne Query).
@@ -1310,7 +1415,7 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
     // with no gateway spends 41 s failing DNS and prints nothing meanwhile -
     // indistinguishable from a hang to an inactivity bound. The reader needs
     // to know WHICH request and HOW LONG before they can judge that.
-    if (now >= c.relay_abs_deadline_ms) {
+    if (!c.relay_file && now >= c.relay_abs_deadline_ms) {
         char m[128];
         snprintf(m, sizeof m, "OpenIPC WebUI backend exceeded the %d ms relay ceiling", cfg_.relay_max_ms);
         return fail(504, m);
@@ -1407,7 +1512,7 @@ bool HttpServer::pump_relay(Client& c, short re, int64_t now) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) return true;
             return fail(502, "OpenIPC WebUI backend failed");
         }
-        if (c.relay_total + c.relay_head.size() + (size_t)rd > cfg_.max_relay_bytes)
+        if (!c.relay_file && c.relay_total + c.relay_head.size() + (size_t)rd > cfg_.max_relay_bytes)
             return fail(502, "upstream response exceeds the relay size limit");
 
         // Hold the head back until it is complete: whether the downstream may
@@ -2325,6 +2430,11 @@ void HttpServer::loop() {
                 else if (c.rtc_ws)   { c.in.append(buf, (size_t)r); ok = rtc_ws_input(c); }
                 else if (c.ws_upgrade) { c.in.append(buf, (size_t)r); ok = ws_upgrade_input(c); }
                 else if (c.streaming()) { /* ignore input on streaming connections */ }
+                else if (c.upload) {
+                    // An upload in flight: bytes go to its file, not the buffer.
+                    c.in.append(buf, (size_t)r); ok = feed_upload(c);
+                    if (ok && !c.upload && !c.close_after_flush) ok = pump_requests(c);   // pipelined follow-up
+                }
                 else if (c.parked()) { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; }   // pipelined: parsed after the answer
                 else { c.in.append(buf, (size_t)r); if (c.in.size() > input_cap(c.in)) ok = false; else ok = pump_requests(c); }
             }

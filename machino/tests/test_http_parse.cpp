@@ -45,6 +45,77 @@ void run_http_parse_tests() {
     HCHECK(sse_headers().find("text/event-stream") != std::string::npos);
     HCHECK(std::string(status_text(409)) == "Conflict" && std::string(status_text(503)) == "Service Unavailable");
 
+    // head_only (POST /upload): Ok on the terminator, consumed = the head,
+    // content_length = the declared body, nothing of the body required or
+    // bounded by max_body. Everything else about the head is still checked.
+    {
+        Request h; size_t hu = 0; Limits hl; hl.head_only = true;
+        const std::string up = "POST /upload HTTP/1.1\r\nHost: cam\r\nFile-Location: /mnt/sda1/model.bin\r\n"
+                               "Content-Length: 7340032\r\nCookie: s=1\r\n\r\nBODYSTART";
+        HCHECK(parse_request(up, hu, h, hl) == Parse::Ok);
+        HCHECK(h.method == "POST" && h.path == "/upload" && h.content_length == 7340032 && h.body.empty());
+        HCHECK(hu == up.size() - 9 && up.substr(hu) == "BODYSTART");
+        HCHECK(h.header("file-location") == "/mnt/sda1/model.bin" && h.keep_alive);
+        HCHECK(parse_request("POST /upload HTTP/1.1\r\nContent-Length: 5\r\n", hu, h, hl) == Parse::Incomplete);
+        HCHECK(parse_request("POST /upload HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n", hu, h, hl) == Parse::Bad);
+        HCHECK(parse_request("POST /upload HTTP/1.1\r\nContent-Length: -1\r\n\r\n", hu, h, hl) == Parse::Bad);
+        HCHECK(parse_request("POST /upload HTTP/1.1\r\n\r\n", hu, h, hl) == Parse::Ok && h.content_length == 0);
+        // the full parse still sets content_length and still bounds the body
+        Request f; size_t fu = 0;
+        HCHECK(parse_request("POST /x HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc", fu, f) == Parse::Ok && f.content_length == 3 && f.body == "abc");
+        HCHECK(parse_request("POST /upload HTTP/1.1\r\nContent-Length: 7340032\r\n\r\n", fu, f) == Parse::TooLarge);
+    }
+    // percent helpers: paths, not form fields ('+' is a '+').
+    HCHECK(percent_decode("/mnt/sda1/a%20b%2Bc.bin") == "/mnt/sda1/a b+c.bin");
+    HCHECK(percent_decode("/x%zz%4") == "/x%zz%4");                        // invalid sequences kept
+    HCHECK(percent_decode("/x+y") == "/x+y");
+    HCHECK(percent_encode_path("/mnt/sda1/a b+c&d?e.bin") == "/mnt/sda1/a%20b%2Bc%26d%3Fe.bin");
+    HCHECK(percent_encode_path("/etc/machino/models/yolo_v5-s.bin") == "/etc/machino/models/yolo_v5-s.bin");
+    HCHECK(percent_encode_path(std::string("/mnt/\xc3\xa4.bin")) == "/mnt/%C3%A4.bin");
+    // file_get_rewrite: majestic's static fallback as a relay rewrite. The
+    // probe table plays the camera: what is in the web root, what is a file.
+    {
+        auto probe = [](const std::string& p) -> int {
+            if (p == "/var/www/a/files.js" || p == "/var/www/login.html" || p == "/var/www/index.html") return 1;
+            if (p == "/mnt/sda1/model.bin" || p == "/mnt/sda1/a b+c.bin" || p == "/etc/machino/models/yolo.bin" || p == "/init") return 1;
+            if (p == "/mnt/sda1" || p == "/mnt" || p == "/var/www/mnt/sda1") return 2;
+            return 0;
+        };
+        Request g; size_t gu = 0;
+        HCHECK(parse_request("GET /mnt/sda1/model.bin HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(file_get_rewrite(g, "/var/www", probe));
+        HCHECK(g.path == "/cgi-bin/machino-file-get.cgi" && g.query == "path=/mnt/sda1/model.bin");
+        std::string w = forward_request(g, "127.0.0.1");
+        HCHECK(w.rfind("GET /cgi-bin/machino-file-get.cgi?path=/mnt/sda1/model.bin HTTP/1.0\r\n", 0) == 0);
+        // encoded on the way in, strictly re-encoded on the way out
+        HCHECK(parse_request("GET /mnt/sda1/a%20b%2Bc.bin HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(file_get_rewrite(g, "/var/www", probe) && g.query == "path=/mnt/sda1/a%20b%2Bc.bin");
+        HCHECK(parse_request("GET /mnt/sda1/a+b.bin HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe));                  // "/mnt/sda1/a+b.bin" is not in the table: absent
+        HCHECK(parse_request("GET /etc/machino/models/yolo.bin?x=1 HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(file_get_rewrite(g, "/var/www", probe) && g.query == "path=/etc/machino/models/yolo.bin");
+        HCHECK(parse_request("GET /init HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(file_get_rewrite(g, "/var/www", probe) && g.query == "path=/init");   // top-level file, like majestic
+        // NOT rewritten: web-root assets and pages, directories, the WebUI trees, non-GET, the root
+        HCHECK(parse_request("GET /a/files.js HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe) && g.path == "/a/files.js");
+        HCHECK(parse_request("GET /login.html HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe) && g.path == "/login.html");
+        HCHECK(parse_request("GET /mnt/sda1 HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe));
+        HCHECK(parse_request("GET /mnt/sda1/ HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe));
+        HCHECK(parse_request("GET /cgi-bin/machino-cleanup.cgi HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe));
+        HCHECK(parse_request("GET / HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe));
+        HCHECK(parse_request("GET /nowhere/x.bin HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe) && g.path == "/nowhere/x.bin");   // busybox answers 404 as before
+        HCHECK(parse_request("POST /mnt/sda1/model.bin HTTP/1.1\r\nHost: cam\r\nContent-Length: 0\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe));
+        HCHECK(parse_request("DELETE /mnt/sda1/model.bin HTTP/1.1\r\nHost: cam\r\n\r\n", gu, g) == Parse::Ok);
+        HCHECK(!file_get_rewrite(g, "/var/www", probe));
+    }
     // forward_request (front-door relay to the internal OpenIPC WebUI):
     // rebuilds HTTP/1.0 + Connection: close, keeps path+query, forwards
     // Authorization/Cookie, rewrites Host, drops hop-by-hop + our own length.
