@@ -66,6 +66,28 @@ EXFAT_KO=/etc/machino/modules/exfat.ko
 exfat_loaded()    { grep -q '^exfat ' /proc/modules 2>/dev/null; }
 exfat_available() { exfat_loaded || [ -f "$EXFAT_KO" ]; }
 exfat_ensure()    { exfat_loaded && return 0; [ -f "$EXFAT_KO" ] || return 1; insmod "$EXFAT_KO" >/dev/null 2>&1; exfat_loaded; }
+# Welches Dateisystem traegt das Geraet? OpenIPCs busybox-blkid ist OHNE
+# FEATURE_BLKID_TYPE gebaut (general/package/busybox/busybox.config): es
+# nennt LABEL und UUID, nie TYPE. Befund 2026-09-30: eine frisch als FAT32
+# formatierte Karte stand nach dem Unmount als "no filesystem found" da,
+# ohne Mount-Knopf. Also die Signaturen im Bootsektor lesen -- exFAT und
+# NTFS tragen ihren Namen ab Byte 3, FAT32 ab Byte 82, FAT12/16 ab Byte 54.
+fs_type_of() {
+	_ft=$(blkid "$1" 2>/dev/null | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p')
+	if [ -n "$_ft" ]; then echo "$_ft"; return; fi
+	case "$(dd if="$1" bs=1 skip=3 count=8 2>/dev/null | tr -d '\0')" in
+		'EXFAT   ') echo exfat; return ;;
+		'NTFS    ') echo ntfs; return ;;
+	esac
+	case "$(dd if="$1" bs=1 skip=82 count=8 2>/dev/null)" in
+		'FAT32   ') echo vfat; return ;;
+	esac
+	case "$(dd if="$1" bs=1 skip=54 count=8 2>/dev/null)" in
+		'FAT12   '|'FAT16   ') echo vfat; return ;;
+	esac
+	# Ein Dateisystem, das gerade gemountet ist, kennt /proc/mounts sicher.
+	awk -v d="$1" '$1==d{print $3; exit}' /proc/mounts 2>/dev/null
+}
 # Was laesst sich hier mounten -- und mit welchem -t? Leer: gar nicht.
 mount_type() {
 	case "$1" in
@@ -105,7 +127,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 		if ! is_ext_blockdev "$_d"; then redirect_to "$SCRIPT_NAME" "danger" "Not a removable block device: $_d"; fi
 		_n=$(basename "$_d")
 		if grep -q "^$_d " /proc/mounts; then redirect_to "$SCRIPT_NAME" "success" "$_d is already mounted"; fi
-		_t=$(blkid "$_d" 2>/dev/null | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p')
+		_t=$(fs_type_of "$_d")
 		case "$_t" in
 			vfat|msdos) _mt=vfat ;;
 			exfat)
@@ -262,7 +284,7 @@ for _b in /sys/block/sd[a-z] /sys/block/mmcblk[0-9]; do
 		_psz=$(cat "$_b/$_p/size" 2>/dev/null); [ -n "$_psz" ] || _psz=$_sz
 		_mb=$(( _psz / 2048 ))
 		_bl=$(blkid "/dev/$_p" 2>/dev/null)
-		_type=$(printf '%s' "$_bl" | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p')
+		_type=$(fs_type_of "/dev/$_p")
 		_label=$(printf '%s' "$_bl" | sed -n 's/.*LABEL="\([^"]*\)".*/\1/p')
 		_mp=$(awk -v d="/dev/$_p" '$1==d{print $2; exit}' /proc/mounts)
 		_free=0

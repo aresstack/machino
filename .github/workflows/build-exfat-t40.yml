@@ -16,7 +16,7 @@ name: build-exfat-t40
 #                nur mkfs.vfat). Dynamisch gegen die musl der Kamera wie
 #                machino selbst, non-PIE.
 #
-# install.sh legt beides nur auf Wunsch ab (--with-exfat, Cam-Tool: exFAT):
+# install.sh legt beides per Vorgabe ab (--without-exfat laesst es weg):
 # das Modul inert unter /etc/machino/modules, der USB-Helfer laedt es VOR
 # usb-storage, damit mdevs Automount ("vfat exfat ...") ein exFAT-Medium beim
 # Einstecken schon mounten kann.
@@ -220,7 +220,7 @@ jobs:
             echo "vermagic:   $WANT_VERMAGIC (verified)"
             echo "built:      $(date -u +%Y-%m-%dT%H:%M:%SZ) by run ${GITHUB_RUN_ID}"
             echo
-            echo "Installed only with --with-exfat (Cam-Tool: exFAT). The module goes to"
+            echo "Installed by default (--without-exfat skips it). The module goes to"
             echo "/etc/machino/modules/exfat.ko and is loaded by machino-usb-helper BEFORE"
             echo "usb-storage when usb.storage=true, so OpenIPC's mdev automount (which"
             echo "tries 'vfat exfat ...') can mount an exFAT card the moment it appears."

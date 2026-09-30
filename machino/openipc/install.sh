@@ -39,10 +39,12 @@ WITH_NNA_PAYLOAD=0
 # IPsec (WeirdIKE) genauso: ein eigener Daemon mit eigenem Initskript und
 # einem Preshared-Key in der Config -- ein VPN ist eine Entscheidung.
 WITH_WEIRDIKE=0
-# exFAT (Kernelmodul + mkfs.exfat) ebenso AUS: rund 200 kB fuer ein
-# Dateisystem, das nur braucht, wer eine Karte ueber 32 GB im Werksformat
-# oder Dateien ueber 4 GB will. FAT32 geht immer.
-WITH_EXFAT=0
+# exFAT (Kernelmodul + mkfs.exfat, rund 200 kB) kommt wie die Speichermodule
+# MIT: eine Karte ueber 32 GB ist ab Werk exFAT, und wer sie einsteckt, soll
+# sie mounten und formatieren koennen, ohne vorher etwas zu wissen. Inert
+# wie die Speichermodule. 1 = Vorgabe (fehlt es im Bundle: Warnung),
+# 2 = ausdruecklich verlangt (--with-exfat; fehlt es: Fehler), 0 = aus.
+WITH_EXFAT=1
 
 # Der eine Schalter fuer den einen Port. Leer heisst "nicht angefasst": eine
 # Neuinstallation ueber eine bestehende hinweg darf die Wahl des Betreibers
@@ -141,13 +143,14 @@ only works after someone has copied files over by SSH is not a switch.
                         nearly full -- AI is an explicit choice, and the AI
                         page can free the space (majestic backup) first.
 
-  --with-exfat          install the exFAT payload: the exfat kernel module
+  --without-exfat       the same for the exFAT payload: the exfat kernel module
                         (built for this camera's kernel) and mkfs.exfat, about
-                        200 kB. OFF by default. The USB helper loads the module
-                        with the storage drivers (usb.storage=true), so an
-                        SDXC card in its factory format mounts, and the Storage
-                        page can format a medium as exFAT (no 4 GB file limit)
-                        as well as FAT32.
+                        200 kB, installed by default. The USB helper loads the
+                        module with the storage drivers (usb.storage=true), so
+                        an SDXC card in its factory format mounts, and the
+                        Storage page can format a medium as exFAT (no 4 GB
+                        file limit) as well as FAT32. --with-exfat demands it
+                        (a bundle without it is then an error, not a warning).
 
   --with-weirdike       install the IKEv2/IPsec client (weirdiked, weirdikectl,
                         S99weirdike, the ipsec.cgi status page). OFF by
@@ -181,7 +184,8 @@ EOF
         --without-storage-payload) WITH_STORAGE_PAYLOAD=0 ;;
         --with-nna-payload) WITH_NNA_PAYLOAD=1 ;;
         --with-weirdike) WITH_WEIRDIKE=1 ;;
-        --with-exfat) WITH_EXFAT=1 ;;
+        --with-exfat) WITH_EXFAT=2 ;;
+        --without-exfat) WITH_EXFAT=0 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -301,8 +305,8 @@ fi
 # Erst wenn selbst das In-Place nicht passt, ist wirklich kein Platz.
 new_kb=$(( $(wc -c < "$HERE/machino") / 1024 ))
 need_kb=$(( new_kb + 1280 ))
-# Die exFAT-Nutzlast (Modul + mkfs.exfat) kommt nur auf Wunsch und obendrauf.
-[ "$WITH_EXFAT" = "1" ] && need_kb=$(( need_kb + 256 ))
+# Die exFAT-Nutzlast (Modul + mkfs.exfat) kommt obendrauf, wenn sie kommt.
+[ "$WITH_EXFAT" != "0" ] && need_kb=$(( need_kb + 256 ))
 # MACHINO_TEST_FREE_KB overrides the measured free space (test seam only): the
 # host install tests run against a large real /, so without it the low-space
 # branches below can never be exercised. Production reads df.
@@ -856,14 +860,17 @@ fi
 # exFAT ist das Werksformat von SDXC-Karten ueber 32 GB und kennt keine
 # 4-GB-Dateigrenze; der Kamera-Kernel hat es nicht. Das Modul (Samsung-
 # Treiber, out-of-tree gegen 4.4.94 gebaut: build-exfat-t40) und mkfs.exfat
-# kommen nur auf Wunsch (--with-exfat). Das Modul liegt inert neben den
-# Speichermodulen; der USB-Helfer laedt es VOR usb-storage, damit mdevs
-# Automount ("vfat exfat ...") ein exFAT-Medium beim Einstecken schon mounten
-# kann. Mit mkfs.exfat bietet die Storage-Seite "Format exFAT" neben FAT32.
-# Nicht gewuenscht heisst nicht angefasst -- dieselbe Regel wie bei NNA.
-if [ "$WITH_EXFAT" = "1" ]; then
-    [ -r "$HERE/exfat/exfat.ko" ] ||
+# kommen per Vorgabe mit (--without-exfat laesst sie weg). Das Modul liegt
+# inert neben den Speichermodulen; der USB-Helfer laedt es VOR usb-storage,
+# damit mdevs Automount ("vfat exfat ...") ein exFAT-Medium beim Einstecken
+# schon mounten kann. Mit mkfs.exfat bietet die Storage-Seite "Format exFAT"
+# neben FAT32. Ein Bundle ohne exfat/ ist per Vorgabe eine Warnung (aeltere
+# Bundles), bei ausdruecklichem --with-exfat ein Fehler.
+if [ "$WITH_EXFAT" != "0" ] && [ ! -r "$HERE/exfat/exfat.ko" ]; then
+    [ "$WITH_EXFAT" = "2" ] &&
         die "--with-exfat, but the bundle carries no exfat/exfat.ko (see build-exfat-t40)"
+    warn "the bundle carries no exfat/exfat.ko - exFAT media stay unmountable, the Storage page offers FAT32 only (see build-exfat-t40)"
+elif [ "$WITH_EXFAT" != "0" ]; then
     put 0644 "$HERE/exfat/exfat.ko" "$STATE_DIR/modules/exfat.ko" || die "cannot install exfat.ko"
     if [ -r "$HERE/exfat/mkfs.exfat" ]; then
         put 0755 "$HERE/exfat/mkfs.exfat" "$ROOT/usr/sbin/mkfs.exfat" || die "cannot install mkfs.exfat"
@@ -873,7 +880,9 @@ if [ "$WITH_EXFAT" = "1" ]; then
         say "installed the exFAT payload: exfat.ko"
     fi
     [ "$WITH_STORAGE_PAYLOAD" = "1" ] ||
-        warn "--with-exfat without the storage payload: the exFAT module only matters for media on USB (or the board's SD slot)"
+        warn "exFAT without the storage payload: the exFAT module only matters for media on USB (or the board's SD slot)"
+else
+    say "skipped the exFAT payload (--without-exfat)"
 fi
 
 # ------------------------------------------------------------ NNA (KI) ---
