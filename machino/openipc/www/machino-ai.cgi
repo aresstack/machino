@@ -125,6 +125,16 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 
 <div class="col-12"><div class="card"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap">Models</h3><span class="mj-live-rule"></span></div>
+	<%
+	# Ergebnis des letzten Uploads: die Seite laedt sich danach neu (die
+	# Modell-Liste ist serverseitig gerendert), und eine Meldung, die dabei
+	# verschwindet, hat niemand gelesen (Befund 2026-09-30). Also kommt sie
+	# als ?ok= mit und bleibt als Box stehen, bis man weiterklickt.
+	ai_ok=$(printf '%s' "${GET_ok:-}" | head -c 400 | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g')
+	%>
+	<% if [ -n "$ai_ok" ]; then %>
+	<div class="alert alert-success py-2 mb-3" role="status"><b>Upload done.</b> <%= $ai_ok %></div>
+	<% fi %>
 	<p class="mj-card-note">Model files live in <code>/etc/machino/models</code> &mdash; or on a mounted
 	  SD card / USB stick (see below). They are quantized Magik models (TransformKit output for the
 	  T40). Upload a model bundle below, or copy one on with the Cam-Tool or scp; the AI settings'
@@ -145,7 +155,10 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 	<div class="mb-3">
 		<input type="file" id="mdlfile" accept=".tgz,.gz,.tar" style="max-width:22rem">
 		<button class="btn btn-sm btn-outline-primary" type="button" id="mdlup">Upload model bundle</button>
-		<span id="mdlmsg" class="mj-card-note" style="display:inline-block;margin-left:.5rem"></span>
+		<div id="mdlprog" class="progress mt-2" style="height:.6rem;max-width:32rem;display:none">
+			<div class="progress-bar" role="progressbar" style="width:0%"></div>
+		</div>
+		<div id="mdlmsg" class="mj-card-note mt-2"></div>
 	</div>
 	<% if [ -n "$ext_first" ]; then %>
 	<div class="form-check mb-3">
@@ -169,6 +182,8 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 		b.addEventListener('click', function () {
 			var fi = document.getElementById('mdlfile');
 			var msg = document.getElementById('mdlmsg');
+			var prog = document.getElementById('mdlprog');
+			var bar = prog.querySelector('.progress-bar');
 			var f = fi.files && fi.files[0];
 			if (!f) { msg.textContent = 'Choose a .tgz bundle first.'; return; }
 			var url = 'machino-ai-upload.cgi';
@@ -177,15 +192,42 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 				var sel = document.getElementById('mdlmount');
 				url += '?dest=' + encodeURIComponent(sel ? sel.value : card.dataset.mount);
 			}
-			b.disabled = true; msg.textContent = 'Uploading ' + f.name + (card && card.checked ? ' to the card' : '') + ' ...';
-			fetch(url, { method: 'POST', body: f })
-				.then(function (r) { return r.text().then(function (t) { return { ok: r.ok, t: t }; }); })
-				.then(function (res) {
-					msg.textContent = res.t;
-					if (res.ok) setTimeout(function () { location.reload(); }, 900);
-					else b.disabled = false;
-				})
-				.catch(function (e) { msg.textContent = 'Upload failed: ' + e; b.disabled = false; });
+			var where = (card && card.checked) ? ' to the card' : ' to the overlay';
+			var kb = function (n) { return Math.round(n / 1024) + ' kB'; };
+			var fail = function (text) {
+				prog.style.display = 'none';
+				msg.innerHTML = '<div class="alert alert-danger py-2 mb-0" role="alert"></div>';
+				msg.firstChild.textContent = text;
+				b.disabled = false;
+			};
+			b.disabled = true;
+			bar.style.width = '0%'; prog.style.display = '';
+			msg.textContent = 'Uploading ' + f.name + where + ' (' + kb(f.size) + ') ...';
+			// XHR, nicht fetch: nur XHR meldet den Upload-Fortschritt.
+			var xhr = new XMLHttpRequest();
+			xhr.open('POST', url, true);
+			xhr.upload.onprogress = function (e) {
+				if (!e.lengthComputable) return;
+				var pct = Math.round(e.loaded / e.total * 100);
+				bar.style.width = pct + '%';
+				msg.textContent = 'Uploading ' + f.name + where + ': ' + pct + '% (' + kb(e.loaded) + ' of ' + kb(e.total) + ')';
+			};
+			xhr.upload.onload = function () {
+				bar.style.width = '100%';
+				msg.textContent = 'Upload complete, the camera is checking the bundle and writing the model ...';
+			};
+			xhr.onload = function () {
+				var t = (xhr.responseText || '').trim();
+				if (xhr.status === 200) {
+					// Ergebnis per ?ok= mitnehmen: die Liste unten ist serverseitig
+					// gerendert, und die Meldung bleibt nach dem Neuladen stehen.
+					location.href = 'machino-ai.cgi?ok=' + encodeURIComponent(t);
+				} else {
+					fail(t || ('HTTP ' + xhr.status));
+				}
+			};
+			xhr.onerror = function () { fail('Upload failed: the connection dropped (the camera keeps streaming; try again).'); };
+			xhr.send(f);
 		});
 	})();
 	</script>

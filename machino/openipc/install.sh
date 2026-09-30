@@ -307,6 +307,11 @@ new_kb=$(( $(wc -c < "$HERE/machino") / 1024 ))
 need_kb=$(( new_kb + 1280 ))
 # Die exFAT-Nutzlast (Modul + mkfs.exfat) kommt obendrauf, wenn sie kommt.
 [ "$WITH_EXFAT" != "0" ] && need_kb=$(( need_kb + 256 ))
+# Der NNA-Helfer (machino-nna, ~2 MB) ebenso: er wird erst NACH dem Binary
+# geschrieben, und ein ENOSPC dort liesse eine halbe Installation zurueck.
+if [ "$WITH_NNA_PAYLOAD" = "1" ] && [ -r "$HERE/nna/machino-nna" ]; then
+    need_kb=$(( need_kb + $(wc -c < "$HERE/nna/machino-nna") / 1024 + 64 ))
+fi
 # MACHINO_TEST_FREE_KB overrides the measured free space (test seam only): the
 # host install tests run against a large real /, so without it the low-space
 # branches below can never be exercised. Production reads df.

@@ -141,6 +141,17 @@ Der Weg ohne Cam-Tool und ohne scp, alles auf der KI-Seite
    Die beiden kleinen ONNX im Toolkit (Txx_Xs2/yolov5: 4 Klassen bei
    128x128; persondet: zwei Koepfe, eine Klasse, jzdl-ATen-Ops) passen nicht
    zum Helfer.
+
+   **Cam-Tool, KI-Nutzlast (seit 2026-09-30 per Vorgabe an):** Helfer (im
+   Bundle, ueber den Manager) plus Demo-Modell: fetch-machino.sh und
+   "Machino laden" legen das Release-Asset als
+   `machino-nna-model-demo.tgz` neben Bundle und Manifest (nie IM Bundle:
+   AGPL); der Machino-Patch haengt es als zweiten TFTP-Transfer an und
+   installiert es auf der Kamera ueber `machino-ai-upload.cgi` (dieselbe
+   Manifest- und Platzpruefung wie die KI-Seite) nach /etc/machino/models.
+   Die Vorpruefung des Patches rechnet Helfer (2200 kB) und Modell mit,
+   install.sh zaehlt den Helfer im Platzbedarf. Danach auf der KI-Seite
+   "Use". Das grosse yolov5s bleibt Sache der KI-Seite (Link dort).
 2. **Use** neben der Datei: `PATCH /api/v1/config {"ai":{"model_path":…}}`.
    `ai.model_path` ist damit zur Laufzeit setzbar (absoluter Pfad ohne
    `..`; ob die Datei existiert und das Manifest passt, beantwortet weiter
