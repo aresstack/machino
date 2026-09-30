@@ -70,6 +70,16 @@ formatkompatibel; keine Ereignisse fuer leere Frames.
 - Detector-Dropdown der ai-Sektion speist sich aus der detectors-Liste;
   person erscheint dort erst mit Supported (nach AP6). Die Reason-Codes
   sind bis dahin ueber /api/v1/ai/detectors und die KI-Seite sichtbar.
+- **Sichtbar im Bild (2026-09-30):** die Stock-WebUI zeichnet auf der
+  Ai-Seite (camera.cgi?tab=ai) mit analytics-overlay.js Kaestchen ueber
+  die Vorschau und meldet darunter "n Erkennungen, Alter der Antwort".
+  Quelle ist der WebSocket `/ws/analytics`, den machino jetzt bedient:
+  DetectionService::set_analytics_sink liefert JEDES analysierte Ergebnis
+  (auch leere Frames, dazu ein Herzschlag pro Sekunde im Leerlauf, und
+  active=false beim Stopp), core/detection/analytics_event formt die
+  Nachricht (Boxen in Hauptstrom-Pixeln, das Overlay mappt ueber den
+  /api/v1/osd-Report auf den gezeigten Strom), der HTTP-Server faechert
+  im Poll-Tick auf. Motion bleibt boxlos (active = Bewegung ja/nein).
   (Bewusste Restluecke: „ausgegraut mit Grund IM Dropdown" ist
   JS-Arbeit in der ai-Sektion — nach AP6 sinnvoll, wenn person real
   erscheinen kann.)

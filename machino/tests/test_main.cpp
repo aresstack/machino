@@ -42,6 +42,7 @@ void run_api_tests();
 void run_tuning_tests();
 void run_multistream_tests();
 void run_detection_tests();
+void run_analytics_event_tests();
 void run_nna_detector_tests();
 void run_ipsec_tests();
 void run_audio_tests();
@@ -390,6 +391,7 @@ int main() {
     run_tuning_tests();
     run_multistream_tests();
     run_detection_tests();
+    run_analytics_event_tests();
     run_nna_detector_tests();
     run_ipsec_tests();
     run_audio_tests();

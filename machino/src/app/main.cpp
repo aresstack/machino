@@ -49,6 +49,7 @@
 #include "core/config_store.hpp"
 #include "core/diag.hpp"
 #include "core/detection/detection_service.hpp"
+#include "core/detection/analytics_event.hpp"
 #include "core/events.hpp"
 #include "core/hw/board_profile_parser.hpp"
 #include "core/hw/registry.hpp"
@@ -1025,6 +1026,17 @@ int main(int argc, char** argv) {
         }
         httpd.set_osd(&osd_service);
 
+        // The stock WebUI's live detection overlay (analytics-overlay.js on
+        // the Ai tab) draws what /ws/analytics sends: one message per
+        // analysed frame, boxes in MAIN-stream pixels, which the page maps
+        // onto whichever stream it shows through the /api/v1/osd report
+        // above. Wired here because the detector does not know the stream
+        // geometry and the server does not know the detector.
+        detection.set_analytics_sink(
+            [&httpd, mw = stream.width, mh = stream.height](const std::string& det, const detection::DetectionResult& r, bool active) {
+                httpd.push_analytics(detection::analytics_message(det, r, mw, mh, active));
+            });
+
         // AP10: the unclaimed / first-run gate. No key installer is wired, so a
         // key offered during setup is reported as "claimed, key not installed"
         // rather than silently dropped.
@@ -1324,6 +1336,7 @@ int main(int argc, char** argv) {
             if (wdt_feeder.joinable()) wdt_feeder.join();
             wdt.stop();
         }
+        detection.set_analytics_sink(nullptr);   // the server is about to go; the detector outlives it a moment
         httpd.stop();
         audio_service.shutdown();   // no listener is left once the server is down; close the codec input now
         server.stop();
