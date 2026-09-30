@@ -237,6 +237,49 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 </div></div></div>
 
 <div class="col-12"><div class="card"><div class="card-body">
+	<div class="mj-live-head"><h3 class="mj-cap">Models to start with</h3><span class="mj-live-rule"></span></div>
+	<p class="mj-card-note">The NNA runs <b>Magik</b> models only, and machino's helper decodes <b>YOLOv5</b> heads:
+	  three outputs at strides 8/16/32, the 80 COCO classes, the standard anchors. So any YOLOv5
+	  <b>n / s / m</b> converts and runs unchanged (only <i>person</i> is reported); YOLOv8, YOLO11
+	  (anchor-free), SSD or classifiers do not fit the helper as it is. Every model below is
+	  uploaded with the form above &mdash; on the card by default when one is mounted.</p>
+	<table class="table table-sm mb-2"><thead><tr><th>Model</th><th>Size</th><th>Where</th><th>Notes</th></tr></thead><tbody>
+		<tr><td class="text-nowrap">yolov5n demo</td><td>2&nbsp;MB</td>
+		<td><a href="https://github.com/aresstack/machino/releases/latest/download/machino-nna-model-demo-t40nn.tgz">machino-nna-model-demo-t40nn.tgz</a></td>
+		<td>Fits a full overlay. Ultralytics yolov5n (v7.0) exported to ONNX and quantized to 8 bit by machino's CI.
+		  First steps start here. Not yet hardware-verified: SiLU on the NNA.</td></tr>
+		<tr><td class="text-nowrap">yolov5s</td><td>7.6&nbsp;MB</td>
+		<td><a href="https://github.com/aresstack/machino/releases/latest/download/machino-nna-model-t40nn.tgz">machino-nna-model-t40nn.tgz</a></td>
+		<td>The toolkit's reference model, more accurate. Needs the card or a cleaned overlay (see
+		  <a href="machino-cleanup.cgi">Storage</a>).</td></tr>
+		<tr><td class="text-nowrap">yolov5n / s / m weights</td><td>4&ndash;40&nbsp;MB</td>
+		<td><a href="https://github.com/ultralytics/yolov5/releases/tag/v7.0" target="_blank" rel="noopener">Ultralytics YOLOv5 v7.0 release</a></td>
+		<td>PyTorch checkpoints (AGPL-3.0). Export and convert with the recipe below; yolov5m is
+		  ~21&nbsp;MB as Magik and only lives on a card.</td></tr>
+		<tr><td class="text-nowrap">Hugging Face</td><td>&ndash;</td>
+		<td><a href="https://huggingface.co/models?search=yolov5%20onnx" target="_blank" rel="noopener">search: yolov5 onnx</a>,
+		  <a href="https://huggingface.co/models?library=onnx&amp;search=yolov5" target="_blank" rel="noopener">library: onnx</a>,
+		  <a href="https://huggingface.co/Ultralytics" target="_blank" rel="noopener">Ultralytics on Hugging Face</a></td>
+		<td>A YOLOv5 ONNX with a 640&times;640 <code>images</code> input converts like the demo: the config
+		  cuts the graph at its three head convolutions, so an export that still contains the Detect
+		  decode is fine. Other input sizes: set INPUT_SHAPE accordingly. Check the license of what you take.</td></tr>
+	</tbody></table>
+	<p class="mj-card-note mb-2"><b>Export recipe</b> (x86 Linux, Python 3.10+; exactly what the CI job
+	  <a href="https://github.com/aresstack/machino/actions/workflows/build-nna-t40.yml" target="_blank" rel="noopener">build-nna-t40 / model-demo</a> runs):</p>
+	<pre class="mj-card-note mb-2" style="white-space:pre-wrap">pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+pip install onnx pandas pyyaml tqdm matplotlib seaborn requests psutil opencv-python-headless ipython gitpython pillow scipy "setuptools&lt;81"
+git clone https://github.com/ultralytics/yolov5 &amp;&amp; cd yolov5 &amp;&amp; git checkout v7.0
+sed -i 's/opset_version=opset,/opset_version=opset, dynamo=False,/' export.py   # torch 2.9+: keep the legacy exporter
+TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 python3 export.py --weights yolov5n.pt --include onnx --opset 12 --imgsz 640 640</pre>
+	<p class="mj-card-note mb-0">Then the conversion in the next card with <code>OUTPUT</code> set to
+	  <code>/model.24/m.0/Conv_output_0</code>, <code>/model.24/m.1/Conv_output_0</code>,
+	  <code>/model.24/m.2/Conv_output_0</code> (the three 255-channel head convolutions; for another
+	  export list them with <code>python3 -c "import onnx; m=onnx.load('x.onnx'); print([o for n in m.graph.node if n.op_type=='Conv' and any('model.24.m' in i for i in n.input) for o in n.output])"</code>).
+	  Post-training quantization is 8 bit at most; smaller models come from smaller networks (n instead of s)
+	  or from the toolkit's 4-bit training path.</p>
+</div></div></div>
+
+<div class="col-12"><div class="card"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap">Building a model with the Ingenic SDK</h3><span class="mj-live-rule"></span></div>
 	<p class="mj-card-note">The NNA runs <b>Magik</b> models only: a network exported to ONNX (or
 	  TensorFlow/TFLite), quantized and serialised for the T40 by Ingenic's
@@ -253,7 +296,11 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 		  also fits the overlay, unlike the 7.6&nbsp;MB yolov5s).</li>
 		<li><b>Convert on an x86 Linux host</b> (TransformKit is an x86 binary):<br>
 		  <code>cd Models/post/yolov5s &amp;&amp; ../../../TransformKit/magik-transform-tools --inputpath yolov5s.onnx --outputpath ./yolov5s_t40_magik.mk.h --config cfg/magik_t40.cfg --save_quantize_model true</code><br>
-		  The config sets SOC=T40, input 1&times;3&times;640&times;640 RGB, NORMAL 255 and the calibration set. Output: <code>yolov5s_t40_magik.bin</code>.</li>
+		  The config (JSON) sets SOC=T40, INPUT name and INPUT_SHAPE 1&times;3&times;640&times;640, COLOR RGB, MEAN 0, NORMAL 255,
+		  OUTPUT (the tensors to cut the graph at &mdash; the three head convolutions) and QUANT_DATASET_PATH
+		  (a folder of 10&ndash;20 typical images; the toolkit ships <code>yolov5-20</code>). Output: <code>yolov5s_t40_magik.bin</code>.
+		  The tool prints &bdquo;Convert successfully&ldquo; and still exits 1 &mdash; trust the text and the file.
+		  Documentation: <code>Docs/en/Magik Post-Training-Quantization User Guide.pdf</code> in the toolkit.</li>
 		<li><b>Write the manifest</b> next to the .bin (schemaVersion 1). Minimum:<br>
 		  <code>{"schemaVersion":1,"id":"my-model","backend":"venus-nna","nnaGeneration":"nna1","soc":"t40nn","modelFile":"yolov5s_t40_magik.bin","classes":[{"id":0,"label":"person"}]}</code><br>
 		  machino refuses a model whose manifest names another backend, NNA generation, SoC or file (reason codes <code>AI_MODEL_INCOMPATIBLE_*</code>).</li>
@@ -261,8 +308,10 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 	</ol>
 	<p class="mj-card-note mb-0">Ready-made: the CI workflow
 	  <a href="https://github.com/aresstack/machino/actions/workflows/build-nna-t40.yml" target="_blank" rel="noopener">build-nna-t40</a>
-	  produces the helper (<code>machino-nna-t40</code>) and an upload-ready bundle
-	  (<code>machino-nna-model-bundle</code>, a .tgz) from that exact recipe.
+	  produces the helper (<code>machino-nna-t40</code>) and two upload-ready bundles
+	  (<code>machino-nna-model-bundle</code> = yolov5s, <code>machino-nna-model-demo-bundle</code> = yolov5n) from
+	  these exact recipes; every release carries both as <code>machino-nna-model-t40nn.tgz</code> and
+	  <code>machino-nna-model-demo-t40nn.tgz</code>.
 	  Details, evidence and the boot prerequisites (nmem window, soc-nna driver):
 	  <a href="https://github.com/aresstack/machino/blob/main/machino/docs/architecture/nna-model.md" target="_blank" rel="noopener">nna-model.md</a>,
 	  <a href="https://github.com/aresstack/machino/blob/main/machino/docs/architecture/nna.md" target="_blank" rel="noopener">nna.md</a>,

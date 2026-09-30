@@ -123,6 +123,24 @@ Der Weg ohne Cam-Tool und ohne scp, alles auf der KI-Seite
    ein Medium haengt (AP36). Die CI legt dafuer das Artefakt
    `machino-nna-model-bundle` ab -- ein fertiges `.tgz` statt des
    Verzeichnis-Zips; jedes Release traegt es als `machino-nna-model-t40nn.tgz`.
+
+   **Demo-Modell (2026-09-30):** die Kamera hat 4,1 MB Overlay frei, der
+   7,6-MB-yolov5s passt dort nie ohne Karte. Deshalb baut der Job
+   `model-demo` zusaetzlich **yolov5n** (Ultralytics v7.0, SHA gepinnt):
+   `export.py` (Repo v7.0, Legacy-Exporter, opset 12) -> ONNX mit SiLU ->
+   TransformKit mit `OUTPUT` = die drei Kopf-Convs
+   (`/model.24/m.N/Conv_output_0`; das Detect-Decode dahinter faellt weg) und
+   der Toolkit-Kalibrierung -> `yolov5n_t40_magik.bin`, 2 006 990 Bytes
+   (lokal nachvollzogen). Derselbe Helfer: drei Koepfe, Strides 8/16/32,
+   80 Klassen, dieselben Anker. Artefakt `machino-nna-model-demo(-bundle)`,
+   Release-Asset `machino-nna-model-demo-t40nn.tgz`; das grosse bleibt.
+   Grenzen: PTQ kann hoechstens 8 bit (`QUANT_WEIGHT_BIT`), kleiner wird es
+   nur mit kleinerem Netz oder dem 4-bit-Trainingspfad des Toolkits. NICHT
+   bewiesen: dass Venus die SiLU-Knoten (Sigmoid*Mul) auf der NNA korrekt
+   rechnet -- das yolov5s des Toolkits ist LeakyReLU (pending-physical B11).
+   Die beiden kleinen ONNX im Toolkit (Txx_Xs2/yolov5: 4 Klassen bei
+   128x128; persondet: zwei Koepfe, eine Klasse, jzdl-ATen-Ops) passen nicht
+   zum Helfer.
 2. **Use** neben der Datei: `PATCH /api/v1/config {"ai":{"model_path":…}}`.
    `ai.model_path` ist damit zur Laufzeit setzbar (absoluter Pfad ohne
    `..`; ob die Datei existiert und das Manifest passt, beantwortet weiter

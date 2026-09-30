@@ -191,7 +191,7 @@ Release ein normales, als *latest* markiertes Release.
 
 Assets pro Release: `machino-openipc-t40nn.tar.gz`, `manifest.json`
 (Cam-Tool-Schema 1, mit der sha256 des Bundles), `SHA256SUMS`, `BUILDINFO`
-und `machino-nna-model-t40nn.tgz` (AGPL, deshalb nie im Bundle). Die
+und `machino-nna-model-t40nn.tgz` sowie `machino-nna-model-demo-t40nn.tgz` (yolov5n, 2 MB; beide AGPL, deshalb nie im Bundle). Die
 Release-Notes nennen die Testzähler des Laufs und zitieren
 `docs/pending-physical.md` — was Hardware braucht, wird nicht behauptet.
 
