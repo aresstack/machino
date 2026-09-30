@@ -288,6 +288,19 @@ void run_wwwpages_tests()
     TCHECK(has(aiup, "/etc/machino/models"));
     TCHECK(has(aiup, "CONTENT_LENGTH"));
     TCHECK(has(aiup, "Insufficient Storage"));
+    // AP36: die gemountete Karte als Ziel des Modell-Uploads -- Vorgabe, sobald
+    // ein rw-Medium unter /mnt haengt (Checkbox, abwaehlbar). Das CGI nimmt
+    // als dest NUR einen Mountpunkt unter /mnt aus /proc/mounts, rw.
+    TCHECK(has(ai, "id=\"mdlcard\""));
+    TCHECK(has(ai, "checked data-mount="));
+    TCHECK(has(ai, "/proc/mounts"));
+    TCHECK(has(ai, "'?dest=' + encodeURIComponent("));
+    TCHECK(has(aiup, "dest="));
+    TCHECK(has(aiup, "/mnt/*) ;;"));
+    TCHECK(has(aiup, "MACHINO_MOUNTS:-/proc/mounts"));
+    TCHECK(has(aiup, "(^|,)rw(,|$)"));
+    TCHECK(has(aiup, "MODELS=\"$_dest/models\""));
+    TCHECK(has(aiup, "df -k \"${_dest:-/}\""));
 
     // W5d: der Datei-Download fuer den File Manager (majestics Static-
     // Fallback, den busybox nicht hat). Plain sh, eigene Antwort, und die

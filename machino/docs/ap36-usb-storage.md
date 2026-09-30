@@ -178,8 +178,12 @@ Textdatei der Karte.
    das Medium — oder den Grund und den Knopf, wenn nicht (exFAT-Karte ohne
    exFAT-Nutzlast, `--without-exfat`: „Format FAT32"; mit ihr wird sie
    gemountet, und „Format exFAT" steht neben „Format FAT32").
-4. Modell: `yolov5s_t40_magik.bin` und `manifest.json` auf die Karte,
-   KI-Seite → „Use“. Schreiben geht genauso: das Medium ist rw gemountet.
+4. Modell: auf der KI-Seite das Release-Bundle `machino-nna-model-t40nn.tgz`
+   hochladen — sobald ein Medium gemountet ist, steht die Checkbox „Save
+   to the card“ vorbelegt, und das CGI legt `.bin` und `manifest.json` nach
+   `/mnt/sda1/models/` (Ziel nur ein rw-Mountpunkt aus `/proc/mounts`).
+   Dann „Use“. Oder von Hand: beide Dateien auf die Karte (File Manager,
+   scp), KI-Seite → „Use“. Das Medium ist rw gemountet.
 
 Terminal: `machino-usb-helper status` zeigt `storage:` und `media:`,
 `machino-usb-helper storage` den Schalter.
