@@ -1,13 +1,43 @@
 name: build-machino-t40
+# Baut, prueft und buendelt Machino -- und veroeffentlicht das geprueft
+# Bundle als GitHub-Release (Job `release`):
+#
+#   * Push auf main   -> Release `main-<commitdatum>-<sha7>` aus GENAU diesem
+#                        Lauf. Kein zweiter Build: das Asset ist byteidentisch
+#                        mit dem CI-Artefakt. Die zehn neuesten bleiben, aeltere
+#                        werden samt Tag entfernt.
+#   * Push eines v*-Tags -> versioniertes Release, das bleibt.
+#   * workflow_dispatch  -> Build; mit `release: true` auch ein Release.
+#
+# Der Cam-Tool (ipcam-lan-discovery, Reiter Patches) fragt
+# /repos/aresstack/machino/releases/latest nach dem Asset
+# machino-openipc-t40nn.tar.gz und vergleicht die Version aus BUILDINFO
+# (`git describe`) mit `machino --version` auf der Kamera. Deshalb wird der
+# Release-Tag VOR dem Build lokal gesetzt: git describe = Tag = Version im
+# Binary = Version im Manifest. Gepusht wird der Tag erst, wenn alles gruen war.
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Auch ein Release aus diesem Lauf veroeffentlichen (main-<datum>-<sha7>)"
+        type: boolean
+        default: false
   push:
     branches: [ main ]
-    paths: [ '.github/workflows/build-machino-t40.yml', 'machino/**', 'build.sh' ]
+    tags: [ 'v*' ]
+    # Pfadfilter gelten nur fuer Branch-Pushes, nie fuer Tags. weirdike-openipc
+    # ist dabei, weil der IPsec-Daemon Teil des Bundles ist.
+    paths: [ '.github/workflows/build-machino-t40.yml', 'machino/**', 'build.sh', 'weirdike-openipc/**' ]
 permissions:
   contents: read
   actions: read          # gh run download holt die WLAN-Nutzlast aus den
                         # Workflows build-aic8800-t40 und build-hostapd-t40
+
+# Zwei Laeufe desselben Refs nacheinander, nie gleichzeitig: ein Release-Job
+# darf nicht mitten im Tag-Push abgebrochen werden.
+concurrency:
+  group: build-machino-t40-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   machino-t40:
@@ -15,12 +45,53 @@ jobs:
     env:
       SDK_VERSION: "1.3.1"
       SOC: "T40"
+    outputs:
+      tag:  ${{ steps.reltag.outputs.tag }}
+      mode: ${{ steps.reltag.outputs.mode }}
     steps:
       - name: "Checkout with submodules (ingenic-headers)"
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
+      - name: "Release-Tag bestimmen und LOKAL setzen (git describe = Tag = machino --version)"
+        id: reltag
+        run: |
+          set -eu
+          TAG=""; MODE="none"
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              TAG="$GITHUB_REF_NAME"; MODE="tagged" ;;
+            refs/heads/main)
+              if [ "$GITHUB_EVENT_NAME" = "push" ] || [ "${{ github.event.inputs.release }}" = "true" ]; then
+                TAG="main-$(git log -1 --format=%cd --date=format:%Y%m%d)-${GITHUB_SHA:0:7}"
+                if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+                  # Wiederholung desselben Commits: der Tag ist schon da (und
+                  # muss auf HEAD zeigen); der Release-Job ersetzt dann die Assets.
+                  [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$GITHUB_SHA" ] ||
+                    { echo "::error::tag $TAG exists but points elsewhere"; exit 1; }
+                  MODE="exists"
+                else
+                  # Lokal, ungepusht: der Build liest ihn ueber git describe. Ein
+                  # roter Build laesst so keinen Tag zurueck.
+                  git tag "$TAG"
+                  MODE="auto"
+                fi
+              fi ;;
+          esac
+          if [ -n "$TAG" ]; then
+            # Zeigen mehrere Tags auf HEAD (erst main-<...>, spaeter v1.0 auf
+            # denselben Commit), waere git describe zweideutig. Lokal bleibt
+            # nur DIESER Tag: der Build heisst eindeutig wie sein Release.
+            for t in $(git tag --points-at HEAD); do
+              [ "$t" = "$TAG" ] || git tag -d "$t" >/dev/null
+            done
+            d=$(git describe --tags --dirty)
+            [ "$d" = "$TAG" ] || { echo "::error::git describe says '$d', expected '$TAG' (checkout dirty or not at the tag)"; exit 1; }
+          fi
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "release tag: ${TAG:-(none)}  mode=$MODE  describe=$(git describe --tags --always --dirty)"
       - name: "Install build dependencies"
         run: sudo apt-get update && sudo apt-get install -y build-essential wget curl git python3 xxd rsync bc cpio unzip file ccache
       - name: "Fetch and build mbedTLS (pinned; WebRTC DTLS handshake)"
@@ -133,6 +204,26 @@ jobs:
         with:
           name: machino-m2-t40
           path: bundle/machino-m2-t40
+      - name: "Nutzlast-Builds DIESES Commits abwarten"
+        # Ein Push, der weirdike-openipc/ oder machino/tools/nna/ aendert,
+        # startet deren Workflow parallel zu diesem. "Neuester erfolgreicher
+        # Lauf" waere dann noch der alte -- und ein Release truege den alten
+        # Daemon unter dem neuen Namen. Also: laeuft fuer diesen Commit ein
+        # Nutzlast-Build, warten wir auf ihn. Faellt er, nimmt der naechste
+        # Schritt wie bisher den letzten gruenen; das Release prueft dann.
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+          for wf in build-aic8800-t40.yml build-hostapd-t40.yml build-modem-modules-t40.yml build-ppp-t40.yml build-nna-t40.yml build-weirdike-t40.yml; do
+            for id in $(gh run list --workflow "$wf" --commit "$GITHUB_SHA" --json databaseId,status \
+                          -q '.[] | select(.status != "completed") | .databaseId' 2>/dev/null); do
+              echo "$wf run $id builds this very commit -- waiting for it"
+              gh run watch "$id" --interval 30 >/dev/null || echo "::warning::$wf run $id did not finish green"
+            done
+          done
+
       - name: "USB payloads (WiFi driver+firmware+hostapd, modem kernel modules)"
         # Warum geholt und nicht hier gebaut: die Module brauchen einen
         # Kernelbaum und hostapd eine eigene libnl-Kette. Beides in jeden
@@ -457,3 +548,158 @@ jobs:
         with:
           name: machino-openipc-t40nn
           path: bundle/machino-openipc-t40nn.tar.gz
+
+  release:
+    # Das GEPRUEFTE Bundle dieses Laufs als GitHub-Release. Nur wenn der Build
+    # gruen war und ein Tag bestimmt wurde (main-Push, v*-Tag, oder Dispatch
+    # mit release=true). Anders als das Entwicklungs-Artefakt verspricht ein
+    # Release nichts, was es nicht mitbringt: fehlt eine Nutzlast, gibt es
+    # kein Release -- und die Fehlermeldung nennt den Workflow, der es liefert.
+    needs: machino-t40
+    if: needs.machino-t40.outputs.tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write     # Tag pushen, Release anlegen -- github.token wie im firmware-tool
+      actions: read       # gh run download: das NNA-Modell aus build-nna-t40
+    env:
+      TAG: ${{ needs.machino-t40.outputs.tag }}
+      MODE: ${{ needs.machino-t40.outputs.mode }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: machino-openipc-t40nn
+          path: bundle
+      - uses: actions/download-artifact@v4
+        with:
+          name: machino-host-test-log
+          path: logs
+
+      - name: "Bundle pruefen: vollstaendig, und wirklich dieser Tag"
+        run: |
+          set -eu
+          B=bundle/machino-openipc-t40nn.tar.gz
+          [ -s "$B" ] || { echo "::error::no bundle artifact in this run"; exit 1; }
+          rm -rf x && mkdir x && tar xzf "$B" -C x
+          O=x/machino-openipc-t40nn
+          # Die Version im Bundle MUSS der Tag sein: der Cam-Tool vergleicht sie
+          # spaeter mit `machino --version` auf der Kamera.
+          grep -q "($TAG)" "$O/BUILDINFO" ||
+            { echo "::error::BUILDINFO does not carry the release tag $TAG:"; grep '^Machino commit' "$O/BUILDINFO"; exit 1; }
+          missing=""
+          for f in wifi/modules/aic8800.ko wifi/modules/aic_load_fw.ko wifi/hostapd \
+                   weirdike/weirdiked weirdike/weirdikectl weirdike/S99weirdike \
+                   nna/machino-nna cellular/pppd cellular/chat \
+                   cellular/modules/option.ko cellular/modules/usb_wwan.ko \
+                   cellular/modules/usbnet.ko cellular/modules/cdc_ether.ko \
+                   sbin/machinoctl sbin/machino-manager install.sh uninstall.sh; do
+            [ -s "$O/$f" ] || missing="$missing $f"
+          done
+          [ -n "$(find "$O/wifi/firmware" -type f 2>/dev/null)" ] || missing="$missing wifi/firmware/*"
+          if [ -n "$missing" ]; then
+            echo "::error::release refused -- the bundle lacks:$missing"
+            echo "::error::a payload workflow (build-aic8800-t40, build-hostapd-t40, build-modem-modules-t40, build-ppp-t40, build-nna-t40, build-weirdike-t40) has no downloadable artifact (expired after 90 days?) -- re-run it, then re-run this workflow"
+            exit 1
+          fi
+          cp "$O/BUILDINFO" "$O/SHA256SUMS" bundle/
+          echo "bundle ok: $(du -h "$B" | cut -f1), version $(sed -n 's/^Machino commit:.*(\(.*\))$/\1/p' "$O/BUILDINFO")"
+
+      - name: "NNA-Modell als eigenes Asset (AGPL -- nie im Bundle)"
+        run: |
+          set -eu
+          mkdir -p nna-model
+          id=$(gh run list --workflow build-nna-t40.yml --status success --limit 1 --json databaseId -q '.[0].databaseId')
+          [ -n "${id:-}" ] && [ "$id" != "null" ] ||
+            { echo "::error::no successful build-nna-t40 run -- the model asset is part of a release; re-run that workflow"; exit 1; }
+          gh run download "$id" --name machino-nna-model -D nna-model ||
+            { echo "::error::machino-nna-model artifact of run $id is not downloadable (expired?) -- re-run build-nna-t40"; exit 1; }
+          [ -n "$(find nna-model -name '*_magik.bin' -print -quit)" ] ||
+            { echo "::error::the model artifact carries no *_magik.bin"; exit 1; }
+          tar czf machino-nna-model-t40nn.tgz -C nna-model .
+          ls -l machino-nna-model-t40nn.tgz
+
+      - name: "manifest.json (Cam-Tool-Schema 1) und Release-Notes"
+        run: |
+          set -eu
+          B=bundle/machino-openipc-t40nn.tar.gz
+          sha=$(sha256sum "$B" | awk '{print $1}')
+          # Dasselbe Manifest, das der Cam-Tool sonst selbst erzeugt
+          # (tool/assets/machino/make-manifest.sh): version = git describe = Tag.
+          printf '{\n  "schema": 1,\n  "product": "machino",\n  "platform": "t40nn",\n  "version": "%s",\n  "sha256": "%s",\n  "managerSchema": 1\n}\n' \
+            "$TAG" "$sha" > bundle/manifest.json
+          cat bundle/manifest.json
+          {
+            echo "## machino $TAG"
+            echo
+            if [ "$MODE" = "tagged" ]; then
+              echo "Versioniertes Release aus Tag \`$TAG\` (Commit $GITHUB_SHA)."
+            else
+              echo "Automatischer Build von \`main\` (Commit $GITHUB_SHA). Jeder Push auf main erzeugt ein solches"
+              echo "Release; die zehn neuesten bleiben, aeltere werden samt Tag entfernt. Versionierte"
+              echo "Releases (\`v*\`-Tags) bleiben immer."
+            fi
+            echo
+            echo "### Vom CI geprueft"
+            echo '```'
+            grep -hE '^(machino unit tests|streamerctl tests|openipc install tests):' logs/host-test.log ||
+              echo "(Testzaehler nicht im Log gefunden)"
+            echo '```'
+            echo "- Cross-Build fuer T40 (mipsel, musl) mit \`-Werror\`"
+            echo "- Bundle vollstaendig: WLAN (Treiber, Firmware, hostapd), Mobilfunk-Module, pppd/chat, NNA-Helfer, WeirdIKE (IPsec)"
+            echo "- \`machino --version\` auf der Kamera meldet \`$TAG\` -- der Cam-Tool vergleicht genau diesen String"
+            echo
+            echo "### NICHT geprueft"
+            echo
+            echo "Gruen heisst: gebaut und Host-Suite bestanden. Ueber eine Kamera sagt das nichts."
+            echo "Was Hardware braucht, steht in docs/pending-physical.md:"
+            echo
+            if [ -f machino/docs/pending-physical.md ]; then sed 's/^/> /' machino/docs/pending-physical.md
+            else echo "> docs/pending-physical.md fehlt in diesem Baum."; fi
+            echo
+            echo "### Assets"
+            echo "- \`machino-openipc-t40nn.tar.gz\` -- das Install-Bundle (Cam-Tool: Reiter Patches; von Hand: \`sh install.sh\`)"
+            echo "- \`manifest.json\` -- Cam-Tool-Manifest (Schema 1) mit der sha256 des Bundles"
+            echo "- \`machino-nna-model-t40nn.tgz\` -- Personen-Modell fuer den WebUI-Upload (AGPL, deshalb getrennt)"
+            echo "- \`SHA256SUMS\`, \`BUILDINFO\`"
+            echo
+            echo "### Checksums"
+            echo '```'
+            cat bundle/SHA256SUMS
+            echo '```'
+          } > notes.md
+          head -30 notes.md
+
+      - name: "Tag pushen (nur bei einem neuen main-Release) und Release anlegen"
+        run: |
+          set -eu
+          if [ "$MODE" = "auto" ]; then
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          fi
+          ASSETS="bundle/machino-openipc-t40nn.tar.gz bundle/manifest.json bundle/SHA256SUMS bundle/BUILDINFO machino-nna-model-t40nn.tgz"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG exists -- replacing its assets and notes"
+            gh release upload "$TAG" --clobber $ASSETS
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            # --latest: /releases/latest (der Cam-Tool) zeigt auf das juengste Release,
+            # gleich ob main-<...> oder v*; nie ein Prerelease, nie ein Draft.
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "machino $TAG" --notes-file notes.md --latest $ASSETS
+          fi
+          echo "release: $(gh release view "$TAG" --json url -q .url)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: "Alte automatische Releases aufraeumen (die zehn neuesten bleiben; v*-Releases nie)"
+        if: env.MODE != 'tagged'
+        run: |
+          set -eu
+          gh release list --limit 300 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("main-"))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
+          while read -r old; do
+            [ -n "$old" ] || continue
+            echo "removing old auto release $old (and its tag)"
+            gh release delete "$old" --yes --cleanup-tag || echo "::warning::could not delete $old"
+          done
