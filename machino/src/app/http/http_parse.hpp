@@ -3,6 +3,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,13 +16,20 @@ struct Request {
     std::string query;
     std::vector<std::pair<std::string, std::string>> headers;   // names lower-cased
     std::string body;
+    // The declared Content-Length. Equal to body.size() after a full parse;
+    // with Limits::head_only it is the only thing known about the body.
+    size_t content_length = 0;
     bool keep_alive = true;
     std::string header(const std::string& lower_name) const;
 };
 
 enum class Parse { Incomplete, Ok, Bad, TooLarge };
 
-struct Limits { size_t max_head = 8192; size_t max_headers = 32; size_t max_body = 8192; };
+// head_only: Ok as soon as the header terminator is in, `consumed` covers the
+// head alone, content_length carries the declared body and nothing of the
+// body is buffered or bounded. For POST /upload, whose body goes to disk as
+// it arrives instead of through the working buffer.
+struct Limits { size_t max_head = 8192; size_t max_headers = 32; size_t max_body = 8192; bool head_only = false; };
 
 // Parses one request from `buf`. On Ok, `consumed` bytes are used.
 Parse parse_request(const std::string& buf, size_t& consumed, Request& out, const Limits& lim = Limits());
@@ -33,6 +41,26 @@ Parse parse_request(const std::string& buf, size_t& consumed, Request& out, cons
 // are dropped; Host is set to `upstream_host`; Authorization/Cookie pass
 // through so the SAME OpenIPC login still applies.
 std::string forward_request(const Request& req, const std::string& upstream_host);
+
+// %XX -> byte (invalid sequences are kept literally); '+' stays '+' - these
+// are path segments, not form fields.
+std::string percent_decode(const std::string& s);
+// The inverse for a filesystem path handed on in a query string: unreserved
+// characters and '/' stay, everything else becomes %XX (so a '+', '&' or '?'
+// in a file name survives the trip).
+std::string percent_encode_path(const std::string& s);
+
+// majestic's static fallback, as a rewrite for the relay: a GET whose path is
+// not in the web root but IS a regular file on the camera (the File Manager
+// downloads and reads files that way: /mnt/sda1/x.bin, /etc/...) is turned
+// into GET /cgi-bin/machino-file-get.cgi?path=<encoded>, which streams it
+// back through the relay. `probe(path)` answers 0 = absent, 1 = regular
+// file, 2 = something else (a directory, a device); the caller supplies
+// stat(), the tests a table. Returns true when `req` was rewritten. The
+// WebUI's own trees (/a/, /cgi-bin/) are never probed, and neither is
+// anything the parser let through with a dot-segment.
+bool file_get_rewrite(Request& req, const std::string& web_root,
+                      const std::function<int(const std::string&)>& probe);
 
 // Decide whether a relayed upstream response head can be handed downstream on a
 // KEPT-ALIVE connection, and rewrite it accordingly.

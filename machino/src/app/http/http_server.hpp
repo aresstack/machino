@@ -47,6 +47,11 @@ struct ServerConfig {
     // Front-door relay: any request that is not a native Machino/Majestic route
     // is forwarded to this internal OpenIPC WebUI (busybox httpd). port 0 = off.
     std::string upstream_host = "127.0.0.1";
+    // busybox httpd's document root. A GET whose path is NOT in here but is
+    // a file on the camera is majestic's static fallback (the File Manager
+    // reads and downloads files that way) and is rewritten onto the
+    // machino-file-get.cgi download helper - see file_get_rewrite().
+    std::string web_root = "/var/www";
     // majestic system.unsafe: authentication off for every endpoint, unclaimed
     // cameras included. Upstream calls this the supported way to run a
     // deliberately-open camera.
@@ -179,6 +184,16 @@ private:
     void note_h264_profile(int unit, const std::vector<uint8_t>& sps);
     std::string h264_profile_[4];   // profile-level-id, "" until first seen
     bool relay_upstream(Client& c, const Request& req); // start (or queue) a non-blocking upstream relay
+    // POST /upload (majestic-native, File Manager + Update page): the body is
+    // streamed to disk from the head onwards, never through the working
+    // buffer. start_upload parses the head and opens the file; feed_upload
+    // moves whatever c.in holds into it and answers once the last byte is
+    // written. Both false only when the client must be dropped.
+    bool start_upload(Client& c);
+    bool feed_upload(Client& c);
+    // The session gate's verdict for a request seen BEFORE any route (the
+    // upload intercept) - the same four conditions handle_request applies.
+    bool authorized(const Client& c, const Request& req, int64_t t);
     bool relay_open(Client& c);                          // open the upstream socket for a prepared relay
     bool pump_relay(Client& c, short re, int64_t now);   // advance it; false drops the client
     bool flush(Client& c);

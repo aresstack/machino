@@ -288,4 +288,22 @@ void run_wwwpages_tests()
     TCHECK(has(aiup, "/etc/machino/models"));
     TCHECK(has(aiup, "CONTENT_LENGTH"));
     TCHECK(has(aiup, "Insufficient Storage"));
+
+    // W5d: der Datei-Download fuer den File Manager (majestics Static-
+    // Fallback, den busybox nicht hat). Plain sh, eigene Antwort, und die
+    // Riegel: absolut, kein "..", keine Pseudo-Dateisysteme, nur regulaere
+    // Dateien; Medien inline, alles andere attachment (nichts aus der
+    // Kamera-Origin ausfuehren). Der Dekoder macht aus '+' KEIN Leerzeichen.
+    const std::string fg = slurp("openipc/www/machino-file-get.cgi");
+    TCHECK(!fg.empty());
+    TCHECK(fg.compare(0, 9, "#!/bin/sh") == 0);
+    TCHECK(has(fg, "HTTP/1.1 200 OK"));
+    TCHECK(has(fg, "*..*"));
+    TCHECK(has(fg, "/proc|/proc/*|/sys|/sys/*|/dev|/dev/*"));
+    TCHECK(has(fg, "[ -f \"$_path\" ] || _fail"));
+    TCHECK(has(fg, "_disp=attachment"));
+    TCHECK(has(fg, "_disp=inline"));
+    TCHECK(has(fg, "application/octet-stream"));
+    TCHECK(has(fg, "Content-Length:"));
+    TCHECK(!has(fg, "gsub(/\\+/"));
 }

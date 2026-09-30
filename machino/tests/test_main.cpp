@@ -16,6 +16,7 @@ using namespace machino;
 static int g_fail = 0, g_pass = 0;
 int g_fail_ext = 0, g_pass_ext = 0;     // shared with test_lifecycle.cpp
 void run_lifecycle_tests();
+void run_file_upload_tests();
 void run_lifecycle_fault_matrix_tests();
 void run_power_tests();
 void run_json_tests();
@@ -368,6 +369,7 @@ int main() {
     run_json_tests();
     run_event_tests();
     run_http_parse_tests();
+    run_file_upload_tests();
     run_relay_keepalive_tests();
     run_relay_head_end_tests();
     run_session_tests();

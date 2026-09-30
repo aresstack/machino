@@ -132,6 +132,42 @@ Nicht am Gerät bewiesen (pending-physical B9): dass die Kamera ein
 exFAT-Medium mountet und dass ein mit diesem `mkfs.exfat` geschriebenes
 Volume von Windows/macOS gelesen wird.
 
+## Dateien auf die Karte: der File Manager unter Machino (2026-09-30)
+
+Karte gemountet, und dann? Der File Manager der WebUI zeigt `mnt/sda1`
+und listet — aber Upload, Einzeldatei-Download und der Editor hingen an
+majestic: der Upload postet den rohen Dateiinhalt auf `/upload` mit dem Ziel
+im Header `File-Location`, der Download holt die Datei über ihren absoluten
+Pfad (`GET /mnt/sda1/x.bin`), den majestics Static-Handler streamt. Machino
+steht an majestics Stelle und reichte beides an busybox httpd weiter, der
+weder das eine noch das andere kennt — der Upload endete still, der
+Download mit 404.
+
+Jetzt:
+
+* **Upload** ist nativ in machinod (`http::FileUpload`): der Request wird
+  an der Request-Zeile abgefangen, der Kopf allein geparst (`Limits::
+  head_only`), dieselbe Login-Schranke wie für jede Route, dann jeder Chunk
+  in eine Temp-Datei neben dem Ziel — kein RAM-Puffer auf der 48-MB-Kamera,
+  keine Größengrenze aus dem Arbeitspuffer, und ein abgebrochener Upload
+  lässt das Ziel unberührt (Temp-Datei weg, Ziel erst durch `rename` am
+  Ende). Verweigert: `/proc`, `/sys`, `/dev`, `/rom`, `/overlay`,
+  relative Pfade, `..`, Verzeichnisse; Platzprüfung per `statvfs` vorab
+  (507 mit Zahlen). Alles andere ist die Kamera des Betreibers, wie bei
+  majestic. Damit funktioniert auch der lokale `.tgz`-Upload der
+  Update-Seite (`/tmp/firmware.tgz`).
+* **Download / Editor**: ein `GET`, dessen Pfad nicht im Webroot liegt,
+  aber eine reguläre Datei auf der Kamera ist (`file_get_rewrite`, zwei
+  `stat`), wird auf `machino-file-get.cgi` umgeschrieben; das Relay streamt
+  die Antwort mit Backpressure, für diese eine Route ohne Byte-Deckel und
+  ohne absolute Zeitgrenze (die Länge steht im Kopf; die
+  Inaktivitätsgrenze bleibt). Medien inline, alles andere als attachment.
+  Kein Range: Spulen im Video lädt neu.
+
+Am Gerät noch zu zeigen (pending-physical B10): ein `.bin` per Drag-and-
+drop nach `/mnt/sda1`, Download derselben Datei, Editor auf einer
+Textdatei der Karte.
+
 ## Bedienung
 
 1. Bundle mit `storage/modules` installieren (jedes Release seit heute).
