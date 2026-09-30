@@ -11,6 +11,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # MACHINO_ROOT is a test hook: empty in production, a throwaway tree in the
 # host tests. Everything the installer touches goes through it.
 ROOT="${MACHINO_ROOT:-}"
+# --check-space: nur die Platzrechnung, nichts anfassen. machino-manager fragt
+# so VOR dem Stoppen des Daemons -- mit genau den Optionen des Aufrufs.
+CHECK_ONLY=0
 WITH_AP=0
 WITH_NETPAGE=0
 WITH_DEVPAGE=0
@@ -166,6 +169,9 @@ only works after someone has copied files over by SSH is not a switch.
   --with-device-page    add a "Geraete (machino)" entry to the stock WebUI menu.
                         Same rule as --with-network-page: off by default, and
                         the page works by URL without it.
+  --check-space         only run the space pre-flight for the given options
+                        and exit 0/1 - nothing is written, nothing stopped.
+                        machino-manager asks so BEFORE it stops the daemon.
   --with-network-page   add a "Netzwerk & USB (machino)" entry to the stock
                         WebUI menu, pointing at the machino network page. Off by default:
                         the installer does not edit p/header.cgi behind your
@@ -186,6 +192,7 @@ EOF
         --with-weirdike) WITH_WEIRDIKE=1 ;;
         --with-exfat) WITH_EXFAT=2 ;;
         --without-exfat) WITH_EXFAT=0 ;;
+        --check-space) CHECK_ONLY=1 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -196,7 +203,7 @@ done
 # BusyBox has no install(1) - found out on the camera, not in review. Everything
 # this script needs must exist there, so it is checked up front instead of
 # failing halfway through with part of the files in place.
-for c in cp chmod mkdir mv rm grep sed awk df wc cat dirname; do
+for c in cp chmod mkdir mv rm grep sed awk df wc cat dirname cmp; do
     command -v "$c" >/dev/null 2>&1 || die "required command '$c' not found on this system"
 done
 
@@ -230,6 +237,14 @@ done
 put() {
     _put_m=$1; _put_s=$2; _put_d=$3
     mkdir -p "$(dirname "$_put_d")" || return 1
+    # Byte-identisch schon da: nichts schreiben. Das spart die transiente
+    # tmp-Kopie (2 MB beim NNA-Helfer) auf einem Overlay, das sie nicht hat,
+    # und Flash-Zyklen -- und macht eine Neuinstallation ueber sich selbst
+    # platzneutral (2026-09-30: sie scheiterte an "5970 kB nutzbar < 9150 kB",
+    # waehrend Helfer und Modell unveraendert auf dem Overlay lagen).
+    if [ -f "$_put_d" ] && cmp -s "$_put_s" "$_put_d" 2>/dev/null; then
+        chmod "$_put_m" "$_put_d"; return $?
+    fi
     _put_t="$_put_d.machino-new.$$"
     if ! cp "$_put_s" "$_put_t"; then rm -f "$_put_t"; return 1; fi
     if ! chmod "$_put_m" "$_put_t"; then rm -f "$_put_t"; return 1; fi
@@ -285,9 +300,15 @@ done
 # dieser Kamera der Unterschied zwischen "passt" und "not enough space":
 # am 2026-09-26 scheiterte ein Install-ueber-Install an ~200 kB, waehrend
 # 2,9 MB alte Backup-Kopie auf dem Overlay lagen.
+prev_kb=0
 if [ -f "$BACKUP/machino.prev" ]; then
-    rm -f "$BACKUP/machino.prev" "$BACKUP/machino.prev.tmp"
-    say "removed the rollback binary of the previous install (this install writes its own)"
+    if [ "$CHECK_ONLY" = 1 ]; then
+        # nur rechnen: die Kopie ginge als erstes, also zaehlt sie als frei
+        prev_kb=$(( $(wc -c < "$BACKUP/machino.prev") / 1024 ))
+    else
+        rm -f "$BACKUP/machino.prev" "$BACKUP/machino.prev.tmp"
+        say "removed the rollback binary of the previous install (this install writes its own)"
+    fi
 fi
 
 # 1280 kB Zuschlag: die groesste Einzeldatei der Nutzlast (hostapd ~1 MB) wird
@@ -305,26 +326,57 @@ fi
 # Erst wenn selbst das In-Place nicht passt, ist wirklich kein Platz.
 new_kb=$(( $(wc -c < "$HERE/machino") / 1024 ))
 need_kb=$(( new_kb + 1280 ))
-# Die exFAT-Nutzlast (Modul + mkfs.exfat) kommt obendrauf, wenn sie kommt.
-[ "$WITH_EXFAT" != "0" ] && need_kb=$(( need_kb + 256 ))
+# Was schon byte-identisch auf der Kamera liegt, kostet nichts: put() laesst
+# solche Dateien liegen, und die Rechnung hier weiss das. Sonst scheitert eine
+# Neuinstallation ueber sich selbst am Platz fuer Dateien, die laengst da sind.
+same_file() { [ -f "$2" ] && cmp -s "$1" "$2" 2>/dev/null; }
+# Die exFAT-Nutzlast (Modul + mkfs.exfat) kommt obendrauf, wenn sie kommt --
+# und sich von dem unterscheidet, was liegt.
+exfat_kb=0
+if [ "$WITH_EXFAT" != "0" ] && [ -r "$HERE/exfat/exfat.ko" ]; then
+    same_file "$HERE/exfat/exfat.ko" "$STATE_DIR/modules/exfat.ko" || exfat_kb=256
+    if [ -r "$HERE/exfat/mkfs.exfat" ]; then
+        same_file "$HERE/exfat/mkfs.exfat" "$ROOT/usr/sbin/mkfs.exfat" || exfat_kb=256
+    fi
+fi
 # Der NNA-Helfer (machino-nna, ~2 MB) ebenso: er wird erst NACH dem Binary
 # geschrieben, und ein ENOSPC dort liesse eine halbe Installation zurueck.
+# Ein alter, ANDERER Helfer ist Verhandlungsmasse: reicht es nur ohne ihn,
+# geht er zuerst und der neue wird an seine Stelle geschrieben (wie beim
+# Daemon: In-Place statt Absage).
+helper_kb=0; helper_old_kb=0; helper_same=0
 if [ "$WITH_NNA_PAYLOAD" = "1" ] && [ -r "$HERE/nna/machino-nna" ]; then
-    need_kb=$(( need_kb + $(wc -c < "$HERE/nna/machino-nna") / 1024 + 64 ))
+    if same_file "$HERE/nna/machino-nna" "$ROOT/usr/sbin/machino-nna"; then
+        helper_same=1
+    else
+        helper_kb=$(( $(wc -c < "$HERE/nna/machino-nna") / 1024 + 64 ))
+        [ -f "$ROOT/usr/sbin/machino-nna" ] && helper_old_kb=$(( $(wc -c < "$ROOT/usr/sbin/machino-nna") / 1024 ))
+    fi
 fi
+need_kb=$(( need_kb + exfat_kb + helper_kb ))
 # MACHINO_TEST_FREE_KB overrides the measured free space (test seam only): the
 # host install tests run against a large real /, so without it the low-space
 # branches below can never be exercised. Production reads df.
 free_kb=${MACHINO_TEST_FREE_KB:-$(df -k / | awk 'NR==2 {print $4}')}
+free_kb=$(( ${free_kb:-0} + prev_kb ))
 cur_kb=0
 [ -f "$ROOT/usr/bin/machino" ] && cur_kb=$(( $(wc -c < "$ROOT/usr/bin/machino") / 1024 ))
-if [ "${free_kb:-0}" -ge "$need_kb" ]; then
+helper_inplace=0
+if [ "$free_kb" -ge "$need_kb" ]; then
     keep_prev=1
-elif [ "$(( ${free_kb:-0} + cur_kb ))" -ge "$need_kb" ]; then
+elif [ "$(( free_kb + cur_kb ))" -ge "$need_kb" ]; then
     keep_prev=0
     say "not enough room to keep a rollback copy - upgrading in place; the previous daemon will NOT be kept"
+elif [ "$(( free_kb + cur_kb + helper_old_kb ))" -ge "$need_kb" ]; then
+    keep_prev=0; helper_inplace=1
+    say "not enough room to keep a rollback copy - upgrading in place; the previous daemon will NOT be kept"
+    say "not enough room for a temporary copy of the NNA helper either - the old helper is deleted first and the new one written in its place"
 else
-    die "not enough space on / (need ~${need_kb} kB, free ~${free_kb} kB, reclaimable ~${cur_kb} kB) - free space first: the WebUI System > Storage page removes the majestic backup (~2.9 MB)"
+    die "not enough space on / (need ~${need_kb} kB, free ~${free_kb} kB, reclaimable ~$(( cur_kb + helper_old_kb )) kB: running daemon ${cur_kb} kB$([ "$helper_old_kb" -gt 0 ] && echo ", old NNA helper ${helper_old_kb} kB")) - free space first: the WebUI System > Storage page removes the majestic backup (~2.9 MB) and old payloads"
+fi
+if [ "$CHECK_ONLY" = 1 ]; then
+    say "space check passed: need ~${need_kb} kB, free ~${free_kb} kB, reclaimable ~$(( cur_kb + helper_old_kb )) kB$([ "$helper_same" = 1 ] && echo " (NNA helper already installed and unchanged)")"
+    exit 0
 fi
 
 # ------------------------------------------------- AP21: check before writing
@@ -899,7 +951,13 @@ fi
 # verschwinden nicht, weil eine Software geht. Der Helfer selbst wird beim
 # Deinstallieren entfernt.
 if [ "$WITH_NNA_PAYLOAD" = "1" ]; then
-    if [ -r "$HERE/nna/machino-nna" ]; then
+    if [ -r "$HERE/nna/machino-nna" ] && [ "$helper_same" = 1 ]; then
+        say "the NNA inference helper is already installed and unchanged"
+    elif [ -r "$HERE/nna/machino-nna" ]; then
+        if [ "$helper_inplace" = 1 ]; then
+            rm -f "$ROOT/usr/sbin/machino-nna"
+            say "replacing the NNA helper in place (no room for a temporary copy next to the old one)"
+        fi
         put 0755 "$HERE/nna/machino-nna" "$ROOT/usr/sbin/machino-nna" ||
             die "cannot install machino-nna"
         say "installed the NNA inference helper"

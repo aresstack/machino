@@ -165,32 +165,34 @@ cmd_install() {
     # toggle's contract is "ON = our bundle installed and active". install.sh
     # never clobbers an existing machino.conf, and afterwards the ownership
     # manifest makes the install ours. Ownership only gates UNINSTALL.
-    # A running daemon must stop first - overwriting a running ELF fails with
-    # ETXTBSY. (Skipped under the NO_ACTIVATE test hook: no real daemon there.)
     # Der Platz-Check MUSS vor dem Stoppen liegen. Am 2026-09-26 stoppte der
     # Manager erst den Daemon, und install.sh starb DANACH am Platz-Check --
     # Ergebnis: state BROKEN, kein Streamer, und der Bediener fragt zu Recht,
-    # warum ein gescheiterter Install die Kamera lahmlegt. Dieselbe Rechnung
-    # wie in install.sh, plus Gutschrift fuer das alte Rollback-Binary, das
-    # install.sh als erstes loescht.
-    _bb=$(dirname "$INSTALL_SH")/machino
-    if [ -r "$_bb" ]; then
-        _need=$(( ($(wc -c < "$_bb") / 1024) + 1280 ))
-        # MACHINO_TEST_FREE_KB: test seam (see install.sh); production reads df.
-        _free=${MACHINO_TEST_FREE_KB:-$(df -k "$ROOT/" | awk 'NR==2 {print $4}')}
-        # Reclaimable BEFORE the new binary is written: install.sh deletes any
-        # stale rollback (machino.prev) up front, and - when a rollback copy
-        # will not fit - upgrades in place by deleting the CURRENT daemon first.
-        # On the tiny T40NN overlay the running binary (~3.6 MB) is exactly what
-        # makes room, so it must count here or the pre-flight kills a perfectly
-        # possible in-place upgrade (the 2026-09-29 "not enough space" refusal).
-        _prev="$STATE_DIR/backup/machino.prev"
-        [ -f "$_prev" ] && _free=$(( ${_free:-0} + ($(wc -c < "$_prev") / 1024) ))
-        [ -f "$BIN" ]   && _free=$(( ${_free:-0} + ($(wc -c < "$BIN") / 1024) ))
-        [ "${_free:-0}" -ge "$_need" ] || die \
-            "not enough space on / for this install (need ~${_need} kB, free+reclaimable ~${_free} kB) - nothing was stopped, machino keeps running. Free space first: the WebUI System > Storage page removes the majestic backup"
+    # warum ein gescheiterter Install die Kamera lahmlegt.
+    # Die Optionen fuer install.sh -- vor dem Platz-Check, weil er mit ihnen
+    # rechnet. (Warum die Menueseiten AUS sind: der Block vor dem Aufruf unten.)
+    _pageopts=""
+    [ "$pages" = "1" ] && _pageopts="--with-network-page --with-device-page"
+    [ "$nowifi" = "1" ] && _pageopts="$_pageopts --without-wifi-payload"
+    [ "$nocell" = "1" ] && _pageopts="$_pageopts --without-cellular-payload"
+    [ "$nostorage" = "1" ] && _pageopts="$_pageopts --without-storage-payload"
+    [ "${withnna:-0}" = "1" ] && _pageopts="$_pageopts --with-nna-payload"
+    [ "${withweirdike:-0}" = "1" ] && _pageopts="$_pageopts --with-weirdike"
+    [ "$noexfat" = "1" ] && _pageopts="$_pageopts --without-exfat"
+    [ "${withexfat:-0}" = "1" ] && [ "$noexfat" != "1" ] && _pageopts="$_pageopts --with-exfat"
+    # Seit 2026-09-30 ist es buchstaeblich DIESELBE Rechnung: install.sh
+    # --check-space rechnet mit den Optionen dieses Aufrufs (NNA-Helfer, exFAT,
+    # laufendes Binary, Rollback -- und was schon byte-identisch liegt und
+    # deshalb nichts kostet) und schreibt nichts. Die eigene Kopie der Rechnung
+    # hier kannte den 2-MB-Helfer nicht: der Manager haette gestoppt, install.sh
+    # abgebrochen, und die Kamera stuende ohne Streamer da.
+    # shellcheck disable=SC2086 -- feste Schalter, kein Benutzertext
+    if ! _chk=$(MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" --check-space $_pageopts 2>&1); then
+        die "pre-flight failed - nothing was stopped, machino keeps running: $(printf '%s\n' "$_chk" | sed 's/^install: //' | tail -n 1)"
     fi
 
+    # A running daemon must stop first - overwriting a running ELF fails with
+    # ETXTBSY. (Skipped under the NO_ACTIVATE test hook: no real daemon there.)
     if [ -z "${MACHINO_MANAGER_NO_ACTIVATE:-}" ] && [ -x "$BIN" ] && running; then
         say "stopping the running machino before replacing its binary" >&2
         [ -x "$INITD/machino" ] && MACHINO_ROOT="$ROOT" "$INITD/machino" stop >/dev/null 2>&1
@@ -220,15 +222,6 @@ cmd_install() {
     # der installiert. Sollte OpenIPC einmal einen echten Erweiterungspunkt
     # fuer Menueeintraege anbieten, gehoert die Integration dorthin -- nicht in
     # ein sed auf eine fremde Datei.
-    _pageopts=""
-    [ "$pages" = "1" ] && _pageopts="--with-network-page --with-device-page"
-    [ "$nowifi" = "1" ] && _pageopts="$_pageopts --without-wifi-payload"
-    [ "$nocell" = "1" ] && _pageopts="$_pageopts --without-cellular-payload"
-    [ "$nostorage" = "1" ] && _pageopts="$_pageopts --without-storage-payload"
-    [ "${withnna:-0}" = "1" ] && _pageopts="$_pageopts --with-nna-payload"
-    [ "${withweirdike:-0}" = "1" ] && _pageopts="$_pageopts --with-weirdike"
-    [ "$noexfat" = "1" ] && _pageopts="$_pageopts --without-exfat"
-    [ "${withexfat:-0}" = "1" ] && [ "$noexfat" != "1" ] && _pageopts="$_pageopts --with-exfat"
     # shellcheck disable=SC2086 -- feste Schalter, kein Benutzertext
     MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" $_pageopts || die "install.sh failed"
 

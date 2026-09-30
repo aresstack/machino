@@ -288,6 +288,13 @@ void run_wwwpages_tests()
     TCHECK(has(aiup, "/etc/machino/models"));
     TCHECK(has(aiup, "CONTENT_LENGTH"));
     TCHECK(has(aiup, "Insufficient Storage"));
+    // Byte-identisch schon da (Neuinstallation der KI-Nutzlast): kein Platz
+    // noetig, Antwort weiterhin "Installed model" (der Cam-Tool erwartet sie);
+    // sonst weicht die alte Datei GLEICHEN Namens zuerst, ihr Platz zaehlt.
+    TCHECK(has(aiup, "cmp -s \"$_bin\" \"$_tgt\""));
+    TCHECK(has(aiup, "already there, unchanged"));
+    TCHECK(has(aiup, "${_free:-0} + ${_old:-0}"));
+    TCHECK(has(aiup, "[ -f \"$_tgt\" ] && rm -f \"$_tgt\""));
     // AP36: die gemountete Karte als Ziel des Modell-Uploads -- Vorgabe, sobald
     // ein rw-Medium unter /mnt haengt (Checkbox, abwaehlbar). Das CGI nimmt
     // als dest NUR einen Mountpunkt unter /mnt aus /proc/mounts, rw.
