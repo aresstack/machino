@@ -130,15 +130,38 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 	  T40). Upload a model bundle below, or copy one on with the Cam-Tool or scp; the AI settings'
 	  <code>model path</code> then points at one<% [ -n "$model_cfg" ] && echo " (currently: <code>$model_cfg</code>)" %>.</p>
 
+	<%
+	# AP36: gemountete Medien (rw) unter /mnt -- das Ziel des Uploads, sobald
+	# eines da ist. Das Overlay ist eng (der 7,6-MB-yolov5s passt nur nach
+	# Aufraeumen), die Karte hat Platz: also Vorgabe Karte, abwaehlbar.
+	ext_mounts=$(awk '$2 ~ /^\/mnt\// && $4 ~ /(^|,)rw(,|$)/ {print $2}' /proc/mounts 2>/dev/null | head -8)
+	ext_first=$(printf '%s\n' "$ext_mounts" | head -1)
+	ext_nmounts=$(printf '%s\n' "$ext_mounts" | grep -c .)
+	%>
 	<p class="mj-card-note">Upload a <b>.tgz</b> bundle containing the model <code>.bin</code>
 	  and its <code>manifest.json</code> (backend <code>venus-nna</code>, NNA generation
-	  <code>nna1</code>). Incompatible bundles are refused, and it needs free overlay space
-	  (see <a href="machino-cleanup.cgi">Storage</a>).</p>
+	  <code>nna1</code>). Incompatible bundles are refused. On the overlay it needs free space
+	  (see <a href="machino-cleanup.cgi">Storage</a>); on a mounted card it does not.</p>
 	<div class="mb-3">
 		<input type="file" id="mdlfile" accept=".tgz,.gz,.tar" style="max-width:22rem">
 		<button class="btn btn-sm btn-outline-primary" type="button" id="mdlup">Upload model bundle</button>
 		<span id="mdlmsg" class="mj-card-note" style="display:inline-block;margin-left:.5rem"></span>
 	</div>
+	<% if [ -n "$ext_first" ]; then %>
+	<div class="form-check mb-3">
+		<input class="form-check-input" type="checkbox" id="mdlcard" checked data-mount="<%= $ext_first %>">
+		<label class="form-check-label" for="mdlcard">Save to the card
+		<% if [ "$ext_nmounts" -gt 1 ]; then %>
+			<select id="mdlmount" class="form-select form-select-sm d-inline-block ms-1" style="width:auto">
+			<% for _m in $ext_mounts; do %><option value="<%= $_m %>"><%= $_m %>/models</option><% done %>
+			</select>
+		<% else %>
+			(<code><%= $ext_first %>/models</code>)
+		<% fi %>
+		&mdash; the overlay stays free; keep the medium in at every boot the detector starts.
+		Unticked: <code>/etc/machino/models</code> on the overlay.</label>
+	</div>
+	<% fi %>
 	<script>
 	(function () {
 		var b = document.getElementById('mdlup');
@@ -148,8 +171,14 @@ model_cfg=$(sed -n 's/^ai\.model_path=//p' /etc/machino/machino.conf 2>/dev/null
 			var msg = document.getElementById('mdlmsg');
 			var f = fi.files && fi.files[0];
 			if (!f) { msg.textContent = 'Choose a .tgz bundle first.'; return; }
-			b.disabled = true; msg.textContent = 'Uploading ' + f.name + ' ...';
-			fetch('machino-ai-upload.cgi', { method: 'POST', body: f })
+			var url = 'machino-ai-upload.cgi';
+			var card = document.getElementById('mdlcard');
+			if (card && card.checked) {
+				var sel = document.getElementById('mdlmount');
+				url += '?dest=' + encodeURIComponent(sel ? sel.value : card.dataset.mount);
+			}
+			b.disabled = true; msg.textContent = 'Uploading ' + f.name + (card && card.checked ? ' to the card' : '') + ' ...';
+			fetch(url, { method: 'POST', body: f })
 				.then(function (r) { return r.text().then(function (t) { return { ok: r.ok, t: t }; }); })
 				.then(function (res) {
 					msg.textContent = res.t;

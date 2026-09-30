@@ -116,9 +116,13 @@ Der Weg ohne Cam-Tool und ohne scp, alles auf der KI-Seite
 
 1. **Upload**: ein `.tgz` mit `.bin` + `manifest.json` an
    `machino-ai-upload.cgi` (prueft Pfade, Backend/NNA-Generation im
-   Manifest, Overlay-Platz; max. 8 MB, die :80-Front-Door puffert genau so
-   viel). Die CI legt dafuer das Artefakt `machino-nna-model-bundle` ab --
-   ein fertiges `.tgz` statt des Verzeichnis-Zips.
+   Manifest, Platz auf dem Ziel; max. 8 MB, die :80-Front-Door puffert genau
+   so viel). Ziel ist das Overlay -- oder mit `?dest=<Mountpunkt>` die
+   gemountete Karte (`<Mountpunkt>/models`, nur ein rw-Mountpunkt unter
+   /mnt aus /proc/mounts), was die KI-Seite per Checkbox vorbelegt, sobald
+   ein Medium haengt (AP36). Die CI legt dafuer das Artefakt
+   `machino-nna-model-bundle` ab -- ein fertiges `.tgz` statt des
+   Verzeichnis-Zips; jedes Release traegt es als `machino-nna-model-t40nn.tgz`.
 2. **Use** neben der Datei: `PATCH /api/v1/config {"ai":{"model_path":…}}`.
    `ai.model_path` ist damit zur Laufzeit setzbar (absoluter Pfad ohne
    `..`; ob die Datei existiert und das Manifest passt, beantwortet weiter
