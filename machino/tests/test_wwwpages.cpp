@@ -301,6 +301,23 @@ void run_wwwpages_tests()
     TCHECK(has(aiup, "(^|,)rw(,|$)"));
     TCHECK(has(aiup, "MODELS=\"$_dest/models\""));
     TCHECK(has(aiup, "df -k \"${_dest:-/}\""));
+    // Die Einstiegskachel: fertige Modelle (beide Release-Assets), die
+    // Ultralytics-Gewichte, Hugging Face -- und ehrlich, was der Helfer kann
+    // (YOLOv5-Koepfe, 80 Klassen) und was nicht (YOLOv8/YOLO11). Das Rezept
+    // ist das des CI-Jobs, mit dem OUTPUT-Schnitt an den Kopf-Convs.
+    TCHECK(has(ai, "Models to start with"));
+    TCHECK(has(ai, "releases/latest/download/machino-nna-model-demo-t40nn.tgz"));
+    TCHECK(has(ai, "releases/latest/download/machino-nna-model-t40nn.tgz"));
+    TCHECK(has(ai, "https://github.com/ultralytics/yolov5/releases/tag/v7.0"));
+    TCHECK(has(ai, "https://huggingface.co/models?search=yolov5%20onnx"));
+    TCHECK(has(ai, "https://huggingface.co/models?library=onnx&amp;search=yolov5"));
+    TCHECK(has(ai, "YOLOv8, YOLO11"));
+    TCHECK(has(ai, "/model.24/m.0/Conv_output_0"));
+    TCHECK(has(ai, "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1"));
+    TCHECK(has(ai, "dynamo=False"));
+    TCHECK(has(ai, "Not yet hardware-verified"));
+    TCHECK(has(ai, "machino-nna-model-demo-bundle"));
+    TCHECK(has(ai, "Post-Training-Quantization User Guide"));
 
     // W5d: der Datei-Download fuer den File Manager (majestics Static-
     // Fallback, den busybox nicht hat). Plain sh, eigene Antwort, und die

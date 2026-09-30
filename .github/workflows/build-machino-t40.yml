@@ -669,6 +669,15 @@ jobs:
             { echo "::error::the model artifact carries no *_magik.bin"; exit 1; }
           tar czf machino-nna-model-t40nn.tgz -C nna-model .
           ls -l machino-nna-model-t40nn.tgz
+          # Das Demo-Modell (yolov5n, 2 MB) aus demselben Lauf: fuer ein
+          # Overlay, auf das der 7,6-MB-yolov5s nie passt. Das grosse bleibt.
+          mkdir -p nna-model-demo
+          gh run download "$id" --name machino-nna-model-demo -D nna-model-demo ||
+            { echo "::error::machino-nna-model-demo artifact of run $id is not downloadable -- re-run build-nna-t40 (job model-demo)"; exit 1; }
+          [ -n "$(find nna-model-demo -name '*_magik.bin' -print -quit)" ] ||
+            { echo "::error::the demo model artifact carries no *_magik.bin"; exit 1; }
+          tar czf machino-nna-model-demo-t40nn.tgz -C nna-model-demo .
+          ls -l machino-nna-model-demo-t40nn.tgz
 
       - name: "manifest.json (Cam-Tool-Schema 1) und Release-Notes"
         run: |
@@ -712,6 +721,7 @@ jobs:
             echo "- \`machino-openipc-t40nn.tar.gz\` -- das Install-Bundle (Cam-Tool: Reiter Patches; von Hand: \`sh install.sh\`)"
             echo "- \`manifest.json\` -- Cam-Tool-Manifest (Schema 1) mit der sha256 des Bundles"
             echo "- \`machino-nna-model-t40nn.tgz\` -- Personen-Modell fuer den WebUI-Upload (AGPL, deshalb getrennt)"
+            echo "- \`machino-nna-model-demo-t40nn.tgz\` -- Demo-Modell yolov5n, 2 MB: passt auf ein volles Overlay (AGPL, nicht hardwareerprobt)"
             echo "- \`SHA256SUMS\`, \`BUILDINFO\`"
             echo
             echo "### Checksums"
@@ -728,7 +738,7 @@ jobs:
             git tag "$TAG" "$GITHUB_SHA"
             git push origin "refs/tags/$TAG"
           fi
-          ASSETS="bundle/machino-openipc-t40nn.tar.gz bundle/manifest.json bundle/SHA256SUMS bundle/BUILDINFO machino-nna-model-t40nn.tgz"
+          ASSETS="bundle/machino-openipc-t40nn.tar.gz bundle/manifest.json bundle/SHA256SUMS bundle/BUILDINFO machino-nna-model-t40nn.tgz machino-nna-model-demo-t40nn.tgz"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG exists -- replacing its assets and notes"
             gh release upload "$TAG" --clobber $ASSETS
