@@ -537,15 +537,25 @@ make_bundle; make_camera auto
 ( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn ) >"$WORK/out" 2>&1 ||
     bad "manager install (default) exited non-zero: $(cat "$WORK/out")"
 has   "manager: storage modules by default"  "$R/etc/machino/modules/usb-storage.ko"
-hasnt "manager: no exFAT by default"          "$R/etc/machino/modules/exfat.ko"
-# exFAT (Modul + mkfs.exfat) ist eine EIN-Option; der Manager reicht sie
-# durch wie --with-nna-payload -- der Cam-Tool kennt nur den Manager.
+has   "manager: exFAT by default"             "$R/etc/machino/modules/exfat.ko"
+# exFAT (Modul + mkfs.exfat) kommt wie die Speichermodule per Vorgabe; der
+# Manager reicht --without-exfat durch -- der Cam-Tool kennt nur den Manager.
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --without-exfat ) >"$WORK/out" 2>&1 ||
+    bad "manager install --without-exfat exited non-zero: $(cat "$WORK/out")"
+hasnt "manager: exfat.ko skipped"             "$R/etc/machino/modules/exfat.ko"
+hasnt "manager: mkfs.exfat skipped"           "$R/usr/sbin/mkfs.exfat"
+has   "manager: storage modules still there"  "$R/etc/machino/modules/usb-storage.ko"
+# --minimal laesst auch exFAT weg: minimal heisst minimal.
+make_bundle; make_camera auto
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --minimal ) >"$WORK/out" 2>&1 ||
+    bad "manager install --minimal exited non-zero: $(cat "$WORK/out")"
+hasnt "manager: --minimal skips exfat.ko"     "$R/etc/machino/modules/exfat.ko"
+# --with-exfat bleibt gueltig (ausdruecklich verlangt).
 make_bundle; make_camera auto
 ( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --with-exfat ) >"$WORK/out" 2>&1 ||
     bad "manager install --with-exfat exited non-zero: $(cat "$WORK/out")"
 has   "manager: exfat.ko on request"          "$R/etc/machino/modules/exfat.ko"
-has   "manager: mkfs.exfat on request"        "$R/usr/sbin/mkfs.exfat"
-has   "manager: storage modules still there"  "$R/etc/machino/modules/usb-storage.ko"
 
 # Ein unbekannter Schalter muss weiterhin scheitern -- sonst verschluckt der
 # Manager einen Tippfehler und installiert etwas anderes als gemeint.
@@ -892,20 +902,29 @@ hasnt "sd_mod skipped on request"            "$WORK/root/etc/machino/modules/sd_
 has   "cellular modules still installed"     "$WORK/root/etc/machino/modules/option.ko"
 if grep -q "skipped the USB storage payload" "$WORK/out"; then ok; else bad "skipping the storage payload was not stated"; fi
 
-# exFAT: AUS per Vorgabe, --with-exfat legt Modul und mkfs.exfat ab, und der
-# Boot-Helfer laedt das Modul VOR usb-storage (sonst verpasst mdevs Automount
-# ein exFAT-Medium beim Einstecken).
+# exFAT: per Vorgabe MIT (wie die Speichermodule): Modul und mkfs.exfat
+# liegen bereit, --without-exfat laesst sie weg, und der Boot-Helfer laedt
+# das Modul VOR usb-storage (sonst verpasst mdevs Automount ein exFAT-Medium
+# beim Einstecken).
 make_bundle; make_camera auto
 run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
-hasnt "no exfat.ko without --with-exfat"     "$WORK/root/etc/machino/modules/exfat.ko"
-hasnt "no mkfs.exfat without --with-exfat"   "$WORK/root/usr/sbin/mkfs.exfat"
-make_bundle; make_camera auto
-run_install --with-exfat || bad "--with-exfat was refused: $(cat "$WORK/out")"
-has   "exfat.ko installed on request"        "$WORK/root/etc/machino/modules/exfat.ko"
-has   "mkfs.exfat installed on request"      "$WORK/root/usr/sbin/mkfs.exfat"
+has   "exfat.ko installed by default"        "$WORK/root/etc/machino/modules/exfat.ko"
+has   "mkfs.exfat installed by default"      "$WORK/root/usr/sbin/mkfs.exfat"
 if [ -x "$WORK/root/usr/sbin/mkfs.exfat" ]; then ok; else bad "mkfs.exfat is not executable"; fi
 if grep -q "installed the exFAT payload" "$WORK/out"; then ok; else bad "the exFAT payload was not stated"; fi
-# Ohne exfat/ im Bundle ist --with-exfat ein Fehler, kein stilles Nichts.
+make_bundle; make_camera auto
+run_install --without-exfat || bad "--without-exfat was refused: $(cat "$WORK/out")"
+hasnt "no exfat.ko with --without-exfat"     "$WORK/root/etc/machino/modules/exfat.ko"
+hasnt "no mkfs.exfat with --without-exfat"   "$WORK/root/usr/sbin/mkfs.exfat"
+has   "storage modules still installed"      "$WORK/root/etc/machino/modules/usb-storage.ko"
+if grep -q "skipped the exFAT payload" "$WORK/out"; then ok; else bad "skipping the exFAT payload was not stated"; fi
+# Ein aelteres Bundle ohne exfat/: per Vorgabe eine benannte Warnung, die
+# Installation geht durch; mit ausdruecklichem --with-exfat ein Fehler.
+make_bundle; make_camera auto
+rm -rf "$WORK/bundle/exfat"
+run_install || bad "a bundle without exfat/ must still install by default: $(cat "$WORK/out")"
+hasnt "no exfat.ko from a bundle without it" "$WORK/root/etc/machino/modules/exfat.ko"
+if grep -q "carries no exfat/exfat.ko" "$WORK/out"; then ok; else bad "the missing exFAT payload was not named: $(cat "$WORK/out")"; fi
 make_bundle; make_camera auto
 rm -rf "$WORK/bundle/exfat"
 if run_install --with-exfat; then bad "--with-exfat without exfat/ in the bundle must fail"; else ok; fi
@@ -1016,7 +1035,7 @@ has "models survive the uninstall"      "$WORK/root/etc/machino/models/yolov5s_t
 # Die exFAT-Nutzlast geht beim Deinstallieren genauso wieder weg -- Modul
 # und mkfs.exfat gehoeren Machino, ein Overlay mit 200 kB Leichen nicht.
 make_bundle; make_camera auto
-run_install --with-exfat || bad "--with-exfat was refused: $(cat "$WORK/out")"
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
 has   "exfat.ko before uninstall"       "$WORK/root/etc/machino/modules/exfat.ko"
 run_uninstall || bad "uninstall.sh exited non-zero: $(cat "$WORK/out")"
 hasnt "exfat.ko removed again"          "$WORK/root/etc/machino/modules/exfat.ko"

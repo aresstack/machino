@@ -4,7 +4,7 @@
 #
 #   machino-manager install [--owner NAME] [--platform P] [--with-pages] [--minimal]
 #                           [--without-wifi-payload] [--without-cellular-payload] [--without-storage-payload]
-#                           [--with-nna-payload] [--with-weirdike] [--with-exfat]
+#                           [--without-exfat] [--with-nna-payload] [--with-weirdike]
 #   machino-manager uninstall [--owner NAME] [--force]
 #   machino-manager status            # machine-readable JSON on stdout
 #
@@ -128,7 +128,7 @@ EOF
 }
 
 cmd_install() {
-    owner=cam-tool; platform=""; pages=0; nowifi=0; nocell=0; nostorage=0; withnna=0; withweirdike=0; withexfat=0
+    owner=cam-tool; platform=""; pages=0; nowifi=0; nocell=0; nostorage=0; noexfat=0; withnna=0; withweirdike=0; withexfat=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --owner)    shift; owner="${1:-cam-tool}" ;;
@@ -152,8 +152,9 @@ cmd_install() {
             --without-storage-payload)  nostorage=1 ;;      # AP36: USB-Massenspeicher-Module
             --with-nna-payload)         withnna=1 ;;
             --with-weirdike)            withweirdike=1 ;;
-            --with-exfat)               withexfat=1 ;;       # exFAT-Modul + mkfs.exfat
-            --minimal)                  nowifi=1; nocell=1; nostorage=1 ;;
+            --without-exfat)            noexfat=1 ;;         # exFAT-Modul + mkfs.exfat (Vorgabe: mit)
+            --with-exfat)               withexfat=1 ;;       # ausdruecklich verlangt
+            --minimal)                  nowifi=1; nocell=1; nostorage=1; noexfat=1 ;;
             *) die "install: unknown option '$1'" ;;
         esac
         shift
@@ -226,7 +227,8 @@ cmd_install() {
     [ "$nostorage" = "1" ] && _pageopts="$_pageopts --without-storage-payload"
     [ "${withnna:-0}" = "1" ] && _pageopts="$_pageopts --with-nna-payload"
     [ "${withweirdike:-0}" = "1" ] && _pageopts="$_pageopts --with-weirdike"
-    [ "${withexfat:-0}" = "1" ] && _pageopts="$_pageopts --with-exfat"
+    [ "$noexfat" = "1" ] && _pageopts="$_pageopts --without-exfat"
+    [ "${withexfat:-0}" = "1" ] && [ "$noexfat" != "1" ] && _pageopts="$_pageopts --with-exfat"
     # shellcheck disable=SC2086 -- feste Schalter, kein Benutzertext
     MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" $_pageopts || die "install.sh failed"
 
@@ -334,7 +336,7 @@ case "${1:-}" in
 usage: machino-manager <command>
   install [--owner NAME] [--platform P] [--with-pages]
           [--without-wifi-payload] [--without-cellular-payload] [--without-storage-payload]
-          [--with-nna-payload] [--with-weirdike] [--with-exfat] [--minimal]
+          [--without-exfat] [--with-nna-payload] [--with-weirdike] [--minimal]
             --with-pages: also add the machino entries to the stock WebUI
             menu. OFF by default - the deploy does not touch OpenIPC's
             files. The pages are reachable at /cgi-bin/machino-usb.cgi and

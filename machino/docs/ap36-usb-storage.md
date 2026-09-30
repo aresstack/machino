@@ -95,9 +95,9 @@ unter busybox httpd — machinod forkt weiterhin nicht.
 ## exFAT als Nutzlast (2026-09-30)
 
 Die frische 128-GB-Karte war exFAT, und „Format FAT32“ war die einzige
-Antwort — mit der 4-GB-Dateigrenze von FAT32. Jetzt gibt es exFAT als
-**opt-in-Nutzlast** (`install.sh --with-exfat`, Cam-Tool: „exFAT-Nutzlast“),
-rund 200 kB Overlay:
+Antwort — mit der 4-GB-Dateigrenze von FAT32. Jetzt kommt exFAT als
+**Nutzlast per Vorgabe** mit (wie die Speichermodule; `--without-exfat`
+lässt sie weg, Cam-Tool: „exFAT-Nutzlast“), rund 200 kB Overlay:
 
 ```
 exfat.ko      Samsung-Treiber exfat-nofuse (der Android-Treiber fuer 3.x/4.x-
@@ -121,6 +121,13 @@ jederzeit zwischen FAT32 (4 GB pro Datei, überall lesbar) und exFAT (keine
 Dateigrenze, Werksformat) umformatieren. `machino-usb-helper status` zeigt
 `exfat:`.
 
+Nebenbefund derselben Karte: OpenIPCs busybox-`blkid` ist ohne
+`FEATURE_BLKID_TYPE` gebaut und nennt nie `TYPE=`, nur `LABEL`/`UUID`. Die
+frisch formatierte FAT32-Karte stand deshalb nach dem Unmount als „no
+filesystem found“ da, ohne Mount-Knopf. Die Storage-Seite liest jetzt die
+Signaturen im Bootsektor (exFAT/NTFS ab Byte 3, FAT32 ab Byte 82, FAT12/16
+ab Byte 54) und nimmt `TYPE=` nur, wenn `blkid` es doch liefert.
+
 Nicht am Gerät bewiesen (pending-physical B9): dass die Kamera ein
 exFAT-Medium mountet und dass ein mit diesem `mkfs.exfat` geschriebenes
 Volume von Windows/macOS gelesen wird.
@@ -133,8 +140,8 @@ Volume von Windows/macOS gelesen wird.
 3. Kartenleser mit FAT32-Karte in den Hub. `dmesg` zeigt `usb-storage`,
    `sd 0:0:0:0: [sda] …`, mdev mountet `/mnt/sda1`. Storage-Seite zeigt
    das Medium — oder den Grund und den Knopf, wenn nicht (exFAT-Karte ohne
-   exFAT-Nutzlast: „Format FAT32"; mit ihr wird sie gemountet, und „Format
-   exFAT" steht neben „Format FAT32").
+   exFAT-Nutzlast, `--without-exfat`: „Format FAT32"; mit ihr wird sie
+   gemountet, und „Format exFAT" steht neben „Format FAT32").
 4. Modell: `yolov5s_t40_magik.bin` und `manifest.json` auf die Karte,
    KI-Seite → „Use“. Schreiben geht genauso: das Medium ist rw gemountet.
 

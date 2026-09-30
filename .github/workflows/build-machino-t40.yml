@@ -412,9 +412,10 @@ jobs:
           cat "$O/storage/PAYLOAD.txt"
 
           # exFAT (build-exfat-t40): Out-of-Tree-Modul gegen den Kamera-Kernel
-          # plus mkfs.exfat. Eine EIN-Option (install.sh --with-exfat): die
-          # Karte ueber 32 GB kommt ab Werk so, und ohne das Modul bleibt nur
-          # FAT32 mit 4-GB-Dateigrenze.
+          # plus mkfs.exfat. Per Vorgabe dabei wie die Speichermodule
+          # (install.sh --without-exfat laesst es weg): die Karte ueber 32 GB
+          # kommt ab Werk so, und ohne das Modul bleibt nur FAT32 mit
+          # 4-GB-Dateigrenze.
           mkdir -p "$O/exfat"
           for b in exfat.ko mkfs.exfat; do
             f=$(find wifi-payload/build-exfat-t40.yml -name "$b" -type f 2>/dev/null | head -1)
@@ -422,10 +423,10 @@ jobs:
           done
           [ -f "$O/exfat/mkfs.exfat" ] && chmod 0755 "$O/exfat/mkfs.exfat"
           {
-            echo "# exFAT payload in this bundle (install.sh --with-exfat)"
+            echo "# exFAT payload in this bundle (installed by default; install.sh --without-exfat skips it)"
             echo "files: $(ls "$O/exfat" 2>/dev/null | tr '\n' ' ' || echo none)"
             echo
-            echo "OFF by default. exfat.ko is loaded by the USB helper before usb-storage"
+            echo "exfat.ko is loaded by the USB helper before usb-storage"
             echo "when usb.storage=true; mkfs.exfat lets the Storage page format as exFAT."
           } > "$O/exfat/PAYLOAD.txt"
           cat "$O/exfat/PAYLOAD.txt"
