@@ -236,7 +236,7 @@ std::string inject_machino_footer_brand(const std::string& html, bool& changed) 
     // Site mit ?ref=machino (dasselbe zaehlbare, datenfreie Muster wie #549).
     static const char linked[] =
         "<a href=\"https://github.com/aresstack/machino\">Machino</a>"
-        " by <a href=\"https://aresstack.org/?ref=machino\">AresStack</a>";
+        " by <a href=\"https://aresstack.com/?ref=machino\">AresStack</a>";
     // Schon gebrandet: niemals doppeln. ?ref=machino ist der eindeutige Marker
     // der eigenen Zeile (analog zu OpenIPCs ?ref=webui).
     if (html.find("?ref=machino") != std::string::npos)
