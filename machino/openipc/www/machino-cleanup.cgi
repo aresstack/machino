@@ -126,16 +126,31 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 		# Nie ein Geraet formatieren, von dem eine Partition gemountet ist.
 		if grep -q "^$_d[p]*[0-9] " /proc/mounts; then redirect_to "$SCRIPT_NAME" "danger" "a partition of $_d is mounted - unmount it first"; fi
 		_n=$(basename "$_d")
-		if _err=$(mkfs.vfat -n MACHINO "$_d" 2>&1); then
-			mkdir -p "/mnt/$_n"
-			if mount -t vfat -o rw,noatime "$_d" "/mnt/$_n" 2>/dev/null; then
-				redirect_to "$SCRIPT_NAME" "success" "Formatted $_d as FAT32 and mounted it at /mnt/$_n"
-			else
-				redirect_to "$SCRIPT_NAME" "success" "Formatted $_d as FAT32 (mount it with the button)"
-			fi
-		else
-			redirect_to "$SCRIPT_NAME" "danger" "mkfs.vfat $_d failed: $_err"
+		_st=/tmp/machino-format.$_n
+		if [ "$(cat "$_st" 2>/dev/null)" = "running" ]; then
+			redirect_to "$SCRIPT_NAME" "danger" "$_d is already being formatted - this page shows the result"
 		fi
+		# Im HINTERGRUND. mkfs.vfat auf einer 128-GB-Karte schreibt zwei FATs
+		# von je 32 MB ueber USB und braucht deutlich laenger als die 6 s,
+		# nach denen Machinos Front-Door eine stumme CGI abbricht (Befund
+		# 2026-09-30: "backend sent nothing for 6000 ms", Ergebnis unsichtbar).
+		# Die Antwort kommt sofort; das Ergebnis steht in der Statusdatei, die
+		# Seite zeigt es und laedt sich waehrenddessen alle 10 s neu.
+		echo running > "$_st"
+		(
+			mkfs.vfat -n MACHINO "$_d" > "$_st.log" 2>&1; _rc=$?
+			if [ "$_rc" = 0 ]; then
+				mkdir -p "/mnt/$_n"
+				if mount -t vfat -o rw,noatime "$_d" "/mnt/$_n" >> "$_st.log" 2>&1; then
+					echo "ok mounted" > "$_st"
+				else
+					echo "ok unmounted" > "$_st"
+				fi
+			else
+				echo "failed $_rc" > "$_st"
+			fi
+		) </dev/null >/dev/null 2>&1 &
+		redirect_to "$SCRIPT_NAME" "success" "Formatting $_d as FAT32 in the background - a 128 GB card takes about a minute; this page shows the result"
 		;;
 	ensure-majestic-off)
 		if [ -c "$WO" ]; then
@@ -200,6 +215,7 @@ media_owner=$(streamerctl status 2>/dev/null | sed -n 's/^running:[[:space:]]*//
 ext_rows=""
 ext_any=0
 ext_mounted=0
+ext_formatting=0
 for _b in /sys/block/sd[a-z] /sys/block/mmcblk[0-9]; do
 	[ -d "$_b" ] || continue
 	_dn=$(basename "$_b")
@@ -222,7 +238,21 @@ for _b in /sys/block/sd[a-z] /sys/block/mmcblk[0-9]; do
 		_mp=$(awk -v d="/dev/$_p" '$1==d{print $2; exit}' /proc/mounts)
 		_free=0
 		_note=""
-		if [ -n "$_mp" ]; then
+		_fmt=""
+		# Laeuft oder lief ein Formatieren im Hintergrund (Statusdatei)?
+		_fs=/tmp/machino-format.$_p
+		if [ -f "$_fs" ]; then
+			case "$(cat "$_fs" 2>/dev/null)" in
+				running)  _fmt=running; ext_formatting=1 ;;
+				ok*)      rm -f "$_fs" "$_fs.log" ;;           # Ergebnis steht im Mount-/blkid-Zustand
+				failed*)  _fmt="failed: $(tail -c 300 "$_fs.log" 2>/dev/null | tr '\n' ' ')"; rm -f "$_fs" "$_fs.log" ;;
+			esac
+		fi
+		if [ "$_fmt" = "running" ]; then
+			_note="formatting as FAT32 ... (this page reloads every 10 s)"
+		elif [ -n "$_fmt" ]; then
+			_note="format $_fmt"
+		elif [ -n "$_mp" ]; then
 			ext_mounted=1
 			_free=$(df -k "$_mp" 2>/dev/null | awk 'NR==2{print $4}'); [ -n "$_free" ] || _free=0
 		else
@@ -234,7 +264,7 @@ for _b in /sys/block/sd[a-z] /sys/block/mmcblk[0-9]; do
 			esac
 		fi
 		ext_rows="$ext_rows
-/dev/$_p|$_mb|$_type|$_label|$_mp|$_free|$_note"
+/dev/$_p|$_mb|$_type|$_label|$_mp|$_free|$_note|$_fmt"
 	done
 done
 ext_log=$(logread 2>/dev/null | grep -i 'automount' | tail -2)
@@ -305,13 +335,15 @@ ext_canformat=0; command -v mkfs.vfat >/dev/null 2>&1 && ext_canformat=1
 	<div class="mj-live-head"><h3 class="mj-cap"><span class="drive">&#128189;</span>External <small class="text-muted">SD / USB</small></h3><span class="mj-live-rule"></span></div>
 	<% if [ "$ext_any" = "1" ]; then %>
 	<table class="table table-sm mb-2"><thead><tr><th>Device</th><th>Size</th><th>FS</th><th>State</th><th></th></tr></thead><tbody>
-	<% printf '%s\n' "$ext_rows" | while IFS='|' read -r _d _mb _t _l _mp _free _note; do [ -n "$_d" ] || continue %>
+	<% printf '%s\n' "$ext_rows" | while IFS='|' read -r _d _mb _t _l _mp _free _note _fmt; do [ -n "$_d" ] || continue %>
 		<tr><td class="text-nowrap"><code><%= $_d %></code><% [ -n "$_l" ] && echo " <small class=\"text-muted\">$_l</small>" %></td>
 		<td class="text-nowrap"><% [ "$_mb" -gt 0 ] && echo "${_mb} MB" || echo "&ndash;" %></td>
 		<td><%= ${_t:-–} %></td>
-		<td><% if [ -n "$_mp" ]; then echo "<span class=\"text-success\">mounted at <code>$_mp</code>, ${_free} kB free</span>"; else echo "<span class=\"text-warning\">$_note</span>"; fi %></td>
+		<td><% if [ "$_fmt" = "running" ]; then echo "<span class=\"text-info\">$_note</span>"; elif [ -n "$_mp" ]; then echo "<span class=\"text-success\">mounted at <code>$_mp</code>, ${_free} kB free</span>"; elif [ -n "$_fmt" ]; then echo "<span class=\"text-danger\">$_note</span>"; else echo "<span class=\"text-warning\">$_note</span>"; fi %></td>
 		<td class="text-nowrap">
-		<% if [ -n "$_mp" ]; then %>
+		<% if [ "$_fmt" = "running" ]; then %>
+			<span class="spinner-border spinner-border-sm text-info" role="status"></span>
+		<% elif [ -n "$_mp" ]; then %>
 			<form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"><input type="hidden" name="dev" value="<%= $_d %>">
 				<button class="btn btn-sm btn-outline-secondary" type="submit" name="action" value="umount-ext" title="Unmount before pulling the medium">Unmount</button></form>
 		<% elif [ "$_mb" -gt 0 ]; then %>
@@ -340,6 +372,9 @@ ext_canformat=0; command -v mkfs.vfat >/dev/null 2>&1 && ext_canformat=1
 	<% fi %>
 	<% if [ -n "$ext_log" ]; then %>
 	<p class="mj-card-note">System log (automount): <code class="text-break"><%= $ext_log %></code></p>
+	<% fi %>
+	<% if [ "$ext_formatting" = "1" ]; then %>
+	<script>setTimeout(function () { location.replace(location.pathname); }, 10000);</script>
 	<% fi %>
 	<% else %>
 	<p class="mj-card-note">None mounted. Switch on <b>USB storage</b> on the <a href="machino-usb.cgi">USB</a>
