@@ -318,6 +318,14 @@ void run_wwwpages_tests()
     TCHECK(has(ai, "Not yet hardware-verified"));
     TCHECK(has(ai, "machino-nna-model-demo-bundle"));
     TCHECK(has(ai, "Post-Training-Quantization User Guide"));
+    // Upload mit Fortschritt (XHR, nicht fetch) und einer Meldung, die das
+    // Neuladen ueberlebt (?ok= -> Box oben in der Karte, HTML-escaped).
+    TCHECK(has(ai, "xhr.upload.onprogress"));
+    TCHECK(has(ai, "progress-bar"));
+    TCHECK(has(ai, "machino-ai.cgi?ok="));
+    TCHECK(has(ai, "GET_ok"));
+    TCHECK(has(ai, "alert-success"));
+    TCHECK(!has(ai, "location.reload"));
 
     // W5d: der Datei-Download fuer den File Manager (majestics Static-
     // Fallback, den busybox nicht hat). Plain sh, eigene Antwort, und die

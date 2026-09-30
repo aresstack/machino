@@ -904,6 +904,19 @@ hasnt "sd_mod skipped on request"            "$WORK/root/etc/machino/modules/sd_
 has   "cellular modules still installed"     "$WORK/root/etc/machino/modules/option.ko"
 if grep -q "skipped the USB storage payload" "$WORK/out"; then ok; else bad "skipping the storage payload was not stated"; fi
 
+# Die Platzrechnung zaehlt den NNA-Helfer mit, wenn er kommt: ein 2-MB-Helfer
+# nach dem Binary darf nicht erst beim Schreiben an ENOSPC scheitern.
+make_bundle; make_camera auto
+head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
+_bin_kb=$(( $(wc -c < "$WORK/bundle/machino") / 1024 ))
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=10 sh ./install.sh --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+if [ "$rc" != 0 ]; then ok; else bad "install with 10 kB free must fail"; fi
+_want=$(( _bin_kb + 1280 + 256 + 2100000 / 1024 + 64 ))
+if grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "the space need must include the NNA helper (want ~${_want} kB): $(grep -o 'need ~[0-9]* kB' "$WORK/out")"; fi
+( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=10 sh ./install.sh ) >"$WORK/out" 2>&1; rc=$?
+_want=$(( _bin_kb + 1280 + 256 ))
+if grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "without --with-nna-payload the helper must not count (want ~${_want} kB): $(grep -o 'need ~[0-9]* kB' "$WORK/out")"; fi
+
 # exFAT: per Vorgabe MIT (wie die Speichermodule): Modul und mkfs.exfat
 # liegen bereit, --without-exfat laesst sie weg, und der Boot-Helfer laedt
 # das Modul VOR usb-storage (sonst verpasst mdevs Automount ein exFAT-Medium
