@@ -47,6 +47,16 @@ is_reclaimable() {
 	return 1
 }
 
+# Ein Wechselmedium-Knoten, sonst nichts: sd[a-z](N) vom USB-Kartenleser/Stick,
+# mmcblkN(pN) vom Kartenslot. Kein mtd*, kein loop, kein Pfad mit "..".
+is_ext_blockdev() {
+	case "$1" in
+		*..*|*/../*) return 1 ;;
+		/dev/sd[a-z]|/dev/sd[a-z][0-9]|/dev/sd[a-z][0-9][0-9]|/dev/mmcblk[0-9]|/dev/mmcblk[0-9]p[0-9]) [ -b "$1" ] ;;
+		*) return 1 ;;
+	esac
+}
+
 if [ "$REQUEST_METHOD" = "POST" ]; then
 	case "$POST_action" in
 	del-file)
@@ -68,6 +78,64 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 			;;
 		*) redirect_to "$SCRIPT_NAME" "danger" "Not a cleanup folder" ;;
 		esac
+		;;
+	# AP36: externes Medium (USB-Kartenleser am Hub, Kartenslot). Nur echte
+	# Wechselmedien-Knoten, nie mtd*, nie etwas, das gemountet ist (also auch
+	# nie das Root-Dateisystem). Dieselben Mountpunkte wie OpenIPCs mdev-
+	# Automount (/mnt/<dev>), damit KI-Seite und Helfer-Status sie finden.
+	mount-ext)
+		_d=$(t_value "POST_dev")
+		if ! is_ext_blockdev "$_d"; then redirect_to "$SCRIPT_NAME" "danger" "Not a removable block device: $_d"; fi
+		_n=$(basename "$_d")
+		if grep -q "^$_d " /proc/mounts; then redirect_to "$SCRIPT_NAME" "success" "$_d is already mounted"; fi
+		_t=$(blkid "$_d" 2>/dev/null | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p')
+		case "$_t" in
+			vfat|msdos) ;;
+			"")  redirect_to "$SCRIPT_NAME" "danger" "$_d carries no filesystem this camera can read - format it as FAT32 first" ;;
+			*)   redirect_to "$SCRIPT_NAME" "danger" "$_d is $_t - this kernel can only mount FAT32 (vfat); format the medium as FAT32" ;;
+		esac
+		mkdir -p "/mnt/$_n"
+		if _err=$(mount -t vfat -o rw,noatime "$_d" "/mnt/$_n" 2>&1); then
+			redirect_to "$SCRIPT_NAME" "success" "Mounted $_d at /mnt/$_n"
+		else
+			redirect_to "$SCRIPT_NAME" "danger" "mount $_d failed: $_err"
+		fi
+		;;
+	umount-ext)
+		_d=$(t_value "POST_dev")
+		if ! is_ext_blockdev "$_d"; then redirect_to "$SCRIPT_NAME" "danger" "Not a removable block device: $_d"; fi
+		_mp=$(awk -v d="$_d" '$1==d{print $2; exit}' /proc/mounts)
+		case "$_mp" in
+			/mnt/*) ;;
+			*) redirect_to "$SCRIPT_NAME" "danger" "$_d is not mounted under /mnt" ;;
+		esac
+		if _err=$(umount "$_mp" 2>&1); then
+			redirect_to "$SCRIPT_NAME" "success" "Unmounted $_d - safe to remove"
+		else
+			redirect_to "$SCRIPT_NAME" "danger" "umount $_mp failed: $_err (a file on it is still open - the AI model path, a download?)"
+		fi
+		;;
+	format-ext)
+		# FAT32 mit busybox mkfs.vfat: das einzige Dateisystem, das dieser
+		# Kernel als Modul mitbringt. Loescht ALLES auf dem Geraet/der
+		# Partition; die Seite fragt vorher, die Pruefung hier ist die zweite.
+		_d=$(t_value "POST_dev")
+		if ! is_ext_blockdev "$_d"; then redirect_to "$SCRIPT_NAME" "danger" "Not a removable block device: $_d"; fi
+		command -v mkfs.vfat >/dev/null 2>&1 || redirect_to "$SCRIPT_NAME" "danger" "mkfs.vfat is not in this image - format the medium as FAT32 on a PC"
+		if grep -q "^$_d " /proc/mounts; then redirect_to "$SCRIPT_NAME" "danger" "$_d is mounted - unmount it first"; fi
+		# Nie ein Geraet formatieren, von dem eine Partition gemountet ist.
+		if grep -q "^$_d[p]*[0-9] " /proc/mounts; then redirect_to "$SCRIPT_NAME" "danger" "a partition of $_d is mounted - unmount it first"; fi
+		_n=$(basename "$_d")
+		if _err=$(mkfs.vfat -n MACHINO "$_d" 2>&1); then
+			mkdir -p "/mnt/$_n"
+			if mount -t vfat -o rw,noatime "$_d" "/mnt/$_n" 2>/dev/null; then
+				redirect_to "$SCRIPT_NAME" "success" "Formatted $_d as FAT32 and mounted it at /mnt/$_n"
+			else
+				redirect_to "$SCRIPT_NAME" "success" "Formatted $_d as FAT32 (mount it with the button)"
+			fi
+		else
+			redirect_to "$SCRIPT_NAME" "danger" "mkfs.vfat $_d failed: $_err"
+		fi
 		;;
 	ensure-majestic-off)
 		if [ -c "$WO" ]; then
@@ -123,9 +191,54 @@ maj_disabled=no; [ -c "$WO" ] && maj_disabled=yes
 media_owner=$(streamerctl status 2>/dev/null | sed -n 's/^running:[[:space:]]*//p' | head -1); [ -n "$media_owner" ] || media_owner="unknown"
 
 # --- Bereich Extern (SD/USB) ---------------------------------------------
-ext_dev=""
-for _d in /dev/mmcblk0 /dev/mmcblk1 /dev/sda /dev/sdb /dev/sdc; do [ -b "$_d" ] && ext_dev="$ext_dev $_d"; done
-ext_mount=$(mount 2>/dev/null | grep -iE '/mnt/(mmc|sd|usb)' | awk '{print $3" ("$1")"}' | head -3)
+# AP36: je Blockgeraet die DIAGNOSE, nicht nur "vorhanden" -- Medium drin?
+# Partition? Dateisystem (blkid)? gemountet, wo, wieviel frei? Und WARUM
+# nicht: dieser Kernel kann nur FAT32 (vfat kommt als Modul mit), exFAT und
+# NTFS nicht -- eine 64-GB-SDXC-Karte ist ab Werk exFAT. Eine leere Karte hat
+# gar kein Dateisystem. Dazu die letzte Meldung des mdev-Automounts.
+# Zeilen: dev|MB|fstype|label|mountpoint|free_kb|note
+ext_rows=""
+ext_any=0
+ext_mounted=0
+for _b in /sys/block/sd[a-z] /sys/block/mmcblk[0-9]; do
+	[ -d "$_b" ] || continue
+	_dn=$(basename "$_b")
+	[ -b "/dev/$_dn" ] || continue
+	ext_any=1
+	_sz=$(cat "$_b/size" 2>/dev/null); [ -n "$_sz" ] || _sz=0
+	if [ "$_sz" -eq 0 ]; then
+		ext_rows="$ext_rows
+/dev/$_dn|0||||0|no medium in this slot"
+		continue
+	fi
+	_parts=$(cd "$_b" 2>/dev/null && ls -d "$_dn"[0-9]* 2>/dev/null)
+	[ -n "$_parts" ] || _parts=$_dn
+	for _p in $_parts; do
+		_psz=$(cat "$_b/$_p/size" 2>/dev/null); [ -n "$_psz" ] || _psz=$_sz
+		_mb=$(( _psz / 2048 ))
+		_bl=$(blkid "/dev/$_p" 2>/dev/null)
+		_type=$(printf '%s' "$_bl" | sed -n 's/.*TYPE="\([^"]*\)".*/\1/p')
+		_label=$(printf '%s' "$_bl" | sed -n 's/.*LABEL="\([^"]*\)".*/\1/p')
+		_mp=$(awk -v d="/dev/$_p" '$1==d{print $2; exit}' /proc/mounts)
+		_free=0
+		_note=""
+		if [ -n "$_mp" ]; then
+			ext_mounted=1
+			_free=$(df -k "$_mp" 2>/dev/null | awk 'NR==2{print $4}'); [ -n "$_free" ] || _free=0
+		else
+			case "$_type" in
+				vfat|msdos) _note="FAT - not mounted (mount it below)" ;;
+				exfat|ntfs) _note="$_type - this kernel cannot mount it; format as FAT32" ;;
+				"")         _note="no filesystem found - format as FAT32" ;;
+				*)          _note="$_type - only FAT32 is mountable here" ;;
+			esac
+		fi
+		ext_rows="$ext_rows
+/dev/$_p|$_mb|$_type|$_label|$_mp|$_free|$_note"
+	done
+done
+ext_log=$(logread 2>/dev/null | grep -i 'automount' | tail -2)
+ext_canformat=0; command -v mkfs.vfat >/dev/null 2>&1 && ext_canformat=1
 
 # --- Partitionen (Info) ---------------------------------------------------
 %>
@@ -190,12 +303,44 @@ ext_mount=$(mount 2>/dev/null | grep -iE '/mnt/(mmc|sd|usb)' | awk '{print $3" (
 <!-- Bereich: Extern (SD/USB) -->
 <div class="col-12 col-lg-4"><div class="card h-100"><div class="card-body">
 	<div class="mj-live-head"><h3 class="mj-cap"><span class="drive">&#128189;</span>External <small class="text-muted">SD / USB</small></h3><span class="mj-live-rule"></span></div>
-	<% if [ -n "$ext_mount" ]; then %>
-	<dl class="row mb-0"><% echo "$ext_mount" | while read -r _m; do %><dt class="col-12 text-break"><%= $_m %></dt><% done %></dl>
-	<p class="mj-card-note">External storage is present. Large AI models can live here instead of
-	  the overlay &mdash; point the model path at it in the <a href="machino-ai.cgi">AI</a> page.</p>
-	<% elif [ -n "$ext_dev" ]; then %>
-	<p class="mj-card-note">A card/stick is present but not mounted:<code><%= $ext_dev %></code>.</p>
+	<% if [ "$ext_any" = "1" ]; then %>
+	<table class="table table-sm mb-2"><thead><tr><th>Device</th><th>Size</th><th>FS</th><th>State</th><th></th></tr></thead><tbody>
+	<% printf '%s\n' "$ext_rows" | while IFS='|' read -r _d _mb _t _l _mp _free _note; do [ -n "$_d" ] || continue %>
+		<tr><td class="text-nowrap"><code><%= $_d %></code><% [ -n "$_l" ] && echo " <small class=\"text-muted\">$_l</small>" %></td>
+		<td class="text-nowrap"><% [ "$_mb" -gt 0 ] && echo "${_mb} MB" || echo "&ndash;" %></td>
+		<td><%= ${_t:-–} %></td>
+		<td><% if [ -n "$_mp" ]; then echo "<span class=\"text-success\">mounted at <code>$_mp</code>, ${_free} kB free</span>"; else echo "<span class=\"text-warning\">$_note</span>"; fi %></td>
+		<td class="text-nowrap">
+		<% if [ -n "$_mp" ]; then %>
+			<form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"><input type="hidden" name="dev" value="<%= $_d %>">
+				<button class="btn btn-sm btn-outline-secondary" type="submit" name="action" value="umount-ext" title="Unmount before pulling the medium">Unmount</button></form>
+		<% elif [ "$_mb" -gt 0 ]; then %>
+			<% case "$_t" in vfat|msdos) %>
+			<form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"><input type="hidden" name="dev" value="<%= $_d %>">
+				<button class="btn btn-sm btn-outline-primary" type="submit" name="action" value="mount-ext">Mount</button></form>
+			<% ;; esac %>
+			<% if [ "$ext_canformat" = "1" ]; then %>
+			<form action="<%= $SCRIPT_NAME %>" method="post" class="d-inline"
+			      onsubmit="return confirm('Format <%= $_d %> (<%= $_mb %> MB) as FAT32? EVERYTHING on it is erased.')">
+				<input type="hidden" name="dev" value="<%= $_d %>">
+				<button class="btn btn-sm btn-outline-danger" type="submit" name="action" value="format-ext" title="mkfs.vfat on the camera - erases the medium">Format FAT32</button></form>
+			<% fi %>
+		<% fi %>
+		</td></tr>
+	<% done %>
+	</tbody></table>
+	<% if [ "$ext_mounted" = "1" ]; then %>
+	<p class="mj-card-note">Mounted media can hold large AI models &mdash; the <a href="machino-ai.cgi">AI</a> page lists
+	  <code>.bin</code> files on them and points the model path there. Unmount before pulling a card.</p>
+	<% else %>
+	<p class="mj-card-note">The system mounts a medium by itself (mdev) when it carries a <b>FAT32</b> filesystem
+	  &mdash; the only one this kernel can read from a card. exFAT (the factory format of SDXC cards over
+	  32&nbsp;GB) and NTFS are not supported: format the card as FAT32 here or on a PC. A slot without a card
+	  shows no medium. <b>Mount</b> retries by hand.</p>
+	<% fi %>
+	<% if [ -n "$ext_log" ]; then %>
+	<p class="mj-card-note">System log (automount): <code class="text-break"><%= $ext_log %></code></p>
+	<% fi %>
 	<% else %>
 	<p class="mj-card-note">None mounted. Switch on <b>USB storage</b> on the <a href="machino-usb.cgi">USB</a>
 	  page (it needs the port role Wi-Fi or Cellular) and plug a card reader or stick into the hub

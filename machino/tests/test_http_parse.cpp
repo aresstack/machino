@@ -373,9 +373,9 @@ void run_relay_head_end_tests() {
         // Verlinkt wie die OpenIPC-Zeile: Machino -> Repo, AresStack -> Site.
         static const char kLinked[] =
             "<a href=\"https://github.com/aresstack/machino\">Machino</a>"
-            " by <a href=\"https://aresstack.org/?ref=machino\">AresStack</a>";
+            " by <a href=\"https://aresstack.com/?ref=machino\">AresStack</a>";
         HCHECK(out.find(std::string(">OpenIPC</a></p>\n\t<p class=\"text-end\">") + kLinked + "</p>") != std::string::npos);
-        HCHECK(out.find("aresstack.com") == std::string::npos);   // die Site ist .org
+        HCHECK(out.find("aresstack.org") == std::string::npos);   // die Site ist .com
         // Idempotent: a second pass (or a footer.cgi already patched on disk)
         // never doubles the line.
         bool again = false;

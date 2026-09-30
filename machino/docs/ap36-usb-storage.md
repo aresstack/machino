@@ -75,6 +75,23 @@ Leer-Text erklärt den Schalter. KI-Seite: „Models on external storage“
 listet `.bin` unter `/mnt` (max. 3 Ebenen), „Use“ setzt `ai.model_path`
 dorthin — das Modell bleibt auf der Karte.
 
+## Erster Hardware-Befund (2026-09-30)
+
+Der Kartenleser am Hub enumeriert, `sd_mod` legt `/dev/sda` und `/dev/sdb`
+an (ein Leser mit zwei Schächten). Die Treiberkette steht also. Gemountet
+war nichts, und die Storage-Seite sagte nur „present but not mounted" —
+ohne Grund, ohne Werkzeug. Deshalb zeigt die Storage-Seite jetzt je
+Blockgerät die Diagnose (Medium im Schacht? Partition? Dateisystem per
+`blkid`? gemountet, wo, wie viel frei?) und den Grund, wenn nicht: dieser
+Kernel kann nur FAT32 (`vfat` als Modul); exFAT — ab Werk auf SDXC-Karten
+über 32 GB — und NTFS nicht; eine leere Karte hat kein Dateisystem. Dazu
+die letzten `automount`-Zeilen aus dem Log (OpenIPCs `automount.sh` loggt
+den ersten Mount-Fehler per `logger`). Werkzeuge, alles busybox: **Mount**
+(`mount -t vfat -o rw,noatime`, Mountpunkt `/mnt/<dev>` wie mdev),
+**Unmount**, **Format FAT32** (`mkfs.vfat -n MACHINO`, mit Rückfrage, nie
+auf etwas Gemountetes, nie auf `mtd*`). Die CGI läuft als eigener Prozess
+unter busybox httpd — machinod forkt weiterhin nicht.
+
 ## Bedienung
 
 1. Bundle mit `storage/modules` installieren (jedes Release seit heute).
@@ -82,7 +99,8 @@ dorthin — das Modell bleibt auf der Karte.
    Apply, Neustart.
 3. Kartenleser mit FAT32-Karte in den Hub. `dmesg` zeigt `usb-storage`,
    `sd 0:0:0:0: [sda] …`, mdev mountet `/mnt/sda1`. Storage-Seite zeigt
-   das Medium.
+   das Medium — oder den Grund und den Knopf, wenn nicht (exFAT-Karte:
+   „Format FAT32").
 4. Modell: `yolov5s_t40_magik.bin` und `manifest.json` auf die Karte,
    KI-Seite → „Use“. Schreiben geht genauso: das Medium ist rw gemountet.
 
