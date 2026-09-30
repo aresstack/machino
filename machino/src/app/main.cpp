@@ -611,6 +611,22 @@ int main(int argc, char** argv) {
             LOGI(MOD, "usb: boot helper started '%s', configuration says '%s'",
                  usb::usb_function_name(boot_usb_function),
                  usb::usb_function_name(usb_service.config().function));
+            // AP36: the same marker rule for the storage switch. Not readable
+            // means "off" -- one reboot too many, never one too few.
+            bool boot_storage = false;
+            {
+                std::ifstream sf("/var/run/machino-usb-storage");
+                std::string st;
+                if (sf && std::getline(sf, st)) {
+                    while (!st.empty() && (st.back() == '\n' || st.back() == '\r' || st.back() == ' '))
+                        st.pop_back();
+                    boot_storage = (st == "on");
+                }
+            }
+            usb_service.set_boot_storage(boot_storage);
+            if (usb_service.config().storage != boot_storage)
+                LOGI(MOD, "usb: storage drivers %s at boot, configuration says %s -- a reboot applies it",
+                     boot_storage ? "loaded" : "not loaded", usb_service.config().storage ? "on" : "off");
         }
 
         linuxsys::LinuxEthernetUplink eth_uplink("eth0");

@@ -198,6 +198,12 @@ void UsbHostService::set_boot_function(UsbFunction f)
     boot_function_ = f;
 }
 
+void UsbHostService::set_boot_storage(bool on)
+{
+    std::lock_guard<std::mutex> g(m_);
+    boot_storage_ = on;
+}
+
 UsbStatus UsbHostService::status() const
 {
     UsbStatus s;
@@ -210,10 +216,13 @@ UsbStatus UsbHostService::status() const
         s.resolved = resolved_;
         s.function = cfg_.function;
         s.boot_function = boot_function_;
+        s.storage = cfg_.storage;
+        s.boot_storage = boot_storage_;
         // A mode change is only real after the boot helper has run. Saying so
         // here, from the two values themselves, means the flag clears itself
-        // at the next boot instead of needing anyone to reset it.
-        s.reboot_required = (cfg_.function != boot_function_);
+        // at the next boot instead of needing anyone to reset it. AP36: the
+        // storage switch follows the same rule.
+        s.reboot_required = (cfg_.function != boot_function_) || (cfg_.storage != boot_storage_);
     }
     bool on = false;
     if (backend_.power_state(on)) { s.power_known = true; s.power_on = on; }

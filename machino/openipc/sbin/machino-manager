@@ -3,6 +3,7 @@
 # humans. It hides which files Machino owns behind three operations:
 #
 #   machino-manager install [--owner NAME] [--platform P] [--with-pages] [--minimal]
+#                           [--without-wifi-payload] [--without-cellular-payload] [--without-storage-payload]
 #   machino-manager uninstall [--owner NAME] [--force]
 #   machino-manager status            # machine-readable JSON on stdout
 #
@@ -126,7 +127,7 @@ EOF
 }
 
 cmd_install() {
-    owner=cam-tool; platform=""; pages=0; nowifi=0; nocell=0; withnna=0; withweirdike=0
+    owner=cam-tool; platform=""; pages=0; nowifi=0; nocell=0; nostorage=0; withnna=0; withweirdike=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --owner)    shift; owner="${1:-cam-tool}" ;;
@@ -147,9 +148,10 @@ cmd_install() {
             # ueber den Manager -- also war die Nutzlast dort nicht abwaehlbar.
             --without-wifi-payload)     nowifi=1 ;;
             --without-cellular-payload) nocell=1 ;;
+            --without-storage-payload)  nostorage=1 ;;      # AP36: USB-Massenspeicher-Module
             --with-nna-payload)         withnna=1 ;;
             --with-weirdike)            withweirdike=1 ;;
-            --minimal)                  nowifi=1; nocell=1 ;;
+            --minimal)                  nowifi=1; nocell=1; nostorage=1 ;;
             *) die "install: unknown option '$1'" ;;
         esac
         shift
@@ -219,6 +221,7 @@ cmd_install() {
     [ "$pages" = "1" ] && _pageopts="--with-network-page --with-device-page"
     [ "$nowifi" = "1" ] && _pageopts="$_pageopts --without-wifi-payload"
     [ "$nocell" = "1" ] && _pageopts="$_pageopts --without-cellular-payload"
+    [ "$nostorage" = "1" ] && _pageopts="$_pageopts --without-storage-payload"
     [ "${withnna:-0}" = "1" ] && _pageopts="$_pageopts --with-nna-payload"
     [ "${withweirdike:-0}" = "1" ] && _pageopts="$_pageopts --with-weirdike"
     # shellcheck disable=SC2086 -- feste Schalter, kein Benutzertext
@@ -327,7 +330,8 @@ case "${1:-}" in
         cat >&2 <<EOF
 usage: machino-manager <command>
   install [--owner NAME] [--platform P] [--with-pages]
-          [--without-wifi-payload] [--without-cellular-payload] [--with-nna-payload] [--with-weirdike] [--minimal]
+          [--without-wifi-payload] [--without-cellular-payload] [--without-storage-payload]
+          [--with-nna-payload] [--with-weirdike] [--minimal]
             --with-pages: also add the machino entries to the stock WebUI
             menu. OFF by default - the deploy does not touch OpenIPC's
             files. The pages are reachable at /cgi-bin/machino-usb.cgi and

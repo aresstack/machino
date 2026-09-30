@@ -124,7 +124,7 @@ media_owner=$(streamerctl status 2>/dev/null | sed -n 's/^running:[[:space:]]*//
 
 # --- Bereich Extern (SD/USB) ---------------------------------------------
 ext_dev=""
-for _d in /dev/mmcblk0 /dev/mmcblk1 /dev/sda /dev/sdb; do [ -b "$_d" ] && ext_dev="$ext_dev $_d"; done
+for _d in /dev/mmcblk0 /dev/mmcblk1 /dev/sda /dev/sdb /dev/sdc; do [ -b "$_d" ] && ext_dev="$ext_dev $_d"; done
 ext_mount=$(mount 2>/dev/null | grep -iE '/mnt/(mmc|sd|usb)' | awk '{print $3" ("$1")"}' | head -3)
 
 # --- Partitionen (Info) ---------------------------------------------------
@@ -197,8 +197,11 @@ ext_mount=$(mount 2>/dev/null | grep -iE '/mnt/(mmc|sd|usb)' | awk '{print $3" (
 	<% elif [ -n "$ext_dev" ]; then %>
 	<p class="mj-card-note">A card/stick is present but not mounted:<code><%= $ext_dev %></code>.</p>
 	<% else %>
-	<p class="mj-card-note">None. The one USB port is assigned on the <a href="machino-usb.cgi">USB</a>
-	  page; an SD card or USB stick can hold large AI models so they do not fill the overlay.</p>
+	<p class="mj-card-note">None mounted. Switch on <b>USB storage</b> on the <a href="machino-usb.cgi">USB</a>
+	  page (it needs the port role Wi-Fi or Cellular) and plug a card reader or stick into the hub
+	  next to the module &mdash; or a card into the board's slot, if it is wired. A FAT32 medium is
+	  mounted by the system under <code>/mnt</code>; large AI models can live there so they do not
+	  fill the overlay.</p>
 	<% fi %>
 </div></div></div>
 
