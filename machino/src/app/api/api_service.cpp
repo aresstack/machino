@@ -138,10 +138,23 @@ Json ApiService::capabilities_json() const {
     ai.set("person", Json::string(cap_name(c.ai.person)));
     Json detectors = Json::array();
     if (c.ai.motion == Cap::Supported) detectors.push(Json::string("motion"));
-    // person erscheint erst, wenn die Plattform es als Supported meldet --
-    // also nach der Hardware-Abnahme (AP-NNA6). Ein Eintrag, der beim
-    // Auswaehlen "unavailable" wirft, waere ein kaputter Menuepunkt.
-    if (c.ai.person == Cap::Supported) detectors.push(Json::string("person"));
+    // person erscheint, sobald es AUF DIESER KAMERA JETZT geht: dieselbe
+    // Live-Bewertung wie GET /ai/detectors und die Detector-Fabrik (nmem,
+    // /dev/soc-nna, Helfer, Modell, Manifest). Die statische Capability
+    // ai.person bleibt "unknown" bis zur Hardware-Abnahme -- sie sagt "vom
+    // Code abgenommen", diese Liste sagt "auswaehlbar". Vorher stand hier nur
+    // die statische Capability, und die WebUI zeigte "person (unsupported)"
+    // auf einer Kamera, auf der alle Voraussetzungen gruen waren
+    // (2026-10-01). Fehlt eine, bleibt person draussen -- ein Eintrag, der
+    // beim Auswaehlen "unavailable" wirft, waere ein kaputter Menuepunkt.
+    bool person_listed = c.ai.person == Cap::Supported;
+    if (!person_listed && det_status_ && c.ai.available == Cap::Supported) {
+        std::string mp = store_.get("ai.model_path");
+        if (mp.empty()) mp = cfg_.ai.model_path;
+        for (const auto& d : det_status_(mp))
+            if (d.id == "person" && d.selectable) person_listed = true;
+    }
+    if (person_listed) detectors.push(Json::string("person"));
     ai.set("detectors", detectors);
     Json aifps = Json::object(); aifps.set("status", Json::string(cap_name(c.ai.available)));
     aifps.set("apply", Json::string(c.ai.available == Cap::Supported ? "live" : "unsupported"));
@@ -1133,12 +1146,18 @@ Response ApiService::patch_config(const std::string& body, const std::string& if
                     // outside [A-Za-z0-9/._-] (< > " ' ; | $ ...) is refused at
                     // the source rather than escaped downstream.
                     if (!mp.empty()) {
+                        // Dazu /mnt/<medium>/models/: dorthin laedt die KI-Seite
+                        // Modelle, wenn eine Karte steckt (Vorgabe), und bietet
+                        // daneben "Use" an -- ohne diesen Zweig endete das in 422.
+                        const size_t mseg = mp.rfind("/mnt/", 0) == 0 ? mp.find('/', 5) : std::string::npos;
+                        const bool on_card = mseg != std::string::npos && mseg > 5 &&
+                                             mp.compare(mseg, 8, "/models/") == 0;
                         const bool rooted = mp.rfind("/etc/machino/models/", 0) == 0 ||
-                                            mp.rfind("/tmp/models/", 0) == 0;
+                                            mp.rfind("/tmp/models/", 0) == 0 || on_card;
                         if (!rooted || mp.size() > 255 || mp.find("/../") != std::string::npos ||
                             (mp.size() >= 3 && mp.compare(mp.size() - 3, 3, "/..") == 0))
                             return bad(422, "invalid_value", path,
-                                       "model_path must be under /etc/machino/models or /tmp/models, without '..'");
+                                       "model_path must be under /etc/machino/models, /mnt/<medium>/models or /tmp/models, without '..'");
                         for (char ch : mp) {
                             const bool okc = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
                                              (ch >= '0' && ch <= '9') || ch == '/' || ch == '.' ||
