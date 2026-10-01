@@ -14,6 +14,11 @@ ROOT="${MACHINO_ROOT:-}"
 # --check-space: nur die Platzrechnung, nichts anfassen. machino-manager fragt
 # so VOR dem Stoppen des Daemons -- mit genau den Optionen des Aufrufs.
 CHECK_ONLY=0
+# --stage-nna-helper: nur den NNA-Helfer schreiben (sha256-geprueft) und raus.
+# machino-manager ruft das VOR dem Stoppen: das Overlay ist zlib-komprimiertes
+# jffs2, der 2-MB-Helfer kostet dort rund 1 MB, und das sagt keine Rechnung mit
+# Rohgroessen -- nur das echte Schreiben. Passt er nicht, ist nichts gestoppt.
+STAGE_ONLY=0
 WITH_AP=0
 WITH_NETPAGE=0
 WITH_DEVPAGE=0
@@ -172,6 +177,10 @@ only works after someone has copied files over by SSH is not a switch.
   --check-space         only run the space pre-flight for the given options
                         and exit 0/1 - nothing is written, nothing stopped.
                         machino-manager asks so BEFORE it stops the daemon.
+  --stage-nna-helper    only write the NNA helper (sha256-checked) and exit.
+                        machino-manager does this BEFORE it stops the daemon:
+                        the overlay is compressed jffs2, so only a real write
+                        tells whether the helper fits.
   --with-network-page   add a "Netzwerk & USB (machino)" entry to the stock
                         WebUI menu, pointing at the machino network page. Off by default:
                         the installer does not edit p/header.cgi behind your
@@ -193,6 +202,7 @@ EOF
         --with-exfat) WITH_EXFAT=2 ;;
         --without-exfat) WITH_EXFAT=0 ;;
         --check-space) CHECK_ONLY=1 ;;
+        --stage-nna-helper) STAGE_ONLY=1 ;;
         *) die "unknown option '$1' (try --help)" ;;
     esac
     shift
@@ -246,7 +256,17 @@ put() {
         chmod "$_put_m" "$_put_d"; return $?
     fi
     _put_t="$_put_d.machino-new.$$"
-    if ! cp "$_put_s" "$_put_t"; then rm -f "$_put_t"; return 1; fi
+    if ! cp "$_put_s" "$_put_t"; then
+        rm -f "$_put_t"
+        [ -f "$_put_d" ] || return 1
+        # Kein Platz fuer die Kopie NEBEN der alten Datei: die alte geht zuerst,
+        # die neue an ihre Stelle (nicht atomar, aber besser als eine Absage
+        # auf einem vollen Overlay). Scheitert auch das, kein halber Rest.
+        say "no room for a temporary copy of $_put_d - replacing it in place"
+        rm -f "$_put_d"
+        if cp "$_put_s" "$_put_d" && chmod "$_put_m" "$_put_d"; then return 0; fi
+        rm -f "$_put_d"; return 1
+    fi
     if ! chmod "$_put_m" "$_put_t"; then rm -f "$_put_t"; return 1; fi
     if mv -f "$_put_t" "$_put_d" 2>/dev/null; then return 0; fi
     rm -f "$_put_t"
@@ -302,7 +322,7 @@ done
 # 2,9 MB alte Backup-Kopie auf dem Overlay lagen.
 prev_kb=0
 if [ -f "$BACKUP/machino.prev" ]; then
-    if [ "$CHECK_ONLY" = 1 ]; then
+    if [ "$CHECK_ONLY" = 1 ] || [ "$STAGE_ONLY" = 1 ]; then
         # nur rechnen: die Kopie ginge als erstes, also zaehlt sie als frei
         prev_kb=$(( $(wc -c < "$BACKUP/machino.prev") / 1024 ))
     else
@@ -311,10 +331,6 @@ if [ -f "$BACKUP/machino.prev" ]; then
     fi
 fi
 
-# 1280 kB Zuschlag: die groesste Einzeldatei der Nutzlast (hostapd ~1 MB) wird
-# als tmp+mv geschrieben und braucht ihren Platz TRANSIENT doppelt, dazu etwas
-# Luft.
-#
 # Zwei Betriebspunkte, weil das T40NN-Overlay (~3,8 MB) keine ZWEI Binaries
 # gleichzeitig traegt:
 #   keep_prev=1  Es ist Platz, das laufende Binary als Rollback-Kopie
@@ -325,7 +341,13 @@ fi
 #                machino belegt ~3,6 MB Overlay, die nie zusaetzlich frei sind.
 # Erst wenn selbst das In-Place nicht passt, ist wirklich kein Platz.
 new_kb=$(( $(wc -c < "$HERE/machino") / 1024 ))
-need_kb=$(( new_kb + 1280 ))
+# 256 kB statt frueher 1280: die 1280 waren fuer hostapd & Co., die als
+# tmp+mv TRANSIENT doppelt Platz brauchten. Seit put() byte-identische Dateien
+# liegen laesst und bei Platzmangel an Ort und Stelle ersetzt, gibt es diese
+# Doppelung nicht mehr; was bleibt, sind kleine Skripte und CGIs, die sich
+# zwischen zwei Versionen aendern. (2026-10-01: die 1280 allein verweigerten
+# die Installation auf einer Kamera, auf der sie physisch passte.)
+need_kb=$(( new_kb + 256 ))
 # Was schon byte-identisch auf der Kamera liegt, kostet nichts: put() laesst
 # solche Dateien liegen, und die Rechnung hier weiss das. Sonst scheitert eine
 # Neuinstallation ueber sich selbst am Platz fuer Dateien, die laengst da sind.
@@ -362,7 +384,9 @@ free_kb=$(( ${free_kb:-0} + prev_kb ))
 cur_kb=0
 [ -f "$ROOT/usr/bin/machino" ] && cur_kb=$(( $(wc -c < "$ROOT/usr/bin/machino") / 1024 ))
 helper_inplace=0
-if [ "$free_kb" -ge "$need_kb" ]; then
+if [ "$STAGE_ONLY" = 1 ]; then
+    keep_prev=0     # die Rechnung mit Rohgroessen entscheidet hier nicht -- das Schreiben unten
+elif [ "$free_kb" -ge "$need_kb" ]; then
     keep_prev=1
 elif [ "$(( free_kb + cur_kb ))" -ge "$need_kb" ]; then
     keep_prev=0
@@ -473,6 +497,34 @@ if [ -r "$HERE/BUILDINFO" ] && [ -r "$ROOT/proc/device-tree/compatible" ]; then
                 die "this bundle is built for T40, but the camera reports '$dt'. Nothing was written."
             say "camera reports '$dt' - platform NOT verified" ;;
     esac
+fi
+
+# ------------------------------------------- NNA helper, staged early ---
+# Siehe --stage-nna-helper: geschrieben wird erst, wenn sein Hash zu
+# SHA256SUMS passt (dasselbe Gate wie fuer den Daemon oben).
+if [ "$STAGE_ONLY" = 1 ]; then
+    if [ "$WITH_NNA_PAYLOAD" != "1" ] || [ ! -r "$HERE/nna/machino-nna" ]; then
+        say "no NNA helper to stage"; exit 0
+    fi
+    if [ "$helper_same" = 1 ]; then
+        say "the NNA inference helper is already installed and unchanged"; exit 0
+    fi
+    if [ -r "$HERE/SHA256SUMS" ] && command -v sha256sum >/dev/null 2>&1; then
+        _hw=$(awk '$2 == "./nna/machino-nna" || $2 == "nna/machino-nna" {print $1; exit}' "$HERE/SHA256SUMS")
+        if [ -n "$_hw" ]; then
+            _hh=$(sha256sum "$HERE/nna/machino-nna" | awk '{print $1}')
+            [ "$_hw" = "$_hh" ] || die "bundle is corrupt: nna/machino-nna hashes $_hh, SHA256SUMS says $_hw. Nothing was written."
+        fi
+    fi
+    _f0=$(df -k "$ROOT/" 2>/dev/null | awk 'NR==2 {print $4}')
+    mkdir -p "$ROOT/usr/sbin"
+    if put 0755 "$HERE/nna/machino-nna" "$ROOT/usr/sbin/machino-nna"; then
+        _f1=$(df -k "$ROOT/" 2>/dev/null | awk 'NR==2 {print $4}')
+        say "staged the NNA inference helper ($(( $(wc -c < "$HERE/nna/machino-nna") / 1024 )) kB, cost ~$(( ${_f0:-0} - ${_f1:-0} )) kB on flash; ${_f1:-?} kB left)"
+        exit 0
+    fi
+    rm -f "$ROOT/usr/sbin/machino-nna.machino-new."*
+    die "the NNA helper ($(( $(wc -c < "$HERE/nna/machino-nna") / 1024 )) kB) does not fit on / (free ~${_f0:-?} kB) - free space first (System > Storage), or install without the AI payload"
 fi
 
 mkdir -p "$STATE_DIR" "$BACKUP" || die "cannot create $STATE_DIR"
