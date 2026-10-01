@@ -929,6 +929,41 @@ void test_ai_detectors_route_and_person_config() {
     ACHECK(person.get("reasons")->size() == 4);     // nmem, device, runtime, model
     ACHECK(person.get("reasons")->at(0).get("code")->as_string() == "NNA_BOOT_MEMORY_MISSING");
     ACHECK(!person.get("reasons")->at(0).get("message")->as_string().empty());
+    // Solange eine Voraussetzung fehlt, bietet das Schema person NICHT an.
+    {
+        api::Response caps = r.api.capabilities();
+        ACHECK(path(caps.body, "ai.detectors")->size() == 1);
+        const Json sch = compat::majestic_schema(caps.body);
+        const Json* en = path(sch, "properties.ai.properties.detector.enum");
+        ACHECK(en && en->size() == 1 && en->at(0).as_string() == "motion");
+    }
+
+    // Alle Voraussetzungen gruen: person steht in ai.detectors und damit im
+    // Detector-Dropdown der WebUI (2026-10-01: "person (unsupported)", weil
+    // hier nur die statische Capability zaehlte). ai.person selbst bleibt
+    // "unknown" -- die Hardware-Abnahme steht aus.
+    {
+        Rig g;
+        std::string seen;
+        g.api.set_detector_status_provider([&seen](const std::string& mp) {
+            seen = mp;
+            std::vector<detection::DetectorStatus> v;
+            v.push_back(detection::evaluate_motion(true));
+            detection::DetectorStatus p;
+            p.id = "person"; p.label = "Person (NNA)"; p.available = true; p.selectable = true;
+            v.push_back(p);
+            return v;
+        });
+        ACHECK(g.api.patch_config("{\"ai\":{\"model_path\":\"/etc/machino/models/y.bin\"}}", "").status == 200);
+        api::Response caps = g.api.capabilities();
+        ACHECK(path(caps.body, "ai.detectors")->size() == 2);
+        ACHECK(path(caps.body, "ai.detectors")->at(1).as_string() == "person");
+        ACHECK(path(caps.body, "ai.person")->as_string() == "unknown");
+        ACHECK(seen == "/etc/machino/models/y.bin");          // der LIVE-Pfad, nicht der Startwert
+        const Json sch = compat::majestic_schema(caps.body);
+        const Json* en = path(sch, "properties.ai.properties.detector.enum");
+        ACHECK(en && en->size() == 2 && en->at(1).as_string() == "person");
+    }
 
     // §16: person ist KONFIGURIERBAR, auch wenn unavailable -- kein stiller
     // Rueckfall auf motion. Aktivierung endet in state=error, Video-Demand
@@ -962,6 +997,13 @@ void test_ai_detectors_route_and_person_config() {
     ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/etc/machino/models/../../shadow\"}}", "").status == 422);
     // Der Testpfad /tmp/models ist erlaubt (Modell zu gross fuers Overlay).
     ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/tmp/models/y.bin\"}}", "").status == 200);
+    // Die Karte: dorthin laedt die KI-Seite per Vorgabe, und "Use" daneben
+    // muss gehen. Nur <medium>/models/, nicht irgendwo unter /mnt.
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/mnt/sda1/models/yolov5n_t40_magik.bin\"}}", "").status == 200);
+    ACHECK(r.store.get("ai.model_path") == "/mnt/sda1/models/yolov5n_t40_magik.bin");
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/mnt/sda1/x.bin\"}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/mnt//models/x.bin\"}}", "").status == 422);
+    ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/mnt/sda1/models/../../etc/shadow\"}}", "").status == 422);
     // Ausserhalb der Modell-Verzeichnisse: abgelehnt (kein /etc/shadow o.ae.).
     ACHECK(r.api.patch_config("{\"ai\":{\"model_path\":\"/etc/shadow\"}}", "").status == 422);
     // XSS-/Injection-Zeichen: an der Quelle abgelehnt, nicht erst beim Rendern.
