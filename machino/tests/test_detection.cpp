@@ -100,6 +100,40 @@ void test_unavailable_is_error_not_fatal() {
     DCHECK(r.log.count("enc.create") == 1);
 }
 
+// ---- Error + enabled: a config change retries (the "Use" case) -------------
+// 2026-10-01: person stood in Error for want of a model; "Use" set the path,
+// and nothing happened until Enable was toggled off and on again.
+void test_error_retries_on_config_change() {
+    Rig r;
+    r.platform.detector_supported = false;
+    DetectionService svc(r.mgr, r.platform, r.bus, ai(true));
+    DCHECK(svc.state() == AiState::Error);
+    // switching detector while failing: tried again (still failing here)
+    DCHECK(!svc.set_detector("person"));
+    DCHECK(svc.state() == AiState::Error);
+    // the missing piece arrives; the model path is set -> it starts
+    r.platform.detector_supported = true;
+    DCHECK(svc.set_model_path("/etc/machino/models/y.bin"));
+    DCHECK(svc.state() == AiState::Active);
+    svc.shutdown();
+    // the same for the inference rate
+    Rig r2;
+    r2.platform.detector_supported = false;
+    DetectionService s2(r2.mgr, r2.platform, r2.bus, ai(true));
+    DCHECK(s2.state() == AiState::Error);
+    r2.platform.detector_supported = true;
+    DCHECK(s2.set_inference_fps(3));
+    DCHECK(s2.state() == AiState::Active);
+    s2.shutdown();
+    // switched OFF it stays off: a config change never starts a disabled detector
+    Rig r3;
+    DetectionService s3(r3.mgr, r3.platform, r3.bus, ai(false));
+    DCHECK(s3.state() == AiState::Disabled);
+    DCHECK(s3.set_model_path("/etc/machino/models/z.bin"));
+    DCHECK(s3.set_detector("person"));
+    DCHECK(s3.state() == AiState::Disabled);
+}
+
 // ---- backend start failure: Error, detector torn down, demand released ------
 void test_start_failure_is_error() {
     Rig r;
@@ -221,6 +255,7 @@ void run_detection_tests() {
     test_disabled_no_demand();
     test_enabled_base_only();
     test_unavailable_is_error_not_fatal();
+    test_error_retries_on_config_change();
     test_start_failure_is_error();
     test_events_on_detection_not_empty_frames();
     test_timeout_is_not_failure();
