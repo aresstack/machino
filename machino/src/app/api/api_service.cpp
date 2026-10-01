@@ -151,8 +151,18 @@ Json ApiService::capabilities_json() const {
     if (!person_listed && det_status_ && c.ai.available == Cap::Supported) {
         std::string mp = store_.get("ai.model_path");
         if (mp.empty()) mp = cfg_.ai.model_path;
-        for (const auto& d : det_status_(mp))
-            if (d.id == "person" && d.selectable) person_listed = true;
+        for (const auto& d : det_status_(mp)) {
+            if (d.id != "person") continue;
+            if (d.selectable) { person_listed = true; continue; }
+            // WARUM nicht: die WebUI zeigt sonst nur "person (unsupported)"
+            // und niemand weiss, welches Glied fehlt (2026-10-01). Das erste
+            // fehlende Glied der Kette, als Hinweis unter dem Detector-Feld.
+            if (!d.reason_codes.empty()) {
+                ai.set("person_reason_code", Json::string(d.reason_codes.front()));
+                ai.set("person_reason", Json::string(d.reason_details.empty() ? d.reason_codes.front()
+                                                                              : d.reason_details.front()));
+            }
+        }
     }
     if (person_listed) detectors.push(Json::string("person"));
     ai.set("detectors", detectors);

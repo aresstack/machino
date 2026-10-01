@@ -940,6 +940,15 @@ void test_ai_detectors_route_and_person_config() {
         const Json sch = compat::majestic_schema(caps.body);
         const Json* en = path(sch, "properties.ai.properties.detector.enum");
         ACHECK(en && en->size() == 1 && en->at(0).as_string() == "motion");
+        // ... und sagt WARUM, unter dem Detector-Feld beider Seiten
+        // (2026-10-01: "person (unsupported)" ohne jeden Grund).
+        ACHECK(path(caps.body, "ai.person_reason_code") &&
+               path(caps.body, "ai.person_reason_code")->as_string() == "NNA_BOOT_MEMORY_MISSING");
+        const Json* h1 = path(sch, "properties.ai.properties.detector.hint");
+        const Json* h2 = path(sch, "properties.motionDetect.properties.detector.hint");
+        ACHECK(h1 && h1->as_string().find("person not available yet") != std::string::npos);
+        ACHECK(h1 && h1->as_string().find("NNA_BOOT_MEMORY_MISSING") != std::string::npos);
+        ACHECK(h2 && h2->as_string() == h1->as_string());
     }
 
     // Alle Voraussetzungen gruen: person steht in ai.detectors und damit im
@@ -963,6 +972,7 @@ void test_ai_detectors_route_and_person_config() {
         ACHECK(path(caps.body, "ai.detectors")->size() == 2);
         ACHECK(path(caps.body, "ai.detectors")->at(1).as_string() == "person");
         ACHECK(path(caps.body, "ai.person")->as_string() == "unknown");
+        ACHECK(path(caps.body, "ai.person_reason") == nullptr);    // verfuegbar: kein Grund, kein Hinweis
         ACHECK(seen == "/etc/machino/models/y.bin");          // der LIVE-Pfad, nicht der Startwert
         const Json sch = compat::majestic_schema(caps.body);
         const Json* en = path(sch, "properties.ai.properties.detector.enum");

@@ -49,7 +49,11 @@ DetectorStatus evaluate_person(const NnaFacts& f)
     if (!f.helper_exec)
         add("NNA_RUNTIME_MISSING",
             "/usr/sbin/machino-nna fehlt - NNA-Payload nicht installiert.");
-    if (!f.model_readable)
+    if (!f.model_readable && f.model_path.empty())
+        add("AI_MODEL_MISSING",
+            "Kein Modell: ai.model_path ist leer und unter /etc/machino/models liegt "
+            "kein Modell mit manifest.json - auf der KI-Seite hochladen und \"Use\" druecken.");
+    else if (!f.model_readable)
         add("AI_MODEL_MISSING",
             "Modell '" + f.model_path + "' nicht lesbar - ai.model_path pruefen.");
     else if (f.manifest_present) {

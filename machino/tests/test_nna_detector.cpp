@@ -336,6 +336,19 @@ void test_availability_matrix() {
       NCHECK(!s.available && s.reason_codes[0] == "NNA_RUNTIME_MISSING"); }
     { NnaFacts f = all(); f.model_readable = false; s = evaluate_person(f);
       NCHECK(!s.available && s.reason_codes[0] == "AI_MODEL_MISSING"); }
+    // Leerer Pfad (und kein installiertes Modell): sagt genau das.
+    { NnaFacts f = all(); f.model_readable = false; f.model_path.clear(); s = evaluate_person(f);
+      NCHECK(!s.available && s.reason_codes[0] == "AI_MODEL_MISSING");
+      NCHECK(s.reason_details[0].find("ai.model_path ist leer") != std::string::npos); }
+    // Das installierte Modell aus dem Manifest, wenn ai.model_path leer ist
+    // (2026-10-01: Demo-Modell installiert, Pfad nie gesetzt -> "unsupported").
+    NCHECK(model_from_manifest("{\"schemaVersion\":1,\"modelFile\":\"yolov5n_t40_magik.bin\"}", "/etc/machino/models")
+           == "/etc/machino/models/yolov5n_t40_magik.bin");
+    NCHECK(model_from_manifest("{\"modelFile\":\"../../etc/shadow\"}", "/etc/machino/models").empty());
+    NCHECK(model_from_manifest("{\"modelFile\":\"sub/x.bin\"}", "/etc/machino/models").empty());
+    NCHECK(model_from_manifest("{\"modelFile\":\"a b.bin\"}", "/etc/machino/models").empty());
+    NCHECK(model_from_manifest("{\"schemaVersion\":1}", "/etc/machino/models").empty());
+    NCHECK(model_from_manifest("not json", "/etc/machino/models").empty());
     { NnaFacts f = all(); f.soc = "t31"; s = evaluate_person(f);
       NCHECK(!s.available && s.reason_codes[0] == "NNA_PLATFORM_UNSUPPORTED"); }
 

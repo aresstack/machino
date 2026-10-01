@@ -336,6 +336,14 @@ Json majestic_schema(const Json& capabilities) {
             ai_fields.set("enabled", en);
             if (const Json* dets = ai->get("detectors"); dets && dets->is_array() && dets->size() > 0) {
                 Json de = enum_field("Detector", *dets); de.set("x-reload", Json::string("live"));
+                // person fehlt in der Liste: der Grund steht unter dem Feld
+                // (die WebUI zeigt "hint" unter jedem Control), auf der Ai-
+                // und der Motion-Seite gleich.
+                if (const Json* why = ai->get("person_reason"); why && why->is_string() && !why->as_string().empty()) {
+                    const Json* code = ai->get("person_reason_code");
+                    de.set("hint", Json::string("person not available yet: " + why->as_string() +
+                                                (code && code->is_string() ? " [" + code->as_string() + "]" : std::string())));
+                }
                 ai_fields.set("detector", de);
             }
             if (const Json* fps = ai->get("inference_fps")) {
