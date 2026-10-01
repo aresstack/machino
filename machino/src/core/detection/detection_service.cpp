@@ -173,6 +173,17 @@ void DetectionService::run() {
     }
 }
 
+// Soll der Detector laufen? Aktiv oder im Start -- ODER eingeschaltet und an
+// einer Voraussetzung gescheitert (Error). Ohne den letzten Fall blieb ein
+// Detector, der z.B. mangels Modell nicht starten konnte, nach "Use" auf der
+// KI-Seite im Fehler stehen, bis jemand Enable aus- und wieder einschaltete
+// (2026-10-01). Eine Konfigurationsaenderung ist genau der Moment, es
+// erneut zu versuchen.
+bool DetectionService::should_run_locked() const {
+    return state_ == AiState::Active || state_ == AiState::Starting ||
+           (state_ == AiState::Error && cfg_.enabled);
+}
+
 Result DetectionService::set_enabled(bool on) {
     std::lock_guard<std::mutex> lk(m_);
     cfg_.enabled = on;
@@ -184,7 +195,7 @@ Result DetectionService::set_enabled(bool on) {
 Result DetectionService::set_detector(const std::string& name) {
     std::lock_guard<std::mutex> lk(m_);
     cfg_.detector = name;
-    if (state_ == AiState::Active || state_ == AiState::Starting) { stop_locked(); return start_locked(); }
+    if (should_run_locked()) { stop_locked(); return start_locked(); }
     return Result::ok();
 }
 
@@ -197,7 +208,7 @@ Result DetectionService::set_model_path(const std::string& path) {
     // gap in a running detector (header contract). "motion" is the one
     // non-model detector id (detector_availability.cpp); everything else is an
     // NNA backend that loads the file.
-    if ((state_ == AiState::Active || state_ == AiState::Starting) && cfg_.detector != "motion") {
+    if (should_run_locked() && cfg_.detector != "motion") {
         stop_locked();
         return start_locked();
     }
@@ -208,7 +219,7 @@ Result DetectionService::set_inference_fps(int fps) {
     std::lock_guard<std::mutex> lk(m_);
     if (fps < 1 || fps > 60) return Result::error();
     cfg_.inference_fps = fps;
-    if (state_ == AiState::Active || state_ == AiState::Starting) { stop_locked(); return start_locked(); }
+    if (should_run_locked()) { stop_locked(); return start_locked(); }
     return Result::ok();
 }
 

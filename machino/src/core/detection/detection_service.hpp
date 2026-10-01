@@ -79,6 +79,7 @@ public:
 private:
     Result start_locked();
     void   stop_locked();
+    bool   should_run_locked() const;   // m_ gehalten
     void   run();                      // bound-source poll loop
 
     lifecycle::PipelineManager& pipeline_;
