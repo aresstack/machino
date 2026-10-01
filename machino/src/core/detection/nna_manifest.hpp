@@ -28,4 +28,14 @@ NnaManifestCheck nna_manifest_check(const std::string& manifest_json,
                                     const std::string& model_basename,
                                     const std::string& soc);
 
+// Das Modell, das ein manifest.json im Verzeichnis `dir` nennt (modelFile),
+// als Pfad -- oder "" wenn das Manifest unlesbar ist oder modelFile kein
+// schlichter Dateiname ([A-Za-z0-9._-], ohne "..") ist. Damit laeuft der
+// Personendetektor mit dem installierten Modell, auch wenn ai.model_path nie
+// gesetzt wurde: das Cam-Tool installiert das Demo-Modell nach
+// /etc/machino/models, setzte den Pfad aber nicht, und ohne "Use" auf der
+// KI-Seite blieb "person" unbenutzbar (2026-10-01). Ob die Datei existiert,
+// prueft der Aufrufer (I/O).
+std::string model_from_manifest(const std::string& manifest_json, const std::string& dir);
+
 }} // namespace machino::detection

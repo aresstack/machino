@@ -63,4 +63,21 @@ NnaManifestCheck nna_manifest_check(const std::string& manifest_json,
     return c;
 }
 
+std::string model_from_manifest(const std::string& manifest_json, const std::string& dir)
+{
+    Json m;
+    std::string err;
+    if (!Json::parse(manifest_json, m, err) || !m.is_object())
+        return std::string();
+    const std::string mf = str_field(m, "modelFile");
+    if (mf.empty() || mf.size() > 128 || mf.find("..") != std::string::npos)
+        return std::string();
+    for (char ch : mf) {
+        const bool ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                        (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-';
+        if (!ok) return std::string();
+    }
+    return dir + "/" + mf;
+}
+
 }} // namespace machino::detection

@@ -137,11 +137,31 @@ std::unique_ptr<IAudioOut> IngenicPlatform::create_audio_out(const AudioParams& 
 
 namespace {
 
+// ai.model_path leer: das Modell, das /etc/machino/models/manifest.json nennt
+// (dorthin installieren Cam-Tool und KI-Seite), sofern die Datei lesbar ist.
+// Ein gesetzter Pfad gilt immer, auch wenn er nicht lesbar ist -- dann sagt
+// die Bewertung genau das, statt still auf ein anderes Modell auszuweichen.
+std::string effective_model_path(const std::string& configured)
+{
+    if (!configured.empty()) return configured;
+    static const char* kDir = "/etc/machino/models";
+    std::string mj;
+    if (FILE* mf = ::fopen("/etc/machino/models/manifest.json", "rb")) {
+        char buf[512];
+        size_t n;
+        while ((n = ::fread(buf, 1, sizeof buf, mf)) > 0 && mj.size() < 65536) mj.append(buf, n);
+        ::fclose(mf);
+    }
+    const std::string p = detection::model_from_manifest(mj, kDir);
+    return (!p.empty() && ::access(p.c_str(), R_OK) == 0) ? p : std::string();
+}
+
 // Die FAKTEN fuer den Availability-Vertrag: hier passiert das I/O, die
 // Bewertung (evaluate_person) ist eine reine Core-Funktion. Fabrik und
 // detector_status() nutzen BEIDE genau diesen Sammler -- eine Wahrheit.
-detection::NnaFacts gather_nna_facts(const std::string& soc, const std::string& model_path)
+detection::NnaFacts gather_nna_facts(const std::string& soc, const std::string& configured_model)
 {
+    const std::string model_path = effective_model_path(configured_model);
     detection::NnaFacts f;
     f.soc = soc;
     if (FILE* c = ::fopen("/proc/cmdline", "rb")) {
@@ -237,7 +257,7 @@ std::unique_ptr<IDetector> IngenicPlatform::create_detector(int chn, const Detec
         if (!src) return nullptr;
         detection::NnaDetectorConfig cfg;
         cfg.helper_path   = kNnaHelperPath;
-        cfg.model_path    = p.model_path;
+        cfg.model_path    = facts.model_path;   // ai.model_path, oder das installierte Modell
         cfg.frame_path    = "/tmp/machino-nna.frame";   // tmpfs; nie auf dem Overlay
         cfg.inference_fps = p.inference_fps;
         return std::make_unique<OwnedNnaDetector>(
