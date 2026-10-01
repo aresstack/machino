@@ -413,7 +413,11 @@ void test_majestic_webui_compat() {
     Rig r;
 
     Json schema = compat::majestic_schema(r.api.capabilities().body);
-    ACHECK(schema.get("x-groups") && schema.get("x-groups")->size() == 3);
+    // media, image, events (die Original-Seite "Motion detection", seit die
+    // Detektion bewiesen ist), runtime.
+    ACHECK(schema.get("x-groups") && schema.get("x-groups")->size() == 4);
+    ACHECK(schema.get("x-groups")->at(2).get("id")->as_string() == "events");
+    ACHECK(path(schema, "properties.motionDetect.properties.enabled") != nullptr);
     ACHECK(path(schema, "properties.video0.properties.fps") != nullptr);
     ACHECK(path(schema, "properties.video0.properties.bitrate_kbps") != nullptr);
     ACHECK(path(schema, "properties.sensor.properties.fps") != nullptr);

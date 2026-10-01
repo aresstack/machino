@@ -480,6 +480,84 @@ void test_upgrade_plan() {
 
 } // namespace
 
+
+// Die ORIGINAL-Seite "Motion detection" der Stock-WebUI: nur sie zeichnet,
+// was die Detektoren sehen (Livebild + Kaestchen aus /ws/analytics). Unter
+// machino fehlte sie, weil das Schema keinen motionDetect-Abschnitt trug
+// (2026-10-01: "ES GIBT KEINE SEITE MOTION DETECTION").
+void test_motion_detect_page() {
+    Json caps = Json::object();
+    {
+        Json ai = Json::object();
+        ai.set("available", Json::string("supported"));
+        Json dets = Json::array(); dets.push(Json::string("motion")); dets.push(Json::string("person"));
+        ai.set("detectors", dets);
+        Json fps = Json::object(); fps.set("status", Json::string("supported")); fps.set("apply", Json::string("live"));
+        fps.set("min", Json::integer(1)); fps.set("max", Json::integer(60));
+        ai.set("inference_fps", fps);
+        caps.set("ai", ai);
+    }
+    Json schema = majestic_schema(caps);
+    const Json* md = schema.get("properties") ? schema.get("properties")->get("motionDetect") : nullptr;
+    const Json* mp = md ? md->get("properties") : nullptr;
+    CCHECK(mp && mp->get("enabled") && mp->get("enabled")->get("type")->as_string() == "boolean");
+    CCHECK(mp && mp->get("enabled")->get("default") && mp->get("enabled")->get("default")->is_bool());
+    CCHECK(mp && mp->get("detector") && mp->get("detector")->get("enum")->size() == 2);
+    CCHECK(mp && mp->get("detector")->get("enum")->at(1).as_string() == "person");
+    // roi MUSS da sein (erst dann holt die Seite die Stream-Geometrie und
+    // zeichnet), leer, als Array -- wie majestics eigenes Schema.
+    CCHECK(mp && mp->get("roi") && mp->get("roi")->get("type")->as_string() == "array");
+    CCHECK(mp && mp->get("roi")->get("default")->is_array() && mp->get("roi")->get("default")->size() == 0);
+    // ... in einer eigenen Gruppe "Events", sonst rendert die WebUI sie nie.
+    bool in_events = false;
+    if (const Json* gs = schema.get("x-groups"))
+        for (size_t i = 0; i < gs->size(); ++i)
+            if (gs->at(i).get("id")->as_string() == "events") {
+                const Json* ss = gs->at(i).get("sections");
+                in_events = ss && ss->size() == 1 && ss->at(0).as_string() == "motionDetect";
+            }
+    CCHECK(in_events);
+    // Ohne bewiesene Detektion: weder ai noch motionDetect noch Gruppe.
+    Json none = majestic_schema(Json::object());
+    CCHECK(!none.get("properties")->get("motionDetect"));
+    bool ev = false;
+    if (const Json* gs = none.get("x-groups"))
+        for (size_t i = 0; i < gs->size(); ++i) if (gs->at(i).get("id")->as_string() == "events") ev = true;
+    CCHECK(!ev);
+
+    // Die Seite liest dieselben Werte unter majestics Namen.
+    Json native = Json::object();
+    { Json ai = Json::object(); ai.set("enabled", Json::boolean(true)); ai.set("detector", Json::string("person")); native.set("ai", ai); }
+    Json cfg = majestic_config(native, Json::object());
+    const Json* mc = cfg.get("motionDetect");
+    CCHECK(mc && mc->get("enabled")->as_bool() && mc->get("detector")->as_string() == "person");
+    CCHECK(mc && mc->get("roi")->is_array() && mc->get("roi")->size() == 0);
+
+    // Save der Seite -> ai.*; zusammen mit einem ai-Abschnitt im selben POST
+    // ueberschreibt keiner den anderen.
+    MajesticTranslation t = majestic_post_to_native(
+        "{\"motionDetect\":{\"enabled\":\"true\",\"detector\":\"person\",\"roi\":[]},\"ai\":{\"inference_fps\":\"5\"}}");
+    CCHECK(t.ok);
+    const Json* pa = t.patch.get("ai");
+    CCHECK(pa && pa->get("enabled") && pa->get("enabled")->is_bool() && pa->get("enabled")->as_bool());
+    CCHECK(pa && pa->get("detector") && pa->get("detector")->as_string() == "person");
+    CCHECK(pa && pa->get("inference_fps") && pa->get("inference_fps")->as_int() == 5);
+    CCHECK(pa && !pa->get("roi"));
+    MajesticTranslation t2 = majestic_post_to_native("{\"ai\":{\"enabled\":\"false\"},\"motionDetect\":{\"detector\":\"motion\"}}");
+    CCHECK(t2.ok && t2.patch.get("ai")->get("enabled") && t2.patch.get("ai")->get("detector")->as_string() == "motion");
+    // Bereiche kann machino noch nicht: abgelehnt, mit dem Grund.
+    MajesticTranslation t3 = majestic_post_to_native("{\"motionDetect\":{\"roi\":[\"0x0x100x100\"]}}");
+    CCHECK(!t3.ok && t3.status == 422 && t3.path == "motionDetect.roi");
+    CCHECK(t3.message.find("whole picture") != std::string::npos);
+    MajesticTranslation t4 = majestic_post_to_native("{\"motionDetect\":{\"sensitivity\":\"5\"}}");
+    CCHECK(!t4.ok && t4.path == "motionDetect.sensitivity");
+    // Reset der Seite: enabled auf den Default, detector auf "nicht gesetzt".
+    MajesticTranslation r1 = majestic_reset("motionDetect.enabled");
+    CCHECK(r1.ok && r1.patch.get("ai") && r1.patch.get("ai")->get("enabled")->is_bool());
+    MajesticTranslation r2 = majestic_reset("motionDetect.detector");
+    CCHECK(r2.ok && r2.unset.size() == 1 && r2.unset[0] == "ai.detector");
+}
+
 void run_compat_tests() {
     test_migrate_core();
     test_migrate_edges();
@@ -488,6 +566,7 @@ void run_compat_tests() {
     test_webui_post_strings_and_reset();
     test_unoffered_subsystems();
     test_upgrade_plan();
+    test_motion_detect_page();
 }
 
 // AP6: the substream must be addressable through the same surfaces the main

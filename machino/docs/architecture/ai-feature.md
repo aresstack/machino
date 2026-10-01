@@ -70,9 +70,13 @@ formatkompatibel; keine Ereignisse fuer leere Frames.
 - Detector-Dropdown der ai-Sektion speist sich aus der detectors-Liste;
   person erscheint dort erst mit Supported (nach AP6). Die Reason-Codes
   sind bis dahin ueber /api/v1/ai/detectors und die KI-Seite sichtbar.
-- **Sichtbar im Bild (2026-09-30):** die Stock-WebUI zeichnet auf der
-  Ai-Seite (camera.cgi?tab=ai) mit analytics-overlay.js Kaestchen ueber
-  die Vorschau und meldet darunter "n Erkennungen, Alter der Antwort".
+- **Sichtbar im Bild (2026-09-30, Ort korrigiert 2026-10-01):** die
+  Stock-WebUI zeichnet auf ihrer Original-Seite Settings → Events →
+  Motion detection (camera.cgi?tab=motionDetect) mit analytics-overlay.js
+  Kaestchen ueber das Livebild. Die Seite erscheint, weil machinos Schema
+  einen motionDetect-Abschnitt traegt (enabled/detector = ai.*, roi leer,
+  aber vorhanden -- erst damit holt die Seite die Stream-Geometrie); die
+  Ai-Seite ist nur ein Formular ohne Bild und meldet darunter "n Erkennungen, Alter der Antwort".
   Quelle ist der WebSocket `/ws/analytics`, den machino jetzt bedient:
   DetectionService::set_analytics_sink liefert JEDES analysierte Ergebnis
   (auch leere Frames, dazu ein Herzschlag pro Sekunde im Leerlauf, und

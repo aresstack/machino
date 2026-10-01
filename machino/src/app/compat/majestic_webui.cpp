@@ -326,6 +326,7 @@ Json majestic_schema(const Json& capabilities) {
 
     // M9/M10: detection is advertised only when the platform proved it.
     Json ai_fields = Json::object();
+    Json motion_fields = Json::object();
     if (const Json* ai = capabilities.get("ai"); ai && ai->is_object()) {
         const Json* avail = ai->get("available");
         if (avail && avail->is_string() && avail->as_string() == "supported") {
@@ -344,9 +345,37 @@ Json majestic_schema(const Json& capabilities) {
             }
             set_default(ai_fields, "ai", "enabled");
             set_default(ai_fields, "ai", "inference_fps");
+
+            // Die ORIGINAL-Seite "Motion detection" der Stock-WebUI (Gruppe
+            // "Events", wie bei majestic). Nur sie zeigt, was die Detektoren
+            // sehen: Livebild plus Kaestchen aus /ws/analytics. Die WebUI
+            // rendert sie, sobald das Schema diesen Abschnitt traegt -- ohne
+            // ihn gab es unter machino keinen Ort, an dem eine erkannte Person
+            // sichtbar wird (2026-10-01). Die Felder sind DIESELBEN Schalter
+            // wie ai.enabled / ai.detector (eine Wahrheit, zwei Seiten).
+            //
+            // roi muss dabei sein, auch leer: erst mit diesem Feld fragt die
+            // Seite /api/v1/osd nach der Stream-Geometrie, und ohne die zeichnet
+            // ihr Overlay keine Box ("do not draw yet"). Bereiche selbst kann
+            // machino noch nicht: es beobachtet das ganze Bild, und ein Save mit
+            // Bereichen wird mit genau diesem Satz abgelehnt.
+            Json md = Json::object();
+            Json mden = bool_field("Enable"); mden.set("x-reload", Json::string("live"));
+            md.set("enabled", mden);
+            if (const Json* de = ai_fields.get("detector")) md.set("detector", *de);
+            Json roi = Json::object();
+            roi.set("type", Json::string("array"));
+            roi.set("title", Json::string("Region of interest"));
+            roi.set("default", Json::array());
+            roi.set("hint", Json::string("machino watches the whole picture; regions are not supported yet."));
+            md.set("roi", roi);
+            set_default(md, "motionDetect", "enabled");
+            motion_fields = md;
         }
     }
     add_section(properties, "ai", ai_fields);
+    if (motion_fields.is_object() && motion_fields.size() > 0)
+        add_section(properties, "motionDetect", motion_fields);
 
     // Audio: microphone and speaker, each only when the platform has it.
     // Every field applies inside the POST (srate at the next open of the
@@ -419,8 +448,11 @@ Json majestic_schema(const Json& capabilities) {
     Json media = group("media", "Media", properties, media_sections, 4);
     Json image = group("image", "Image", properties, image_sections, 2);
     Json runtime = group("runtime", "Runtime", properties, runtime_sections, 7);
+    const char* events_sections[] = {"motionDetect"};      // wie majestic: eigene Gruppe "Events"
+    Json events = group("events", "Events", properties, events_sections, 1);
     if (media.get("sections")->size()) groups.push(media);
     if (image.get("sections")->size()) groups.push(image);
+    if (events.get("sections")->size()) groups.push(events);
     if (runtime.get("sections")->size()) groups.push(runtime);
     schema.set("x-groups", groups);
     return schema;
@@ -434,6 +466,14 @@ Json majestic_config(const Json& native_config, const Json& state) {
     copy_if(native_config, out, "sensor");
     copy_if(native_config, out, "rtsp");
     copy_if(native_config, out, "ai");
+    // Die Motion-Seite liest dieselben Werte unter majestics Namen.
+    if (const Json* ai = native_config.get("ai"); ai && ai->is_object()) {
+        Json md = Json::object();
+        if (const Json* e = ai->get("enabled"))  md.set("enabled", *e);
+        if (const Json* d = ai->get("detector")) md.set("detector", *d);
+        md.set("roi", Json::array());
+        out.set("motionDetect", md);
+    }
 
     // AP14: the snapshot gate, said out loud.
     //
@@ -702,8 +742,37 @@ MajesticTranslation majestic_post_to_native(const std::string& body) {
             patch.set("night", native_night);
             continue;
         }
+        // motionDetect (die Original-Seite "Motion detection") ist eine zweite
+        // Sicht auf ai.*: enabled/detector landen dort, ZUSAMMEN mit einem
+        // ai-Abschnitt im selben POST (keiner ueberschreibt den anderen).
+        if (name == "motionDetect" || name == "ai") {
+            if (!value.is_object()) {
+                r.code = "unknown_field"; r.path = name; r.message = "section must be an object"; return r;
+            }
+            Json ai;
+            if (const Json* existing = patch.get("ai"); existing && existing->is_object()) ai = *existing;
+            else ai = Json::object();
+            for (const auto& kv : value.members()) {
+                if (name == "motionDetect") {
+                    if (kv.first == "roi") {
+                        if (kv.second.is_array() && kv.second.size() == 0) continue;   // ganzes Bild = Ist-Zustand
+                        r.status = 422; r.code = "invalid_value"; r.path = "motionDetect.roi";
+                        r.message = "machino watches the whole picture; regions are not supported yet";
+                        return r;
+                    }
+                    if (kv.first != "enabled" && kv.first != "detector") {
+                        r.code = "unknown_field"; r.path = "motionDetect." + kv.first;
+                        r.message = "machino's motion page takes enabled, detector and an empty roi";
+                        return r;
+                    }
+                }
+                ai.set(kv.first, kv.second);
+            }
+            if (ai.size() > 0) patch.set("ai", ai);
+            continue;
+        }
         if (name == "performance" || name == "sensor" || name == "image" ||
-            name == "latency" || name == "rtsp" || name == "lifecycle" || name == "power" || name == "ai" ||
+            name == "latency" || name == "rtsp" || name == "lifecycle" || name == "power" ||
             name == "jpeg" || name == "webui") {
             patch.set(name, value);
             continue;
@@ -904,6 +973,7 @@ bool compiled_default(const std::string& key, Json& out) {
     if (key == "video0.bitrate_kbps")     { out = Json::integer(def.video.bitrate_kbps); return true; }
     if (key == "video0.gop")              { out = Json::integer(def.video.gop); return true; }
     if (key == "ai.enabled")              { out = Json::boolean(def.ai.enabled); return true; }
+    if (key == "motionDetect.enabled")    { out = Json::boolean(def.ai.enabled); return true; }
     if (key == "ai.inference_fps")        { out = Json::integer(def.ai.inference_fps); return true; }
     if (key == "jpeg.enabled")            { out = Json::boolean(def.jpeg.enabled); return true; }
     if (key == "webui.dashboard_preview") { out = Json::string(def.webui.dashboard_preview); return true; }
@@ -949,6 +1019,7 @@ MajesticTranslation majestic_reset(const std::string& key) {
         {"latency.encoder_buffers",     "latency.encoder_buffers"},
         {"latency.consumer_queue_depth","latency.queue_depth"},
         {"ai.detector",                 "ai.detector"},
+        {"motionDetect.detector",       "ai.detector"},
     };
     // image.* controls: the conf key mirrors the majestic key; the name list
     // mirrors media::ImageControl (an unknown name must stay 404).
