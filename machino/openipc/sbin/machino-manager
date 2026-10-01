@@ -186,8 +186,27 @@ cmd_install() {
     # deshalb nichts kostet) und schreibt nichts. Die eigene Kopie der Rechnung
     # hier kannte den 2-MB-Helfer nicht: der Manager haette gestoppt, install.sh
     # abgebrochen, und die Kamera stuende ohne Streamer da.
+    #
+    # Der NNA-Helfer wird VORHER echt geschrieben (install.sh
+    # --stage-nna-helper, sha256-geprueft), solange der alte Daemon noch
+    # laeuft: das Overlay ist zlib-komprimiertes jffs2, 2 MB Helfer kosten dort
+    # rund 1 MB, und das weiss nur das Schreiben selbst. Danach ist er
+    # identisch und kostet die Rechnung nichts. Scheitert die Rechnung
+    # trotzdem, geht ein so frisch geschriebener Helfer wieder -- die Kamera
+    # bleibt, wie sie war.
+    _staged=0
+    if [ "${withnna:-0}" = "1" ]; then
+        _had_nna=0; [ -f "$ROOT/usr/sbin/machino-nna" ] && _had_nna=1
+        # shellcheck disable=SC2086 -- feste Schalter, kein Benutzertext
+        if ! _stg=$(MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" --stage-nna-helper $_pageopts 2>&1); then
+            die "pre-flight failed - nothing was stopped, machino keeps running: $(printf '%s\n' "$_stg" | sed 's/^install: //' | tail -n 1)"
+        fi
+        printf '%s\n' "$_stg" | tail -n 1 >&2
+        [ "$_had_nna" = "0" ] && _staged=1
+    fi
     # shellcheck disable=SC2086 -- feste Schalter, kein Benutzertext
     if ! _chk=$(MACHINO_ROOT="$ROOT" sh "$INSTALL_SH" --check-space $_pageopts 2>&1); then
+        [ "$_staged" = "1" ] && rm -f "$ROOT/usr/sbin/machino-nna"
         die "pre-flight failed - nothing was stopped, machino keeps running: $(printf '%s\n' "$_chk" | sed 's/^install: //' | tail -n 1)"
     fi
 

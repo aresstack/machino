@@ -911,10 +911,10 @@ head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
 _bin_kb=$(( $(wc -c < "$WORK/bundle/machino") / 1024 ))
 ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=10 sh ./install.sh --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
 if [ "$rc" != 0 ]; then ok; else bad "install with 10 kB free must fail"; fi
-_want=$(( _bin_kb + 1280 + 256 + 2100000 / 1024 + 64 ))
+_want=$(( _bin_kb + 256 + 256 + 2100000 / 1024 + 64 ))
 if grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "the space need must include the NNA helper (want ~${_want} kB): $(grep -o 'need ~[0-9]* kB' "$WORK/out")"; fi
 ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=10 sh ./install.sh ) >"$WORK/out" 2>&1; rc=$?
-_want=$(( _bin_kb + 1280 + 256 ))
+_want=$(( _bin_kb + 256 + 256 ))
 if grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "without --with-nna-payload the helper must not count (want ~${_want} kB): $(grep -o 'need ~[0-9]* kB' "$WORK/out")"; fi
 
 # Was schon identisch auf der Kamera liegt, kostet nichts mehr. 2026-09-30:
@@ -926,7 +926,7 @@ make_bundle; make_camera auto
 head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
 mkdir -p "$WORK/root/usr/sbin"; cp "$WORK/bundle/nna/machino-nna" "$WORK/root/usr/sbin/machino-nna"
 _bin_kb=$(( $(wc -c < "$WORK/bundle/machino") / 1024 ))
-_tight=$(( _bin_kb + 1280 + 256 + 8 ))      # Daemon + Reserve + exFAT: der identische Helfer darf nichts kosten
+_tight=$(( _bin_kb + 256 + 256 + 8 ))      # Daemon + Reserve + exFAT: der identische Helfer darf nichts kosten
 ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_tight sh ./install.sh --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
 is "an identical helper already installed costs no space" "$rc" "0"
 if grep -q "already installed and unchanged" "$WORK/out"; then ok; else bad "the unchanged helper was not reported: $(cat "$WORK/out")"; fi
@@ -936,7 +936,7 @@ if cmp -s "$WORK/bundle/nna/machino-nna" "$WORK/root/usr/sbin/machino-nna"; then
 make_bundle; make_camera auto
 head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
 mkdir -p "$WORK/root/usr/sbin"; head -c 2000000 /dev/zero | tr '\0' 'x' > "$WORK/root/usr/sbin/machino-nna"
-_free=$(( _bin_kb + 1280 + 256 + 2100000 / 1024 + 64 - 1000 ))   # 1000 kB zu wenig fuer eine tmp-Kopie NEBEN dem alten
+_free=$(( _bin_kb + 256 + 256 + 2100000 / 1024 + 64 - 1000 ))   # 1000 kB zu wenig fuer eine tmp-Kopie NEBEN dem alten
 ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_free sh ./install.sh --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
 is "a different old helper is replaced in place when only that fits" "$rc" "0"
 if grep -q "old helper is deleted first" "$WORK/out"; then ok; else bad "in-place helper replacement not reported: $(cat "$WORK/out")"; fi
@@ -949,13 +949,25 @@ if [ "$rc" != 0 ]; then ok; else bad "without an old helper to reclaim this must
 if grep -q "not enough space" "$WORK/out"; then ok; else bad "no space message: $(cat "$WORK/out")"; fi
 hasnt "a refused install writes no helper" "$WORK/root/usr/sbin/machino-nna"
 
+# put(): passt keine tmp-Kopie NEBEN die alte Datei, wird an Ort und Stelle
+# ersetzt statt abgebrochen.
+make_bundle; make_camera auto
+run_install || bad "install.sh exited non-zero: $(cat "$WORK/out")"
+echo "old-cgi" > "$WORK/root/var/www/cgi-bin/machino-ai.cgi"
+mkdir -p "$WORK/nospace2"
+printf '#!/bin/sh\nfor a; do case "$a" in *machino-ai.cgi.machino-new.*) echo "cp: No space left on device" >&2; exit 1 ;; esac; done\nexec /bin/cp "$@"\n' > "$WORK/nospace2/cp"; chmod +x "$WORK/nospace2/cp"
+( cd "$WORK/bundle" && PATH="$WORK/nospace2:$PATH" MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 sh ./install.sh ) >"$WORK/out" 2>&1; rc=$?
+is "install survives a file whose temp copy does not fit" "$rc" "0"
+if grep -q "replacing it in place" "$WORK/out"; then ok; else bad "in-place replacement not reported: $(cat "$WORK/out")"; fi
+if cmp -s "$WORK/bundle/www/machino-ai.cgi" "$WORK/root/var/www/cgi-bin/machino-ai.cgi"; then ok; else bad "the CGI was not replaced in place"; fi
+
 # --check-space: rechnen, nichts anfassen, Ausgang 0/1 -- so fragt der Manager.
 make_bundle; make_camera auto
 head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
 _before=$(find "$WORK/root" | sort | md5sum)
 ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=10 sh ./install.sh --check-space --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
 if [ "$rc" != 0 ]; then ok; else bad "--check-space must fail with 10 kB free: $(cat "$WORK/out")"; fi
-_want=$(( _bin_kb + 1280 + 256 + 2100000 / 1024 + 64 ))
+_want=$(( _bin_kb + 256 + 256 + 2100000 / 1024 + 64 ))
 if grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "--check-space must carry the full need (want ~${_want} kB): $(cat "$WORK/out")"; fi
 ( cd "$WORK/bundle" && MACHINO_ROOT="$WORK/root" MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=100000 sh ./install.sh --check-space --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
 is "--check-space passes with room" "$rc" "0"
@@ -968,13 +980,31 @@ hasnt "--check-space installed no daemon" "$WORK/root/usr/bin/machino"
 # identischer, der schon liegt, kostet nichts, und es laeuft durch.
 make_bundle; make_camera auto
 head -c 2100000 /dev/zero > "$WORK/bundle/nna/machino-nna"
-_tight=$(( _bin_kb + 1280 + 256 + 8 ))
+_tight=$(( _bin_kb + 256 + 256 + 8 ))
 # (der Stub-Ordner ist seit den Manager-Tests weg -- hier laeuft der Daemon)
 mkdir -p "$MSTUB"; printf '#!/bin/sh\ncase "$*" in *machino*) echo 1234; exit 0 ;; esac\nexit 1\n' > "$MSTUB/pgrep"; chmod +x "$MSTUB/pgrep"
-( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_tight sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+# Der Helfer wird VOR dem Stoppen echt geschrieben (jffs2 komprimiert; nur das
+# Schreiben weiss, ob er passt). Ein cp, der fuer ihn scheitert, ist ein volles
+# Overlay: Absage, nichts gestoppt, kein halber Helfer.
+mkdir -p "$WORK/nospace"
+printf '#!/bin/sh\nfor a; do case "$a" in *machino-nna*) case "$a" in */nna/machino-nna) ;; *) echo "cp: write error: No space left on device" >&2; exit 1 ;; esac ;; esac; done\nexec /bin/cp "$@"\n' > "$WORK/nospace/cp"; chmod +x "$WORK/nospace/cp"
+( cd "$WORK/bundle" && PATH="$WORK/nospace:$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
 if [ "$rc" != 0 ]; then ok; else bad "manager must refuse when the NNA helper does not fit: $(cat "$WORK/out")"; fi
-if grep -q "nothing was stopped" "$WORK/out" && grep -q "need ~${_want} kB" "$WORK/out"; then ok; else bad "manager refusal must carry install.sh's numbers: $(cat "$WORK/out")"; fi
-hasnt "manager refused before writing the helper" "$R/usr/sbin/machino-nna"
+if grep -q "nothing was stopped" "$WORK/out" && grep -q "does not fit" "$WORK/out"; then ok; else bad "manager refusal must say the helper does not fit: $(cat "$WORK/out")"; fi
+hasnt "manager refused without leaving a helper" "$R/usr/sbin/machino-nna"
+if ls "$R/usr/sbin/" | grep -q "machino-nna.machino-new"; then bad "a partial helper copy was left behind"; else ok; fi
+# Geschrieben, aber danach reicht die Rechnung fuer den Rest nicht: der eben
+# gestagte Helfer geht wieder, die Kamera bleibt, wie sie war.
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=10 sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+if [ "$rc" != 0 ]; then ok; else bad "manager must refuse with 10 kB free: $(cat "$WORK/out")"; fi
+if grep -q "nothing was stopped" "$WORK/out"; then ok; else bad "refusal must say nothing was stopped: $(cat "$WORK/out")"; fi
+hasnt "a freshly staged helper is removed again on refusal" "$R/usr/sbin/machino-nna"
+# Und der Normalfall auf dem knappen Overlay: Helfer gestagt, Rest passt.
+( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_tight sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
+if [ "$rc" = 0 ]; then ok; else bad "manager must install once the staged helper fit: $(cat "$WORK/out")"; fi
+if grep -q "staged the NNA inference helper" "$WORK/out"; then ok; else bad "staging was not reported: $(cat "$WORK/out")"; fi
+if cmp -s "$WORK/bundle/nna/machino-nna" "$R/usr/sbin/machino-nna"; then ok; else bad "the staged helper is not the bundle's"; fi
+rm -f "$R/usr/sbin/machino-nna"
 mkdir -p "$R/usr/sbin"; cp "$WORK/bundle/nna/machino-nna" "$R/usr/sbin/machino-nna"
 ( cd "$WORK/bundle" && PATH="$MSTUB:$PATH" MACHINO_ROOT="$R" MACHINO_MANAGER_NO_ACTIVATE=1 MACHINO_INSTALL_SKIP_FORMAT=1 MACHINO_TEST_FREE_KB=$_tight sh ./sbin/machino-manager install --owner cam-tool --platform t40nn --with-nna-payload ) >"$WORK/out" 2>&1; rc=$?
 if [ "$rc" = 0 ]; then ok; else bad "manager must install when the identical helper is already there: $(cat "$WORK/out")"; fi
